@@ -124,6 +124,118 @@ func TestMemoryAgentRegistry_Heartbeat_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestMemoryAgentRegistry_RegisterOrHeartbeat_NewAgent(t *testing.T) {
+	registry := newTestMemoryRegistry(t)
+	ctx := context.Background()
+
+	err := registry.Start(ctx)
+	require.NoError(t, err)
+	defer registry.Close()
+
+	// RegisterOrHeartbeat with new agent should auto-register
+	agent := &AgentInfo{
+		AgentID:  "agent-new",
+		Hostname: "host-new",
+		IP:       "192.168.1.100",
+		Version:  "2.0.0",
+		Labels:   map[string]string{"env": "prod"},
+	}
+
+	err = registry.RegisterOrHeartbeat(ctx, agent)
+	require.NoError(t, err)
+
+	// Verify agent was registered
+	retrieved, err := registry.GetAgent(ctx, "agent-new")
+	require.NoError(t, err)
+	assert.Equal(t, "agent-new", retrieved.AgentID)
+	assert.Equal(t, "host-new", retrieved.Hostname)
+	assert.Equal(t, "192.168.1.100", retrieved.IP)
+	assert.Equal(t, "2.0.0", retrieved.Version)
+	assert.Equal(t, AgentStateOnline, retrieved.Status.State)
+	assert.NotZero(t, retrieved.RegisteredAt)
+}
+
+func TestMemoryAgentRegistry_RegisterOrHeartbeat_ExistingAgent(t *testing.T) {
+	registry := newTestMemoryRegistry(t)
+	ctx := context.Background()
+
+	err := registry.Start(ctx)
+	require.NoError(t, err)
+	defer registry.Close()
+
+	// First, register an agent
+	agent := &AgentInfo{
+		AgentID:  "agent-existing",
+		Hostname: "host-old",
+		IP:       "192.168.1.1",
+		Version:  "1.0.0",
+		Labels:   map[string]string{"env": "test"},
+	}
+	err = registry.Register(ctx, agent)
+	require.NoError(t, err)
+
+	retrieved, _ := registry.GetAgent(ctx, "agent-existing")
+	initialHeartbeat := retrieved.LastHeartbeat
+	initialRegisteredAt := retrieved.RegisteredAt
+
+	// Wait a bit to ensure timestamp changes
+	time.Sleep(10 * time.Millisecond)
+
+	// RegisterOrHeartbeat with updated info
+	updatedAgent := &AgentInfo{
+		AgentID:  "agent-existing",
+		Hostname: "host-new",
+		IP:       "192.168.1.2",
+		Version:  "2.0.0",
+		Labels:   map[string]string{"env": "prod", "region": "us-west"},
+		Status: &AgentStatus{
+			ConfigVersion: "v2.0",
+		},
+	}
+
+	err = registry.RegisterOrHeartbeat(ctx, updatedAgent)
+	require.NoError(t, err)
+
+	// Verify agent was updated, not re-registered
+	retrieved, err = registry.GetAgent(ctx, "agent-existing")
+	require.NoError(t, err)
+	assert.Equal(t, "agent-existing", retrieved.AgentID)
+	assert.Equal(t, "host-new", retrieved.Hostname)
+	assert.Equal(t, "192.168.1.2", retrieved.IP)
+	assert.Equal(t, "2.0.0", retrieved.Version)
+	assert.Equal(t, "v2.0", retrieved.Status.ConfigVersion)
+	assert.Equal(t, AgentStateOnline, retrieved.Status.State)
+
+	// RegisteredAt should not change
+	assert.Equal(t, initialRegisteredAt, retrieved.RegisteredAt)
+
+	// LastHeartbeat should be updated
+	assert.Greater(t, retrieved.LastHeartbeat, initialHeartbeat)
+
+	// Labels should be updated
+	assert.Equal(t, "prod", retrieved.Labels["env"])
+	assert.Equal(t, "us-west", retrieved.Labels["region"])
+}
+
+func TestMemoryAgentRegistry_RegisterOrHeartbeat_Validation(t *testing.T) {
+	registry := newTestMemoryRegistry(t)
+	ctx := context.Background()
+
+	err := registry.Start(ctx)
+	require.NoError(t, err)
+	defer registry.Close()
+
+	// Nil agent
+	err = registry.RegisterOrHeartbeat(ctx, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+
+	// Empty agent_id
+	err = registry.RegisterOrHeartbeat(ctx, &AgentInfo{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "agent_id")
+}
+
 func TestMemoryAgentRegistry_Unregister(t *testing.T) {
 	registry := newTestMemoryRegistry(t)
 	ctx := context.Background()

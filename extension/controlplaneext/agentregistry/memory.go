@@ -105,6 +105,90 @@ func (m *MemoryAgentRegistry) Heartbeat(ctx context.Context, agentID string, sta
 	return nil
 }
 
+// RegisterOrHeartbeat registers a new agent if not exists, or updates heartbeat if exists.
+// This provides upsert semantics for automatic registration via status reports.
+func (m *MemoryAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *AgentInfo) error {
+	if agent == nil {
+		return errors.New("agent cannot be nil")
+	}
+	if agent.AgentID == "" {
+		return errors.New("agent_id is required")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now().UnixNano()
+
+	existing, ok := m.agents[agent.AgentID]
+	if ok {
+		// Agent exists, update heartbeat and status
+		existing.LastHeartbeat = now
+
+		// Update mutable fields from the incoming agent info
+		if agent.Hostname != "" {
+			existing.Hostname = agent.Hostname
+		}
+		if agent.IP != "" {
+			existing.IP = agent.IP
+		}
+		if agent.Version != "" {
+			existing.Version = agent.Version
+		}
+		if agent.Token != "" {
+			existing.Token = agent.Token
+		}
+		if agent.AppID != "" {
+			existing.AppID = agent.AppID
+		}
+
+		// Update status
+		if agent.Status != nil {
+			agent.Status.State = AgentStateOnline
+			existing.Status = agent.Status
+		} else if existing.Status != nil {
+			existing.Status.State = AgentStateOnline
+		}
+
+		// Update labels if provided
+		if len(agent.Labels) > 0 {
+			oldLabels := existing.Labels
+			existing.Labels = agent.Labels
+			m.updateLabelIndex(agent.AgentID, oldLabels, agent.Labels)
+		}
+
+		m.logger.Debug("Agent heartbeat updated",
+			zap.String("agent_id", agent.AgentID),
+		)
+		return nil
+	}
+
+	// Agent doesn't exist, register it
+	agent.RegisteredAt = now
+	agent.LastHeartbeat = now
+
+	if agent.Status == nil {
+		agent.Status = &AgentStatus{
+			State: AgentStateOnline,
+		}
+	} else {
+		agent.Status.State = AgentStateOnline
+	}
+
+	// Store agent
+	m.agents[agent.AgentID] = agent
+
+	// Update label index
+	m.updateLabelIndex(agent.AgentID, nil, agent.Labels)
+
+	m.logger.Info("Agent auto-registered via heartbeat",
+		zap.String("agent_id", agent.AgentID),
+		zap.String("hostname", agent.Hostname),
+	)
+
+	return nil
+}
+
 // Unregister removes an agent from the registry.
 func (m *MemoryAgentRegistry) Unregister(ctx context.Context, agentID string) error {
 	m.mu.Lock()

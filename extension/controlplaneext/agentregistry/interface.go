@@ -18,6 +18,10 @@ type AgentRegistry interface {
 	// Heartbeat updates the agent's heartbeat and status.
 	Heartbeat(ctx context.Context, agentID string, status *AgentStatus) error
 
+	// RegisterOrHeartbeat registers a new agent if not exists, or updates heartbeat if exists.
+	// This provides upsert semantics for automatic registration via status reports.
+	RegisterOrHeartbeat(ctx context.Context, agent *AgentInfo) error
+
 	// Unregister removes an agent from the registry.
 	Unregister(ctx context.Context, agentID string) error
 

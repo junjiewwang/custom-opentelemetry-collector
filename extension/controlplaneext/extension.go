@@ -51,6 +51,7 @@ type ControlPlane interface {
 	// Agent registry
 	RegisterAgent(ctx context.Context, agent *agentregistry.AgentInfo) error
 	HeartbeatAgent(ctx context.Context, agentID string, status *agentregistry.AgentStatus) error
+	RegisterOrHeartbeatAgent(ctx context.Context, agent *agentregistry.AgentInfo) error
 	UnregisterAgent(ctx context.Context, agentID string) error
 	GetAgent(ctx context.Context, agentID string) (*agentregistry.AgentInfo, error)
 	GetOnlineAgents(ctx context.Context) ([]*agentregistry.AgentInfo, error)
@@ -435,6 +436,12 @@ func (e *Extension) RegisterAgent(ctx context.Context, agent *agentregistry.Agen
 // HeartbeatAgent implements ControlPlane.
 func (e *Extension) HeartbeatAgent(ctx context.Context, agentID string, status *agentregistry.AgentStatus) error {
 	return e.agentReg.Heartbeat(ctx, agentID, status)
+}
+
+// RegisterOrHeartbeatAgent implements ControlPlane.
+// This provides upsert semantics: registers the agent if not exists, or updates heartbeat if exists.
+func (e *Extension) RegisterOrHeartbeatAgent(ctx context.Context, agent *agentregistry.AgentInfo) error {
+	return e.agentReg.RegisterOrHeartbeat(ctx, agent)
 }
 
 // UnregisterAgent implements ControlPlane.

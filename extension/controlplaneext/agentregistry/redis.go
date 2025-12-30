@@ -231,6 +231,179 @@ func (r *RedisAgentRegistry) Heartbeat(ctx context.Context, agentID string, stat
 	return err
 }
 
+// RegisterOrHeartbeat registers a new agent if not exists, or updates heartbeat if exists.
+// This provides upsert semantics for automatic registration via status reports.
+func (r *RedisAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *AgentInfo) error {
+	if agent == nil {
+		return errors.New("agent cannot be nil")
+	}
+	if agent.AgentID == "" {
+		return errors.New("agent_id is required")
+	}
+
+	r.mu.RLock()
+	client := r.client
+	r.mu.RUnlock()
+
+	if client == nil {
+		return errors.New("redis client not initialized")
+	}
+
+	infoKey := fmt.Sprintf(keyAgentInfo, r.keyPrefix, agent.AgentID)
+	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
+	heartbeatKey := fmt.Sprintf(keyHeartbeatZSet, r.keyPrefix)
+
+	now := time.Now().UnixNano()
+
+	// Try to get existing agent info
+	data, err := client.Get(ctx, infoKey).Result()
+	if err != nil && err != redis.Nil {
+		return err
+	}
+
+	var existing *AgentInfo
+	if err == nil {
+		// Agent exists, unmarshal it
+		existing = &AgentInfo{}
+		if err := json.Unmarshal([]byte(data), existing); err != nil {
+			return err
+		}
+	}
+
+	if existing != nil {
+		// Update existing agent
+		existing.LastHeartbeat = now
+
+		// Update mutable fields from the incoming agent info
+		if agent.Hostname != "" {
+			existing.Hostname = agent.Hostname
+		}
+		if agent.IP != "" {
+			existing.IP = agent.IP
+		}
+		if agent.Version != "" {
+			existing.Version = agent.Version
+		}
+		if agent.Token != "" {
+			existing.Token = agent.Token
+		}
+		if agent.AppID != "" {
+			existing.AppID = agent.AppID
+		}
+
+		// Update status
+		if agent.Status != nil {
+			agent.Status.State = AgentStateOnline
+			existing.Status = agent.Status
+		} else if existing.Status != nil {
+			existing.Status.State = AgentStateOnline
+		}
+
+		// Update labels if provided
+		if len(agent.Labels) > 0 {
+			// Remove old label indexes
+			pipe := client.TxPipeline()
+			for k, v := range existing.Labels {
+				labelKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, k, v)
+				pipe.SRem(ctx, labelKey, agent.AgentID)
+			}
+			_, _ = pipe.Exec(ctx)
+
+			existing.Labels = agent.Labels
+		}
+
+		agentData, err := json.Marshal(existing)
+		if err != nil {
+			return err
+		}
+
+		pipe := client.TxPipeline()
+
+		// Update agent info and refresh TTL
+		pipe.Set(ctx, infoKey, agentData, r.config.HeartbeatTTL)
+
+		// Ensure in online set
+		pipe.SAdd(ctx, onlineKey, agent.AgentID)
+
+		// Update heartbeat timestamp
+		pipe.ZAdd(ctx, heartbeatKey, redis.Z{
+			Score:  float64(now),
+			Member: agent.AgentID,
+		})
+
+		// Add new label indexes
+		for k, v := range existing.Labels {
+			labelKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, k, v)
+			pipe.SAdd(ctx, labelKey, agent.AgentID)
+		}
+
+		_, err = pipe.Exec(ctx)
+		if err != nil {
+			return err
+		}
+
+		r.logger.Debug("Agent heartbeat updated",
+			zap.String("agent_id", agent.AgentID),
+		)
+		return nil
+	}
+
+	// Agent doesn't exist, register it
+	agent.RegisteredAt = now
+	agent.LastHeartbeat = now
+
+	if agent.Status == nil {
+		agent.Status = &AgentStatus{
+			State: AgentStateOnline,
+		}
+	} else {
+		agent.Status.State = AgentStateOnline
+	}
+
+	agentData, err := json.Marshal(agent)
+	if err != nil {
+		return err
+	}
+
+	pipe := client.TxPipeline()
+
+	// Store agent info with TTL
+	pipe.Set(ctx, infoKey, agentData, r.config.HeartbeatTTL)
+
+	// Add to online set
+	pipe.SAdd(ctx, onlineKey, agent.AgentID)
+
+	// Add to heartbeat sorted set
+	pipe.ZAdd(ctx, heartbeatKey, redis.Z{
+		Score:  float64(now),
+		Member: agent.AgentID,
+	})
+
+	// Add to label indexes
+	for k, v := range agent.Labels {
+		labelKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, k, v)
+		pipe.SAdd(ctx, labelKey, agent.AgentID)
+	}
+
+	// Publish online event
+	if r.config.EnableEvents {
+		eventKey := fmt.Sprintf(keyEventOnline, r.keyPrefix)
+		pipe.Publish(ctx, eventKey, agent.AgentID)
+	}
+
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	r.logger.Info("Agent auto-registered via heartbeat",
+		zap.String("agent_id", agent.AgentID),
+		zap.String("hostname", agent.Hostname),
+	)
+
+	return nil
+}
+
 // Unregister removes an agent from the registry.
 func (r *RedisAgentRegistry) Unregister(ctx context.Context, agentID string) error {
 	r.mu.RLock()

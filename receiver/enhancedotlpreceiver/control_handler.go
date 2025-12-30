@@ -290,15 +290,35 @@ func (h *controlHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		h.controlPlane.UpdateHealth(req.Status.Health)
 	}
 
-	// If agent_id is provided, update heartbeat
+	// If agent_id is provided, auto-register or update heartbeat (upsert semantics)
 	if req.Status != nil && req.Status.AgentID != "" {
-		agentStatus := &agentregistry.AgentStatus{
-			Health: req.Status.Health,
+		agentInfo := &agentregistry.AgentInfo{
+			AgentID:  req.Status.AgentID,
+			Hostname: req.Status.Hostname,
+			IP:       req.Status.IP,
+			Version:  req.Status.Version,
+			Status: &agentregistry.AgentStatus{
+				Health: req.Status.Health,
+			},
 		}
-		if req.Status.Metrics != nil {
-			agentStatus.ConfigVersion = req.Status.Health.CurrentConfigVersion
+
+		// Extract labels from status if available
+		if req.Status.Labels != nil {
+			agentInfo.Labels = req.Status.Labels
 		}
-		_ = h.controlPlane.HeartbeatAgent(r.Context(), req.Status.AgentID, agentStatus)
+
+		// Set config version if available
+		if req.Status.Health != nil && agentInfo.Status != nil {
+			agentInfo.Status.ConfigVersion = req.Status.Health.CurrentConfigVersion
+		}
+
+		// Use RegisterOrHeartbeatAgent for upsert semantics
+		if err := h.controlPlane.RegisterOrHeartbeatAgent(r.Context(), agentInfo); err != nil {
+			h.logger.Warn("Failed to register/heartbeat agent",
+				zap.String("agent_id", req.Status.AgentID),
+				zap.Error(err),
+			)
+		}
 	}
 
 	// Return pending tasks

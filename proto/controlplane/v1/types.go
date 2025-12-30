@@ -150,6 +150,13 @@ type AgentStatus struct {
 	Health            *HealthStatus     `json:"health,omitempty"`
 	CompletedTasks    []*TaskResult     `json:"completed_tasks,omitempty"`
 	Metrics           map[string]string `json:"metrics,omitempty"`
+
+	// Agent identification fields for auto-registration
+	Hostname  string            `json:"hostname,omitempty"`
+	IP        string            `json:"ip,omitempty"`
+	Version   string            `json:"version,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	StartTime int64             `json:"start_time,omitempty"`
 }
 
 // ConfigRequest is sent by the control plane to update agent configuration.
