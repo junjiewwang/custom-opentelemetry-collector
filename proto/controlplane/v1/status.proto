@@ -1,0 +1,98 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package controlplane.v1;
+
+option go_package = "go.opentelemetry.io/collector/custom/proto/controlplane/v1;controlplanev1";
+
+import "custom/proto/controlplane/v1/task.proto";
+
+// AgentStatus represents the current state of an agent.
+message AgentStatus {
+    // Unique identifier for this agent.
+    string agent_id = 1;
+    
+    // Status report timestamp in Unix nanoseconds.
+    int64 timestamp_unix_nano = 2;
+    
+    // Current health status.
+    HealthStatus health = 3;
+    
+    // Recently completed tasks.
+    repeated TaskResult completed_tasks = 4;
+    
+    // Agent metrics (key-value pairs).
+    map<string, string> metrics = 5;
+}
+
+// HealthStatus describes the agent's health.
+message HealthStatus {
+    // Overall health state.
+    HealthState state = 1;
+    
+    // Success rate (0.0 to 1.0).
+    double success_rate = 2;
+    
+    // Total successful operations.
+    int64 success_count = 3;
+    
+    // Total failed operations.
+    int64 failure_count = 4;
+    
+    // Currently applied configuration version.
+    string current_config_version = 5;
+}
+
+// HealthState enumerates possible health states.
+enum HealthState {
+    HEALTH_STATE_UNSPECIFIED = 0;
+    HEALTH_STATE_HEALTHY = 1;
+    HEALTH_STATE_DEGRADED = 2;
+    HEALTH_STATE_UNHEALTHY = 3;
+}
+
+// StatusRequest is sent to report agent status.
+message StatusRequest {
+    AgentStatus status = 1;
+}
+
+// StatusResponse is returned after status report.
+message StatusResponse {
+    bool received = 1;
+    string message = 2;
+    
+    // Optional: pending tasks for this agent.
+    repeated Task pending_tasks = 3;
+}
+
+// UploadChunkRequest is sent to upload large data in chunks.
+message UploadChunkRequest {
+    // Task ID this chunk belongs to.
+    string task_id = 1;
+    
+    // Chunk sequence number (0-based).
+    int32 chunk_index = 2;
+    
+    // Total number of chunks.
+    int32 total_chunks = 3;
+    
+    // Chunk data.
+    bytes data = 4;
+    
+    // Checksum of this chunk (optional).
+    string checksum = 5;
+}
+
+// UploadChunkResponse is returned after chunk upload.
+message UploadChunkResponse {
+    bool success = 1;
+    string message = 2;
+    
+    // Number of chunks received so far.
+    int32 chunks_received = 3;
+    
+    // Whether all chunks have been received.
+    bool complete = 4;
+}

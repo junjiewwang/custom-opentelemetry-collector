@@ -1,0 +1,84 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package controlplane.v1;
+
+option go_package = "go.opentelemetry.io/collector/custom/proto/controlplane/v1;controlplanev1";
+
+// Task represents a command to be executed by the agent.
+message Task {
+    // Unique identifier for this task.
+    string task_id = 1;
+    
+    // Type of task (e.g., "heap_dump", "thread_dump", "config_export").
+    string task_type = 2;
+    
+    // Task-specific parameters in JSON format.
+    string parameters_json = 3;
+    
+    // Priority level (higher = more urgent).
+    int32 priority = 4;
+    
+    // Maximum time allowed for task execution in milliseconds.
+    int64 timeout_millis = 5;
+    
+    // Task creation timestamp in Unix nanoseconds.
+    int64 created_at_unix_nano = 6;
+    
+    // Task expiration timestamp in Unix nanoseconds.
+    int64 expires_at_unix_nano = 7;
+}
+
+// TaskResult contains the outcome of a task execution.
+message TaskResult {
+    // ID of the completed task.
+    string task_id = 1;
+    
+    // Execution status.
+    TaskStatus status = 2;
+    
+    // Result data (format depends on task type).
+    bytes result_data = 3;
+    
+    // Error message if task failed.
+    string error_message = 4;
+    
+    // Completion timestamp in Unix nanoseconds.
+    int64 completed_at_unix_nano = 5;
+}
+
+// TaskStatus enumerates possible task outcomes.
+enum TaskStatus {
+    TASK_STATUS_UNSPECIFIED = 0;
+    TASK_STATUS_SUCCESS = 1;
+    TASK_STATUS_FAILED = 2;
+    TASK_STATUS_TIMEOUT = 3;
+    TASK_STATUS_CANCELLED = 4;
+    TASK_STATUS_PENDING = 5;
+    TASK_STATUS_RUNNING = 6;
+}
+
+// TaskRequest is sent to submit a new task.
+message TaskRequest {
+    Task task = 1;
+}
+
+// TaskResponse is returned after task submission.
+message TaskResponse {
+    bool accepted = 1;
+    string message = 2;
+    string task_id = 3;
+}
+
+// TaskResultRequest is sent to query task results.
+message TaskResultRequest {
+    string task_id = 1;
+}
+
+// TaskResultResponse returns task execution results.
+message TaskResultResponse {
+    bool found = 1;
+    TaskResult result = 2;
+}

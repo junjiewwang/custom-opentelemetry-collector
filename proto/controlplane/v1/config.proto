@@ -1,0 +1,75 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package controlplane.v1;
+
+option go_package = "go.opentelemetry.io/collector/custom/proto/controlplane/v1;controlplanev1";
+
+// AgentConfig represents the configuration to be pushed to agents.
+message AgentConfig {
+    // Version of this configuration for tracking changes.
+    string config_version = 1;
+    
+    // Sampler configuration.
+    SamplerConfig sampler = 2;
+    
+    // Batch processor configuration.
+    BatchConfig batch = 3;
+    
+    // Dynamic resource attributes to be added to telemetry data.
+    map<string, string> dynamic_resource_attributes = 4;
+    
+    // Extension-specific configuration in JSON format.
+    string extension_config_json = 5;
+}
+
+// SamplerConfig defines sampling behavior.
+message SamplerConfig {
+    // Type of sampler to use.
+    SamplerType type = 1;
+    
+    // Sampling ratio (0.0 to 1.0) for TRACE_ID_RATIO sampler.
+    double ratio = 2;
+    
+    // Rules for RULE_BASED sampler (JSON format).
+    string rules_json = 3;
+}
+
+// SamplerType enumerates available sampler types.
+enum SamplerType {
+    SAMPLER_TYPE_UNSPECIFIED = 0;
+    SAMPLER_TYPE_ALWAYS_ON = 1;
+    SAMPLER_TYPE_ALWAYS_OFF = 2;
+    SAMPLER_TYPE_TRACE_ID_RATIO = 3;
+    SAMPLER_TYPE_PARENT_BASED = 4;
+    SAMPLER_TYPE_RULE_BASED = 5;
+}
+
+// BatchConfig defines batch processor settings.
+message BatchConfig {
+    // Maximum number of spans/metrics/logs in a single batch.
+    int32 max_export_batch_size = 1;
+    
+    // Maximum number of items waiting in queue.
+    int32 max_queue_size = 2;
+    
+    // Delay between batch exports in milliseconds.
+    int64 schedule_delay_millis = 3;
+    
+    // Export timeout in milliseconds.
+    int64 export_timeout_millis = 4;
+}
+
+// ConfigRequest is sent by the control plane to update agent configuration.
+message ConfigRequest {
+    AgentConfig config = 1;
+}
+
+// ConfigResponse is returned after processing a configuration update.
+message ConfigResponse {
+    bool success = 1;
+    string message = 2;
+    string applied_version = 3;
+}
