@@ -279,43 +279,24 @@ func (h *controlHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	var req controlplanev1.StatusRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	// Parse status request - support both nested and flat JSON formats
+	agentInfo, health, parseErr := h.parseStatusRequest(body)
+	if parseErr != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request: "+parseErr.Error())
 		return
 	}
 
 	// Update health if provided
-	if req.Status != nil && req.Status.Health != nil {
-		h.controlPlane.UpdateHealth(req.Status.Health)
+	if health != nil {
+		h.controlPlane.UpdateHealth(health)
 	}
 
 	// If agent_id is provided, auto-register or update heartbeat (upsert semantics)
-	if req.Status != nil && req.Status.AgentID != "" {
-		agentInfo := &agentregistry.AgentInfo{
-			AgentID:  req.Status.AgentID,
-			Hostname: req.Status.Hostname,
-			IP:       req.Status.IP,
-			Version:  req.Status.Version,
-			Status: &agentregistry.AgentStatus{
-				Health: req.Status.Health,
-			},
-		}
-
-		// Extract labels from status if available
-		if req.Status.Labels != nil {
-			agentInfo.Labels = req.Status.Labels
-		}
-
-		// Set config version if available
-		if req.Status.Health != nil && agentInfo.Status != nil {
-			agentInfo.Status.ConfigVersion = req.Status.Health.CurrentConfigVersion
-		}
-
+	if agentInfo != nil && agentInfo.AgentID != "" {
 		// Use RegisterOrHeartbeatAgent for upsert semantics
 		if err := h.controlPlane.RegisterOrHeartbeatAgent(r.Context(), agentInfo); err != nil {
 			h.logger.Warn("Failed to register/heartbeat agent",
-				zap.String("agent_id", req.Status.AgentID),
+				zap.String("agent_id", agentInfo.AgentID),
 				zap.Error(err),
 			)
 		}
@@ -328,6 +309,116 @@ func (h *controlHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Message:      "status received",
 		PendingTasks: pendingTasks,
 	})
+}
+
+// parseStatusRequest parses status request body, supporting both nested and flat JSON formats.
+// Nested format: {"status": {"agent_id": "...", ...}}
+// Flat format: {"agentId": "...", "hostname": "...", ...} (Java agent format)
+func (h *controlHandler) parseStatusRequest(body []byte) (*agentregistry.AgentInfo, *controlplanev1.HealthStatus, error) {
+	// First try nested format (standard format)
+	var nestedReq controlplanev1.StatusRequest
+	if err := json.Unmarshal(body, &nestedReq); err == nil && nestedReq.Status != nil && nestedReq.Status.AgentID != "" {
+		agentInfo := &agentregistry.AgentInfo{
+			AgentID:  nestedReq.Status.AgentID,
+			Hostname: nestedReq.Status.Hostname,
+			IP:       nestedReq.Status.IP,
+			Version:  nestedReq.Status.Version,
+			Status: &agentregistry.AgentStatus{
+				Health: nestedReq.Status.Health,
+			},
+		}
+		if nestedReq.Status.Labels != nil {
+			agentInfo.Labels = nestedReq.Status.Labels
+		}
+		if nestedReq.Status.Health != nil && agentInfo.Status != nil {
+			agentInfo.Status.ConfigVersion = nestedReq.Status.Health.CurrentConfigVersion
+		}
+		return agentInfo, nestedReq.Status.Health, nil
+	}
+
+	// Try flat format (Java agent format)
+	var flatReq javaAgentStatusRequest
+	if err := json.Unmarshal(body, &flatReq); err != nil {
+		return nil, nil, err
+	}
+
+	// Validate required field
+	if flatReq.AgentID == "" {
+		return nil, nil, nil // Empty request, no agent info
+	}
+
+	// Build agent info from flat format
+	agentInfo := &agentregistry.AgentInfo{
+		AgentID:  flatReq.AgentID,
+		Hostname: flatReq.Hostname,
+		IP:       flatReq.IP,
+		Version:  flatReq.SDKVersion,
+		AppID:    flatReq.ServiceName,
+		Labels: map[string]string{
+			"service.name":      flatReq.ServiceName,
+			"service.namespace": flatReq.ServiceNamespace,
+			"process.pid":       flatReq.ProcessID,
+		},
+	}
+
+	// Build health status from flat format
+	health := &controlplanev1.HealthStatus{}
+	switch flatReq.RunningState {
+	case "RUNNING":
+		health.State = controlplanev1.HealthStateHealthy
+	case "STARTING":
+		health.State = controlplanev1.HealthStateDegraded
+	default:
+		health.State = controlplanev1.HealthStateUnhealthy
+	}
+
+	// Extract span export stats if available
+	if flatReq.SpanExportStats != nil {
+		health.SuccessRate = flatReq.SpanExportStats.SuccessRate
+		health.SuccessCount = flatReq.SpanExportStats.SuccessCount
+		health.FailureCount = flatReq.SpanExportStats.FailureCount
+	}
+
+	agentInfo.Status = &agentregistry.AgentStatus{
+		Health: health,
+	}
+
+	h.logger.Debug("Parsed Java agent status request",
+		zap.String("agent_id", agentInfo.AgentID),
+		zap.String("hostname", agentInfo.Hostname),
+		zap.String("service_name", flatReq.ServiceName),
+	)
+
+	return agentInfo, health, nil
+}
+
+// javaAgentStatusRequest represents the flat status format sent by Java agent.
+type javaAgentStatusRequest struct {
+	AgentID          string `json:"agentId"`
+	Hostname         string `json:"hostname"`
+	ProcessID        string `json:"processId"`
+	IP               string `json:"ip"`
+	SDKVersion       string `json:"sdkVersion"`
+	ServiceNamespace string `json:"serviceNamespace"`
+	ServiceName      string `json:"serviceName"`
+	StartupTimestamp int64  `json:"startupTimestamp"`
+	RunningState     string `json:"runningState"`
+	UptimeMs         int64  `json:"uptimeMs"`
+	Timestamp        int64  `json:"timestamp"`
+	ConnectionState  string `json:"connectionState"`
+	ConfigPollCount  int64  `json:"configPollCount"`
+	TaskPollCount    int64  `json:"taskPollCount"`
+	StatusReportCnt  int64  `json:"statusReportCount"`
+	OTLPHealthState  string `json:"otlpHealthState"`
+	SpanExportStats  *spanExportStats `json:"spanExportStats"`
+}
+
+// spanExportStats represents span export statistics from Java agent.
+type spanExportStats struct {
+	TotalExports int64   `json:"totalExports"`
+	SuccessRate  float64 `json:"successRate"`
+	SuccessCount int64   `json:"successCount"`
+	FailureCount int64   `json:"failureCount"`
 }
 
 // handleRegister handles POST /v1/control/register

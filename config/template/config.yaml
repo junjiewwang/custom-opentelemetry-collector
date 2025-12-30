@@ -154,7 +154,7 @@ extensions:
     
     # HTTP server configuration
     http:
-      endpoint: "0.0.0.0:8080"
+      endpoint: "0.0.0.0:8088"
       read_timeout: 30s
       write_timeout: 30s
       idle_timeout: 60s
@@ -345,7 +345,7 @@ service:
       # tokenauth processor validates token from resource attributes
       # Place it before other processors for early rejection of invalid data
       processors: [tokenauth, memory_limiter, batch]
-      exporters: [debug, otlphttp/jaeger, spanmetrics]
+      exporters: [otlphttp/jaeger, spanmetrics]
     
     # Metrics from spanmetrics connector
     metrics/spanmetrics:
@@ -356,12 +356,12 @@ service:
     metrics:
       receivers: [enhanced_otlp]
       processors: [tokenauth, memory_limiter, batch]
-      exporters: [debug, prometheusremotewrite]
+      exporters: [prometheusremotewrite]
     
-    logs:
-      receivers: [enhanced_otlp]
-      processors: [tokenauth, memory_limiter, batch]
-      exporters: [debug]
+    # logs:
+    #   receivers: [enhanced_otlp]
+    #   processors: [tokenauth, memory_limiter, batch]
+    #   exporters: [debug]
 
   telemetry:
     logs:
