@@ -9,8 +9,11 @@ import (
 	"net/http"
 
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
@@ -94,6 +97,12 @@ func (r *enhancedOTLPReceiver) handleTraces(w http.ResponseWriter, req *http.Req
 		return
 	}
 
+	// Validate token from header if enabled
+	tokenResult := r.validateTokenFromHeader(w, req)
+	if !tokenResult.valid {
+		return
+	}
+
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
@@ -127,6 +136,9 @@ func (r *enhancedOTLPReceiver) handleTraces(w http.ResponseWriter, req *http.Req
 		return
 	}
 
+	// Inject token into resource attributes if configured
+	r.injectTokenToTraces(td, tokenResult.token)
+
 	ctx := r.obsrepHTTP.StartTracesOp(req.Context())
 	err = r.tracesConsumer.ConsumeTraces(ctx, td)
 	r.obsrepHTTP.EndTracesOp(ctx, dataFormatForContentType(contentType), numSpans, err)
@@ -143,6 +155,12 @@ func (r *enhancedOTLPReceiver) handleTraces(w http.ResponseWriter, req *http.Req
 func (r *enhancedOTLPReceiver) handleMetrics(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Validate token from header if enabled
+	tokenResult := r.validateTokenFromHeader(w, req)
+	if !tokenResult.valid {
 		return
 	}
 
@@ -179,6 +197,9 @@ func (r *enhancedOTLPReceiver) handleMetrics(w http.ResponseWriter, req *http.Re
 		return
 	}
 
+	// Inject token into resource attributes if configured
+	r.injectTokenToMetrics(md, tokenResult.token)
+
 	ctx := r.obsrepHTTP.StartMetricsOp(req.Context())
 	err = r.metricsConsumer.ConsumeMetrics(ctx, md)
 	r.obsrepHTTP.EndMetricsOp(ctx, dataFormatForContentType(contentType), numDataPoints, err)
@@ -195,6 +216,12 @@ func (r *enhancedOTLPReceiver) handleMetrics(w http.ResponseWriter, req *http.Re
 func (r *enhancedOTLPReceiver) handleLogs(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Validate token from header if enabled
+	tokenResult := r.validateTokenFromHeader(w, req)
+	if !tokenResult.valid {
 		return
 	}
 
@@ -230,6 +257,9 @@ func (r *enhancedOTLPReceiver) handleLogs(w http.ResponseWriter, req *http.Reque
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+
+	// Inject token into resource attributes if configured
+	r.injectTokenToLogs(ld, tokenResult.token)
 
 	ctx := r.obsrepHTTP.StartLogsOp(req.Context())
 	err = r.logsConsumer.ConsumeLogs(ctx, ld)
@@ -279,5 +309,47 @@ func dataFormatForContentType(contentType string) string {
 		return "protobuf"
 	default:
 		return "json"
+	}
+}
+
+// injectTokenToTraces injects the token into all resource attributes of the traces.
+func (r *enhancedOTLPReceiver) injectTokenToTraces(td ptrace.Traces, token string) {
+	attrKey := r.config.GetTokenAuthInjectAttributeKey()
+	if attrKey == "" || token == "" {
+		return
+	}
+
+	resourceSpans := td.ResourceSpans()
+	for i := 0; i < resourceSpans.Len(); i++ {
+		rs := resourceSpans.At(i)
+		rs.Resource().Attributes().PutStr(attrKey, token)
+	}
+}
+
+// injectTokenToMetrics injects the token into all resource attributes of the metrics.
+func (r *enhancedOTLPReceiver) injectTokenToMetrics(md pmetric.Metrics, token string) {
+	attrKey := r.config.GetTokenAuthInjectAttributeKey()
+	if attrKey == "" || token == "" {
+		return
+	}
+
+	resourceMetrics := md.ResourceMetrics()
+	for i := 0; i < resourceMetrics.Len(); i++ {
+		rm := resourceMetrics.At(i)
+		rm.Resource().Attributes().PutStr(attrKey, token)
+	}
+}
+
+// injectTokenToLogs injects the token into all resource attributes of the logs.
+func (r *enhancedOTLPReceiver) injectTokenToLogs(ld plog.Logs, token string) {
+	attrKey := r.config.GetTokenAuthInjectAttributeKey()
+	if attrKey == "" || token == "" {
+		return
+	}
+
+	resourceLogs := ld.ResourceLogs()
+	for i := 0; i < resourceLogs.Len(); i++ {
+		rl := resourceLogs.At(i)
+		rl.Resource().Attributes().PutStr(attrKey, token)
 	}
 }

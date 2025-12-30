@@ -20,6 +20,9 @@ type Config struct {
 	// ControlPlane configuration for the control plane API.
 	// Control plane APIs are served on the same HTTP port as OTLP when HTTP is enabled.
 	ControlPlane ControlPlaneConfig `mapstructure:"control_plane"`
+
+	// TokenAuth configuration for token authentication on OTLP endpoints.
+	TokenAuth TokenAuthConfig `mapstructure:"token_auth"`
 }
 
 // Protocols is the configuration for the supported protocols.
@@ -53,6 +56,28 @@ type ControlPlaneConfig struct {
 	// ControlURLPathPrefix is the URL path prefix for control plane APIs.
 	// Default is "/v1/control".
 	ControlURLPathPrefix string `mapstructure:"control_url_path_prefix,omitempty"`
+}
+
+// TokenAuthConfig defines the token authentication configuration.
+// Note: This only validates tokens from HTTP headers.
+// For attribute-based token validation, use the tokenauth processor.
+type TokenAuthConfig struct {
+	// Enabled indicates whether token authentication is enabled.
+	Enabled bool `mapstructure:"enabled"`
+
+	// HeaderName is the HTTP header name for the token.
+	// Default is "Authorization".
+	HeaderName string `mapstructure:"header_name,omitempty"`
+
+	// HeaderPrefix is the prefix before the token in the header value.
+	// Default is "Bearer ".
+	HeaderPrefix string `mapstructure:"header_prefix,omitempty"`
+
+	// InjectAttributeKey is the resource attribute key to inject the validated token.
+	// When set, the validated token will be written to this attribute key in all resources.
+	// This allows downstream processors (like tokenauthprocessor) to access the token.
+	// Default is "" (disabled).
+	InjectAttributeKey string `mapstructure:"inject_attribute_key,omitempty"`
 }
 
 var _ confmap.Unmarshaler = (*Config)(nil)
@@ -123,6 +148,27 @@ func (cfg *Config) GetControlURLPathPrefix() string {
 	return "/v1/control"
 }
 
+// GetTokenAuthHeaderName returns the header name for token authentication.
+func (cfg *Config) GetTokenAuthHeaderName() string {
+	if cfg.TokenAuth.HeaderName != "" {
+		return cfg.TokenAuth.HeaderName
+	}
+	return "Authorization"
+}
+
+// GetTokenAuthHeaderPrefix returns the header prefix for token authentication.
+func (cfg *Config) GetTokenAuthHeaderPrefix() string {
+	if cfg.TokenAuth.HeaderPrefix != "" {
+		return cfg.TokenAuth.HeaderPrefix
+	}
+	return "Bearer "
+}
+
+// GetTokenAuthInjectAttributeKey returns the attribute key for injecting the validated token.
+func (cfg *Config) GetTokenAuthInjectAttributeKey() string {
+	return cfg.TokenAuth.InjectAttributeKey
+}
+
 // createDefaultConfig creates the default configuration.
 func createDefaultConfig() *Config {
 	return &Config{
@@ -145,6 +191,12 @@ func createDefaultConfig() *Config {
 		ControlPlane: ControlPlaneConfig{
 			Enabled:              true,
 			ControlURLPathPrefix: "/v1/control",
+		},
+		TokenAuth: TokenAuthConfig{
+			Enabled:            false,
+			HeaderName:         "Authorization",
+			HeaderPrefix:       "Bearer ",
+			InjectAttributeKey: "",
 		},
 	}
 }

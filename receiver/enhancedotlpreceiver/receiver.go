@@ -293,10 +293,23 @@ func (r *enhancedOTLPReceiver) registerControlPlaneEndpoints(mux *http.ServeMux)
 	prefix := r.config.GetControlURLPathPrefix()
 	handler := newControlHandler(r.logger, r.controlPlane)
 
-	// Control plane APIs
+	// Configuration management
 	mux.HandleFunc(prefix+"/config", handler.handleConfig)
+
+	// Task management
 	mux.HandleFunc(prefix+"/tasks", handler.handleTasks)
+	mux.HandleFunc(prefix+"/tasks/cancel", handler.handleTaskCancel)
+
+	// Status and heartbeat
 	mux.HandleFunc(prefix+"/status", handler.handleStatus)
+
+	// Agent registration and management
+	mux.HandleFunc(prefix+"/register", handler.handleRegister)
+	mux.HandleFunc(prefix+"/unregister", handler.handleUnregister)
+	mux.HandleFunc(prefix+"/agents", handler.handleAgents)
+	mux.HandleFunc(prefix+"/agents/stats", handler.handleAgents)
+
+	// Chunk upload
 	mux.HandleFunc(prefix+"/upload-chunk", handler.handleUploadChunk)
 
 	// Health check endpoint
@@ -310,7 +323,12 @@ func (r *enhancedOTLPReceiver) registerControlPlaneEndpoints(mux *http.ServeMux)
 		zap.Strings("paths", []string{
 			prefix + "/config",
 			prefix + "/tasks",
+			prefix + "/tasks/cancel",
 			prefix + "/status",
+			prefix + "/register",
+			prefix + "/unregister",
+			prefix + "/agents",
+			prefix + "/agents/stats",
 			prefix + "/upload-chunk",
 			"/health",
 		}))
