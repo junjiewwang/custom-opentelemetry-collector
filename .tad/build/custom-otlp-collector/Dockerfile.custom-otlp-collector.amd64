@@ -1,0 +1,73 @@
+# Define build arguments - only set once
+ARG TLINUX_BASE_IMAGE_X86  
+ARG TLINUX_TAG_X86
+ARG BUILDER_IMAGE_X86
+ARG DEPLOY_DIR=/usr/local/services
+
+# ============================================
+# Stage 1: deps - Install dependencies
+# ============================================
+FROM ${BUILDER_IMAGE_X86} AS deps
+
+# Set build output directory (shared between deps_install.sh and build.sh)
+ENV BUILD_OUTPUT_DIR=/opt/dist
+ENV PROJECT_ROOT=/opt
+
+WORKDIR /opt
+
+# Copy dependency files only (for caching)
+# Copy only dependency manifest files to leverage Docker cache
+# When these files don't change, Docker will reuse the cached dependency layer
+# Detected dependency files for: go
+COPY go.mod ./
+COPY go.sum ./
+
+# Copy build scripts needed for dependency installation
+# Note: CI_SCRIPT_DIR is relative to project root, will be at /opt/.tad/build/custom-otlp-collector in container
+COPY .tad/build/custom-otlp-collector/build_deps_install.sh .tad/build/custom-otlp-collector/
+
+# Install dependencies (cacheable if deps files unchanged)
+# This layer will be cached if dependency files haven't changed
+# Only source code changes won't invalidate this cache layer
+RUN sh -xe /opt/.tad/build/custom-otlp-collector/build_deps_install.sh
+
+# ============================================
+# Stage 3: builder - Build service
+# ============================================
+FROM deps AS builder
+
+# Use ARG value as ENV in builder stage
+ARG DEPLOY_DIR
+ENV DEPLOY_DIR=${DEPLOY_DIR}
+
+# Copy all source code
+# Copy remaining source code after dependencies are installed
+# This ensures dependency layer cache is preserved when only source code changes
+COPY . /opt/
+
+# Build the service (without plugin build logic)
+# Build using already installed dependencies
+RUN sh -xe /opt/.tad/build/custom-otlp-collector/build.sh
+
+# ============================================
+# Stage 4: runtime - Runtime image
+# ============================================
+FROM ${TLINUX_BASE_IMAGE_X86}:${TLINUX_TAG_X86}
+
+# Use ARG value in runtime stage
+ARG DEPLOY_DIR
+
+# Copy runtime preparation script
+COPY .tad/build/custom-otlp-collector/rt_prepare.sh /tmp/rt_prepare.sh
+
+# Install runtime dependencies
+RUN sh -xe /tmp/rt_prepare.sh && rm -f /tmp/rt_prepare.sh
+
+# Copy built artifacts from builder stage
+COPY --from=builder ${DEPLOY_DIR} ${DEPLOY_DIR}
+
+# Set working directory to service directory
+WORKDIR ${DEPLOY_DIR}/custom-otlp-collector
+
+# Set entrypoint (use service-specific entrypoint script)
+ENTRYPOINT ["./entrypoint.sh"]

@@ -1,0 +1,51 @@
+# Auto-generated docker-compose.yaml
+# Generated at: 2025-12-31T15:27:01+08:00
+
+services:
+  custom-otlp-collector:
+    build:
+      context: .
+      dockerfile: .tad/build/custom-otlp-collector/${DOCKERFILE}
+      args:
+        # ARM64 args
+        - TLINUX_BASE_IMAGE_ARM=${TLINUX_BASE_IMAGE_ARM}
+        - TLINUX_TAG_ARM=${TLINUX_TAG_ARM}
+        - BUILDER_IMAGE_ARM=${BUILDER_IMAGE_ARM}
+        # AMD64 args
+        - TLINUX_BASE_IMAGE_X86=${TLINUX_BASE_IMAGE_X86}
+        - TLINUX_TAG_X86=${TLINUX_TAG_X86}
+        - BUILDER_IMAGE_X86=${BUILDER_IMAGE_X86}
+        # Common args
+        - DEPLOY_DIR=${DEPLOY_DIR}
+    image: custom-otlp-collector:latest-${DOCKER_ARCH}
+    container_name: custom-otlp-collector
+    ports:
+      - "4317"
+      - "4318"
+      - "8088"
+    environment:
+      - GO_ENV=production
+      - LOG_LEVEL=info
+    volumes:
+      - ./config/build/config.yaml:/usr/local/services/custom-otlp-collector/config.yaml
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/usr/local/services/custom-otlp-collector/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      kompose.image-pull-policy: "IfNotPresent"
+      reloader.stakater.com/auto: "true"
+      telegraf.influxdata.com/inject: "true"
+      telegraf.influxdata.com/path: "/metrics"
+      telegraf.influxdata.com/port: "8888"
+    restart: unless-stopped

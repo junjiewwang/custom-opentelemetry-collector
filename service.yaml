@@ -1,0 +1,397 @@
+# ============================================
+# Service Configuration
+# Version: 2.0
+# ============================================
+
+# ============================================
+# 基础镜像预设库（顶层配置，与 service 同级）
+# ============================================
+base_images:
+  # 构建镜像预设
+  builders:
+    go_1.23:
+      amd64: "mirrors.tencent.com/tcs-infra/tceforqci_x86_go23:v1.0.0"
+      arm64: "mirrors.tencent.com/tcs-infra/tceforqci_arm_go23:v1.0.0"
+
+
+  # 运行时镜像预设
+  runtimes:
+    tencentos_minimal:
+      amd64: "mirrors.tencent.com/tencentos/tencentos3-minimal:latest"
+      arm64: "mirrors.tencent.com/tencentos/tencentos3-minimal:latest"
+
+
+# ============================================
+# 基础服务信息
+# ============================================
+service:
+  name: custom-otlp-collector
+  description: "Custom OTLP Collector"
+
+  # 服务端口配置（支持多端口，可选）
+  # 注意：ports 可以为空数组，适用于不需要暴露端口的服务（如后台任务、消息消费者等）
+  # 可用变量：SERVICE_PORT（主端口，取第一个端口；如果 ports 为空，则为空字符串）
+  ports:
+  - name: grpc
+    port: 4317
+    protocol: TCP
+    expose: true
+    description: "grpc port"
+  - name: http
+    port: 4318
+    protocol: TCP
+    expose: true
+    description: "HTTP API port"
+  - name: http
+    port: 8088
+    protocol: TCP
+    expose: true
+    description: "Admin API port"
+
+  # 服务部署目录
+  # 默认值：/usr/local/services
+  # 如需自定义，取消注释并修改：
+  # deploy_dir: /usr/local/services
+
+  # ============================================
+  # 语言配置
+  # ============================================
+language:
+  type: go # go | python | nodejs | java | rust
+
+  # 语言特定配置（可选）
+  # 不同语言支持不同的配置项，根据实际需要配置
+  config:
+    # ========================================
+    # Go 语言配置
+    # ========================================
+    goproxy: "https://goproxy.woa.com,direct"
+    gosumdb: "sum.woa.com+643d7a06+Ac5f5VOC4N8NUXdmhbm8pZSXIWfhek5JSmWdWrq7pLX4"
+    # goprivate: "github.com/myorg/*"  # 私有仓库配置
+
+    # ========================================
+    # Python 语言配置（示例）
+    # ========================================
+    # pip_index_url: "https://mirrors.tencent.com/pypi/simple"
+    # pip_trusted_host: "mirrors.tencent.com"
+    # pip_extra_index_url: "https://pypi.org/simple"
+
+    # 自定义依赖安装命令（支持变量替换）
+    # 可用变量：
+    #   ${BUILD_OUTPUT_DIR}  - 构建输出目录（如 /opt/dist）
+    #   ${PROJECT_ROOT}      - 项目根目录（如 /opt）
+    #   ${SERVICE_ROOT}      - 服务根目录（同 PROJECT_ROOT）
+    #   ${SERVICE_NAME}      - 服务名称
+    #   ${DEPLOY_DIR}        - 部署目录
+    # deps_install_command: "pip install -r requirements.txt -t ${BUILD_OUTPUT_DIR}/bin"
+    # ============================================
+    # 构建配置
+    # ============================================
+build:
+  # 依赖文件配置
+  # auto_detect: 自动检测依赖文件（默认：true，无需显式配置）
+  #   - true（默认）: 根据语言类型自动检测依赖文件
+  #     * go: go.mod, go.sum
+  #     * python: requirements.txt
+  #     * nodejs: package.json, package-lock.json
+  #     * java (maven): pom.xml
+  #     * java (gradle): build.gradle, settings.gradle
+  #     * rust: Cargo.toml, Cargo.lock
+  #   - false: 使用 files 字段指定的自定义依赖文件列表
+  #
+  # 默认情况下无需配置此字段，工具会自动检测
+  # 仅当需要自定义依赖文件列表时才需要配置：
+  #
+  dependency_files:
+    auto_detect: false
+    files:
+      - go.mod
+      - go.sum
+
+
+  # 构建基础镜像（引用 base_images 中的预设）
+  # 使用 @category.name 格式引用预设镜像
+  # 示例：@builders.go_1.21 引用 base_images.builders.go_1.21
+  builder_image: "@builders.go_1.23"
+
+  # 运行时基础镜像（引用 base_images 中的预设）
+  # 示例：@runtimes.tencentos_minimal 引用 base_images.runtimes.tencentos_minimal
+  runtime_image: "@runtimes.tencentos_minimal"
+
+  # 构建阶段依赖配置
+  # 工具会自动检测包管理器（apt-get/yum/apk/dnf/zypper）
+  dependencies:
+    # 系统包列表（通过包管理器安装）
+    system_pkgs: []
+    # 自定义包列表（通过自定义命令安装）
+    # 可用变量：
+    #   ${BUILD_OUTPUT_DIR}   - 构建输出目录（/opt/dist）
+    #   ${SERVICE_NAME}       - 服务名称
+    #   ${SERVICE_ROOT}       - 项目根目录（/opt）
+    #   ${PROJECT_ROOT}       - 项目根目录（/opt，同 SERVICE_ROOT）
+    #   ${DEPLOY_DIR}         - 部署目录
+    # custom_pkgs:
+    # - name: nacos
+    #   description: "Nacos Service Discovery"
+    #   install_command: |
+    #     echo "Installing Nacos to ${BUILD_OUTPUT_DIR}..."
+    #     curl -L https://github.com/alibaba/nacos/releases/download/2.2.0/nacos-server-2.2.0.tar.gz \
+    #       -o ${BUILD_OUTPUT_DIR}/nacos.tar.gz
+    #     tar -xzf ${BUILD_OUTPUT_DIR}/nacos.tar.gz -C ${BUILD_OUTPUT_DIR}
+    #     echo "Nacos installed successfully"
+    #   required: true
+
+    # 构建命令（三阶段）
+    # 可用变量：
+    #   ${SERVICE_NAME}       - 服务名称
+    #   ${SERVICE_ROOT}       - 项目根目录（容器内为 /opt，等同于 PROJECT_ROOT）
+    #   ${PROJECT_ROOT}       - 项目根目录（容器内为 /opt，等同于 SERVICE_ROOT）
+    #   ${BUILD_OUTPUT_DIR}   - 构建输出目录（容器内为 /opt/dist）
+    #   ${DEPLOY_DIR}         - 部署目录（默认 /usr/local/services）
+    #   ${GOARCH}             - Go 架构（仅 Go）
+    #   ${GOOS}               - Go 操作系统（仅 Go）
+  commands:
+    pre_build: |
+      echo "Pre-build stage"
+
+    build: |
+      echo "Build stage"
+      go mod tidy
+      CGO_ENABLED=0 go build -ldflags="-s -w" -o ${BUILD_OUTPUT_DIR}/bin/${SERVICE_NAME} ./cmd/customcol
+
+    post_build: |
+      echo "Post-build completed"
+
+  # ============================================
+  # 运行时配置
+  # ============================================
+  # 运行时脚本生成：
+  # 1. build.sh 会生成 entrypoint.sh 和 healthcheck.sh 脚本
+  # 2. 这些脚本会被放置在服务目录中（${SERVICE_ROOT}）
+  # 3. entrypoint.sh 负责加载插件环境变量并启动服务
+  # 4. healthcheck.sh 负责服务健康检查
+  # ============================================
+runtime:
+  # 运行时系统依赖
+  # 工具会自动检测包管理器
+  system_dependencies:
+    packages: []
+
+  # 健康检查配置
+  # 工具使用策略模式生成 healthcheck.sh 脚本
+  #
+  # 支持的策略类型：
+  # 1. default - 默认策略：检查服务进程是否运行
+  # 2. custom  - 自定义策略：使用用户提供的 custom_script
+  #
+  # 策略选择逻辑：
+  # - 当 enabled=false 时，使用 default 策略
+  # - 当 enabled=true 且 type="" 或 type="default" 时，使用 default 策略
+  # - 当 enabled=true 且 type="custom" 时，使用 custom 策略（必须提供 custom_script）
+  #
+  healthcheck:
+    enabled: true
+    type: default # default | custom
+    # 自定义健康检查脚本（当 type=custom 时必需）
+    #
+    # 可用环境变量（脚本中自动导出）：
+    #   ${SERVICE_NAME}       - 服务名称
+    #   ${SERVICE_ROOT}       - 服务根目录
+    #   ${SERVICE_BIN_DIR}    - 二进制目录
+    #
+    # 示例：
+    # custom_script: |
+    #   #!/bin/sh
+    #   # Custom health check logic
+    #   curl -f http://localhost:8080/health || exit 1
+
+    # 启动配置
+    # 工具会根据此配置生成 entrypoint.sh 脚本
+  startup:
+    # 启动命令（会被写入 entrypoint.sh）
+    # 可用变量：
+    #   ${SERVICE_NAME}       - 服务名称
+    #   ${SERVICE_PORT}       - 主服务端口
+    #   ${SERVICE_ROOT}       - 服务根目录
+    #   ${CONFIG_DIR}         - 配置目录
+    #   ${SERVICE_BIN_DIR}    - 二进制目录
+    #   ${DEPLOY_DIR}         - 部署目录
+    command: |
+      #!/bin/sh
+      set -e
+      cd ${SERVICE_ROOT}
+      exec ./bin/${SERVICE_NAME} --config ./config.yaml
+
+    # 环境变量（会在 entrypoint.sh 中设置）
+    env:
+    - name: GO_ENV
+      value: production
+    - name: LOG_LEVEL
+      value: info
+
+# ============================================
+# 本地开发和测试配置
+# ============================================
+local_dev:
+  # Docker Compose 配置
+  compose:
+    # 资源限制
+    resources:
+      limits:
+        cpus: "0.5"
+        memory: 1G
+      reservations:
+        cpus: "0.25"
+        memory: 512M
+
+    # 环境变量配置（可选）
+    # 用于本地开发环境特定的环境变量
+    # 这些环境变量会与 runtime.startup.env 合并，compose 的环境变量优先级更高
+    # 如果同名，会覆盖 runtime.startup.env 中的值
+    # environment: 
+    # # - name: DEBUG
+    # #   value: "true"
+
+    # Entrypoint 配置（可选）
+    # 用于覆盖容器的默认 entrypoint
+    # 支持数组格式，每个元素是命令的一部分
+    #
+    # 使用场景：
+    # 1. 调试模式：使用 shell 进入容器
+    # 2. 自定义启动脚本：使用不同的启动方式
+    # 3. 开发模式：添加额外的启动参数
+    #
+    # 示例：
+    # entrypoint:
+    #   - /bin/sh
+    #   - -c
+    #   - |
+    #     echo "Starting in debug mode..."
+    #     exec /usr/local/services/example-service/bin/example-service --debug
+    #
+    # 或者简单的 shell 模式（用于调试）：
+    # entrypoint:
+    #   - /bin/sh
+    #
+    # 注意：如果设置了 entrypoint，容器将不会执行 Dockerfile 中定义的 CMD 或 ENTRYPOINT
+
+    # 卷挂载配置（唯一配置源）
+    # 工具会自动：
+    #   1. 生成 compose.yaml 的 volumes 配置
+    #   2. 通过 kompose 转换为 K8s ConfigMap/PVC
+    #   3. 自动识别配置文件目录并生成 ConfigMap
+    #
+    # 支持的变量替换：
+    #   ${SERVICE_NAME}          - 服务名称
+    #   ${SERVICE_ROOT}          - 服务根目录（${DEPLOY_DIR}/${SERVICE_NAME}）
+    #   ${PLUGIN_INSTALL_DIR}    - 插件安装目录（从 plugins 配置中获取）
+    #   ${CI_SCRIPT_DIR}         - CI 脚本目录
+    #   ${CI_BUILD_CONFIG_DIR}   - 构建配置目录
+    #   ${CI_CONFIG_TEMPLATE_DIR} - 配置模板目录
+    volumes:
+    - source: ./config/build/config.yaml
+      target: ${SERVICE_ROOT}/config.yaml
+      type: bind
+      description: "Service config"
+    # - source: ${CI_BUILD_CONFIG_DIR}/sdk.json
+    #   target: ${PLUGIN_INSTALL_DIR}/config/sdk.json
+    #   type: bind
+    #   description: "TCE SDK config"
+    # 数据卷示例
+    # - source: app-data
+    #   target: /data
+    #   type: volume
+    #   description: "Application data"
+
+    # 健康检查配置（Docker Compose 格式）
+    healthcheck:
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # 标签配置
+    labels:
+      kompose.image-pull-policy: "IfNotPresent"
+      reloader.stakater.com/auto: "true"
+      telegraf.influxdata.com/inject: 'true'
+      telegraf.influxdata.com/path: /metrics
+      telegraf.influxdata.com/port: '8888'
+
+  # Kubernetes 本地部署配置
+  kubernetes:
+    enabled: true
+    namespace: default
+    output_dir: k8s-manifests
+
+    # 卷类型配置（kompose 转换时使用）
+    volume_type: configMap # configMap | persistentVolumeClaim | emptyDir | hostPath
+
+    # 部署等待配置
+    wait:
+      enabled: true
+      timeout: 300s
+
+# ============================================
+# Makefile 生成配置
+# ============================================
+makefile:
+  # 自定义 Make targets
+  custom_targets:
+  - name: test
+    description: "Run tests"
+    commands:
+    - go test -v ./...
+
+  - name: lint
+    description: "Run linter"
+    commands:
+    - golangci-lint run
+
+# ============================================
+# CI/CD 路径配置（可选）
+# ============================================
+# 用于统一管理 CI/CD 相关脚本和配置文件的路径
+# 如果不配置，将使用默认值
+#
+# 默认目录结构：
+#   .tad/build/{service-name}/          # CI 脚本目录
+#   ├── build.sh                        # 构建脚本
+#   ├── build_deps_install.sh           # 依赖安装脚本
+#   ├── rt_prepare.sh                   # 运行时准备脚本
+#   ├── entrypoint.sh                   # 入口脚本
+#   ├── healthchk.sh                    # 健康检查脚本
+#   ├── Dockerfile.{service}.amd64      # AMD64 Dockerfile
+#   ├── Dockerfile.{service}.arm64      # ARM64 Dockerfile
+#   ├── build/                          # 构建配置目录
+#   │   ├── config.yaml                 # 配置文件
+#   │   └── sdk.json                    # SDK 配置
+#   └── config_template/                # 配置模板目录（用户自定义）
+#       └── *.yaml.tmpl                 # 配置模板文件
+#
+ci:
+  # CI 脚本目录（相对于项目根目录）
+  # 默认: .tad/build/{service-name}
+  # 该目录用于存放构建脚本、Dockerfile 等，所有构建相关文件集中管理
+  # 留空使用默认值
+  # script_dir: ""
+
+  # 构建配置目录（用于 K8s ConfigMap 等）
+  # 默认: {script_dir}/build
+  # 该目录用于存放配置文件，会被挂载到容器中
+  # 留空使用默认值
+  # build_config_dir: ""
+
+  # 配置模板目录（用于用户自定义配置模板）
+  # 默认: {script_dir}/config_template
+  # 该目录用于存放配置模板文件，可在构建时渲染
+  # 留空使用默认值
+  # config_template_dir: ""
+
+# ============================================
+# 元数据
+# ============================================
+metadata:
+  template_version: "2.0.0"
+  generated_at: "" # 自动填充
+  generator: "svcgen"

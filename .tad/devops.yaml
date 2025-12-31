@@ -1,0 +1,33 @@
+# Auto-generated DevOps configuration
+# Generated at: 2025-12-31T15:27:01+08:00
+
+tad:
+  export_envs:
+  # ============================================
+  # Runtime Base Images (运行时基础镜像)
+  # ============================================
+  - name: "TLINUX_BASE_IMAGE_X86"  # 运行时基础镜像名称 (x86)
+    value: "mirrors.tencent.com/tencentos/tencentos3-minimal"
+  - name: "TLINUX_TAG_X86"  # 运行时基础镜像tag (x86)
+    value: "latest"
+  - name: "TLINUX_BASE_IMAGE_ARM"  # 运行时基础镜像名称 (arm64)
+    value: "mirrors.tencent.com/tencentos/tencentos3-minimal"
+  - name: "TLINUX_TAG_ARM"  # 运行时基础镜像tag (arm64)
+    value: "latest"
+  
+  # ============================================
+  # Builder Images (构建镜像)
+  # ============================================
+  # 使用 Go 构建镜像
+  
+  # Go 构建镜像 (默认)
+  - name: "BUILDER_IMAGE_X86"  # x86 构建镜像
+    value: "mirrors.tencent.com/tcs-infra/tceforqci_x86_go23:v1.0.0"
+  - name: "BUILDER_IMAGE_ARM"  # arm64 构建镜像
+    value: "mirrors.tencent.com/tcs-infra/tceforqci_arm_go23:v1.0.0"
+  
+  # ============================================
+  # Deployment Configuration (部署配置)
+  # ============================================
+  - name: "DEPLOY_DIR"  # 服务部署目录
+    value: "/usr/local/services"

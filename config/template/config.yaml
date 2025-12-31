@@ -99,9 +99,22 @@ extensions:
       type: redis  # "memory" or "redis"
       redis_name: default  # Reference to redis connection name
       key_prefix: "otel:agents"
-      heartbeat_ttl: 60s  # TTL for agent info (~3x heartbeat interval)
+      # Instance info TTL (for historical queries, keeps agent info after going offline)
+      instance_ttl: 24h
+      # Heartbeat key TTL (for online detection, should be 2-3x heartbeat interval)
+      # When heartbeat key expires, agent is marked as offline
+      heartbeat_ttl: 60s
+      # Offline detection interval
       offline_check_interval: 10s
       enable_events: true  # Enable Pub/Sub for agent events
+      # Instance key mode: "host" (default) or "host_ip"
+      # - "host": otel:agents:app/{appID}/svc/{svc}/host/{hostname}
+      # - "host_ip": otel:agents:app/{appID}/svc/{svc}/host/{hostname}/ip/{ip}
+      # Use "host_ip" when multiple instances run on the same host (e.g., containers)
+      instance_key_mode: host
+      # Enable hierarchy indexes for GetApps/GetServicesByApp/GetInstancesByService queries
+      # When disabled, reduces Redis keys per agent
+      enable_hierarchy_index: true
     
     # Task manager configuration
     task_manager:
@@ -144,13 +157,14 @@ extensions:
       type: redis  # "memory" or "redis"
       redis_name: default
       key_prefix: "otel:apps"
-      token_length: 32
 
   # Admin extension - Management HTTP API interface
   # Provides REST APIs for frontend management
   admin:
-    # Reference to storage extension
-    storage_extension: storage
+    # Reference to controlplane extension to reuse components
+    # This avoids creating duplicate instances of ConfigManager, TaskManager, AgentRegistry, TokenManager
+    # When set, the following component configs are ignored as they are reused from controlplane
+    controlplane_extension: controlplane
     
     # HTTP server configuration
     http:
@@ -200,45 +214,46 @@ extensions:
           - "your-api-key-1"
           - "your-api-key-2"
     
-    # Agent registry (shares same backend as controlplane)
-    agent_registry:
-      type: redis
-      redis_name: default
-      key_prefix: "otel:agents"
-      heartbeat_ttl: 60s
-      offline_check_interval: 10s
-      enable_events: true
-    
-    # Task manager (shares same backend as controlplane)
-    task_manager:
-      type: redis
-      redis_name: default
-      key_prefix: "otel:tasks"
-      result_ttl: 24h
-      workers: 4
-      queue_size: 100
-      default_timeout: 30s
-    
-    # Config manager (on_demand mode for multi-agent support)
-    # Configs are loaded on-demand when agents connect with their token
-    config_manager:
-      type: on_demand  # "memory", "nacos", or "on_demand"
-      nacos_name: default
-      on_demand:
-        namespace: ""
-        load_timeout: 5s
-        max_retries: 3
-        retry_interval: 1s
-        cache_expiration: 5m
-        cleanup_interval: 1m
-    
-    # Token manager for app/token management
-    # Apps are created via Admin API, each app gets a unique token
-    token_manager:
-      type: redis  # "memory" or "redis"
-      redis_name: default
-      key_prefix: "otel:apps"
-      token_length: 32
+    # NOTE: The following component configs are only used when controlplane_extension is NOT set.
+    # When controlplane_extension is set, these are ignored and components are reused from controlplane.
+    #
+    # # Agent registry (shares same backend as controlplane)
+    # agent_registry:
+    #   type: redis
+    #   redis_name: default
+    #   key_prefix: "otel:agents"
+    #   heartbeat_ttl: 60s
+    #   offline_check_interval: 10s
+    #   enable_events: true
+    # 
+    # # Task manager (shares same backend as controlplane)
+    # task_manager:
+    #   type: redis
+    #   redis_name: default
+    #   key_prefix: "otel:tasks"
+    #   result_ttl: 24h
+    #   workers: 4
+    #   queue_size: 100
+    #   default_timeout: 30s
+    # 
+    # # Config manager (on_demand mode for multi-agent support)
+    # config_manager:
+    #   type: on_demand
+    #   nacos_name: default
+    #   on_demand:
+    #     namespace: ""
+    #     load_timeout: 5s
+    #     max_retries: 3
+    #     retry_interval: 1s
+    #     cache_expiration: 5m
+    #     cleanup_interval: 1m
+    # 
+    # # Token manager for app/token management
+    # token_manager:
+    #   type: redis
+    #   redis_name: default
+    #   key_prefix: "otel:apps"
+    #   token_length: 32
 
   # Memory limiter extension
   memory_limiter:
