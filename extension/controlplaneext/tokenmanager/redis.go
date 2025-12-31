@@ -5,8 +5,6 @@ package tokenmanager
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,10 +34,6 @@ type RedisTokenManager struct {
 func NewRedisTokenManager(logger *zap.Logger, config Config, client redis.UniversalClient) (*RedisTokenManager, error) {
 	if client == nil {
 		return nil, errors.New("redis client is required")
-	}
-
-	if config.TokenLength <= 0 {
-		config.TokenLength = 32
 	}
 
 	if config.KeyPrefix == "" {
@@ -94,8 +88,8 @@ func (r *RedisTokenManager) tokensKey() string {
 
 // CreateApp creates a new application group and generates a token.
 func (r *RedisTokenManager) CreateApp(ctx context.Context, req *CreateAppRequest) (*AppInfo, error) {
-	if req == nil || req.Name == "" {
-		return nil, errors.New("app name is required")
+	if err := req.Validate(); err != nil {
+		return nil, err
 	}
 
 	// Check for duplicate name
@@ -109,15 +103,28 @@ func (r *RedisTokenManager) CreateApp(ctx context.Context, req *CreateAppRequest
 		}
 	}
 
-	// Generate ID and token
-	id, err := r.generateID()
+	// Generate ID
+	id, err := GenerateID()
 	if err != nil {
 		return nil, err
 	}
 
-	token, err := r.generateToken()
-	if err != nil {
-		return nil, err
+	// Use custom token if provided, otherwise generate one
+	token := req.Token
+	if token == "" {
+		token, err = GenerateToken(0)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Check for duplicate token
+		exists, err := r.client.HExists(ctx, r.tokensKey(), token).Result()
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, errors.New("token already exists")
+		}
 	}
 
 	now := time.Now()
@@ -348,7 +355,7 @@ func (r *RedisTokenManager) RegenerateToken(ctx context.Context, appID string) (
 	oldToken := app.Token
 
 	// Generate new token
-	newToken, err := r.generateToken()
+	newToken, err := GenerateToken(0)
 	if err != nil {
 		return nil, err
 	}
@@ -378,22 +385,4 @@ func (r *RedisTokenManager) RegenerateToken(ctx context.Context, appID string) (
 	)
 
 	return app, nil
-}
-
-// generateID generates a unique ID.
-func (r *RedisTokenManager) generateID() (string, error) {
-	bytes := make([]byte, 8)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
-}
-
-// generateToken generates a secure token.
-func (r *RedisTokenManager) generateToken() (string, error) {
-	bytes := make([]byte, r.config.TokenLength/2)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
 }

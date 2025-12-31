@@ -5,8 +5,57 @@ package tokenmanager
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"time"
 )
+
+const (
+	// base62Chars is the character set for Base62 encoding (URL-safe, human-friendly).
+	base62Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+	// DefaultTokenLength is the default length for generated tokens.
+	// 20 characters of Base62 provides ~119 bits of entropy, sufficient for uniqueness.
+	DefaultTokenLength = 20
+
+	// MaxTokenLength is the maximum allowed token length.
+	MaxTokenLength = 64
+
+	// DefaultIDLength is the default length for generated IDs.
+	DefaultIDLength = 16
+)
+
+// GenerateToken generates a secure token using Base62 encoding.
+// If length is 0, uses DefaultTokenLength. If length > MaxTokenLength, uses MaxTokenLength.
+// The result is a human-friendly string containing A-Z, a-z, 0-9.
+func GenerateToken(length int) (string, error) {
+	if length <= 0 {
+		length = DefaultTokenLength
+	}
+	if length > MaxTokenLength {
+		length = MaxTokenLength
+	}
+	return generateBase62String(length)
+}
+
+// GenerateID generates a unique ID using Base62 encoding.
+func GenerateID() (string, error) {
+	return generateBase62String(DefaultIDLength)
+}
+
+// generateBase62String generates a random Base62 string of the specified length.
+func generateBase62String(length int) (string, error) {
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+
+	result := make([]byte, length)
+	for i, b := range bytes {
+		result[i] = base62Chars[int(b)%len(base62Chars)]
+	}
+	return string(result), nil
+}
 
 // AppInfo represents an application group.
 type AppInfo struct {
@@ -43,6 +92,23 @@ type CreateAppRequest struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+	// Token is optional. If provided, uses this token instead of generating one.
+	// Must be unique and no longer than MaxTokenLength.
+	Token string `json:"token,omitempty"`
+}
+
+// Validate validates the create app request.
+func (r *CreateAppRequest) Validate() error {
+	if r == nil {
+		return errors.New("request cannot be nil")
+	}
+	if r.Name == "" {
+		return errors.New("app name is required")
+	}
+	if r.Token != "" && len(r.Token) > MaxTokenLength {
+		return errors.New("token exceeds maximum length")
+	}
+	return nil
 }
 
 // UpdateAppRequest is the request to update an app.
@@ -55,10 +121,10 @@ type UpdateAppRequest struct {
 
 // TokenValidationResult holds the result of token validation.
 type TokenValidationResult struct {
-	Valid   bool     `json:"valid"`
-	AppID   string   `json:"app_id,omitempty"`
-	AppName string   `json:"app_name,omitempty"`
-	Reason  string   `json:"reason,omitempty"`
+	Valid   bool   `json:"valid"`
+	AppID   string `json:"app_id,omitempty"`
+	AppName string `json:"app_name,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // TokenManager manages application groups and their tokens.
@@ -104,17 +170,13 @@ type Config struct {
 
 	// KeyPrefix is the prefix for Redis keys.
 	KeyPrefix string `mapstructure:"key_prefix"`
-
-	// TokenLength is the length of generated tokens.
-	TokenLength int `mapstructure:"token_length"`
 }
 
 // DefaultConfig returns the default configuration.
 func DefaultConfig() Config {
 	return Config{
-		Type:        "memory",
-		RedisName:   "default",
-		KeyPrefix:   "otel:apps",
-		TokenLength: 32,
+		Type:      "memory",
+		RedisName: "default",
+		KeyPrefix: "otel:apps",
 	}
 }

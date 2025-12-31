@@ -65,47 +65,15 @@ type StatusReporterConfig struct {
 
 // Validate checks if the configuration is valid.
 func (cfg *Config) Validate() error {
-	// Validate ConfigManager
-	validConfigTypes := map[string]bool{"": true, "memory": true, "nacos": true, "multi_agent_nacos": true, "on_demand": true}
-	if !validConfigTypes[cfg.ConfigManager.Type] {
-		return errors.New("config_manager.type must be 'memory', 'nacos', 'multi_agent_nacos', or 'on_demand'")
-	}
-
-	if (cfg.ConfigManager.Type == "nacos" || cfg.ConfigManager.Type == "multi_agent_nacos" || cfg.ConfigManager.Type == "on_demand") && cfg.StorageExtension == "" {
-		return errors.New("storage_extension is required when config_manager.type is 'nacos', 'multi_agent_nacos', or 'on_demand'")
-	}
-
-	// Validate TaskManager
-	if cfg.TaskManager.Type != "" && cfg.TaskManager.Type != "memory" && cfg.TaskManager.Type != "redis" {
-		return errors.New("task_manager.type must be 'memory' or 'redis'")
-	}
-
-	if cfg.TaskManager.Type == "redis" {
-		if cfg.StorageExtension == "" {
-			return errors.New("storage_extension is required when task_manager.type is 'redis'")
-		}
-	}
-
-	// Validate AgentRegistry
-	if cfg.AgentRegistry.Type != "" && cfg.AgentRegistry.Type != "memory" && cfg.AgentRegistry.Type != "redis" {
-		return errors.New("agent_registry.type must be 'memory' or 'redis'")
-	}
-
-	if cfg.AgentRegistry.Type == "redis" {
-		if cfg.StorageExtension == "" {
-			return errors.New("storage_extension is required when agent_registry.type is 'redis'")
-		}
-	}
-
-	// Validate TokenManager
-	if cfg.TokenManager.Type != "" && cfg.TokenManager.Type != "memory" && cfg.TokenManager.Type != "redis" {
-		return errors.New("token_manager.type must be 'memory' or 'redis'")
-	}
-
-	if cfg.TokenManager.Type == "redis" {
-		if cfg.StorageExtension == "" {
-			return errors.New("storage_extension is required when token_manager.type is 'redis'")
-		}
+	// Validate component configs using shared validation
+	if err := ValidateComponentConfigs(ComponentConfigs{
+		StorageExtension: cfg.StorageExtension,
+		ConfigManager:    cfg.ConfigManager,
+		TaskManager:      cfg.TaskManager,
+		AgentRegistry:    cfg.AgentRegistry,
+		TokenManager:     cfg.TokenManager,
+	}); err != nil {
+		return err
 	}
 
 	// Validate TaskExecutor

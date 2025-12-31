@@ -42,7 +42,7 @@ func TestConfig_Validate(t *testing.T) {
 				ConfigManager: configmanager.Config{Type: "invalid"},
 			},
 			wantErr: true,
-			errMsg:  "config_manager.type must be 'memory' or 'nacos'",
+			errMsg:  "config_manager.type must be 'memory', 'nacos', 'multi_agent_nacos', or 'on_demand'",
 		},
 		{
 			name: "nacos config without storage extension",

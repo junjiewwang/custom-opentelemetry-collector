@@ -136,32 +136,33 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 
 	// Get storage extension if configured
 	if e.config.StorageExtension != "" {
-		if err := e.initStorage(host); err != nil {
+		storage, err := GetStorageExtension(host, e.config.StorageExtension, e.logger)
+		if err != nil {
 			return err
 		}
+		e.storage = storage
 	}
 
-	// Initialize ConfigManager
+	// Create component factory and initialize components
+	factory := NewComponentFactory(e.logger, e.storage)
+
 	var err error
-	e.configMgr, err = e.createConfigManager()
+	e.configMgr, err = factory.CreateConfigManager(e.config.ConfigManager)
 	if err != nil {
 		return fmt.Errorf("failed to create config manager: %w", err)
 	}
 
-	// Initialize TaskManager
-	e.taskMgr, err = e.createTaskManager()
+	e.taskMgr, err = factory.CreateTaskManager(e.config.TaskManager)
 	if err != nil {
 		return fmt.Errorf("failed to create task manager: %w", err)
 	}
 
-	// Initialize AgentRegistry
-	e.agentReg, err = e.createAgentRegistry()
+	e.agentReg, err = factory.CreateAgentRegistry(e.config.AgentRegistry)
 	if err != nil {
 		return fmt.Errorf("failed to create agent registry: %w", err)
 	}
 
-	// Initialize TokenManager
-	e.tokenMgr, err = e.createTokenManager()
+	e.tokenMgr, err = factory.CreateTokenManager(e.config.TokenManager)
 	if err != nil {
 		return fmt.Errorf("failed to create token manager: %w", err)
 	}
@@ -171,156 +172,33 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	e.statusReporter = newStatusReporter(e.logger, e.agentID, e.config.StatusReporter)
 	e.chunkManager = newChunkManager(e.logger)
 
-	// Start ConfigManager
+	// Start all components
 	if err := e.configMgr.Start(ctx); err != nil {
 		return err
 	}
 
-	// Start TaskManager
 	if err := e.taskMgr.Start(ctx); err != nil {
 		return err
 	}
 
-	// Start AgentRegistry
 	if err := e.agentReg.Start(ctx); err != nil {
 		return err
 	}
 
-	// Start TokenManager
 	if err := e.tokenMgr.Start(ctx); err != nil {
 		return err
 	}
 
-	// Start task executor
 	if err := e.taskExecutor.Start(ctx); err != nil {
 		return err
 	}
 
-	// Start status reporter
 	if err := e.statusReporter.Start(ctx); err != nil {
 		return err
 	}
 
 	e.started = true
 	return nil
-}
-
-// initStorage initializes the storage extension reference.
-func (e *Extension) initStorage(host component.Host) error {
-	// Find storage extension by type name
-	storageType := component.MustNewType(e.config.StorageExtension)
-	var storage storageext.Storage
-	var found bool
-
-	for id, ext := range host.GetExtensions() {
-		if id.Type() == storageType {
-			if s, ok := ext.(storageext.Storage); ok {
-				storage = s
-				found = true
-				break
-			}
-		}
-	}
-
-	if !found {
-		return fmt.Errorf("storage extension %q not found or does not implement Storage interface", e.config.StorageExtension)
-	}
-
-	e.storage = storage
-	e.logger.Info("Using storage extension", zap.String("name", e.config.StorageExtension))
-	return nil
-}
-
-// createConfigManager creates the appropriate ConfigManager based on config.
-func (e *Extension) createConfigManager() (configmanager.ConfigManager, error) {
-	cfg := e.config.ConfigManager
-
-	switch cfg.Type {
-	case "nacos":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for nacos config manager")
-		}
-		nacosName := cfg.NacosName
-		if nacosName == "" {
-			nacosName = "default"
-		}
-		client, err := e.storage.GetNacosConfigClient(nacosName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get nacos client %q: %w", nacosName, err)
-		}
-		return configmanager.NewNacosConfigManager(e.logger, cfg, client)
-	default:
-		return configmanager.NewMemoryConfigManager(e.logger), nil
-	}
-}
-
-// createTaskManager creates the appropriate TaskManager based on config.
-func (e *Extension) createTaskManager() (taskmanager.TaskManager, error) {
-	cfg := e.config.TaskManager
-
-	switch cfg.Type {
-	case "redis":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for redis task manager")
-		}
-		redisName := cfg.RedisName
-		if redisName == "" {
-			redisName = "default"
-		}
-		client, err := e.storage.GetRedis(redisName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
-		}
-		return taskmanager.NewRedisTaskManager(e.logger, cfg, client)
-	default:
-		return taskmanager.NewMemoryTaskManager(e.logger, cfg), nil
-	}
-}
-
-// createAgentRegistry creates the appropriate AgentRegistry based on config.
-func (e *Extension) createAgentRegistry() (agentregistry.AgentRegistry, error) {
-	cfg := e.config.AgentRegistry
-
-	switch cfg.Type {
-	case "redis":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for redis agent registry")
-		}
-		redisName := cfg.RedisName
-		if redisName == "" {
-			redisName = "default"
-		}
-		client, err := e.storage.GetRedis(redisName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
-		}
-		return agentregistry.NewRedisAgentRegistry(e.logger, cfg, client)
-	default:
-		return agentregistry.NewMemoryAgentRegistry(e.logger, cfg), nil
-	}
-}
-
-// createTokenManager creates the appropriate TokenManager based on config.
-func (e *Extension) createTokenManager() (tokenmanager.TokenManager, error) {
-	cfg := e.config.TokenManager
-
-	switch cfg.Type {
-	case "redis":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for redis token manager")
-		}
-		redisName := cfg.RedisName
-		if redisName == "" {
-			redisName = "default"
-		}
-		client, err := e.storage.GetRedis(redisName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
-		}
-		return tokenmanager.NewRedisTokenManager(e.logger, cfg, client)
-	default:
-		return tokenmanager.NewMemoryTokenManager(e.logger, cfg), nil
-	}
 }
 
 // Shutdown implements component.Component.

@@ -5,8 +5,6 @@ package tokenmanager
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"sync"
 	"time"
@@ -31,10 +29,6 @@ type MemoryTokenManager struct {
 
 // NewMemoryTokenManager creates a new in-memory token manager.
 func NewMemoryTokenManager(logger *zap.Logger, config Config) *MemoryTokenManager {
-	if config.TokenLength <= 0 {
-		config.TokenLength = 32
-	}
-
 	return &MemoryTokenManager{
 		logger: logger,
 		config: config,
@@ -72,8 +66,8 @@ func (m *MemoryTokenManager) Close() error {
 
 // CreateApp creates a new application group and generates a token.
 func (m *MemoryTokenManager) CreateApp(ctx context.Context, req *CreateAppRequest) (*AppInfo, error) {
-	if req == nil || req.Name == "" {
-		return nil, errors.New("app name is required")
+	if err := req.Validate(); err != nil {
+		return nil, err
 	}
 
 	m.mu.Lock()
@@ -86,15 +80,24 @@ func (m *MemoryTokenManager) CreateApp(ctx context.Context, req *CreateAppReques
 		}
 	}
 
-	// Generate ID and token
-	id, err := m.generateID()
+	// Generate ID
+	id, err := GenerateID()
 	if err != nil {
 		return nil, err
 	}
 
-	token, err := m.generateToken()
-	if err != nil {
-		return nil, err
+	// Use custom token if provided, otherwise generate one
+	token := req.Token
+	if token == "" {
+		token, err = GenerateToken(0)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Check for duplicate token
+		if _, exists := m.tokens[token]; exists {
+			return nil, errors.New("token already exists")
+		}
 	}
 
 	now := time.Now()
@@ -299,7 +302,7 @@ func (m *MemoryTokenManager) RegenerateToken(ctx context.Context, appID string) 
 	delete(m.tokens, app.Token)
 
 	// Generate new token
-	newToken, err := m.generateToken()
+	newToken, err := GenerateToken(0)
 	if err != nil {
 		return nil, err
 	}
@@ -316,22 +319,4 @@ func (m *MemoryTokenManager) RegenerateToken(ctx context.Context, appID string) 
 	)
 
 	return app, nil
-}
-
-// generateID generates a unique ID.
-func (m *MemoryTokenManager) generateID() (string, error) {
-	bytes := make([]byte, 8)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
-}
-
-// generateToken generates a secure token.
-func (m *MemoryTokenManager) generateToken() (string, error) {
-	bytes := make([]byte, m.config.TokenLength/2)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
 }
