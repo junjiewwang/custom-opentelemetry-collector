@@ -17,22 +17,22 @@ import (
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
 )
 
-// Redis key patterns
-const (
-	keyAgentInfo      = "%s:info:%s"          // Hash: agent info (with TTL)
-	keyOnlineSet      = "%s:online"           // Set: online agent IDs
-	keyHeartbeatZSet  = "%s:heartbeat"        // ZSet: agent heartbeats (score = timestamp)
-	keyLabelIndex     = "%s:label:%s:%s"      // Set: agents by label
-	keyAgentTasks     = "%s:tasks"            // Hash: agentID -> current taskID
-	keyEventOnline    = "%s:events:online"    // Pub/Sub: agent online
-	keyEventOffline   = "%s:events:offline"   // Pub/Sub: agent offline
-)
-
 // RedisAgentRegistry implements AgentRegistry using Redis as backend.
+// Key structure:
+//   - {prefix}:app/{appID}/svc/{serviceName}/host/{hostname} -> String (instance info JSON with InstanceTTL)
+//   - {prefix}:_hb/{fullPath} -> String ("1" with HeartbeatTTL, for online detection)
+//   - {prefix}:_ids -> Hash (agentID -> fullPath)
+//   - {prefix}:_online -> ZSet (fullPath with heartbeat timestamps)
+//   - {prefix}:_tasks -> Hash (agentID -> taskID)
+//   - {prefix}:_apps -> Set (all app IDs, escaped) [optional, when EnableHierarchyIndex=true]
+//   - {prefix}:app/{appID}:_services -> Set (service names, escaped) [optional]
+//   - {prefix}:app/{appID}/svc/{serviceName}:_instances -> Set (instance keys) [optional]
 type RedisAgentRegistry struct {
-	logger    *zap.Logger
-	config    Config
-	keyPrefix string
+	logger       *zap.Logger
+	config       Config
+	keys         *KeyBuilder
+	statusHelper *StatusHelper
+	statsHelper  *StatsHelper
 
 	mu       sync.RWMutex
 	client   redis.UniversalClient
@@ -49,11 +49,13 @@ func NewRedisAgentRegistry(logger *zap.Logger, config Config, client redis.Unive
 	}
 
 	return &RedisAgentRegistry{
-		logger:    logger,
-		config:    config,
-		keyPrefix: keyPrefix,
-		client:    client,
-		stopChan:  make(chan struct{}),
+		logger:       logger,
+		config:       config,
+		keys:         NewKeyBuilderWithMode(keyPrefix, config.InstanceKeyMode),
+		statusHelper: NewStatusHelper(),
+		statsHelper:  NewStatsHelper(),
+		client:       client,
+		stopChan:     make(chan struct{}),
 	}, nil
 }
 
@@ -70,7 +72,7 @@ func (r *RedisAgentRegistry) Start(ctx context.Context) error {
 	}
 
 	r.logger.Info("Starting Redis agent registry",
-		zap.String("key_prefix", r.keyPrefix),
+		zap.String("key_prefix", r.keys.prefix),
 	)
 
 	if r.client == nil {
@@ -93,17 +95,11 @@ func (r *RedisAgentRegistry) Start(ctx context.Context) error {
 
 // Register registers a new agent.
 func (r *RedisAgentRegistry) Register(ctx context.Context, agent *AgentInfo) error {
-	if agent == nil {
-		return errors.New("agent cannot be nil")
-	}
-	if agent.AgentID == "" {
-		return errors.New("agent_id is required")
+	if err := agent.Validate(); err != nil {
+		return err
 	}
 
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return errors.New("redis client not initialized")
 	}
@@ -112,292 +108,84 @@ func (r *RedisAgentRegistry) Register(ctx context.Context, agent *AgentInfo) err
 	agent.RegisteredAt = now
 	agent.LastHeartbeat = now
 
-	if agent.Status == nil {
-		agent.Status = &AgentStatus{
-			State: AgentStateOnline,
-		}
-	} else {
-		agent.Status.State = AgentStateOnline
-	}
+	r.statusHelper.InitializeStatus(agent, now)
 
-	// Serialize agent info
-	agentData, err := json.Marshal(agent)
-	if err != nil {
-		return err
-	}
-
-	infoKey := fmt.Sprintf(keyAgentInfo, r.keyPrefix, agent.AgentID)
-	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
-	heartbeatKey := fmt.Sprintf(keyHeartbeatZSet, r.keyPrefix)
-
-	pipe := client.TxPipeline()
-
-	// Store agent info with TTL
-	pipe.Set(ctx, infoKey, agentData, r.config.HeartbeatTTL)
-
-	// Add to online set
-	pipe.SAdd(ctx, onlineKey, agent.AgentID)
-
-	// Add to heartbeat sorted set
-	pipe.ZAdd(ctx, heartbeatKey, redis.Z{
-		Score:  float64(now),
-		Member: agent.AgentID,
-	})
-
-	// Add to label indexes
-	for k, v := range agent.Labels {
-		labelKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, k, v)
-		pipe.SAdd(ctx, labelKey, agent.AgentID)
-	}
-
-	// Publish online event
-	if r.config.EnableEvents {
-		eventKey := fmt.Sprintf(keyEventOnline, r.keyPrefix)
-		pipe.Publish(ctx, eventKey, agent.AgentID)
-	}
-
-	_, err = pipe.Exec(ctx)
-	if err != nil {
-		return err
-	}
-
-	r.logger.Info("Agent registered",
-		zap.String("agent_id", agent.AgentID),
-		zap.String("hostname", agent.Hostname),
-	)
-
-	return nil
+	return r.upsertAgent(ctx, client, agent, now, true)
 }
 
 // Heartbeat updates the agent's heartbeat and status.
 func (r *RedisAgentRegistry) Heartbeat(ctx context.Context, agentID string, status *AgentStatus) error {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return errors.New("redis client not initialized")
 	}
 
-	infoKey := fmt.Sprintf(keyAgentInfo, r.keyPrefix, agentID)
-	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
-	heartbeatKey := fmt.Sprintf(keyHeartbeatZSet, r.keyPrefix)
+	// Get agent by ID
+	agent, err := r.GetAgent(ctx, agentID)
+	if err != nil {
+		return err
+	}
 
 	now := time.Now().UnixNano()
-
-	// Get current agent info
-	data, err := client.Get(ctx, infoKey).Result()
-	if err == redis.Nil {
-		return errors.New("agent not found: " + agentID)
-	}
-	if err != nil {
-		return err
-	}
-
-	var agent AgentInfo
-	if err := json.Unmarshal([]byte(data), &agent); err != nil {
-		return err
-	}
-
-	// Update agent info
 	agent.LastHeartbeat = now
-	if status != nil {
-		status.State = AgentStateOnline
-		agent.Status = status
-	} else if agent.Status != nil {
-		agent.Status.State = AgentStateOnline
-	}
 
-	agentData, err := json.Marshal(&agent)
-	if err != nil {
-		return err
-	}
+	r.statusHelper.UpdateHeartbeatStatus(agent, status, now)
 
-	pipe := client.TxPipeline()
-
-	// Update agent info and refresh TTL
-	pipe.Set(ctx, infoKey, agentData, r.config.HeartbeatTTL)
-
-	// Ensure in online set
-	pipe.SAdd(ctx, onlineKey, agentID)
-
-	// Update heartbeat timestamp
-	pipe.ZAdd(ctx, heartbeatKey, redis.Z{
-		Score:  float64(now),
-		Member: agentID,
-	})
-
-	_, err = pipe.Exec(ctx)
-	return err
+	return r.upsertAgent(ctx, client, agent, now, false)
 }
 
 // RegisterOrHeartbeat registers a new agent if not exists, or updates heartbeat if exists.
-// This provides upsert semantics for automatic registration via status reports.
 func (r *RedisAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *AgentInfo) error {
-	if agent == nil {
-		return errors.New("agent cannot be nil")
-	}
-	if agent.AgentID == "" {
-		return errors.New("agent_id is required")
+	if err := agent.Validate(); err != nil {
+		return err
 	}
 
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return errors.New("redis client not initialized")
 	}
 
-	infoKey := fmt.Sprintf(keyAgentInfo, r.keyPrefix, agent.AgentID)
-	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
-	heartbeatKey := fmt.Sprintf(keyHeartbeatZSet, r.keyPrefix)
-
 	now := time.Now().UnixNano()
 
-	// Try to get existing agent info
-	data, err := client.Get(ctx, infoKey).Result()
-	if err != nil && err != redis.Nil {
-		return err
-	}
-
-	var existing *AgentInfo
-	if err == nil {
-		// Agent exists, unmarshal it
-		existing = &AgentInfo{}
-		if err := json.Unmarshal([]byte(data), existing); err != nil {
-			return err
-		}
-	}
-
-	if existing != nil {
+	// Try to get existing agent
+	existing, err := r.GetAgent(ctx, agent.AgentID)
+	if err == nil && existing != nil {
 		// Update existing agent
 		existing.LastHeartbeat = now
+		existing.MergeFrom(agent)
 
-		// Update mutable fields from the incoming agent info
-		if agent.Hostname != "" {
-			existing.Hostname = agent.Hostname
-		}
-		if agent.IP != "" {
-			existing.IP = agent.IP
-		}
-		if agent.Version != "" {
-			existing.Version = agent.Version
-		}
-		if agent.Token != "" {
-			existing.Token = agent.Token
-		}
-		if agent.AppID != "" {
-			existing.AppID = agent.AppID
-		}
+		wasOffline := r.statusHelper.UpdateHeartbeatStatus(existing, agent.Status, now)
 
-		// Update status
-		if agent.Status != nil {
-			agent.Status.State = AgentStateOnline
-			existing.Status = agent.Status
-		} else if existing.Status != nil {
-			existing.Status.State = AgentStateOnline
-		}
-
-		// Update labels if provided
-		if len(agent.Labels) > 0 {
-			// Remove old label indexes
-			pipe := client.TxPipeline()
-			for k, v := range existing.Labels {
-				labelKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, k, v)
-				pipe.SRem(ctx, labelKey, agent.AgentID)
-			}
-			_, _ = pipe.Exec(ctx)
-
-			existing.Labels = agent.Labels
-		}
-
-		agentData, err := json.Marshal(existing)
-		if err != nil {
+		if err := r.upsertAgent(ctx, client, existing, now, false); err != nil {
 			return err
 		}
 
-		pipe := client.TxPipeline()
-
-		// Update agent info and refresh TTL
-		pipe.Set(ctx, infoKey, agentData, r.config.HeartbeatTTL)
-
-		// Ensure in online set
-		pipe.SAdd(ctx, onlineKey, agent.AgentID)
-
-		// Update heartbeat timestamp
-		pipe.ZAdd(ctx, heartbeatKey, redis.Z{
-			Score:  float64(now),
-			Member: agent.AgentID,
-		})
-
-		// Add new label indexes
-		for k, v := range existing.Labels {
-			labelKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, k, v)
-			pipe.SAdd(ctx, labelKey, agent.AgentID)
+		if wasOffline {
+			r.logger.Info("Agent recovered from offline",
+				zap.String("agent_id", agent.AgentID),
+			)
+		} else {
+			r.logger.Debug("Agent heartbeat updated",
+				zap.String("agent_id", agent.AgentID),
+			)
 		}
-
-		_, err = pipe.Exec(ctx)
-		if err != nil {
-			return err
-		}
-
-		r.logger.Debug("Agent heartbeat updated",
-			zap.String("agent_id", agent.AgentID),
-		)
 		return nil
 	}
 
-	// Agent doesn't exist, register it
+	// Register new agent
 	agent.RegisteredAt = now
 	agent.LastHeartbeat = now
 
-	if agent.Status == nil {
-		agent.Status = &AgentStatus{
-			State: AgentStateOnline,
-		}
-	} else {
-		agent.Status.State = AgentStateOnline
-	}
+	r.statusHelper.InitializeStatus(agent, now)
 
-	agentData, err := json.Marshal(agent)
-	if err != nil {
-		return err
-	}
-
-	pipe := client.TxPipeline()
-
-	// Store agent info with TTL
-	pipe.Set(ctx, infoKey, agentData, r.config.HeartbeatTTL)
-
-	// Add to online set
-	pipe.SAdd(ctx, onlineKey, agent.AgentID)
-
-	// Add to heartbeat sorted set
-	pipe.ZAdd(ctx, heartbeatKey, redis.Z{
-		Score:  float64(now),
-		Member: agent.AgentID,
-	})
-
-	// Add to label indexes
-	for k, v := range agent.Labels {
-		labelKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, k, v)
-		pipe.SAdd(ctx, labelKey, agent.AgentID)
-	}
-
-	// Publish online event
-	if r.config.EnableEvents {
-		eventKey := fmt.Sprintf(keyEventOnline, r.keyPrefix)
-		pipe.Publish(ctx, eventKey, agent.AgentID)
-	}
-
-	_, err = pipe.Exec(ctx)
-	if err != nil {
+	if err := r.upsertAgent(ctx, client, agent, now, true); err != nil {
 		return err
 	}
 
 	r.logger.Info("Agent auto-registered via heartbeat",
 		zap.String("agent_id", agent.AgentID),
+		zap.String("app_id", agent.AppID),
+		zap.String("service_name", agent.ServiceName),
 		zap.String("hostname", agent.Hostname),
 	)
 
@@ -406,55 +194,49 @@ func (r *RedisAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *Age
 
 // Unregister removes an agent from the registry.
 func (r *RedisAgentRegistry) Unregister(ctx context.Context, agentID string) error {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return errors.New("redis client not initialized")
 	}
 
-	infoKey := fmt.Sprintf(keyAgentInfo, r.keyPrefix, agentID)
-	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
-	heartbeatKey := fmt.Sprintf(keyHeartbeatZSet, r.keyPrefix)
-	tasksKey := fmt.Sprintf(keyAgentTasks, r.keyPrefix)
-
-	// Get agent info for label cleanup
-	data, err := client.Get(ctx, infoKey).Result()
-	var agent AgentInfo
-	if err == nil {
-		_ = json.Unmarshal([]byte(data), &agent)
+	// Get agent info first
+	agent, err := r.GetAgent(ctx, agentID)
+	if err != nil {
+		return err
 	}
+
+	instanceKey := r.keys.InstanceKey(agent.AppID, agent.ServiceName, agent.Hostname, agent.IP)
+	fullPath := r.keys.FullKeyPath(agent.AppID, agent.ServiceName, agent.Hostname, agent.IP)
+	heartbeatKey := r.keys.HeartbeatKey(fullPath)
 
 	pipe := client.TxPipeline()
 
-	// Remove agent info
-	pipe.Del(ctx, infoKey)
+	// Remove essential keys
+	pipe.Del(ctx, instanceKey)
+	pipe.Del(ctx, heartbeatKey)
+	pipe.ZRem(ctx, r.keys.OnlineKey(), fullPath)
+	pipe.HDel(ctx, r.keys.AgentIDsKey(), agentID)
+	pipe.HDel(ctx, r.keys.TasksKey(), agentID)
 
-	// Remove from online set
-	pipe.SRem(ctx, onlineKey, agentID)
-
-	// Remove from heartbeat sorted set
-	pipe.ZRem(ctx, heartbeatKey, agentID)
-
-	// Remove current task
-	pipe.HDel(ctx, tasksKey, agentID)
-
-	// Remove from label indexes
-	for k, v := range agent.Labels {
-		labelKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, k, v)
-		pipe.SRem(ctx, labelKey, agentID)
+	// Remove from hierarchy indexes if enabled
+	if r.config.EnableHierarchyIndex {
+		instanceID := r.keys.InstanceID(agent.Hostname, agent.IP)
+		pipe.SRem(ctx, r.keys.InstancesKey(agent.AppID, agent.ServiceName), instanceID)
 	}
 
 	// Publish offline event
 	if r.config.EnableEvents {
-		eventKey := fmt.Sprintf(keyEventOffline, r.keyPrefix)
-		pipe.Publish(ctx, eventKey, agentID)
+		pipe.Publish(ctx, r.keys.EventOfflineKey(), agentID)
 	}
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
 		return err
+	}
+
+	// Clean up empty indexes if hierarchy index is enabled
+	if r.config.EnableHierarchyIndex {
+		r.cleanupEmptyIndexes(ctx, client, agent.AppID, agent.ServiceName)
 	}
 
 	r.logger.Info("Agent unregistered", zap.String("agent_id", agentID))
@@ -463,19 +245,31 @@ func (r *RedisAgentRegistry) Unregister(ctx context.Context, agentID string) err
 
 // GetAgent retrieves information about a specific agent.
 func (r *RedisAgentRegistry) GetAgent(ctx context.Context, agentID string) (*AgentInfo, error) {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return nil, errors.New("redis client not initialized")
 	}
 
-	infoKey := fmt.Sprintf(keyAgentInfo, r.keyPrefix, agentID)
-
-	data, err := client.Get(ctx, infoKey).Result()
+	// Get full key path from agent IDs hash
+	fullPath, err := client.HGet(ctx, r.keys.AgentIDsKey(), agentID).Result()
 	if err == redis.Nil {
-		return nil, errors.New("agent not found: " + agentID)
+		return nil, fmt.Errorf("agent not found: %s", agentID)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse full path to get instance key
+	appGroupB64, serviceNameB64, instanceKey, err := r.keys.ParseFullKeyPath(fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get instance info
+	instanceInfoKey := r.keys.InstanceKeyFromParts(appGroupB64, serviceNameB64, instanceKey)
+	data, err := client.Get(ctx, instanceInfoKey).Result()
+	if err == redis.Nil {
+		return nil, fmt.Errorf("agent not found: %s", agentID)
 	}
 	if err != nil {
 		return nil, err
@@ -491,27 +285,73 @@ func (r *RedisAgentRegistry) GetAgent(ctx context.Context, agentID string) (*Age
 
 // GetOnlineAgents returns all online agents.
 func (r *RedisAgentRegistry) GetOnlineAgents(ctx context.Context) ([]*AgentInfo, error) {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return nil, errors.New("redis client not initialized")
 	}
 
-	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
-
-	agentIDs, err := client.SMembers(ctx, onlineKey).Result()
+	// Get all members from online sorted set
+	fullPaths, err := client.ZRange(ctx, r.keys.OnlineKey(), 0, -1).Result()
 	if err != nil {
 		return nil, err
 	}
 
 	var agents []*AgentInfo
-	for _, agentID := range agentIDs {
-		agent, err := r.GetAgent(ctx, agentID)
-		if err == nil {
-			agents = append(agents, agent)
+	for _, fullPath := range fullPaths {
+		appGroupB64, serviceNameB64, instanceKey, err := r.keys.ParseFullKeyPath(fullPath)
+		if err != nil {
+			continue
 		}
+
+		instanceInfoKey := r.keys.InstanceKeyFromParts(appGroupB64, serviceNameB64, instanceKey)
+		data, err := client.Get(ctx, instanceInfoKey).Result()
+		if err != nil {
+			continue
+		}
+
+		var agent AgentInfo
+		if err := json.Unmarshal([]byte(data), &agent); err != nil {
+			continue
+		}
+		agents = append(agents, &agent)
+	}
+
+	return agents, nil
+}
+
+// GetAllAgents returns all agents (including offline ones within InstanceTTL).
+// This uses the _ids hash to get all agent IDs, then fetches their info.
+func (r *RedisAgentRegistry) GetAllAgents(ctx context.Context) ([]*AgentInfo, error) {
+	client := r.getClient()
+	if client == nil {
+		return nil, errors.New("redis client not initialized")
+	}
+
+	// Get all agent ID -> fullPath mappings from _ids hash
+	agentPaths, err := client.HGetAll(ctx, r.keys.AgentIDsKey()).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var agents []*AgentInfo
+	for _, fullPath := range agentPaths {
+		appIDEsc, serviceNameEsc, instanceKey, err := r.keys.ParseFullKeyPath(fullPath)
+		if err != nil {
+			continue
+		}
+
+		instanceInfoKey := r.keys.InstanceKeyFromParts(appIDEsc, serviceNameEsc, instanceKey)
+		data, err := client.Get(ctx, instanceInfoKey).Result()
+		if err != nil {
+			// Instance info expired (TTL), skip it
+			continue
+		}
+
+		var agent AgentInfo
+		if err := json.Unmarshal([]byte(data), &agent); err != nil {
+			continue
+		}
+		agents = append(agents, &agent)
 	}
 
 	return agents, nil
@@ -519,35 +359,24 @@ func (r *RedisAgentRegistry) GetOnlineAgents(ctx context.Context) ([]*AgentInfo,
 
 // GetAgentsByLabel returns agents matching the specified label.
 func (r *RedisAgentRegistry) GetAgentsByLabel(ctx context.Context, labelKey, labelValue string) ([]*AgentInfo, error) {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
-	if client == nil {
-		return nil, errors.New("redis client not initialized")
-	}
-
-	indexKey := fmt.Sprintf(keyLabelIndex, r.keyPrefix, labelKey, labelValue)
-
-	agentIDs, err := client.SMembers(ctx, indexKey).Result()
+	// Get all online agents and filter by label
+	agents, err := r.GetOnlineAgents(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var agents []*AgentInfo
-	for _, agentID := range agentIDs {
-		agent, err := r.GetAgent(ctx, agentID)
-		if err == nil {
-			agents = append(agents, agent)
+	var result []*AgentInfo
+	for _, agent := range agents {
+		if v, ok := agent.Labels[labelKey]; ok && v == labelValue {
+			result = append(result, agent)
 		}
 	}
 
-	return agents, nil
+	return result, nil
 }
 
 // GetAgentsByToken returns all agents under a specific token/app.
 func (r *RedisAgentRegistry) GetAgentsByToken(ctx context.Context, token string) ([]*AgentInfo, error) {
-	// Get all online agents and filter by token
 	agents, err := r.GetOnlineAgents(ctx)
 	if err != nil {
 		return nil, err
@@ -563,152 +392,177 @@ func (r *RedisAgentRegistry) GetAgentsByToken(ctx context.Context, token string)
 	return result, nil
 }
 
-// GetAgentStats returns statistics about registered agents.
-func (r *RedisAgentRegistry) GetAgentStats(ctx context.Context) (*AgentStats, error) {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+// GetApps returns all app IDs.
+func (r *RedisAgentRegistry) GetApps(ctx context.Context) ([]string, error) {
+	client := r.getClient()
 	if client == nil {
 		return nil, errors.New("redis client not initialized")
 	}
 
-	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
-
-	onlineCount, err := client.SCard(ctx, onlineKey).Result()
+	encodedGroups, err := client.SMembers(ctx, r.keys.GroupsKey()).Result()
 	if err != nil {
 		return nil, err
 	}
 
-	// Get all online agents to count states
-	agents, err := r.GetOnlineAgents(ctx)
+	groups := make([]string, 0, len(encodedGroups))
+	for _, encoded := range encodedGroups {
+		decoded, err := r.keys.Decode(encoded)
+		if err != nil {
+			continue
+		}
+		groups = append(groups, decoded)
+	}
+
+	return groups, nil
+}
+
+// GetServicesByApp returns all service names under an app.
+func (r *RedisAgentRegistry) GetServicesByApp(ctx context.Context, appID string) ([]string, error) {
+	client := r.getClient()
+	if client == nil {
+		return nil, errors.New("redis client not initialized")
+	}
+
+	encodedServices, err := client.SMembers(ctx, r.keys.ServicesKey(appID)).Result()
 	if err != nil {
 		return nil, err
 	}
 
-	stats := &AgentStats{
-		TotalAgents:  int(onlineCount),
-		OnlineAgents: 0,
-		ByLabel:      make(map[string]int),
+	services := make([]string, 0, len(encodedServices))
+	for _, encoded := range encodedServices {
+		decoded, err := r.keys.Decode(encoded)
+		if err != nil {
+			continue
+		}
+		services = append(services, decoded)
 	}
 
-	for _, agent := range agents {
-		if agent.Status != nil {
-			switch agent.Status.State {
-			case AgentStateOnline:
-				stats.OnlineAgents++
-			case AgentStateOffline:
-				stats.OfflineAgents++
-			case AgentStateUnhealthy:
-				stats.UnhealthyAgents++
-			}
-		}
+	return services, nil
+}
 
-		for k, v := range agent.Labels {
-			key := k + ":" + v
-			stats.ByLabel[key]++
-		}
+// GetInstancesByService returns all instances under a service.
+func (r *RedisAgentRegistry) GetInstancesByService(ctx context.Context, appID, serviceName string) ([]*AgentInfo, error) {
+	client := r.getClient()
+	if client == nil {
+		return nil, errors.New("redis client not initialized")
 	}
 
-	return stats, nil
+	instanceKeys, err := client.SMembers(ctx, r.keys.InstancesKey(appID, serviceName)).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	appIDB64 := r.keys.Encode(appID)
+	serviceNameB64 := r.keys.Encode(serviceName)
+
+	var agents []*AgentInfo
+	for _, instanceKey := range instanceKeys {
+		instanceInfoKey := r.keys.InstanceKeyFromParts(appIDB64, serviceNameB64, instanceKey)
+		data, err := client.Get(ctx, instanceInfoKey).Result()
+		if err != nil {
+			continue
+		}
+
+		var agent AgentInfo
+		if err := json.Unmarshal([]byte(data), &agent); err != nil {
+			continue
+		}
+		agents = append(agents, &agent)
+	}
+
+	return agents, nil
+}
+
+// GetAgentStats returns statistics about registered agents.
+func (r *RedisAgentRegistry) GetAgentStats(ctx context.Context) (*AgentStats, error) {
+	// Get all agents (including offline) for accurate statistics
+	agents, err := r.GetAllAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.statsHelper.CalculateStats(agents), nil
 }
 
 // IsOnline checks if an agent is currently online.
+// Online status is determined by the existence of the heartbeat key.
 func (r *RedisAgentRegistry) IsOnline(ctx context.Context, agentID string) (bool, error) {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return false, errors.New("redis client not initialized")
 	}
 
-	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
-	return client.SIsMember(ctx, onlineKey, agentID).Result()
+	// Get fullPath from agent IDs hash
+	fullPath, err := client.HGet(ctx, r.keys.AgentIDsKey(), agentID).Result()
+	if err == redis.Nil {
+		return false, nil // Agent not found, not online
+	}
+	if err != nil {
+		return false, err
+	}
+
+	// Check if heartbeat key exists
+	heartbeatKey := r.keys.HeartbeatKey(fullPath)
+	exists, err := client.Exists(ctx, heartbeatKey).Result()
+	if err != nil {
+		return false, err
+	}
+
+	return exists > 0, nil
 }
 
 // UpdateHealth updates an agent's health status.
 func (r *RedisAgentRegistry) UpdateHealth(ctx context.Context, agentID string, health *controlplanev1.HealthStatus) error {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return errors.New("redis client not initialized")
 	}
 
-	infoKey := fmt.Sprintf(keyAgentInfo, r.keyPrefix, agentID)
-
-	// Get current agent info
-	data, err := client.Get(ctx, infoKey).Result()
-	if err == redis.Nil {
-		return errors.New("agent not found: " + agentID)
-	}
+	agent, err := r.GetAgent(ctx, agentID)
 	if err != nil {
 		return err
 	}
 
-	var agent AgentInfo
-	if err := json.Unmarshal([]byte(data), &agent); err != nil {
+	now := time.Now().UnixNano()
+	r.statusHelper.UpdateHealthStatus(agent, health, now)
+
+	agentData, err := json.Marshal(agent)
+	if err != nil {
 		return err
 	}
 
-	// Update health
-	if agent.Status == nil {
-		agent.Status = &AgentStatus{}
-	}
-	agent.Status.Health = health
+	instanceKey := r.keys.InstanceKey(agent.AppID, agent.ServiceName, agent.Hostname, agent.IP)
 
-	// Update state based on health
-	if health != nil {
-		switch health.State {
-		case controlplanev1.HealthStateHealthy:
-			agent.Status.State = AgentStateOnline
-		case controlplanev1.HealthStateUnhealthy:
-			agent.Status.State = AgentStateUnhealthy
+	// Get remaining TTL
+	ttl, err := client.TTL(ctx, instanceKey).Result()
+	if err != nil || ttl <= 0 {
+		ttl = r.config.InstanceTTL
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
 		}
 	}
 
-	agentData, err := json.Marshal(&agent)
-	if err != nil {
-		return err
-	}
-
-	// Get remaining TTL
-	ttl, err := client.TTL(ctx, infoKey).Result()
-	if err != nil || ttl <= 0 {
-		ttl = r.config.HeartbeatTTL
-	}
-
-	return client.Set(ctx, infoKey, agentData, ttl).Err()
+	return client.Set(ctx, instanceKey, agentData, ttl).Err()
 }
 
 // SetCurrentTask sets the current task for an agent.
 func (r *RedisAgentRegistry) SetCurrentTask(ctx context.Context, agentID string, taskID string) error {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return errors.New("redis client not initialized")
 	}
 
-	tasksKey := fmt.Sprintf(keyAgentTasks, r.keyPrefix)
-	return client.HSet(ctx, tasksKey, agentID, taskID).Err()
+	return client.HSet(ctx, r.keys.TasksKey(), agentID, taskID).Err()
 }
 
 // ClearCurrentTask clears the current task for an agent.
 func (r *RedisAgentRegistry) ClearCurrentTask(ctx context.Context, agentID string) error {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return errors.New("redis client not initialized")
 	}
 
-	tasksKey := fmt.Sprintf(keyAgentTasks, r.keyPrefix)
-	return client.HDel(ctx, tasksKey, agentID).Err()
+	return client.HDel(ctx, r.keys.TasksKey(), agentID).Err()
 }
 
 // Close releases resources.
@@ -724,9 +578,208 @@ func (r *RedisAgentRegistry) Close() error {
 	close(r.stopChan)
 	r.wg.Wait()
 
-	// Note: We don't close the Redis client here because it's managed by the storage extension
+	return nil
+}
+
+// Helper methods
+
+func (r *RedisAgentRegistry) getClient() redis.UniversalClient {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.client
+}
+
+func (r *RedisAgentRegistry) upsertAgent(ctx context.Context, client redis.UniversalClient, agent *AgentInfo, now int64, isNew bool) error {
+	agentData, err := json.Marshal(agent)
+	if err != nil {
+		return err
+	}
+
+	instanceKey := r.keys.InstanceKey(agent.AppID, agent.ServiceName, agent.Hostname, agent.IP)
+	fullPath := r.keys.FullKeyPath(agent.AppID, agent.ServiceName, agent.Hostname, agent.IP)
+	heartbeatKey := r.keys.HeartbeatKey(fullPath)
+
+	// Determine TTLs
+	instanceTTL := r.config.InstanceTTL
+	if instanceTTL <= 0 {
+		instanceTTL = 24 * time.Hour
+	}
+	heartbeatTTL := r.config.HeartbeatTTL
+	if heartbeatTTL <= 0 {
+		heartbeatTTL = 30 * time.Second
+	}
+
+	pipe := client.TxPipeline()
+
+	// 1. Store instance info with long TTL (for historical queries)
+	pipe.Set(ctx, instanceKey, agentData, instanceTTL)
+
+	// 2. Set heartbeat key with short TTL (for online detection)
+	// When this key expires, the agent is considered offline
+	pipe.Set(ctx, heartbeatKey, "1", heartbeatTTL)
+
+	// 3. Add to online sorted set with heartbeat timestamp
+	pipe.ZAdd(ctx, r.keys.OnlineKey(), redis.Z{
+		Score:  float64(now),
+		Member: fullPath,
+	})
+
+	// 4. Set agent ID in _ids hash
+	pipe.HSet(ctx, r.keys.AgentIDsKey(), agent.AgentID, fullPath)
+
+	// Optional hierarchy indexes (only when enabled):
+	if r.config.EnableHierarchyIndex {
+		appIDEsc := r.keys.Escape(agent.AppID)
+		serviceNameEsc := r.keys.Escape(agent.ServiceName)
+		instanceID := r.keys.InstanceID(agent.Hostname, agent.IP)
+
+		// Add to groups index (apps index)
+		pipe.SAdd(ctx, r.keys.GroupsKey(), appIDEsc)
+
+		// Add to services index
+		pipe.SAdd(ctx, r.keys.ServicesKeyEscaped(appIDEsc), serviceNameEsc)
+
+		// Add to instances index
+		pipe.SAdd(ctx, r.keys.InstancesKeyEscaped(appIDEsc, serviceNameEsc), instanceID)
+	}
+
+	// Publish online event for new registrations
+	if isNew && r.config.EnableEvents {
+		pipe.Publish(ctx, r.keys.EventOnlineKey(), agent.AgentID)
+	}
+
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	if isNew {
+		r.logger.Info("Agent registered",
+			zap.String("agent_id", agent.AgentID),
+			zap.String("app_id", agent.AppID),
+			zap.String("service_name", agent.ServiceName),
+			zap.String("hostname", agent.Hostname),
+		)
+	}
 
 	return nil
+}
+
+func (r *RedisAgentRegistry) cleanupEmptyIndexes(ctx context.Context, client redis.UniversalClient, appID, serviceName string) {
+	appIDB64 := r.keys.Encode(appID)
+	serviceNameB64 := r.keys.Encode(serviceName)
+
+	// Check if instances set is empty
+	instancesKey := r.keys.InstancesKeyEncoded(appIDB64, serviceNameB64)
+	count, err := client.SCard(ctx, instancesKey).Result()
+	if err != nil {
+		return
+	}
+
+	if count == 0 {
+		// Remove empty instances set and service from services index
+		pipe := client.TxPipeline()
+		pipe.Del(ctx, instancesKey)
+		pipe.SRem(ctx, r.keys.ServicesKeyEncoded(appIDB64), serviceNameB64)
+		_, _ = pipe.Exec(ctx)
+
+		// Check if services set is empty
+		servicesKey := r.keys.ServicesKeyEncoded(appIDB64)
+		serviceCount, err := client.SCard(ctx, servicesKey).Result()
+		if err != nil {
+			return
+		}
+
+		if serviceCount == 0 {
+			// Remove empty services set and app from groups index
+			pipe := client.TxPipeline()
+			pipe.Del(ctx, servicesKey)
+			pipe.SRem(ctx, r.keys.GroupsKey(), appIDB64)
+			_, _ = pipe.Exec(ctx)
+		}
+	}
+}
+
+// markAgentOffline marks an agent as offline and updates its status in the instance info.
+func (r *RedisAgentRegistry) markAgentOffline(ctx context.Context, client redis.UniversalClient, fullPath string, agentIDMap map[string]string, now int64) {
+	appIDEsc, serviceNameEsc, instanceKey, err := r.keys.ParseFullKeyPath(fullPath)
+	if err != nil {
+		// Failed to parse - might be old format data, remove it directly
+		r.logger.Warn("Failed to parse offline agent path, removing from online set",
+			zap.String("full_path", fullPath),
+			zap.Error(err),
+		)
+		client.ZRem(ctx, r.keys.OnlineKey(), fullPath)
+		return
+	}
+
+	// Get instance info key
+	instanceInfoKey := r.keys.InstanceKeyFromParts(appIDEsc, serviceNameEsc, instanceKey)
+
+	// Try to update instance info with offline status
+	data, err := client.Get(ctx, instanceInfoKey).Result()
+	if err == nil {
+		// Instance info exists, update status to offline
+		var agent AgentInfo
+		if err := json.Unmarshal([]byte(data), &agent); err == nil {
+			// Use statusHelper to mark offline
+			if r.statusHelper.MarkOffline(&agent, now) {
+				// Write back with remaining TTL
+				ttl, _ := client.TTL(ctx, instanceInfoKey).Result()
+				if ttl <= 0 {
+					instanceTTL := r.config.InstanceTTL
+					if instanceTTL <= 0 {
+						instanceTTL = 24 * time.Hour
+					}
+					ttl = instanceTTL
+				}
+
+				if agentData, err := json.Marshal(&agent); err == nil {
+					client.Set(ctx, instanceInfoKey, agentData, ttl)
+				}
+			}
+		}
+	}
+
+	// Remove from online set
+	pipe := client.TxPipeline()
+	pipe.ZRem(ctx, r.keys.OnlineKey(), fullPath)
+
+	// Remove from instances set (only if hierarchy index is enabled)
+	if r.config.EnableHierarchyIndex {
+		pipe.SRem(ctx, r.keys.InstancesKeyEscaped(appIDEsc, serviceNameEsc), instanceKey)
+	}
+
+	// Get agentID for event publishing
+	agentID := agentIDMap[fullPath]
+
+	// Publish offline event
+	if r.config.EnableEvents && agentID != "" {
+		pipe.Publish(ctx, r.keys.EventOfflineKey(), agentID)
+	}
+
+	_, execErr := pipe.Exec(ctx)
+	if execErr != nil {
+		r.logger.Warn("Failed to mark agent offline",
+			zap.String("full_path", fullPath),
+			zap.Error(execErr),
+		)
+		return
+	}
+
+	r.logger.Info("Agent marked as offline due to heartbeat expiration",
+		zap.String("full_path", fullPath),
+		zap.String("agent_id", agentID),
+	)
+
+	// Clean up empty indexes (only if hierarchy index is enabled)
+	if r.config.EnableHierarchyIndex {
+		appID := r.keys.Unescape(appIDEsc)
+		serviceName := r.keys.Unescape(serviceNameEsc)
+		if appID != "" && serviceName != "" {
+			r.cleanupEmptyIndexes(ctx, client, appID, serviceName)
+		}
+	}
 }
 
 // offlineDetectionLoop periodically checks for offline agents.
@@ -751,61 +804,71 @@ func (r *RedisAgentRegistry) offlineDetectionLoop() {
 	}
 }
 
-// detectOfflineAgents marks agents as offline if their heartbeat is stale.
+// detectOfflineAgents checks for offline agents based on heartbeat key expiration.
+// When a heartbeat key expires, the agent is marked as offline and its status is updated.
 func (r *RedisAgentRegistry) detectOfflineAgents() {
-	r.mu.RLock()
-	client := r.client
-	r.mu.RUnlock()
-
+	client := r.getClient()
 	if client == nil {
 		return
 	}
 
 	ctx := context.Background()
-	heartbeatKey := fmt.Sprintf(keyHeartbeatZSet, r.keyPrefix)
-	onlineKey := fmt.Sprintf(keyOnlineSet, r.keyPrefix)
 
-	ttl := r.config.HeartbeatTTL
-	if ttl <= 0 {
-		ttl = 60 * time.Second
-	}
-
-	threshold := float64(time.Now().Add(-ttl).UnixNano())
-
-	// Get agents with stale heartbeats
-	staleAgents, err := client.ZRangeByScore(ctx, heartbeatKey, &redis.ZRangeBy{
-		Min: "-inf",
-		Max: fmt.Sprintf("%f", threshold),
-	}).Result()
+	// Get all members from online sorted set
+	fullPaths, err := client.ZRange(ctx, r.keys.OnlineKey(), 0, -1).Result()
 	if err != nil {
-		r.logger.Warn("Failed to get stale agents", zap.Error(err))
+		r.logger.Warn("Failed to get online agents", zap.Error(err))
 		return
 	}
 
-	for _, agentID := range staleAgents {
-		// Check if agent info key still exists (might have expired)
-		infoKey := fmt.Sprintf(keyAgentInfo, r.keyPrefix, agentID)
-		exists, err := client.Exists(ctx, infoKey).Result()
+	if len(fullPaths) == 0 {
+		return
+	}
+
+	// Build heartbeat keys for batch checking
+	heartbeatKeys := make([]string, len(fullPaths))
+	for i, fullPath := range fullPaths {
+		heartbeatKeys[i] = r.keys.HeartbeatKey(fullPath)
+	}
+
+	// Batch check heartbeat key existence using pipeline
+	pipe := client.Pipeline()
+	existsCmds := make([]*redis.IntCmd, len(heartbeatKeys))
+	for i, key := range heartbeatKeys {
+		existsCmds[i] = pipe.Exists(ctx, key)
+	}
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		r.logger.Warn("Failed to check heartbeat keys", zap.Error(err))
+		return
+	}
+
+	// Build a map of fullPath -> agentID for efficient lookup
+	agentIDMap := make(map[string]string) // fullPath -> agentID
+	allAgentIDs, err := client.HGetAll(ctx, r.keys.AgentIDsKey()).Result()
+	if err != nil {
+		r.logger.Warn("Failed to get agent IDs", zap.Error(err))
+	} else {
+		for agentID, fullPath := range allAgentIDs {
+			agentIDMap[fullPath] = agentID
+		}
+	}
+
+	now := time.Now().UnixNano()
+
+	// Process offline agents
+	for i, fullPath := range fullPaths {
+		exists, err := existsCmds[i].Result()
 		if err != nil {
 			continue
 		}
 
-		if exists == 0 {
-			// Agent info expired, clean up
-			pipe := client.TxPipeline()
-			pipe.SRem(ctx, onlineKey, agentID)
-			pipe.ZRem(ctx, heartbeatKey, agentID)
-
-			if r.config.EnableEvents {
-				eventKey := fmt.Sprintf(keyEventOffline, r.keyPrefix)
-				pipe.Publish(ctx, eventKey, agentID)
-			}
-
-			_, _ = pipe.Exec(ctx)
-
-			r.logger.Warn("Agent marked as offline due to TTL expiration",
-				zap.String("agent_id", agentID),
-			)
+		// Heartbeat key exists, agent is online
+		if exists > 0 {
+			continue
 		}
+
+		// Heartbeat key expired, agent is offline
+		r.markAgentOffline(ctx, client, fullPath, agentIDMap, now)
 	}
 }

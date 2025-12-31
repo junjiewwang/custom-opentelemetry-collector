@@ -16,8 +16,10 @@ import (
 
 // MemoryAgentRegistry implements AgentRegistry using in-memory storage.
 type MemoryAgentRegistry struct {
-	logger *zap.Logger
-	config Config
+	logger       *zap.Logger
+	config       Config
+	statusHelper *StatusHelper
+	statsHelper  *StatsHelper
 
 	mu           sync.RWMutex
 	agents       map[string]*AgentInfo
@@ -35,6 +37,8 @@ func NewMemoryAgentRegistry(logger *zap.Logger, config Config) *MemoryAgentRegis
 	return &MemoryAgentRegistry{
 		logger:       logger,
 		config:       config,
+		statusHelper: NewStatusHelper(),
+		statsHelper:  NewStatsHelper(),
 		agents:       make(map[string]*AgentInfo),
 		labelIndex:   make(map[string]map[string]bool),
 		currentTasks: make(map[string]string),
@@ -47,11 +51,8 @@ var _ AgentRegistry = (*MemoryAgentRegistry)(nil)
 
 // Register registers a new agent.
 func (m *MemoryAgentRegistry) Register(ctx context.Context, agent *AgentInfo) error {
-	if agent == nil {
-		return errors.New("agent cannot be nil")
-	}
-	if agent.AgentID == "" {
-		return errors.New("agent_id is required")
+	if err := agent.Validate(); err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -61,13 +62,7 @@ func (m *MemoryAgentRegistry) Register(ctx context.Context, agent *AgentInfo) er
 	agent.RegisteredAt = now
 	agent.LastHeartbeat = now
 
-	if agent.Status == nil {
-		agent.Status = &AgentStatus{
-			State: AgentStateOnline,
-		}
-	} else {
-		agent.Status.State = AgentStateOnline
-	}
+	m.statusHelper.InitializeStatus(agent, now)
 
 	// Store agent
 	m.agents[agent.AgentID] = agent
@@ -93,14 +88,10 @@ func (m *MemoryAgentRegistry) Heartbeat(ctx context.Context, agentID string, sta
 		return errors.New("agent not found: " + agentID)
 	}
 
-	agent.LastHeartbeat = time.Now().UnixNano()
+	now := time.Now().UnixNano()
+	agent.LastHeartbeat = now
 
-	if status != nil {
-		status.State = AgentStateOnline
-		agent.Status = status
-	} else if agent.Status != nil {
-		agent.Status.State = AgentStateOnline
-	}
+	m.statusHelper.UpdateHeartbeatStatus(agent, status, now)
 
 	return nil
 }
@@ -108,11 +99,8 @@ func (m *MemoryAgentRegistry) Heartbeat(ctx context.Context, agentID string, sta
 // RegisterOrHeartbeat registers a new agent if not exists, or updates heartbeat if exists.
 // This provides upsert semantics for automatic registration via status reports.
 func (m *MemoryAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *AgentInfo) error {
-	if agent == nil {
-		return errors.New("agent cannot be nil")
-	}
-	if agent.AgentID == "" {
-		return errors.New("agent_id is required")
+	if err := agent.Validate(); err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -124,31 +112,9 @@ func (m *MemoryAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *Ag
 	if ok {
 		// Agent exists, update heartbeat and status
 		existing.LastHeartbeat = now
+		existing.MergeFrom(agent)
 
-		// Update mutable fields from the incoming agent info
-		if agent.Hostname != "" {
-			existing.Hostname = agent.Hostname
-		}
-		if agent.IP != "" {
-			existing.IP = agent.IP
-		}
-		if agent.Version != "" {
-			existing.Version = agent.Version
-		}
-		if agent.Token != "" {
-			existing.Token = agent.Token
-		}
-		if agent.AppID != "" {
-			existing.AppID = agent.AppID
-		}
-
-		// Update status
-		if agent.Status != nil {
-			agent.Status.State = AgentStateOnline
-			existing.Status = agent.Status
-		} else if existing.Status != nil {
-			existing.Status.State = AgentStateOnline
-		}
+		wasOffline := m.statusHelper.UpdateHeartbeatStatus(existing, agent.Status, now)
 
 		// Update labels if provided
 		if len(agent.Labels) > 0 {
@@ -157,9 +123,15 @@ func (m *MemoryAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *Ag
 			m.updateLabelIndex(agent.AgentID, oldLabels, agent.Labels)
 		}
 
-		m.logger.Debug("Agent heartbeat updated",
-			zap.String("agent_id", agent.AgentID),
-		)
+		if wasOffline {
+			m.logger.Info("Agent recovered from offline",
+				zap.String("agent_id", agent.AgentID),
+			)
+		} else {
+			m.logger.Debug("Agent heartbeat updated",
+				zap.String("agent_id", agent.AgentID),
+			)
+		}
 		return nil
 	}
 
@@ -167,13 +139,7 @@ func (m *MemoryAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *Ag
 	agent.RegisteredAt = now
 	agent.LastHeartbeat = now
 
-	if agent.Status == nil {
-		agent.Status = &AgentStatus{
-			State: AgentStateOnline,
-		}
-	} else {
-		agent.Status.State = AgentStateOnline
-	}
+	m.statusHelper.InitializeStatus(agent, now)
 
 	// Store agent
 	m.agents[agent.AgentID] = agent
@@ -239,6 +205,19 @@ func (m *MemoryAgentRegistry) GetOnlineAgents(ctx context.Context) ([]*AgentInfo
 	return agents, nil
 }
 
+// GetAllAgents returns all agents (including offline ones).
+func (m *MemoryAgentRegistry) GetAllAgents(ctx context.Context) ([]*AgentInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	agents := make([]*AgentInfo, 0, len(m.agents))
+	for _, agent := range m.agents {
+		agents = append(agents, agent)
+	}
+
+	return agents, nil
+}
+
 // GetAgentsByLabel returns agents matching the specified label.
 func (m *MemoryAgentRegistry) GetAgentsByLabel(ctx context.Context, labelKey, labelValue string) ([]*AgentInfo, error) {
 	m.mu.RLock()
@@ -275,37 +254,73 @@ func (m *MemoryAgentRegistry) GetAgentsByToken(ctx context.Context, token string
 	return agents, nil
 }
 
+// GetApps returns all app IDs.
+func (m *MemoryAgentRegistry) GetApps(ctx context.Context) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	groupSet := make(map[string]struct{})
+	for _, agent := range m.agents {
+		if agent.AppID != "" {
+			groupSet[agent.AppID] = struct{}{}
+		}
+	}
+
+	groups := make([]string, 0, len(groupSet))
+	for group := range groupSet {
+		groups = append(groups, group)
+	}
+
+	return groups, nil
+}
+
+// GetServicesByApp returns all service names under an app.
+func (m *MemoryAgentRegistry) GetServicesByApp(ctx context.Context, appID string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	serviceSet := make(map[string]struct{})
+	for _, agent := range m.agents {
+		if agent.AppID == appID && agent.ServiceName != "" {
+			serviceSet[agent.ServiceName] = struct{}{}
+		}
+	}
+
+	services := make([]string, 0, len(serviceSet))
+	for service := range serviceSet {
+		services = append(services, service)
+	}
+
+	return services, nil
+}
+
+// GetInstancesByService returns all instances under a service.
+func (m *MemoryAgentRegistry) GetInstancesByService(ctx context.Context, appID, serviceName string) ([]*AgentInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var agents []*AgentInfo
+	for _, agent := range m.agents {
+		if agent.AppID == appID && agent.ServiceName == serviceName {
+			agents = append(agents, agent)
+		}
+	}
+
+	return agents, nil
+}
+
 // GetAgentStats returns statistics about registered agents.
 func (m *MemoryAgentRegistry) GetAgentStats(ctx context.Context) (*AgentStats, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	stats := &AgentStats{
-		TotalAgents: len(m.agents),
-		ByLabel:     make(map[string]int),
-	}
-
+	// Convert map to slice for statsHelper
+	agents := make([]*AgentInfo, 0, len(m.agents))
 	for _, agent := range m.agents {
-		if agent.Status == nil {
-			continue
-		}
-
-		switch agent.Status.State {
-		case AgentStateOnline:
-			stats.OnlineAgents++
-		case AgentStateOffline:
-			stats.OfflineAgents++
-		case AgentStateUnhealthy:
-			stats.UnhealthyAgents++
-		}
+		agents = append(agents, agent)
 	}
 
-	// Count by label
-	for indexKey, agentIDs := range m.labelIndex {
-		stats.ByLabel[indexKey] = len(agentIDs)
-	}
-
-	return stats, nil
+	return m.statsHelper.CalculateStats(agents), nil
 }
 
 // IsOnline checks if an agent is currently online.
@@ -331,20 +346,8 @@ func (m *MemoryAgentRegistry) UpdateHealth(ctx context.Context, agentID string, 
 		return errors.New("agent not found: " + agentID)
 	}
 
-	if agent.Status == nil {
-		agent.Status = &AgentStatus{}
-	}
-	agent.Status.Health = health
-
-	// Update state based on health
-	if health != nil {
-		switch health.State {
-		case controlplanev1.HealthStateHealthy:
-			agent.Status.State = AgentStateOnline
-		case controlplanev1.HealthStateUnhealthy:
-			agent.Status.State = AgentStateUnhealthy
-		}
-	}
+	now := time.Now().UnixNano()
+	m.statusHelper.UpdateHealthStatus(agent, health, now)
 
 	return nil
 }
@@ -445,15 +448,14 @@ func (m *MemoryAgentRegistry) detectOfflineAgents() {
 
 	ttl := m.config.HeartbeatTTL
 	if ttl <= 0 {
-		ttl = 60 * time.Second
+		ttl = 30 * time.Second
 	}
 
-	threshold := time.Now().Add(-ttl).UnixNano()
+	now := time.Now().UnixNano()
 
 	for agentID, agent := range m.agents {
-		if agent.LastHeartbeat < threshold {
-			if agent.Status != nil && agent.Status.State == AgentStateOnline {
-				agent.Status.State = AgentStateOffline
+		if m.statusHelper.IsHeartbeatExpired(agent.LastHeartbeat, ttl) {
+			if m.statusHelper.MarkOffline(agent, now) {
 				m.logger.Warn("Agent marked as offline due to heartbeat timeout",
 					zap.String("agent_id", agentID),
 				)

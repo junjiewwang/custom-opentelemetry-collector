@@ -34,6 +34,7 @@ func TestMemoryAgentRegistry_Register(t *testing.T) {
 
 	agent := &AgentInfo{
 		AgentID:  "agent-1",
+		AppID:    "app-test",
 		Hostname: "host-1",
 		IP:       "192.168.1.1",
 		Version:  "1.0.0",
@@ -70,6 +71,11 @@ func TestMemoryAgentRegistry_Register_Validation(t *testing.T) {
 	err = registry.Register(ctx, &AgentInfo{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "agent_id is required")
+
+	// Empty app ID
+	err = registry.Register(ctx, &AgentInfo{AgentID: "agent-1"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "app_id is required")
 }
 
 func TestMemoryAgentRegistry_Heartbeat(t *testing.T) {
@@ -83,6 +89,7 @@ func TestMemoryAgentRegistry_Heartbeat(t *testing.T) {
 	// Register agent
 	agent := &AgentInfo{
 		AgentID:  "agent-1",
+		AppID:    "app-test",
 		Hostname: "host-1",
 	}
 	err = registry.Register(ctx, agent)
@@ -135,6 +142,7 @@ func TestMemoryAgentRegistry_RegisterOrHeartbeat_NewAgent(t *testing.T) {
 	// RegisterOrHeartbeat with new agent should auto-register
 	agent := &AgentInfo{
 		AgentID:  "agent-new",
+		AppID:    "app-test",
 		Hostname: "host-new",
 		IP:       "192.168.1.100",
 		Version:  "2.0.0",
@@ -166,6 +174,7 @@ func TestMemoryAgentRegistry_RegisterOrHeartbeat_ExistingAgent(t *testing.T) {
 	// First, register an agent
 	agent := &AgentInfo{
 		AgentID:  "agent-existing",
+		AppID:    "app-test",
 		Hostname: "host-old",
 		IP:       "192.168.1.1",
 		Version:  "1.0.0",
@@ -184,6 +193,7 @@ func TestMemoryAgentRegistry_RegisterOrHeartbeat_ExistingAgent(t *testing.T) {
 	// RegisterOrHeartbeat with updated info
 	updatedAgent := &AgentInfo{
 		AgentID:  "agent-existing",
+		AppID:    "app-test",
 		Hostname: "host-new",
 		IP:       "192.168.1.2",
 		Version:  "2.0.0",
@@ -234,6 +244,11 @@ func TestMemoryAgentRegistry_RegisterOrHeartbeat_Validation(t *testing.T) {
 	err = registry.RegisterOrHeartbeat(ctx, &AgentInfo{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "agent_id")
+
+	// Empty app_id
+	err = registry.RegisterOrHeartbeat(ctx, &AgentInfo{AgentID: "agent-1"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "app_id")
 }
 
 func TestMemoryAgentRegistry_Unregister(t *testing.T) {
@@ -247,6 +262,7 @@ func TestMemoryAgentRegistry_Unregister(t *testing.T) {
 	// Register agent
 	agent := &AgentInfo{
 		AgentID:  "agent-1",
+		AppID:    "app-test",
 		Hostname: "host-1",
 		Labels:   map[string]string{"env": "test"},
 	}
@@ -278,6 +294,7 @@ func TestMemoryAgentRegistry_GetOnlineAgents(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		agent := &AgentInfo{
 			AgentID:  "agent-" + string(rune('0'+i)),
+			AppID:    "app-test",
 			Hostname: "host-" + string(rune('0'+i)),
 		}
 		err = registry.Register(ctx, agent)
@@ -288,6 +305,47 @@ func TestMemoryAgentRegistry_GetOnlineAgents(t *testing.T) {
 	agents, err := registry.GetOnlineAgents(ctx)
 	require.NoError(t, err)
 	assert.Len(t, agents, 3)
+}
+
+func TestMemoryAgentRegistry_GetAllAgents(t *testing.T) {
+	registry := newTestMemoryRegistry(t)
+	ctx := context.Background()
+
+	err := registry.Start(ctx)
+	require.NoError(t, err)
+	defer registry.Close()
+
+	// Register multiple agents
+	for i := 1; i <= 3; i++ {
+		agent := &AgentInfo{
+			AgentID:  "agent-" + string(rune('0'+i)),
+			AppID:    "app-test",
+			Hostname: "host-" + string(rune('0'+i)),
+		}
+		err = registry.Register(ctx, agent)
+		require.NoError(t, err)
+	}
+
+	// Mark one agent as offline
+	agent1, _ := registry.GetAgent(ctx, "agent-1")
+	agent1.Status.State = AgentStateOffline
+
+	// GetOnlineAgents should return only online agents
+	onlineAgents, err := registry.GetOnlineAgents(ctx)
+	require.NoError(t, err)
+	assert.Len(t, onlineAgents, 2)
+
+	// GetAllAgents should return all agents including offline
+	allAgents, err := registry.GetAllAgents(ctx)
+	require.NoError(t, err)
+	assert.Len(t, allAgents, 3)
+
+	// Verify stats include offline count
+	stats, err := registry.GetAgentStats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, stats.TotalAgents)
+	assert.Equal(t, 2, stats.OnlineAgents)
+	assert.Equal(t, 1, stats.OfflineAgents)
 }
 
 func TestMemoryAgentRegistry_GetAgentsByLabel(t *testing.T) {
@@ -301,14 +359,17 @@ func TestMemoryAgentRegistry_GetAgentsByLabel(t *testing.T) {
 	// Register agents with different labels
 	agent1 := &AgentInfo{
 		AgentID: "agent-1",
+		AppID:   "app-test",
 		Labels:  map[string]string{"env": "prod"},
 	}
 	agent2 := &AgentInfo{
 		AgentID: "agent-2",
+		AppID:   "app-test",
 		Labels:  map[string]string{"env": "prod"},
 	}
 	agent3 := &AgentInfo{
 		AgentID: "agent-3",
+		AppID:   "app-test",
 		Labels:  map[string]string{"env": "test"},
 	}
 
@@ -342,11 +403,13 @@ func TestMemoryAgentRegistry_GetAgentStats(t *testing.T) {
 	// Register agents
 	agent1 := &AgentInfo{
 		AgentID: "agent-1",
+		AppID:   "app-test",
 		Labels:  map[string]string{"env": "prod"},
 		Status:  &AgentStatus{State: AgentStateOnline},
 	}
 	agent2 := &AgentInfo{
 		AgentID: "agent-2",
+		AppID:   "app-test",
 		Labels:  map[string]string{"env": "prod"},
 		Status:  &AgentStatus{State: AgentStateOnline},
 	}
@@ -373,6 +436,7 @@ func TestMemoryAgentRegistry_IsOnline(t *testing.T) {
 	// Register agent
 	agent := &AgentInfo{
 		AgentID: "agent-1",
+		AppID:   "app-test",
 	}
 	_ = registry.Register(ctx, agent)
 
@@ -398,6 +462,7 @@ func TestMemoryAgentRegistry_UpdateHealth(t *testing.T) {
 	// Register agent
 	agent := &AgentInfo{
 		AgentID: "agent-1",
+		AppID:   "app-test",
 	}
 	_ = registry.Register(ctx, agent)
 
@@ -433,6 +498,7 @@ func TestMemoryAgentRegistry_SetCurrentTask(t *testing.T) {
 	// Register agent
 	agent := &AgentInfo{
 		AgentID: "agent-1",
+		AppID:   "app-test",
 	}
 	_ = registry.Register(ctx, agent)
 
@@ -486,6 +552,7 @@ func TestMemoryAgentRegistry_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			agent := &AgentInfo{
 				AgentID:  "agent-" + string(rune('0'+id)),
+				AppID:    "app-test",
 				Hostname: "host",
 			}
 			_ = registry.Register(ctx, agent)
@@ -500,4 +567,89 @@ func TestMemoryAgentRegistry_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		<-done
 	}
+}
+
+func TestMemoryAgentRegistry_GetApps(t *testing.T) {
+	registry := newTestMemoryRegistry(t)
+	ctx := context.Background()
+
+	// Register agents with different apps
+	agents := []*AgentInfo{
+		{AgentID: "agent-1", AppID: "app-a", ServiceName: "svc-1", Hostname: "host1", IP: "10.0.0.1"},
+		{AgentID: "agent-2", AppID: "app-a", ServiceName: "svc-2", Hostname: "host2", IP: "10.0.0.2"},
+		{AgentID: "agent-3", AppID: "app-b", ServiceName: "svc-1", Hostname: "host3", IP: "10.0.0.3"},
+	}
+
+	for _, agent := range agents {
+		err := registry.Register(ctx, agent)
+		require.NoError(t, err)
+	}
+
+	apps, err := registry.GetApps(ctx)
+	require.NoError(t, err)
+	assert.Len(t, apps, 2)
+	assert.Contains(t, apps, "app-a")
+	assert.Contains(t, apps, "app-b")
+}
+
+func TestMemoryAgentRegistry_GetServicesByApp(t *testing.T) {
+	registry := newTestMemoryRegistry(t)
+	ctx := context.Background()
+
+	// Register agents
+	agents := []*AgentInfo{
+		{AgentID: "agent-1", AppID: "app-a", ServiceName: "svc-1", Hostname: "host1", IP: "10.0.0.1"},
+		{AgentID: "agent-2", AppID: "app-a", ServiceName: "svc-2", Hostname: "host2", IP: "10.0.0.2"},
+		{AgentID: "agent-3", AppID: "app-a", ServiceName: "svc-1", Hostname: "host3", IP: "10.0.0.3"},
+		{AgentID: "agent-4", AppID: "app-b", ServiceName: "svc-3", Hostname: "host4", IP: "10.0.0.4"},
+	}
+
+	for _, agent := range agents {
+		err := registry.Register(ctx, agent)
+		require.NoError(t, err)
+	}
+
+	services, err := registry.GetServicesByApp(ctx, "app-a")
+	require.NoError(t, err)
+	assert.Len(t, services, 2)
+	assert.Contains(t, services, "svc-1")
+	assert.Contains(t, services, "svc-2")
+
+	services, err = registry.GetServicesByApp(ctx, "app-b")
+	require.NoError(t, err)
+	assert.Len(t, services, 1)
+	assert.Contains(t, services, "svc-3")
+
+	services, err = registry.GetServicesByApp(ctx, "non-existent")
+	require.NoError(t, err)
+	assert.Len(t, services, 0)
+}
+
+func TestMemoryAgentRegistry_GetInstancesByService(t *testing.T) {
+	registry := newTestMemoryRegistry(t)
+	ctx := context.Background()
+
+	// Register agents
+	agents := []*AgentInfo{
+		{AgentID: "agent-1", AppID: "app-a", ServiceName: "svc-1", Hostname: "host1", IP: "10.0.0.1"},
+		{AgentID: "agent-2", AppID: "app-a", ServiceName: "svc-1", Hostname: "host2", IP: "10.0.0.2"},
+		{AgentID: "agent-3", AppID: "app-a", ServiceName: "svc-2", Hostname: "host3", IP: "10.0.0.3"},
+	}
+
+	for _, agent := range agents {
+		err := registry.Register(ctx, agent)
+		require.NoError(t, err)
+	}
+
+	instances, err := registry.GetInstancesByService(ctx, "app-a", "svc-1")
+	require.NoError(t, err)
+	assert.Len(t, instances, 2)
+
+	instances, err = registry.GetInstancesByService(ctx, "app-a", "svc-2")
+	require.NoError(t, err)
+	assert.Len(t, instances, 1)
+
+	instances, err = registry.GetInstancesByService(ctx, "app-a", "non-existent")
+	require.NoError(t, err)
+	assert.Len(t, instances, 0)
 }
