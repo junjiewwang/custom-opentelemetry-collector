@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
@@ -16,7 +17,14 @@ import (
 // Config defines the configuration for the admin extension.
 type Config struct {
 	// StorageExtension is the name of the storage extension to use.
+	// Only needed if not using ControlPlaneExtension.
 	StorageExtension string `mapstructure:"storage_extension"`
+
+	// ControlPlaneExtension is the name of the controlplane extension to reuse components from.
+	// When set, admin will reuse ConfigManager, TaskManager, AgentRegistry, and TokenManager
+	// from the controlplane extension instead of creating its own instances.
+	// This is the recommended configuration to avoid duplicate component instances.
+	ControlPlaneExtension string `mapstructure:"controlplane_extension"`
 
 	// HTTP server configuration.
 	HTTP HTTPConfig `mapstructure:"http"`
@@ -152,44 +160,20 @@ func (cfg *Config) Validate() error {
 		}
 	}
 
-	// Validate ConfigManager
-	validConfigTypes := map[string]bool{"": true, "memory": true, "nacos": true, "multi_agent_nacos": true, "on_demand": true}
-	if !validConfigTypes[cfg.ConfigManager.Type] {
-		return errors.New("config_manager.type must be 'memory', 'nacos', 'multi_agent_nacos', or 'on_demand'")
+	// If using controlplane extension, skip component config validation
+	// as components will be reused from controlplane
+	if cfg.ControlPlaneExtension != "" {
+		return nil
 	}
 
-	if (cfg.ConfigManager.Type == "nacos" || cfg.ConfigManager.Type == "multi_agent_nacos" || cfg.ConfigManager.Type == "on_demand") && cfg.StorageExtension == "" {
-		return errors.New("storage_extension is required when config_manager.type is 'nacos', 'multi_agent_nacos', or 'on_demand'")
-	}
-
-	// Validate TaskManager
-	if cfg.TaskManager.Type != "" && cfg.TaskManager.Type != "memory" && cfg.TaskManager.Type != "redis" {
-		return errors.New("task_manager.type must be 'memory' or 'redis'")
-	}
-
-	if cfg.TaskManager.Type == "redis" && cfg.StorageExtension == "" {
-		return errors.New("storage_extension is required when task_manager.type is 'redis'")
-	}
-
-	// Validate AgentRegistry
-	if cfg.AgentRegistry.Type != "" && cfg.AgentRegistry.Type != "memory" && cfg.AgentRegistry.Type != "redis" {
-		return errors.New("agent_registry.type must be 'memory' or 'redis'")
-	}
-
-	if cfg.AgentRegistry.Type == "redis" && cfg.StorageExtension == "" {
-		return errors.New("storage_extension is required when agent_registry.type is 'redis'")
-	}
-
-	// Validate TokenManager
-	if cfg.TokenManager.Type != "" && cfg.TokenManager.Type != "memory" && cfg.TokenManager.Type != "redis" {
-		return errors.New("token_manager.type must be 'memory' or 'redis'")
-	}
-
-	if cfg.TokenManager.Type == "redis" && cfg.StorageExtension == "" {
-		return errors.New("storage_extension is required when token_manager.type is 'redis'")
-	}
-
-	return nil
+	// Validate component configs using shared validation from controlplaneext
+	return controlplaneext.ValidateComponentConfigs(controlplaneext.ComponentConfigs{
+		StorageExtension: cfg.StorageExtension,
+		ConfigManager:    cfg.ConfigManager,
+		TaskManager:      cfg.TaskManager,
+		AgentRegistry:    cfg.AgentRegistry,
+		TokenManager:     cfg.TokenManager,
+	})
 }
 
 // createDefaultConfig creates the default configuration.

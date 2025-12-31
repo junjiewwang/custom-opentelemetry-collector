@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/extension/extensioncapabilities"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
@@ -34,10 +35,13 @@ type Extension struct {
 	settings extension.Settings
 	logger   *zap.Logger
 
-	// Storage extension reference
+	// Storage extension reference (only used when not reusing controlplane)
 	storage storageext.Storage
 
-	// Core components
+	// ControlPlane extension reference (when reusing components)
+	controlPlane controlplaneext.ControlPlane
+
+	// Core components (either created locally or reused from controlplane)
 	configMgr configmanager.ConfigManager
 	taskMgr   taskmanager.TaskManager
 	agentReg  agentregistry.AgentRegistry
@@ -45,6 +49,9 @@ type Extension struct {
 
 	// On-demand config manager (if enabled)
 	onDemandConfigMgr configmanager.OnDemandConfigManager
+
+	// Flag to track if we own the components (need to close them on shutdown)
+	ownsComponents bool
 
 	// HTTP server
 	server   *http.Server
@@ -81,31 +88,99 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		zap.String("endpoint", e.config.HTTP.Endpoint),
 	)
 
-	// Get storage extension if configured
-	if e.config.StorageExtension != "" {
-		if err := e.initStorage(host); err != nil {
+	// Check if we should reuse components from controlplane extension
+	if e.config.ControlPlaneExtension != "" {
+		if err := e.initFromControlPlane(host); err != nil {
+			return err
+		}
+	} else {
+		// Create our own components
+		if err := e.initOwnComponents(ctx, host); err != nil {
 			return err
 		}
 	}
 
-	// Initialize components
+	// Start HTTP server
+	if err := e.startHTTPServer(); err != nil {
+		return err
+	}
+
+	e.started = true
+	e.logger.Info("Admin extension started")
+	return nil
+}
+
+// initFromControlPlane initializes by reusing components from the controlplane extension.
+func (e *Extension) initFromControlPlane(host component.Host) error {
+	// Find controlplane extension by type name
+	controlPlaneType := component.MustNewType(e.config.ControlPlaneExtension)
+	var found bool
+
+	for id, ext := range host.GetExtensions() {
+		if id.Type() == controlPlaneType {
+			if cp, ok := ext.(controlplaneext.ControlPlane); ok {
+				e.controlPlane = cp
+				found = true
+				break
+			}
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("controlplane extension %q not found or does not implement ControlPlane interface", e.config.ControlPlaneExtension)
+	}
+
+	// Get the underlying extension to access component getters
+	cpExt, ok := e.controlPlane.(*controlplaneext.Extension)
+	if !ok {
+		return fmt.Errorf("controlplane extension does not expose component getters")
+	}
+
+	// Reuse components from controlplane
+	e.configMgr = cpExt.GetConfigManager()
+	e.taskMgr = cpExt.GetTaskManager()
+	e.agentReg = cpExt.GetAgentRegistry()
+	e.tokenMgr = cpExt.GetTokenManager()
+	e.ownsComponents = false // Don't close these on shutdown
+
+	e.logger.Info("Reusing components from controlplane extension",
+		zap.String("controlplane", e.config.ControlPlaneExtension),
+	)
+
+	return nil
+}
+
+// initOwnComponents creates and starts our own component instances.
+func (e *Extension) initOwnComponents(ctx context.Context, host component.Host) error {
+	// Get storage extension if configured using shared function
+	if e.config.StorageExtension != "" {
+		storage, err := controlplaneext.GetStorageExtension(host, e.config.StorageExtension, e.logger)
+		if err != nil {
+			return err
+		}
+		e.storage = storage
+	}
+
+	// Create component factory and initialize components
+	factory := controlplaneext.NewComponentFactory(e.logger, e.storage)
+
 	var err error
-	e.configMgr, err = e.createConfigManager()
+	e.configMgr, e.onDemandConfigMgr, err = factory.CreateConfigManagerWithOnDemand(e.config.ConfigManager)
 	if err != nil {
 		return fmt.Errorf("failed to create config manager: %w", err)
 	}
 
-	e.taskMgr, err = e.createTaskManager()
+	e.taskMgr, err = factory.CreateTaskManager(e.config.TaskManager)
 	if err != nil {
 		return fmt.Errorf("failed to create task manager: %w", err)
 	}
 
-	e.agentReg, err = e.createAgentRegistry()
+	e.agentReg, err = factory.CreateAgentRegistry(e.config.AgentRegistry)
 	if err != nil {
 		return fmt.Errorf("failed to create agent registry: %w", err)
 	}
 
-	e.tokenMgr, err = e.createTokenManager()
+	e.tokenMgr, err = factory.CreateTokenManager(e.config.TokenManager)
 	if err != nil {
 		return fmt.Errorf("failed to create token manager: %w", err)
 	}
@@ -127,153 +202,8 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		return err
 	}
 
-	// Start HTTP server
-	if err := e.startHTTPServer(); err != nil {
-		return err
-	}
-
-	e.started = true
-	e.logger.Info("Admin extension started")
+	e.ownsComponents = true // We own these, close them on shutdown
 	return nil
-}
-
-// initStorage initializes the storage extension reference.
-func (e *Extension) initStorage(host component.Host) error {
-	// Find storage extension by type name
-	storageType := component.MustNewType(e.config.StorageExtension)
-	var storage storageext.Storage
-	var found bool
-
-	for id, ext := range host.GetExtensions() {
-		if id.Type() == storageType {
-			if s, ok := ext.(storageext.Storage); ok {
-				storage = s
-				found = true
-				break
-			}
-		}
-	}
-
-	if !found {
-		return fmt.Errorf("storage extension %q not found or does not implement Storage interface", e.config.StorageExtension)
-	}
-
-	e.storage = storage
-	e.logger.Info("Using storage extension", zap.String("name", e.config.StorageExtension))
-	return nil
-}
-
-// createConfigManager creates the appropriate ConfigManager based on config.
-func (e *Extension) createConfigManager() (configmanager.ConfigManager, error) {
-	cfg := e.config.ConfigManager
-
-	switch cfg.Type {
-	case "nacos":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for nacos config manager")
-		}
-		nacosName := cfg.NacosName
-		if nacosName == "" {
-			nacosName = "default"
-		}
-		client, err := e.storage.GetNacosConfigClient(nacosName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get nacos client %q: %w", nacosName, err)
-		}
-		return configmanager.NewNacosConfigManager(e.logger, cfg, client)
-
-	case "on_demand":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for on-demand config manager")
-		}
-		nacosName := cfg.NacosName
-		if nacosName == "" {
-			nacosName = "default"
-		}
-		client, err := e.storage.GetNacosConfigClient(nacosName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get nacos client %q: %w", nacosName, err)
-		}
-		onDemandMgr, err := configmanager.NewOnDemandConfigManager(e.logger, cfg, client)
-		if err != nil {
-			return nil, err
-		}
-		e.onDemandConfigMgr = onDemandMgr
-		return onDemandMgr, nil
-
-	default:
-		return configmanager.NewMemoryConfigManager(e.logger), nil
-	}
-}
-
-// createTokenManager creates the appropriate TokenManager based on config.
-func (e *Extension) createTokenManager() (tokenmanager.TokenManager, error) {
-	cfg := e.config.TokenManager
-
-	switch cfg.Type {
-	case "redis":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for redis token manager")
-		}
-		redisName := cfg.RedisName
-		if redisName == "" {
-			redisName = "default"
-		}
-		client, err := e.storage.GetRedis(redisName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
-		}
-		return tokenmanager.NewRedisTokenManager(e.logger, cfg, client)
-
-	default:
-		return tokenmanager.NewMemoryTokenManager(e.logger, cfg), nil
-	}
-}
-
-// createTaskManager creates the appropriate TaskManager based on config.
-func (e *Extension) createTaskManager() (taskmanager.TaskManager, error) {
-	cfg := e.config.TaskManager
-
-	switch cfg.Type {
-	case "redis":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for redis task manager")
-		}
-		redisName := cfg.RedisName
-		if redisName == "" {
-			redisName = "default"
-		}
-		client, err := e.storage.GetRedis(redisName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
-		}
-		return taskmanager.NewRedisTaskManager(e.logger, cfg, client)
-	default:
-		return taskmanager.NewMemoryTaskManager(e.logger, cfg), nil
-	}
-}
-
-// createAgentRegistry creates the appropriate AgentRegistry based on config.
-func (e *Extension) createAgentRegistry() (agentregistry.AgentRegistry, error) {
-	cfg := e.config.AgentRegistry
-
-	switch cfg.Type {
-	case "redis":
-		if e.storage == nil {
-			return nil, fmt.Errorf("storage extension required for redis agent registry")
-		}
-		redisName := cfg.RedisName
-		if redisName == "" {
-			redisName = "default"
-		}
-		client, err := e.storage.GetRedis(redisName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
-		}
-		return agentregistry.NewRedisAgentRegistry(e.logger, cfg, client)
-	default:
-		return agentregistry.NewMemoryAgentRegistry(e.logger, cfg), nil
-	}
 }
 
 // startHTTPServer starts the HTTP server.
@@ -284,19 +214,8 @@ func (e *Extension) startHTTPServer() error {
 	}
 	e.listener = listener
 
-	// Create router
-	mux := http.NewServeMux()
-	e.registerRoutes(mux)
-
-	// Apply middleware
-	var handler http.Handler = mux
-	handler = e.loggingMiddleware(handler)
-	if e.config.CORS.Enabled {
-		handler = e.corsMiddleware(handler)
-	}
-	if e.config.Auth.Enabled {
-		handler = e.authMiddleware(handler)
-	}
+	// Create router with all routes and middleware
+	handler := e.newRouter()
 
 	e.server = &http.Server{
 		Handler:      handler,
@@ -313,33 +232,6 @@ func (e *Extension) startHTTPServer() error {
 	}()
 
 	return nil
-}
-
-// registerRoutes registers all HTTP routes.
-func (e *Extension) registerRoutes(mux *http.ServeMux) {
-	// App/Token management routes
-	mux.HandleFunc("/api/v1/apps", e.handleApps)
-	mux.HandleFunc("/api/v1/apps/", e.handleAppByID)
-
-	// Config routes
-	mux.HandleFunc("/api/v1/configs", e.handleConfigs)
-	mux.HandleFunc("/api/v1/configs/", e.handleConfigByID)
-
-	// Task routes
-	mux.HandleFunc("/api/v1/tasks", e.handleTasks)
-	mux.HandleFunc("/api/v1/tasks/", e.handleTaskByID)
-	mux.HandleFunc("/api/v1/tasks/batch", e.handleTaskBatch)
-
-	// Agent routes
-	mux.HandleFunc("/api/v1/agents", e.handleAgents)
-	mux.HandleFunc("/api/v1/agents/stats", e.handleAgentStats)
-	mux.HandleFunc("/api/v1/agents/", e.handleAgentByID)
-
-	// Dashboard routes
-	mux.HandleFunc("/api/v1/dashboard/overview", e.handleDashboardOverview)
-
-	// Health check
-	mux.HandleFunc("/health", e.handleHealth)
 }
 
 // Shutdown implements component.Component.
@@ -360,28 +252,30 @@ func (e *Extension) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// Close components
-	if e.agentReg != nil {
-		if err := e.agentReg.Close(); err != nil {
-			e.logger.Warn("Error closing agent registry", zap.Error(err))
+	// Only close components if we own them (not reused from controlplane)
+	if e.ownsComponents {
+		if e.agentReg != nil {
+			if err := e.agentReg.Close(); err != nil {
+				e.logger.Warn("Error closing agent registry", zap.Error(err))
+			}
 		}
-	}
 
-	if e.taskMgr != nil {
-		if err := e.taskMgr.Close(); err != nil {
-			e.logger.Warn("Error closing task manager", zap.Error(err))
+		if e.taskMgr != nil {
+			if err := e.taskMgr.Close(); err != nil {
+				e.logger.Warn("Error closing task manager", zap.Error(err))
+			}
 		}
-	}
 
-	if e.configMgr != nil {
-		if err := e.configMgr.Close(); err != nil {
-			e.logger.Warn("Error closing config manager", zap.Error(err))
+		if e.configMgr != nil {
+			if err := e.configMgr.Close(); err != nil {
+				e.logger.Warn("Error closing config manager", zap.Error(err))
+			}
 		}
-	}
 
-	if e.tokenMgr != nil {
-		if err := e.tokenMgr.Close(); err != nil {
-			e.logger.Warn("Error closing token manager", zap.Error(err))
+		if e.tokenMgr != nil {
+			if err := e.tokenMgr.Close(); err != nil {
+				e.logger.Warn("Error closing token manager", zap.Error(err))
+			}
 		}
 	}
 
@@ -415,11 +309,17 @@ func (e *Extension) GetOnDemandConfigManager() configmanager.OnDemandConfigManag
 }
 
 // Dependencies implements extensioncapabilities.Dependent.
-// This ensures the storage extension is started before this extension.
+// This ensures the storage extension and controlplane extension are started before this extension.
 func (e *Extension) Dependencies() []component.ID {
-	if e.config.StorageExtension == "" {
-		return nil
+	var deps []component.ID
+
+	// If using controlplane extension, depend on it
+	if e.config.ControlPlaneExtension != "" {
+		deps = append(deps, component.MustNewID(e.config.ControlPlaneExtension))
+	} else if e.config.StorageExtension != "" {
+		// Otherwise depend on storage extension if configured
+		deps = append(deps, component.MustNewID(e.config.StorageExtension))
 	}
-	// Return the storage extension as a dependency
-	return []component.ID{component.MustNewID(e.config.StorageExtension)}
+
+	return deps
 }
