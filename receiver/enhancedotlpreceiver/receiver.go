@@ -227,19 +227,12 @@ func (r *enhancedOTLPReceiver) startHTTPServer(ctx context.Context, host compone
 		return nil
 	}
 
-	httpMux := http.NewServeMux()
-
-	// Register OTLP HTTP endpoints
-	r.registerOTLPHTTPEndpoints(httpMux)
-
-	// Register Control Plane endpoints if enabled
-	if r.config.ControlPlane.Enabled {
-		r.registerControlPlaneEndpoints(httpMux)
-	}
+	// Create router with all routes registered
+	httpRouter := r.newHTTPRouter()
 
 	var err error
 	r.serverHTTP, err = r.config.Protocols.HTTP.ServerConfig.ToServer(
-		ctx, host, r.settings.TelemetrySettings, httpMux,
+		ctx, host, r.settings.TelemetrySettings, httpRouter,
 		confighttp.WithErrorHandler(otlpErrorHandler),
 	)
 	if err != nil {
@@ -267,72 +260,7 @@ func (r *enhancedOTLPReceiver) startHTTPServer(ctx context.Context, host compone
 	return nil
 }
 
-// registerOTLPHTTPEndpoints registers OTLP HTTP protocol endpoints.
-func (r *enhancedOTLPReceiver) registerOTLPHTTPEndpoints(mux *http.ServeMux) {
-	if r.tracesConsumer != nil {
-		tracesPath := r.config.GetTracesURLPath()
-		mux.HandleFunc(tracesPath, r.handleTraces)
-		r.logger.Debug("Registered traces endpoint", zap.String("path", tracesPath))
-	}
 
-	if r.metricsConsumer != nil {
-		metricsPath := r.config.GetMetricsURLPath()
-		mux.HandleFunc(metricsPath, r.handleMetrics)
-		r.logger.Debug("Registered metrics endpoint", zap.String("path", metricsPath))
-	}
-
-	if r.logsConsumer != nil {
-		logsPath := r.config.GetLogsURLPath()
-		mux.HandleFunc(logsPath, r.handleLogs)
-		r.logger.Debug("Registered logs endpoint", zap.String("path", logsPath))
-	}
-}
-
-// registerControlPlaneEndpoints registers control plane API endpoints.
-func (r *enhancedOTLPReceiver) registerControlPlaneEndpoints(mux *http.ServeMux) {
-	prefix := r.config.GetControlURLPathPrefix()
-	handler := newControlHandler(r.logger, r.controlPlane)
-
-	// Configuration management
-	mux.HandleFunc(prefix+"/config", handler.handleConfig)
-
-	// Task management
-	mux.HandleFunc(prefix+"/tasks", handler.handleTasks)
-	mux.HandleFunc(prefix+"/tasks/cancel", handler.handleTaskCancel)
-
-	// Status and heartbeat
-	mux.HandleFunc(prefix+"/status", handler.handleStatus)
-
-	// Agent registration and management
-	mux.HandleFunc(prefix+"/register", handler.handleRegister)
-	mux.HandleFunc(prefix+"/unregister", handler.handleUnregister)
-	mux.HandleFunc(prefix+"/agents", handler.handleAgents)
-	mux.HandleFunc(prefix+"/agents/stats", handler.handleAgents)
-
-	// Chunk upload
-	mux.HandleFunc(prefix+"/upload-chunk", handler.handleUploadChunk)
-
-	// Health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, req *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	})
-
-	r.logger.Info("Registered control plane endpoints",
-		zap.String("prefix", prefix),
-		zap.Strings("paths", []string{
-			prefix + "/config",
-			prefix + "/tasks",
-			prefix + "/tasks/cancel",
-			prefix + "/status",
-			prefix + "/register",
-			prefix + "/unregister",
-			prefix + "/agents",
-			prefix + "/agents/stats",
-			prefix + "/upload-chunk",
-			"/health",
-		}))
-}
 
 // Shutdown implements component.Component.
 // Uses sync.Once to ensure the receiver is only shutdown once.

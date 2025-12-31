@@ -90,197 +90,30 @@ func (r *logsReceiver) Export(ctx context.Context, req plogotlp.ExportRequest) (
 
 // ===== HTTP Handlers =====
 
-// handleTraces handles HTTP traces requests.
-func (r *enhancedOTLPReceiver) handleTraces(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Validate token from header if enabled
-	tokenResult := r.validateTokenFromHeader(w, req)
-	if !tokenResult.valid {
-		return
-	}
-
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer req.Body.Close()
-
-	contentType := req.Header.Get("Content-Type")
-	otlpReq := ptraceotlp.NewExportRequest()
-
-	switch contentType {
-	case pbContentType:
-		if err := otlpReq.UnmarshalProto(body); err != nil {
-			http.Error(w, "Failed to unmarshal protobuf", http.StatusBadRequest)
-			return
-		}
-	case jsonContentType, "":
-		if err := otlpReq.UnmarshalJSON(body); err != nil {
-			http.Error(w, "Failed to unmarshal JSON", http.StatusBadRequest)
-			return
-		}
-	default:
-		http.Error(w, "Unsupported content type", http.StatusUnsupportedMediaType)
-		return
-	}
-
-	td := otlpReq.Traces()
-	numSpans := td.SpanCount()
-	if numSpans == 0 {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	// Inject token into resource attributes if configured
-	r.injectTokenToTraces(td, tokenResult.token)
-
-	ctx := r.obsrepHTTP.StartTracesOp(req.Context())
-	err = r.tracesConsumer.ConsumeTraces(ctx, td)
-	r.obsrepHTTP.EndTracesOp(ctx, dataFormatForContentType(contentType), numSpans, err)
-
-	if err != nil {
-		http.Error(w, "Failed to consume traces", http.StatusInternalServerError)
-		return
-	}
-
-	writeResponse(w, contentType, ptraceotlp.NewExportResponse())
+// otlpRequest is an interface for OTLP request types.
+type otlpRequest interface {
+	UnmarshalProto([]byte) error
+	UnmarshalJSON([]byte) error
 }
 
-// handleMetrics handles HTTP metrics requests.
-func (r *enhancedOTLPReceiver) handleMetrics(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Validate token from header if enabled
-	tokenResult := r.validateTokenFromHeader(w, req)
-	if !tokenResult.valid {
-		return
-	}
-
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer req.Body.Close()
-
-	contentType := req.Header.Get("Content-Type")
-	otlpReq := pmetricotlp.NewExportRequest()
-
-	switch contentType {
-	case pbContentType:
-		if err := otlpReq.UnmarshalProto(body); err != nil {
-			http.Error(w, "Failed to unmarshal protobuf", http.StatusBadRequest)
-			return
-		}
-	case jsonContentType, "":
-		if err := otlpReq.UnmarshalJSON(body); err != nil {
-			http.Error(w, "Failed to unmarshal JSON", http.StatusBadRequest)
-			return
-		}
-	default:
-		http.Error(w, "Unsupported content type", http.StatusUnsupportedMediaType)
-		return
-	}
-
-	md := otlpReq.Metrics()
-	numDataPoints := md.DataPointCount()
-	if numDataPoints == 0 {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	// Inject token into resource attributes if configured
-	r.injectTokenToMetrics(md, tokenResult.token)
-
-	ctx := r.obsrepHTTP.StartMetricsOp(req.Context())
-	err = r.metricsConsumer.ConsumeMetrics(ctx, md)
-	r.obsrepHTTP.EndMetricsOp(ctx, dataFormatForContentType(contentType), numDataPoints, err)
-
-	if err != nil {
-		http.Error(w, "Failed to consume metrics", http.StatusInternalServerError)
-		return
-	}
-
-	writeResponse(w, contentType, pmetricotlp.NewExportResponse())
-}
-
-// handleLogs handles HTTP logs requests.
-func (r *enhancedOTLPReceiver) handleLogs(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Validate token from header if enabled
-	tokenResult := r.validateTokenFromHeader(w, req)
-	if !tokenResult.valid {
-		return
-	}
-
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer req.Body.Close()
-
-	contentType := req.Header.Get("Content-Type")
-	otlpReq := plogotlp.NewExportRequest()
-
-	switch contentType {
-	case pbContentType:
-		if err := otlpReq.UnmarshalProto(body); err != nil {
-			http.Error(w, "Failed to unmarshal protobuf", http.StatusBadRequest)
-			return
-		}
-	case jsonContentType, "":
-		if err := otlpReq.UnmarshalJSON(body); err != nil {
-			http.Error(w, "Failed to unmarshal JSON", http.StatusBadRequest)
-			return
-		}
-	default:
-		http.Error(w, "Unsupported content type", http.StatusUnsupportedMediaType)
-		return
-	}
-
-	ld := otlpReq.Logs()
-	numRecords := ld.LogRecordCount()
-	if numRecords == 0 {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	// Inject token into resource attributes if configured
-	r.injectTokenToLogs(ld, tokenResult.token)
-
-	ctx := r.obsrepHTTP.StartLogsOp(req.Context())
-	err = r.logsConsumer.ConsumeLogs(ctx, ld)
-	r.obsrepHTTP.EndLogsOp(ctx, dataFormatForContentType(contentType), numRecords, err)
-
-	if err != nil {
-		http.Error(w, "Failed to consume logs", http.StatusInternalServerError)
-		return
-	}
-
-	writeResponse(w, contentType, plogotlp.NewExportResponse())
-}
-
-// responseMarshaler is an interface for OTLP response types.
-type responseMarshaler interface {
+// otlpResponse is an interface for OTLP response types.
+type otlpResponse interface {
 	MarshalProto() ([]byte, error)
 	MarshalJSON() ([]byte, error)
 }
 
-// writeResponse writes the OTLP response in the appropriate format.
-func writeResponse(w http.ResponseWriter, contentType string, resp responseMarshaler) {
+// unmarshalOTLPRequest unmarshals OTLP request based on content type.
+func unmarshalOTLPRequest(body []byte, contentType string, req otlpRequest) error {
+	switch contentType {
+	case pbContentType:
+		return req.UnmarshalProto(body)
+	default:
+		return req.UnmarshalJSON(body)
+	}
+}
+
+// writeOTLPResponse writes OTLP response in the appropriate format.
+func writeOTLPResponse(w http.ResponseWriter, contentType string, resp otlpResponse) {
 	var respBytes []byte
 	var err error
 
@@ -304,13 +137,148 @@ func writeResponse(w http.ResponseWriter, contentType string, resp responseMarsh
 
 // dataFormatForContentType returns the data format string for observability.
 func dataFormatForContentType(contentType string) string {
-	switch contentType {
-	case pbContentType:
+	if contentType == pbContentType {
 		return "protobuf"
-	default:
-		return "json"
 	}
+	return "json"
 }
+
+// handleTraces handles HTTP traces requests.
+func (r *enhancedOTLPReceiver) handleTraces(w http.ResponseWriter, req *http.Request) {
+	// Validate token from header if enabled
+	tokenResult := r.validateTokenFromHeader(w, req)
+	if !tokenResult.valid {
+		return
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer req.Body.Close()
+
+	contentType := req.Header.Get("Content-Type")
+	otlpReq := ptraceotlp.NewExportRequest()
+
+	if err := unmarshalOTLPRequest(body, contentType, &otlpReq); err != nil {
+		http.Error(w, "Failed to unmarshal request", http.StatusBadRequest)
+		return
+	}
+
+	td := otlpReq.Traces()
+	numSpans := td.SpanCount()
+	if numSpans == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Inject token into resource attributes if configured
+	r.injectTokenToTraces(td, tokenResult.token)
+
+	ctx := r.obsrepHTTP.StartTracesOp(req.Context())
+	err = r.tracesConsumer.ConsumeTraces(ctx, td)
+	r.obsrepHTTP.EndTracesOp(ctx, dataFormatForContentType(contentType), numSpans, err)
+
+	if err != nil {
+		http.Error(w, "Failed to consume traces", http.StatusInternalServerError)
+		return
+	}
+
+	writeOTLPResponse(w, contentType, ptraceotlp.NewExportResponse())
+}
+
+// handleMetrics handles HTTP metrics requests.
+func (r *enhancedOTLPReceiver) handleMetrics(w http.ResponseWriter, req *http.Request) {
+	// Validate token from header if enabled
+	tokenResult := r.validateTokenFromHeader(w, req)
+	if !tokenResult.valid {
+		return
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer req.Body.Close()
+
+	contentType := req.Header.Get("Content-Type")
+	otlpReq := pmetricotlp.NewExportRequest()
+
+	if err := unmarshalOTLPRequest(body, contentType, &otlpReq); err != nil {
+		http.Error(w, "Failed to unmarshal request", http.StatusBadRequest)
+		return
+	}
+
+	md := otlpReq.Metrics()
+	numDataPoints := md.DataPointCount()
+	if numDataPoints == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Inject token into resource attributes if configured
+	r.injectTokenToMetrics(md, tokenResult.token)
+
+	ctx := r.obsrepHTTP.StartMetricsOp(req.Context())
+	err = r.metricsConsumer.ConsumeMetrics(ctx, md)
+	r.obsrepHTTP.EndMetricsOp(ctx, dataFormatForContentType(contentType), numDataPoints, err)
+
+	if err != nil {
+		http.Error(w, "Failed to consume metrics", http.StatusInternalServerError)
+		return
+	}
+
+	writeOTLPResponse(w, contentType, pmetricotlp.NewExportResponse())
+}
+
+// handleLogs handles HTTP logs requests.
+func (r *enhancedOTLPReceiver) handleLogs(w http.ResponseWriter, req *http.Request) {
+	// Validate token from header if enabled
+	tokenResult := r.validateTokenFromHeader(w, req)
+	if !tokenResult.valid {
+		return
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer req.Body.Close()
+
+	contentType := req.Header.Get("Content-Type")
+	otlpReq := plogotlp.NewExportRequest()
+
+	if err := unmarshalOTLPRequest(body, contentType, &otlpReq); err != nil {
+		http.Error(w, "Failed to unmarshal request", http.StatusBadRequest)
+		return
+	}
+
+	ld := otlpReq.Logs()
+	numRecords := ld.LogRecordCount()
+	if numRecords == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Inject token into resource attributes if configured
+	r.injectTokenToLogs(ld, tokenResult.token)
+
+	ctx := r.obsrepHTTP.StartLogsOp(req.Context())
+	err = r.logsConsumer.ConsumeLogs(ctx, ld)
+	r.obsrepHTTP.EndLogsOp(ctx, dataFormatForContentType(contentType), numRecords, err)
+
+	if err != nil {
+		http.Error(w, "Failed to consume logs", http.StatusInternalServerError)
+		return
+	}
+
+	writeOTLPResponse(w, contentType, plogotlp.NewExportResponse())
+}
+
+// ===== Token Injection =====
 
 // injectTokenToTraces injects the token into all resource attributes of the traces.
 func (r *enhancedOTLPReceiver) injectTokenToTraces(td ptrace.Traces, token string) {
