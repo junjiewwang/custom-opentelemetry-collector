@@ -4,33 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OTel Collector Admin</title>
+    <!-- External Dependencies -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        [x-cloak] { display: none !important; }
-        .fade-in { animation: fadeIn 0.3s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .slide-in { animation: slideIn 0.3s ease-out; }
-        @keyframes slideIn { from { transform: translateX(-10px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-    </style>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        primary: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' },
-                        success: { 500: '#22c55e', 600: '#16a34a' },
-                        warning: { 500: '#f59e0b', 600: '#d97706' },
-                        danger: { 500: '#ef4444', 600: '#dc2626' },
-                    }
-                }
-            }
-        }
-    </script>
+    <!-- Local Styles -->
+    <link rel="stylesheet" href="css/styles.css">
+    <!-- App Entry (ES Module) - 必须在 Alpine 之前加载 -->
+    <script type="module" src="js/main.js"></script>
+    <!-- Alpine.js - defer 确保在 DOM 解析完成后执行 -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="adminApp()" x-init="init()">
+    <!-- ========================================================================== -->
     <!-- Login Screen -->
+    <!-- ========================================================================== -->
     <div x-show="!authenticated" x-cloak class="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 slide-in">
             <div class="text-center mb-8">
@@ -71,397 +58,415 @@
         </div>
     </div>
 
+    <!-- ========================================================================== -->
     <!-- Main App (shown after login) -->
+    <!-- ========================================================================== -->
     <div x-show="authenticated" x-cloak>
-    <!-- Sidebar -->
-    <aside class="fixed left-0 top-0 h-full w-64 bg-gray-900 text-white shadow-xl z-50">
-        <div class="p-6 border-b border-gray-700">
-            <h1 class="text-xl font-bold flex items-center gap-2">
-                <i class="fas fa-satellite-dish text-primary-400"></i>
-                OTel Admin
-            </h1>
-            <p class="text-gray-400 text-sm mt-1">Control Plane Dashboard</p>
-        </div>
-        <nav class="p-4 space-y-2">
-            <template x-for="item in menuItems" :key="item.id">
-                <button @click="currentView = item.id" 
-                    :class="currentView === item.id ? 'bg-primary-600 text-white' : 'text-gray-300 hover:bg-gray-800'"
-                    class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200">
-                    <i :class="item.icon" class="w-5 text-center"></i>
-                    <span x-text="item.label"></span>
-                    <span x-show="item.badge" x-text="item.badge" 
-                        class="ml-auto bg-primary-500 text-xs px-2 py-0.5 rounded-full"></span>
-                </button>
-            </template>
-        </nav>
-        <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-700">
-            <div class="flex items-center justify-between text-sm text-gray-400">
-                <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 rounded-full" :class="connected ? 'bg-green-500' : 'bg-red-500'"></span>
-                    <span x-text="connected ? 'Connected' : 'Disconnected'"></span>
-                </div>
-                <button @click="logout()" class="text-gray-400 hover:text-white transition" title="Logout">
-                    <i class="fas fa-sign-out-alt"></i>
-                </button>
+        <!-- Sidebar -->
+        <aside class="fixed left-0 top-0 h-full w-64 bg-gray-900 text-white shadow-xl z-50">
+            <div class="p-6 border-b border-gray-700">
+                <h1 class="text-xl font-bold flex items-center gap-2">
+                    <i class="fas fa-satellite-dish text-primary-400"></i>
+                    OTel Admin
+                </h1>
+                <p class="text-gray-400 text-sm mt-1">Control Plane Dashboard</p>
             </div>
-        </div>
-    </aside>
-
-    <!-- Main Content -->
-    <main class="ml-64 p-8">
-        <!-- Dashboard View -->
-        <div x-show="currentView === 'dashboard'" x-cloak class="fade-in">
-            <h2 class="text-2xl font-bold text-gray-800 mb-6">Dashboard Overview</h2>
-            
-            <!-- Stats Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <p class="text-gray-500 text-sm">Total Apps</p>
-                            <p class="text-3xl font-bold text-gray-800" x-text="dashboard.apps?.total || 0"></p>
-                        </div>
-                        <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center">
-                            <i class="fas fa-cube text-primary-600 text-xl"></i>
-                        </div>
+            <nav class="p-4 space-y-2">
+                <template x-for="item in menuItems" :key="item.id">
+                    <button @click="currentView = item.id" 
+                        :class="currentView === item.id ? 'bg-primary-600 text-white' : 'text-gray-300 hover:bg-gray-800'"
+                        class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200">
+                        <i :class="item.icon" class="w-5 text-center"></i>
+                        <span x-text="item.label"></span>
+                        <span x-show="item.badge" x-text="item.badge" 
+                            class="ml-auto bg-primary-500 text-xs px-2 py-0.5 rounded-full"></span>
+                    </button>
+                </template>
+            </nav>
+            <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-700">
+                <div class="flex items-center justify-between text-sm text-gray-400">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full" :class="connected ? 'bg-green-500' : 'bg-red-500'"></span>
+                        <span x-text="connected ? 'Connected' : 'Disconnected'"></span>
                     </div>
-                </div>
-                <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <p class="text-gray-500 text-sm">Online Instances</p>
-                            <p class="text-3xl font-bold text-success-600" x-text="dashboard.instances?.online || 0"></p>
-                        </div>
-                        <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-                            <i class="fas fa-server text-green-600 text-xl"></i>
-                        </div>
-                    </div>
-                    <div class="mt-3 flex gap-4 text-sm">
-                        <span class="text-gray-500">Total: <span class="text-gray-700" x-text="dashboard.instances?.total || 0"></span></span>
-                        <span class="text-red-500">Offline: <span x-text="dashboard.instances?.offline || 0"></span></span>
-                    </div>
-                </div>
-                <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <p class="text-gray-500 text-sm">Unhealthy</p>
-                            <p class="text-3xl font-bold" :class="(dashboard.instances?.unhealthy || 0) > 0 ? 'text-danger-500' : 'text-gray-800'" 
-                               x-text="dashboard.instances?.unhealthy || 0"></p>
-                        </div>
-                        <div class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
-                            <i class="fas fa-exclamation-triangle text-red-600 text-xl"></i>
-                        </div>
-                    </div>
-                </div>
-                <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <p class="text-gray-500 text-sm">Pending Tasks</p>
-                            <p class="text-3xl font-bold text-warning-500" x-text="dashboard.tasks?.pending || 0"></p>
-                        </div>
-                        <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
-                            <i class="fas fa-tasks text-yellow-600 text-xl"></i>
-                        </div>
-                    </div>
+                    <button @click="logout()" class="text-gray-400 hover:text-white transition" title="Logout">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </button>
                 </div>
             </div>
+        </aside>
 
-            <!-- Quick Actions -->
-            <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                <h3 class="text-lg font-semibold text-gray-800 mb-4">Quick Actions</h3>
-                <div class="flex flex-wrap gap-3">
-                    <button @click="currentView = 'apps'; showCreateAppModal = true" 
+        <!-- Main Content -->
+        <main class="ml-64 p-8">
+            <!-- ================================================================== -->
+            <!-- Dashboard View -->
+            <!-- ================================================================== -->
+            <div x-show="currentView === 'dashboard'" x-cloak class="fade-in">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6">Dashboard Overview</h2>
+                
+                <!-- Stats Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-500 text-sm">Total Apps</p>
+                                <p class="text-3xl font-bold text-gray-800" x-text="dashboard.apps?.total || 0"></p>
+                            </div>
+                            <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-cube text-primary-600 text-xl"></i>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-500 text-sm">Online Instances</p>
+                                <p class="text-3xl font-bold text-success-600" x-text="dashboard.instances?.online || 0"></p>
+                            </div>
+                            <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-server text-green-600 text-xl"></i>
+                            </div>
+                        </div>
+                        <div class="mt-3 flex gap-4 text-sm">
+                            <span class="text-gray-500">Total: <span class="text-gray-700" x-text="dashboard.instances?.total || 0"></span></span>
+                            <span class="text-red-500">Offline: <span x-text="dashboard.instances?.offline || 0"></span></span>
+                        </div>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-500 text-sm">Unhealthy</p>
+                                <p class="text-3xl font-bold" :class="(dashboard.instances?.unhealthy || 0) > 0 ? 'text-danger-500' : 'text-gray-800'" 
+                                   x-text="dashboard.instances?.unhealthy || 0"></p>
+                            </div>
+                            <div class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-exclamation-triangle text-red-600 text-xl"></i>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-500 text-sm">Pending Tasks</p>
+                                <p class="text-3xl font-bold text-warning-500" x-text="dashboard.tasks?.pending || 0"></p>
+                            </div>
+                            <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-tasks text-yellow-600 text-xl"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Quick Actions</h3>
+                    <div class="flex flex-wrap gap-3">
+                        <button @click="currentView = 'apps'; showCreateAppModal = true" 
+                            class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
+                            <i class="fas fa-plus"></i> Create App
+                        </button>
+                        <button @click="currentView = 'instances'; loadInstances()" 
+                            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
+                            <i class="fas fa-sync"></i> Refresh Instances
+                        </button>
+                        <button @click="currentView = 'tasks'" 
+                            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
+                            <i class="fas fa-list-check"></i> View Tasks
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================================================================== -->
+            <!-- Apps View -->
+            <!-- ================================================================== -->
+            <div x-show="currentView === 'apps'" x-cloak class="fade-in">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800">Applications</h2>
+                    <button @click="showCreateAppModal = true" 
                         class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
                         <i class="fas fa-plus"></i> Create App
                     </button>
-                    <button @click="currentView = 'instances'; loadInstances()" 
-                        class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
-                        <i class="fas fa-sync"></i> Refresh Instances
-                    </button>
-                    <button @click="currentView = 'tasks'" 
-                        class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
-                        <i class="fas fa-list-check"></i> View Tasks
-                    </button>
                 </div>
-            </div>
-        </div>
 
-        <!-- Apps View -->
-        <div x-show="currentView === 'apps'" x-cloak class="fade-in">
-            <div class="flex items-center justify-between mb-6">
-                <h2 class="text-2xl font-bold text-gray-800">Applications</h2>
-                <button @click="showCreateAppModal = true" 
-                    class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
-                    <i class="fas fa-plus"></i> Create App
-                </button>
-            </div>
-
-            <!-- Apps Table -->
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                <table class="w-full">
-                    <thead class="bg-gray-50 border-b border-gray-100">
-                        <tr>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Name</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Token</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Agents</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Created</th>
-                            <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-100">
-                        <template x-for="app in apps" :key="app.id">
-                            <tr class="hover:bg-gray-50 transition">
-                                <td class="px-6 py-4">
-                                    <div class="font-medium text-gray-800" x-text="app.name"></div>
-                                    <div class="text-sm text-gray-500" x-text="app.description || '-'"></div>
-                                </td>
-                                <td class="px-6 py-4">
-                                    <div class="flex items-center gap-2">
-                                        <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="app.token?.substring(0, 16) + '...'"></code>
-                                        <button @click="copyToClipboard(app.token)" class="text-gray-400 hover:text-gray-600">
-                                            <i class="fas fa-copy"></i>
-                                        </button>
-                                    </div>
-                                </td>
-                                <td class="px-6 py-4">
-                                    <span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-sm" x-text="app.agent_count || 0"></span>
-                                </td>
-                                <td class="px-6 py-4">
-                                    <span class="px-2 py-1 rounded-full text-sm"
-                                        :class="app.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'"
-                                        x-text="app.status || 'active'"></span>
-                                </td>
-                                <td class="px-6 py-4 text-sm text-gray-500" x-text="formatDate(app.created_at)"></td>
-                                <td class="px-6 py-4 text-right">
-                                    <div class="flex items-center justify-end gap-2">
-                                        <button @click="viewAppDetail(app)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
-                                            <i class="fas fa-eye"></i>
-                                        </button>
-                                        <button @click="editApp(app)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="Edit">
-                                            <i class="fas fa-edit"></i>
-                                        </button>
-                                        <button @click="regenerateToken(app)" class="p-2 text-gray-400 hover:text-warning-500 transition" title="Regenerate Token">
-                                            <i class="fas fa-key"></i>
-                                        </button>
-                                        <button @click="confirmDeleteApp(app)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Delete">
-                                            <i class="fas fa-trash"></i>
-                                        </button>
-                                    </div>
+                <!-- Apps Table -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <table class="w-full">
+                        <thead class="bg-gray-50 border-b border-gray-100">
+                            <tr>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Name</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Token</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Agents</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Created</th>
+                                <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            <template x-for="app in apps" :key="app.id">
+                                <tr class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4">
+                                        <div class="font-medium text-gray-800" x-text="app.name"></div>
+                                        <div class="text-sm text-gray-500" x-text="app.description || '-'"></div>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <div class="flex items-center gap-2">
+                                            <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="app.token?.substring(0, 16) + '...'"></code>
+                                            <button @click="copyToClipboard(app.token)" class="text-gray-400 hover:text-gray-600">
+                                                <i class="fas fa-copy"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-sm" x-text="app.agent_count || 0"></span>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <span class="px-2 py-1 rounded-full text-sm"
+                                            :class="app.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'"
+                                            x-text="app.status || 'active'"></span>
+                                    </td>
+                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatDate(app.created_at)"></td>
+                                    <td class="px-6 py-4 text-right">
+                                        <div class="flex items-center justify-end gap-2">
+                                            <button @click="viewAppDetail(app)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
+                                                <i class="fas fa-eye"></i>
+                                            </button>
+                                            <button @click="editApp(app)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="Edit">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <button @click="regenerateToken(app)" class="p-2 text-gray-400 hover:text-warning-500 transition" title="Regenerate Token">
+                                                <i class="fas fa-key"></i>
+                                            </button>
+                                            <button @click="confirmDeleteApp(app)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Delete">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                            <tr x-show="apps.length === 0">
+                                <td colspan="6" class="px-6 py-12 text-center text-gray-500">
+                                    <i class="fas fa-inbox text-4xl mb-3 text-gray-300"></i>
+                                    <p>No applications found</p>
                                 </td>
                             </tr>
-                        </template>
-                        <tr x-show="apps.length === 0">
-                            <td colspan="6" class="px-6 py-12 text-center text-gray-500">
-                                <i class="fas fa-inbox text-4xl mb-3 text-gray-300"></i>
-                                <p>No applications found</p>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Instances View -->
-        <div x-show="currentView === 'instances'" x-cloak class="fade-in">
-            <div class="flex items-center justify-between mb-6">
-                <h2 class="text-2xl font-bold text-gray-800">Instances</h2>
-                <div class="flex items-center gap-3">
-                    <select x-model="instanceFilter" @change="loadInstances()" 
-                        class="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
-                        <option value="">Online Only</option>
-                        <option value="all">All Instances</option>
-                    </select>
-                    <button @click="loadInstances()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                        <i class="fas fa-sync"></i>
-                    </button>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
-            <!-- Instance Stats -->
-            <div class="grid grid-cols-4 gap-4 mb-6">
-                <div class="bg-white rounded-lg p-4 border border-gray-100">
-                    <div class="text-2xl font-bold text-gray-800" x-text="instanceStats.total_agents || 0"></div>
-                    <div class="text-sm text-gray-500">Total</div>
-                </div>
-                <div class="bg-white rounded-lg p-4 border border-gray-100">
-                    <div class="text-2xl font-bold text-green-600" x-text="instanceStats.online_agents || 0"></div>
-                    <div class="text-sm text-gray-500">Online</div>
-                </div>
-                <div class="bg-white rounded-lg p-4 border border-gray-100">
-                    <div class="text-2xl font-bold text-gray-400" x-text="instanceStats.offline_agents || 0"></div>
-                    <div class="text-sm text-gray-500">Offline</div>
-                </div>
-                <div class="bg-white rounded-lg p-4 border border-gray-100">
-                    <div class="text-2xl font-bold text-red-500" x-text="instanceStats.unhealthy_agents || 0"></div>
-                    <div class="text-sm text-gray-500">Unhealthy</div>
-                </div>
-            </div>
-
-            <!-- Instances Table -->
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                <table class="w-full">
-                    <thead class="bg-gray-50 border-b border-gray-100">
-                        <tr>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Agent ID</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Service</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Host</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Last Heartbeat</th>
-                            <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-100">
-                        <template x-for="instance in instances" :key="instance.agent_id">
-                            <tr class="hover:bg-gray-50 transition">
-                                <td class="px-6 py-4">
-                                    <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="instance.agent_id?.substring(0, 20) + '...'"></code>
-                                </td>
-                                <td class="px-6 py-4">
-                                    <div class="font-medium text-gray-800" x-text="instance.service_name || '-'"></div>
-                                    <div class="text-sm text-gray-500" x-text="instance.app_id || '-'"></div>
-                                </td>
-                                <td class="px-6 py-4">
-                                    <div class="text-gray-800" x-text="instance.hostname || '-'"></div>
-                                    <div class="text-sm text-gray-500" x-text="instance.ip || '-'"></div>
-                                </td>
-                                <td class="px-6 py-4">
-                                    <span class="px-2 py-1 rounded-full text-sm"
-                                        :class="{
-                                            'bg-green-100 text-green-700': instance.status?.state === 'online',
-                                            'bg-gray-100 text-gray-700': instance.status?.state === 'offline',
-                                            'bg-red-100 text-red-700': instance.status?.state === 'unhealthy'
-                                        }"
-                                        x-text="instance.status?.state || 'unknown'"></span>
-                                </td>
-                                <td class="px-6 py-4 text-sm text-gray-500" x-text="formatDate(instance.status?.last_heartbeat)"></td>
-                                <td class="px-6 py-4 text-right">
-                                    <div class="flex items-center justify-end gap-2">
-                                        <button @click="viewInstanceDetail(instance)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
-                                            <i class="fas fa-eye"></i>
-                                        </button>
-                                        <button @click="kickInstance(instance)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Kick">
-                                            <i class="fas fa-user-slash"></i>
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                        </template>
-                        <tr x-show="instances.length === 0">
-                            <td colspan="6" class="px-6 py-12 text-center text-gray-500">
-                                <i class="fas fa-server text-4xl mb-3 text-gray-300"></i>
-                                <p>No instances found</p>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Services View -->
-        <div x-show="currentView === 'services'" x-cloak class="fade-in">
-            <div class="flex items-center justify-between mb-6">
-                <h2 class="text-2xl font-bold text-gray-800">Services</h2>
-                <button @click="loadServices()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                    <i class="fas fa-sync"></i> Refresh
-                </button>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <template x-for="service in services" :key="service.service_name + service.app_id">
-                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition">
-                        <div class="flex items-start justify-between mb-4">
-                            <div>
-                                <h3 class="font-semibold text-gray-800" x-text="service.service_name"></h3>
-                                <p class="text-sm text-gray-500" x-text="service.app_name"></p>
-                            </div>
-                            <span class="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium" 
-                                x-text="service.instance_count + ' instances'"></span>
-                        </div>
-                        <button @click="viewServiceInstances(service)" 
-                            class="w-full mt-4 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
-                            View Instances
+            <!-- ================================================================== -->
+            <!-- Instances View -->
+            <!-- ================================================================== -->
+            <div x-show="currentView === 'instances'" x-cloak class="fade-in">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800">Instances</h2>
+                    <div class="flex items-center gap-3">
+                        <select x-model="instanceFilter" @change="loadInstances()" 
+                            class="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                            <option value="">Online Only</option>
+                            <option value="all">All Instances</option>
+                        </select>
+                        <button @click="loadInstances()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
+                            <i class="fas fa-sync"></i>
                         </button>
                     </div>
-                </template>
-                <div x-show="services.length === 0" class="col-span-full text-center py-12 text-gray-500">
-                    <i class="fas fa-sitemap text-4xl mb-3 text-gray-300"></i>
-                    <p>No services found</p>
                 </div>
-            </div>
-        </div>
 
-        <!-- Tasks View -->
-        <div x-show="currentView === 'tasks'" x-cloak class="fade-in">
-            <div class="flex items-center justify-between mb-6">
-                <h2 class="text-2xl font-bold text-gray-800">Tasks</h2>
-                <div class="flex items-center gap-3">
-                    <button @click="showCreateTaskModal = true" 
-                        class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
-                        <i class="fas fa-plus"></i> Create Task
-                    </button>
-                    <button @click="loadTasks()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                        <i class="fas fa-sync"></i>
-                    </button>
+                <!-- Instance Stats -->
+                <div class="grid grid-cols-4 gap-4 mb-6">
+                    <div class="bg-white rounded-lg p-4 border border-gray-100">
+                        <div class="text-2xl font-bold text-gray-800" x-text="instanceStats.total_agents || 0"></div>
+                        <div class="text-sm text-gray-500">Total</div>
+                    </div>
+                    <div class="bg-white rounded-lg p-4 border border-gray-100">
+                        <div class="text-2xl font-bold text-green-600" x-text="instanceStats.online_agents || 0"></div>
+                        <div class="text-sm text-gray-500">Online</div>
+                    </div>
+                    <div class="bg-white rounded-lg p-4 border border-gray-100">
+                        <div class="text-2xl font-bold text-gray-400" x-text="instanceStats.offline_agents || 0"></div>
+                        <div class="text-sm text-gray-500">Offline</div>
+                    </div>
+                    <div class="bg-white rounded-lg p-4 border border-gray-100">
+                        <div class="text-2xl font-bold text-red-500" x-text="instanceStats.unhealthy_agents || 0"></div>
+                        <div class="text-sm text-gray-500">Unhealthy</div>
+                    </div>
                 </div>
-            </div>
 
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                <table class="w-full">
-                    <thead class="bg-gray-50 border-b border-gray-100">
-                        <tr>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Task ID</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Type</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Target</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
-                            <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Created</th>
-                            <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-100">
-                        <template x-for="task in tasks" :key="task.task_id">
-                            <tr class="hover:bg-gray-50 transition">
-                                <td class="px-6 py-4">
-                                    <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="task.task_id"></code>
-                                </td>
-                                <td class="px-6 py-4 font-medium text-gray-800" x-text="task.task_type || '-'"></td>
-                                <td class="px-6 py-4 text-sm text-gray-500" x-text="task.target_agent_id || 'All'"></td>
-                                <td class="px-6 py-4">
-                                    <span class="px-2 py-1 rounded-full text-sm"
-                                        :class="{
-                                            'bg-yellow-100 text-yellow-700': task.status === 'pending',
-                                            'bg-blue-100 text-blue-700': task.status === 'running',
-                                            'bg-green-100 text-green-700': task.status === 'completed',
-                                            'bg-red-100 text-red-700': task.status === 'failed'
-                                        }"
-                                        x-text="task.status || 'pending'"></span>
-                                </td>
-                                <td class="px-6 py-4 text-sm text-gray-500" x-text="formatDate(task.created_at)"></td>
-                                <td class="px-6 py-4 text-right">
-                                    <div class="flex items-center justify-end gap-2">
-                                        <button @click="viewTaskDetail(task)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
-                                            <i class="fas fa-eye"></i>
-                                        </button>
-                                        <button @click="cancelTask(task)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Cancel">
-                                            <i class="fas fa-times"></i>
-                                        </button>
-                                    </div>
+                <!-- Instances Table -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <table class="w-full">
+                        <thead class="bg-gray-50 border-b border-gray-100">
+                            <tr>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Agent ID</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Service</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Host</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Last Heartbeat</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Uptime</th>
+                                <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            <template x-for="instance in instances" :key="instance.agent_id">
+                                <tr class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4">
+                                        <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="instance.agent_id?.substring(0, 20) + '...'"></code>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <div class="font-medium text-gray-800" x-text="instance.service_name || '-'"></div>
+                                        <div class="text-sm text-gray-500" x-text="instance.app_id || '-'"></div>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <div class="text-gray-800" x-text="instance.hostname || '-'"></div>
+                                        <div class="text-sm text-gray-500" x-text="instance.ip || '-'"></div>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <span class="px-2 py-1 rounded-full text-sm"
+                                            :class="{
+                                                'bg-green-100 text-green-700': instance.status?.state === 'online',
+                                                'bg-gray-100 text-gray-700': instance.status?.state === 'offline',
+                                                'bg-red-100 text-red-700': instance.status?.state === 'unhealthy'
+                                            }"
+                                            x-text="instance.status?.state || 'unknown'"></span>
+                                    </td>
+                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatTimestamp(instance.last_heartbeat)"></td>
+                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatUptime(instance.start_time)"></td>
+                                    <td class="px-6 py-4 text-right">
+                                        <div class="flex items-center justify-end gap-2">
+                                            <button @click="viewInstanceDetail(instance)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
+                                                <i class="fas fa-eye"></i>
+                                            </button>
+                                            <button @click="kickInstance(instance)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Kick">
+                                                <i class="fas fa-user-slash"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                            <tr x-show="instances.length === 0">
+                                <td colspan="7" class="px-6 py-12 text-center text-gray-500">
+                                    <i class="fas fa-server text-4xl mb-3 text-gray-300"></i>
+                                    <p>No instances found</p>
                                 </td>
                             </tr>
-                        </template>
-                        <tr x-show="tasks.length === 0">
-                            <td colspan="6" class="px-6 py-12 text-center text-gray-500">
-                                <i class="fas fa-tasks text-4xl mb-3 text-gray-300"></i>
-                                <p>No tasks found</p>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+                        </tbody>
+                    </table>
+                </div>
             </div>
-        </div>
-    </main>
-    </div> <!-- End of authenticated content -->
 
+            <!-- ================================================================== -->
+            <!-- Services View -->
+            <!-- ================================================================== -->
+            <div x-show="currentView === 'services'" x-cloak class="fade-in">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800">Services</h2>
+                    <button @click="loadServices()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
+                        <i class="fas fa-sync"></i> Refresh
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <template x-for="service in services" :key="service.service_name + service.app_id">
+                        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition">
+                            <div class="flex items-start justify-between mb-4">
+                                <div>
+                                    <h3 class="font-semibold text-gray-800" x-text="service.service_name"></h3>
+                                    <p class="text-sm text-gray-500" x-text="service.app_name"></p>
+                                </div>
+                                <span class="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium" 
+                                    x-text="service.instance_count + ' instances'"></span>
+                            </div>
+                            <button @click="viewServiceInstances(service)" 
+                                class="w-full mt-4 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
+                                View Instances
+                            </button>
+                        </div>
+                    </template>
+                    <div x-show="services.length === 0" class="col-span-full text-center py-12 text-gray-500">
+                        <i class="fas fa-sitemap text-4xl mb-3 text-gray-300"></i>
+                        <p>No services found</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================================================================== -->
+            <!-- Tasks View -->
+            <!-- ================================================================== -->
+            <div x-show="currentView === 'tasks'" x-cloak class="fade-in">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800">Tasks</h2>
+                    <div class="flex items-center gap-3">
+                        <button @click="showCreateTaskModal = true" 
+                            class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
+                            <i class="fas fa-plus"></i> Create Task
+                        </button>
+                        <button @click="loadTasks()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
+                            <i class="fas fa-sync"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <table class="w-full">
+                        <thead class="bg-gray-50 border-b border-gray-100">
+                            <tr>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Task ID</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Type</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Target</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Created</th>
+                                <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            <template x-for="task in tasks" :key="task.task_id">
+                                <tr class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4">
+                                        <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="task.task_id"></code>
+                                    </td>
+                                    <td class="px-6 py-4 font-medium text-gray-800" x-text="task.task_type || '-'"></td>
+                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="task.target_agent_id || 'All'"></td>
+                                    <td class="px-6 py-4">
+                                        <span class="px-2 py-1 rounded-full text-sm"
+                                            :class="{
+                                                'bg-yellow-100 text-yellow-700': task.status === 'pending',
+                                                'bg-blue-100 text-blue-700': task.status === 'running',
+                                                'bg-green-100 text-green-700': task.status === 'completed',
+                                                'bg-red-100 text-red-700': task.status === 'failed'
+                                            }"
+                                            x-text="task.status || 'pending'"></span>
+                                    </td>
+                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatDate(task.created_at)"></td>
+                                    <td class="px-6 py-4 text-right">
+                                        <div class="flex items-center justify-end gap-2">
+                                            <button @click="viewTaskDetail(task)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
+                                                <i class="fas fa-eye"></i>
+                                            </button>
+                                            <button @click="cancelTask(task)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Cancel">
+                                                <i class="fas fa-times"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                            <tr x-show="tasks.length === 0">
+                                <td colspan="6" class="px-6 py-12 text-center text-gray-500">
+                                    <i class="fas fa-tasks text-4xl mb-3 text-gray-300"></i>
+                                    <p>No tasks found</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- ========================================================================== -->
+    <!-- Modals -->
+    <!-- ========================================================================== -->
+    
     <!-- Create App Modal -->
     <div x-show="showCreateAppModal" x-cloak 
         class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" 
@@ -508,7 +513,9 @@
         </div>
     </div>
 
+    <!-- ========================================================================== -->
     <!-- Toast Notification -->
+    <!-- ========================================================================== -->
     <div x-show="toast.show" x-cloak
         x-transition:enter="transition ease-out duration-300"
         x-transition:enter-start="opacity-0 translate-y-2"
@@ -531,435 +538,5 @@
             <span x-text="toast.message"></span>
         </div>
     </div>
-
-    <script>
-        // ============================================================================
-        // API Module - 统一的 API 请求层
-        // ============================================================================
-        const ApiService = {
-            apiKey: '',
-            
-            setApiKey(key) {
-                this.apiKey = key;
-            },
-            
-            async request(method, path, data = null) {
-                const options = {
-                    method,
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'X-API-Key': this.apiKey,
-                    },
-                };
-                if (data) options.body = JSON.stringify(data);
-                
-                const res = await fetch(`/api/v1${path}`, options);
-                if (res.status === 401) {
-                    throw { status: 401, message: 'Unauthorized' };
-                }
-                if (!res.ok) {
-                    const err = await res.json().catch(() => ({}));
-                    throw { status: res.status, message: err.error || 'Request failed' };
-                }
-                return res.json();
-            },
-            
-            // Dashboard
-            getDashboard: () => ApiService.request('GET', '/dashboard/overview'),
-            
-            // Apps
-            getApps: () => ApiService.request('GET', '/apps'),
-            createApp: (data) => ApiService.request('POST', '/apps', data),
-            deleteApp: (id) => ApiService.request('DELETE', `/apps/${id}`),
-            regenerateToken: (id) => ApiService.request('POST', `/apps/${id}/token`),
-            
-            // Instances
-            getInstances: (status = '') => ApiService.request('GET', `/instances?status=${status}`),
-            getInstanceStats: () => ApiService.request('GET', '/instances/stats'),
-            kickInstance: (id) => ApiService.request('POST', `/instances/${id}/kick`),
-            
-            // Services
-            getServices: () => ApiService.request('GET', '/services'),
-            
-            // Tasks
-            getTasks: () => ApiService.request('GET', '/tasks'),
-            createTask: (data) => ApiService.request('POST', '/tasks', data),
-            cancelTask: (id) => ApiService.request('DELETE', `/tasks/${id}`),
-        };
-
-        // ============================================================================
-        // Utils Module - 工具函数
-        // ============================================================================
-        const Utils = {
-            formatDate(dateStr) {
-                if (!dateStr) return '-';
-                const date = new Date(dateStr);
-                if (isNaN(date.getTime())) return dateStr;
-                return date.toLocaleString('zh-CN');
-            },
-            
-            copyToClipboard(text) {
-                navigator.clipboard.writeText(text);
-            },
-            
-            truncate(str, len = 20) {
-                if (!str) return '-';
-                return str.length > len ? str.substring(0, len) + '...' : str;
-            },
-        };
-
-        // ============================================================================
-        // Storage Module - 本地存储
-        // ============================================================================
-        const Storage = {
-            API_KEY: 'otel_admin_api_key',
-            
-            getApiKey: () => localStorage.getItem(Storage.API_KEY),
-            setApiKey: (key) => localStorage.setItem(Storage.API_KEY, key),
-            removeApiKey: () => localStorage.removeItem(Storage.API_KEY),
-        };
-
-        // ============================================================================
-        // Main App
-        // ============================================================================
-        function adminApp() {
-            return {
-                // Auth state
-                authenticated: false,
-                apiKey: '',
-                apiKeyInput: '',
-                showApiKey: false,
-                rememberApiKey: true,
-                loginLoading: false,
-                loginError: '',
-                
-                // Navigation
-                currentView: 'dashboard',
-                
-                // Connection status
-                connected: true,
-                
-                // Data stores
-                dashboard: {},
-                apps: [],
-                instances: [],
-                instanceStats: {},
-                services: [],
-                tasks: [],
-                
-                // Filters
-                instanceFilter: '',
-                
-                // Loading states
-                loading: {
-                    dashboard: false,
-                    apps: false,
-                    instances: false,
-                    services: false,
-                    tasks: false,
-                },
-                
-                // Modals
-                showCreateAppModal: false,
-                showDetailModal: false,
-                showCreateTaskModal: false,
-                detailTitle: '',
-                detailData: null,
-                
-                // Forms
-                newApp: { name: '', description: '' },
-                
-                // Toast
-                toast: { show: false, message: '', type: 'info' },
-                
-                // Menu config
-                menuItems: [
-                    { id: 'dashboard', label: 'Dashboard', icon: 'fas fa-chart-pie' },
-                    { id: 'apps', label: 'Applications', icon: 'fas fa-cube' },
-                    { id: 'instances', label: 'Instances', icon: 'fas fa-server' },
-                    { id: 'services', label: 'Services', icon: 'fas fa-sitemap' },
-                    { id: 'tasks', label: 'Tasks', icon: 'fas fa-tasks' },
-                ],
-
-                // ============================================================================
-                // Lifecycle
-                // ============================================================================
-                async init() {
-                    // Try auto-login with saved key
-                    const savedKey = Storage.getApiKey();
-                    if (savedKey) {
-                        this.apiKeyInput = savedKey;
-                        await this.login(true);
-                    }
-                    
-                    // Watch view changes to auto-load data
-                    this.$watch('currentView', (view) => this.onViewChange(view));
-                    
-                    // Auto refresh timer
-                    setInterval(() => this.autoRefresh(), 30000);
-                },
-                
-                onViewChange(view) {
-                    if (!this.authenticated) return;
-                    
-                    const loaders = {
-                        dashboard: () => this.loadDashboard(),
-                        apps: () => this.loadApps(),
-                        instances: () => this.loadInstances(),
-                        services: () => this.loadServices(),
-                        tasks: () => this.loadTasks(),
-                    };
-                    
-                    if (loaders[view]) loaders[view]();
-                },
-                
-                autoRefresh() {
-                    if (!this.authenticated) return;
-                    if (this.currentView === 'dashboard') this.loadDashboard();
-                    if (this.currentView === 'instances') this.loadInstances();
-                },
-
-                // ============================================================================
-                // Auth
-                // ============================================================================
-                async login(silent = false) {
-                    if (!silent) this.loginLoading = true;
-                    this.loginError = '';
-                    
-                    try {
-                        ApiService.setApiKey(this.apiKeyInput);
-                        await ApiService.getDashboard();
-                        
-                        this.apiKey = this.apiKeyInput;
-                        this.authenticated = true;
-                        
-                        if (this.rememberApiKey) {
-                            Storage.setApiKey(this.apiKey);
-                        }
-                        
-                        // Load initial data
-                        await this.loadDashboard();
-                        await this.loadApps();
-                    } catch (e) {
-                        if (!silent) {
-                            this.loginError = e.status === 401 ? 'Invalid API Key' : e.message;
-                        }
-                        Storage.removeApiKey();
-                    } finally {
-                        this.loginLoading = false;
-                    }
-                },
-                
-                logout() {
-                    this.authenticated = false;
-                    this.apiKey = '';
-                    this.apiKeyInput = '';
-                    ApiService.setApiKey('');
-                    Storage.removeApiKey();
-                    
-                    // Clear data
-                    this.dashboard = {};
-                    this.apps = [];
-                    this.instances = [];
-                    this.services = [];
-                    this.tasks = [];
-                    this.instanceStats = {};
-                },
-
-                // ============================================================================
-                // Data Loaders
-                // ============================================================================
-                async loadDashboard() {
-                    if (this.loading.dashboard) return;
-                    this.loading.dashboard = true;
-                    try {
-                        this.dashboard = await ApiService.getDashboard();
-                        this.connected = true;
-                    } catch (e) {
-                        this.handleError(e, 'Failed to load dashboard');
-                    } finally {
-                        this.loading.dashboard = false;
-                    }
-                },
-                
-                async loadApps() {
-                    if (this.loading.apps) return;
-                    this.loading.apps = true;
-                    try {
-                        const res = await ApiService.getApps();
-                        this.apps = res.apps || [];
-                    } catch (e) {
-                        this.handleError(e, 'Failed to load apps');
-                    } finally {
-                        this.loading.apps = false;
-                    }
-                },
-                
-                async loadInstances() {
-                    if (this.loading.instances) return;
-                    this.loading.instances = true;
-                    try {
-                        const [instancesRes, statsRes] = await Promise.all([
-                            ApiService.getInstances(this.instanceFilter),
-                            ApiService.getInstanceStats(),
-                        ]);
-                        this.instances = instancesRes.instances || [];
-                        this.instanceStats = statsRes;
-                    } catch (e) {
-                        this.handleError(e, 'Failed to load instances');
-                    } finally {
-                        this.loading.instances = false;
-                    }
-                },
-                
-                async loadServices() {
-                    if (this.loading.services) return;
-                    this.loading.services = true;
-                    try {
-                        const res = await ApiService.getServices();
-                        this.services = res.services || [];
-                    } catch (e) {
-                        this.handleError(e, 'Failed to load services');
-                    } finally {
-                        this.loading.services = false;
-                    }
-                },
-                
-                async loadTasks() {
-                    if (this.loading.tasks) return;
-                    this.loading.tasks = true;
-                    try {
-                        const res = await ApiService.getTasks();
-                        this.tasks = res.tasks || [];
-                    } catch (e) {
-                        this.handleError(e, 'Failed to load tasks');
-                    } finally {
-                        this.loading.tasks = false;
-                    }
-                },
-
-                // ============================================================================
-                // Actions - Apps
-                // ============================================================================
-                async createApp() {
-                    try {
-                        await ApiService.createApp(this.newApp);
-                        this.showToast('Application created successfully', 'success');
-                        this.showCreateAppModal = false;
-                        this.newApp = { name: '', description: '' };
-                        await this.loadApps();
-                    } catch (e) {
-                        this.handleError(e, 'Failed to create app');
-                    }
-                },
-                
-                async regenerateToken(app) {
-                    if (!confirm(`Regenerate token for "${app.name}"? This will invalidate the current token.`)) return;
-                    try {
-                        await ApiService.regenerateToken(app.id);
-                        this.showToast('Token regenerated successfully', 'success');
-                        await this.loadApps();
-                    } catch (e) {
-                        this.handleError(e, 'Failed to regenerate token');
-                    }
-                },
-                
-                async confirmDeleteApp(app) {
-                    if (!confirm(`Delete "${app.name}"? This action cannot be undone.`)) return;
-                    try {
-                        await ApiService.deleteApp(app.id);
-                        this.showToast('Application deleted successfully', 'success');
-                        await this.loadApps();
-                    } catch (e) {
-                        this.handleError(e, 'Failed to delete app');
-                    }
-                },
-                
-                viewAppDetail(app) {
-                    this.showDetail(`App: ${app.name}`, app);
-                },
-                
-                editApp(app) {
-                    this.showToast('Edit feature coming soon', 'info');
-                },
-
-                // ============================================================================
-                // Actions - Instances
-                // ============================================================================
-                async kickInstance(instance) {
-                    if (!confirm(`Kick instance "${Utils.truncate(instance.agent_id)}"?`)) return;
-                    try {
-                        await ApiService.kickInstance(instance.agent_id);
-                        this.showToast('Instance kicked successfully', 'success');
-                        await this.loadInstances();
-                    } catch (e) {
-                        this.handleError(e, 'Failed to kick instance');
-                    }
-                },
-                
-                viewInstanceDetail(instance) {
-                    this.showDetail(`Instance: ${Utils.truncate(instance.agent_id)}`, instance);
-                },
-
-                // ============================================================================
-                // Actions - Services
-                // ============================================================================
-                viewServiceInstances(service) {
-                    this.currentView = 'instances';
-                },
-
-                // ============================================================================
-                // Actions - Tasks
-                // ============================================================================
-                async cancelTask(task) {
-                    if (!confirm(`Cancel task "${task.task_id}"?`)) return;
-                    try {
-                        await ApiService.cancelTask(task.task_id);
-                        this.showToast('Task cancelled successfully', 'success');
-                        await this.loadTasks();
-                    } catch (e) {
-                        this.handleError(e, 'Failed to cancel task');
-                    }
-                },
-                
-                viewTaskDetail(task) {
-                    this.showDetail(`Task: ${task.task_id}`, task);
-                },
-
-                // ============================================================================
-                // UI Helpers
-                // ============================================================================
-                showDetail(title, data) {
-                    this.detailTitle = title;
-                    this.detailData = data;
-                    this.showDetailModal = true;
-                },
-                
-                showToast(message, type = 'info') {
-                    this.toast = { show: true, message, type };
-                    setTimeout(() => { this.toast.show = false; }, 3000);
-                },
-                
-                handleError(e, defaultMsg) {
-                    if (e.status === 401) {
-                        this.logout();
-                        this.showToast('Session expired, please login again', 'error');
-                    } else {
-                        this.connected = false;
-                        this.showToast(e.message || defaultMsg, 'error');
-                    }
-                },
-                
-                // Utility proxies
-                formatDate: Utils.formatDate,
-                truncate: Utils.truncate,
-                
-                copyToClipboard(text) {
-                    Utils.copyToClipboard(text);
-                    this.showToast('Copied to clipboard', 'success');
-                },
-            };
-        }
-    </script>
 </body>
 </html>

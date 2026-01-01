@@ -18,6 +18,12 @@ func NewStatusHelper() *StatusHelper {
 	return &StatusHelper{}
 }
 
+// Now returns the current timestamp in milliseconds.
+// All time-related operations should use this method to ensure consistent time format.
+func (h *StatusHelper) Now() int64 {
+	return time.Now().UnixMilli()
+}
+
 // InitializeStatus initializes the status for a newly registered agent.
 // Sets state to Online and records the state change time.
 func (h *StatusHelper) InitializeStatus(agent *AgentInfo, now int64) {
@@ -37,7 +43,7 @@ func (h *StatusHelper) InitializeStatus(agent *AgentInfo, now int64) {
 // Parameters:
 //   - agent: the existing agent info
 //   - newStatus: optional new status from the heartbeat (can be nil)
-//   - now: current timestamp in nanoseconds
+//   - now: current timestamp in milliseconds
 //
 // Returns true if the agent was previously offline (recovered).
 func (h *StatusHelper) UpdateHeartbeatStatus(agent *AgentInfo, newStatus *AgentStatus, now int64) (wasOffline bool) {
@@ -126,7 +132,7 @@ func (h *StatusHelper) UpdateHealthStatus(agent *AgentInfo, health *controlplane
 
 // IsHeartbeatExpired checks if an agent's heartbeat has expired based on the given TTL.
 func (h *StatusHelper) IsHeartbeatExpired(lastHeartbeat int64, heartbeatTTL time.Duration) bool {
-	threshold := time.Now().Add(-heartbeatTTL).UnixNano()
+	threshold := time.Now().Add(-heartbeatTTL).UnixMilli()
 	return lastHeartbeat < threshold
 }
 

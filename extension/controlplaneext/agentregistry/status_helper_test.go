@@ -14,7 +14,7 @@ import (
 
 func TestStatusHelper_InitializeStatus(t *testing.T) {
 	h := NewStatusHelper()
-	now := time.Now().UnixNano()
+	now := time.Now().UnixMilli()
 
 	t.Run("nil status", func(t *testing.T) {
 		agent := &AgentInfo{AgentID: "test"}
@@ -42,7 +42,7 @@ func TestStatusHelper_InitializeStatus(t *testing.T) {
 
 func TestStatusHelper_UpdateHeartbeatStatus(t *testing.T) {
 	h := NewStatusHelper()
-	now := time.Now().UnixNano()
+	now := time.Now().UnixMilli()
 
 	t.Run("recover from offline with new status", func(t *testing.T) {
 		agent := &AgentInfo{
@@ -111,7 +111,7 @@ func TestStatusHelper_UpdateHeartbeatStatus(t *testing.T) {
 
 func TestStatusHelper_MarkOffline(t *testing.T) {
 	h := NewStatusHelper()
-	now := time.Now().UnixNano()
+	now := time.Now().UnixMilli()
 
 	t.Run("mark online agent offline", func(t *testing.T) {
 		agent := &AgentInfo{
@@ -160,7 +160,7 @@ func TestStatusHelper_MarkOffline(t *testing.T) {
 
 func TestStatusHelper_UpdateHealthStatus(t *testing.T) {
 	h := NewStatusHelper()
-	now := time.Now().UnixNano()
+	now := time.Now().UnixMilli()
 
 	t.Run("healthy to unhealthy", func(t *testing.T) {
 		agent := &AgentInfo{
@@ -239,13 +239,13 @@ func TestStatusHelper_IsHeartbeatExpired(t *testing.T) {
 	h := NewStatusHelper()
 
 	t.Run("expired", func(t *testing.T) {
-		lastHeartbeat := time.Now().Add(-1 * time.Minute).UnixNano()
+		lastHeartbeat := time.Now().Add(-1 * time.Minute).UnixMilli()
 		expired := h.IsHeartbeatExpired(lastHeartbeat, 30*time.Second)
 		assert.True(t, expired)
 	})
 
 	t.Run("not expired", func(t *testing.T) {
-		lastHeartbeat := time.Now().Add(-10 * time.Second).UnixNano()
+		lastHeartbeat := time.Now().Add(-10 * time.Second).UnixMilli()
 		expired := h.IsHeartbeatExpired(lastHeartbeat, 30*time.Second)
 		assert.False(t, expired)
 	})

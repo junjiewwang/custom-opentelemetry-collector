@@ -58,7 +58,7 @@ func (m *MemoryAgentRegistry) Register(ctx context.Context, agent *AgentInfo) er
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now().UnixNano()
+	now := m.statusHelper.Now()
 	agent.RegisteredAt = now
 	agent.LastHeartbeat = now
 
@@ -88,7 +88,7 @@ func (m *MemoryAgentRegistry) Heartbeat(ctx context.Context, agentID string, sta
 		return errors.New("agent not found: " + agentID)
 	}
 
-	now := time.Now().UnixNano()
+	now := m.statusHelper.Now()
 	agent.LastHeartbeat = now
 
 	m.statusHelper.UpdateHeartbeatStatus(agent, status, now)
@@ -106,7 +106,7 @@ func (m *MemoryAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *Ag
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now().UnixNano()
+	now := m.statusHelper.Now()
 
 	existing, ok := m.agents[agent.AgentID]
 	if ok {
@@ -346,7 +346,7 @@ func (m *MemoryAgentRegistry) UpdateHealth(ctx context.Context, agentID string, 
 		return errors.New("agent not found: " + agentID)
 	}
 
-	now := time.Now().UnixNano()
+	now := m.statusHelper.Now()
 	m.statusHelper.UpdateHealthStatus(agent, health, now)
 
 	return nil
@@ -451,7 +451,7 @@ func (m *MemoryAgentRegistry) detectOfflineAgents() {
 		ttl = 30 * time.Second
 	}
 
-	now := time.Now().UnixNano()
+	now := m.statusHelper.Now()
 
 	for agentID, agent := range m.agents {
 		if m.statusHelper.IsHeartbeatExpired(agent.LastHeartbeat, ttl) {

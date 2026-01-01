@@ -404,6 +404,7 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if appID != "" {
+		// Filter by specific app
 		app, err := e.tokenMgr.GetApp(r.Context(), appID)
 		if err != nil {
 			e.handleError(w, errNotFound("app not found: "+err.Error()))
@@ -415,16 +416,14 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if status == "all" {
-		apps, err := e.tokenMgr.ListApps(r.Context())
+		// Get all instances (including offline)
+		instances, err = e.agentReg.GetAllAgents(r.Context())
 		if err != nil {
 			e.handleError(w, err)
 			return
 		}
-		for _, app := range apps {
-			appInstances, _ := e.agentReg.GetAgentsByToken(r.Context(), app.Token)
-			instances = append(instances, appInstances...)
-		}
 	} else {
+		// Default: online only
 		instances, err = e.agentReg.GetOnlineAgents(r.Context())
 		if err != nil {
 			e.handleError(w, err)

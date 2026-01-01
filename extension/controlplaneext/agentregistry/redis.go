@@ -104,7 +104,7 @@ func (r *RedisAgentRegistry) Register(ctx context.Context, agent *AgentInfo) err
 		return errors.New("redis client not initialized")
 	}
 
-	now := time.Now().UnixNano()
+	now := r.statusHelper.Now()
 	agent.RegisteredAt = now
 	agent.LastHeartbeat = now
 
@@ -126,7 +126,7 @@ func (r *RedisAgentRegistry) Heartbeat(ctx context.Context, agentID string, stat
 		return err
 	}
 
-	now := time.Now().UnixNano()
+	now := r.statusHelper.Now()
 	agent.LastHeartbeat = now
 
 	r.statusHelper.UpdateHeartbeatStatus(agent, status, now)
@@ -145,7 +145,7 @@ func (r *RedisAgentRegistry) RegisterOrHeartbeat(ctx context.Context, agent *Age
 		return errors.New("redis client not initialized")
 	}
 
-	now := time.Now().UnixNano()
+	now := r.statusHelper.Now()
 
 	// Try to get existing agent
 	existing, err := r.GetAgent(ctx, agent.AgentID)
@@ -523,7 +523,7 @@ func (r *RedisAgentRegistry) UpdateHealth(ctx context.Context, agentID string, h
 		return err
 	}
 
-	now := time.Now().UnixNano()
+	now := r.statusHelper.Now()
 	r.statusHelper.UpdateHealthStatus(agent, health, now)
 
 	agentData, err := json.Marshal(agent)
@@ -854,7 +854,7 @@ func (r *RedisAgentRegistry) detectOfflineAgents() {
 		}
 	}
 
-	now := time.Now().UnixNano()
+	now := r.statusHelper.Now()
 
 	// Process offline agents
 	for i, fullPath := range fullPaths {
