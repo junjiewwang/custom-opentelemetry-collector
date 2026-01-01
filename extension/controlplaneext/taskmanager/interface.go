@@ -54,12 +54,12 @@ type TaskManager interface {
 
 // TaskInfo contains detailed task information.
 type TaskInfo struct {
-	Task      *controlplanev1.Task       `json:"task"`
-	Status    controlplanev1.TaskStatus  `json:"status"`
-	AgentID   string                     `json:"agent_id,omitempty"`
-	CreatedAt int64                      `json:"created_at"`
-	StartedAt int64                      `json:"started_at,omitempty"`
-	Result    *controlplanev1.TaskResult `json:"result,omitempty"`
+	Task           *controlplanev1.Task       `json:"task"`
+	Status         controlplanev1.TaskStatus  `json:"status"`
+	AgentID        string                     `json:"agent_id,omitempty"`
+	CreatedAtMillis int64                     `json:"created_at_millis"`
+	StartedAtMillis int64                     `json:"started_at_millis,omitempty"`
+	Result         *controlplanev1.TaskResult `json:"result,omitempty"`
 }
 
 // Config holds the configuration for TaskManager.

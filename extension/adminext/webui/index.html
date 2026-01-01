@@ -6,7 +6,8 @@
     <title>OTel Collector Admin</title>
     <!-- External Dependencies -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Font Awesome (local) - 避免 CDN 加载慢 -->
+    <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <!-- Local Styles -->
     <link rel="stylesheet" href="css/styles.css">
     <!-- App Entry (ES Module) - 必须在 Alpine 之前加载 -->
@@ -207,7 +208,7 @@
                                 <tr class="hover:bg-gray-50 transition">
                                     <td class="px-6 py-4">
                                         <div class="font-medium text-gray-800" x-text="app.name"></div>
-                                        <div class="text-sm text-gray-500" x-text="app.description || '-'"></div>
+                                        <div class="text-xs text-gray-400 font-mono" x-text="app.id"></div>
                                     </td>
                                     <td class="px-6 py-4">
                                         <div class="flex items-center gap-2">
@@ -458,6 +459,122 @@
                             </tr>
                         </tbody>
                     </table>
+                </div>
+            </div>
+
+            <!-- ================================================================== -->
+            <!-- Arthas View -->
+            <!-- ================================================================== -->
+            <div x-show="currentView === 'arthas'" x-cloak class="fade-in">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800">Arthas Terminal</h2>
+                    <div class="flex items-center gap-3">
+                        <button @click="loadArthasAgents()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
+                            <i class="fas fa-sync"></i> Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Arthas Terminal (when connected) -->
+                <div x-show="arthasSession.active" class="mb-6">
+                    <div class="bg-gray-900 rounded-xl overflow-hidden shadow-lg">
+                        <!-- Terminal Header -->
+                        <div class="bg-gray-800 px-4 py-2 flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="flex gap-1.5">
+                                    <div class="w-3 h-3 rounded-full bg-red-500"></div>
+                                    <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+                                    <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                                </div>
+                                <span class="text-gray-300 text-sm">
+                                    Arthas @ <span x-text="arthasSession.agentInfo?.service_name || 'unknown'"></span>
+                                    (<span x-text="arthasSession.agentInfo?.hostname || ''"></span>)
+                                </span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button @click="clearArthasOutput()" class="text-gray-400 hover:text-white transition px-2 py-1 text-sm" title="Clear">
+                                    <i class="fas fa-eraser"></i>
+                                </button>
+                                <button @click="disconnectArthas()" class="text-red-400 hover:text-red-300 transition px-2 py-1 text-sm" title="Disconnect">
+                                    <i class="fas fa-times"></i> Disconnect
+                                </button>
+                            </div>
+                        </div>
+                        <!-- Terminal Output -->
+                        <div id="arthas-terminal" class="p-4 h-96 overflow-y-auto font-mono text-sm text-green-400 whitespace-pre-wrap" x-text="arthasSession.output"></div>
+                        <!-- Terminal Input -->
+                        <div class="border-t border-gray-700 p-3 flex items-center gap-2">
+                            <span class="text-green-400 font-mono">$</span>
+                            <input type="text" x-model="arthasSession.inputCommand" 
+                                @keydown.enter="sendArthasCommand()"
+                                class="flex-1 bg-transparent text-green-400 font-mono text-sm outline-none placeholder-gray-600"
+                                placeholder="Enter Arthas command...">
+                            <button @click="sendArthasCommand()" class="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700 transition">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Connection Error -->
+                <div x-show="arthasSession.error && !arthasSession.active" class="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+                    <div class="flex items-center gap-2 text-red-700">
+                        <i class="fas fa-exclamation-circle"></i>
+                        <span x-text="arthasSession.error"></span>
+                    </div>
+                </div>
+
+                <!-- Agent Selection (when not connected) -->
+                <div x-show="!arthasSession.active">
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-4">
+                            <i class="fas fa-info-circle text-primary-500 mr-2"></i>
+                            How to use Arthas
+                        </h3>
+                        <div class="text-gray-600 space-y-2 text-sm">
+                            <p>1. Select an online Java instance from the list below</p>
+                            <p>2. Click "Connect" to attach Arthas to the target JVM</p>
+                            <p>3. Use the terminal to execute Arthas commands (e.g., <code class="bg-gray-100 px-1 rounded">dashboard</code>, <code class="bg-gray-100 px-1 rounded">thread</code>, <code class="bg-gray-100 px-1 rounded">watch</code>)</p>
+                            <p>4. Type <code class="bg-gray-100 px-1 rounded">help</code> to see all available commands</p>
+                        </div>
+                    </div>
+
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Available Instances</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <template x-for="agent in arthasAgents" :key="agent.agent_id">
+                            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 hover:shadow-md transition">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="flex-1 min-w-0">
+                                        <h4 class="font-medium text-gray-800 truncate" x-text="agent.service_name || 'Unknown Service'"></h4>
+                                        <p class="text-sm text-gray-500 truncate" x-text="agent.hostname || '-'"></p>
+                                    </div>
+                                    <span class="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs flex-shrink-0 ml-2">online</span>
+                                </div>
+                                <div class="text-xs text-gray-400 space-y-1 mb-3">
+                                    <div class="flex items-center gap-2">
+                                        <i class="fas fa-network-wired w-4"></i>
+                                        <span x-text="agent.ip || '-'"></span>
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <i class="fas fa-cube w-4"></i>
+                                        <span class="truncate" x-text="agent.app_id || '-'"></span>
+                                    </div>
+                                </div>
+                                <button @click="connectArthas(agent)" 
+                                    :disabled="arthasSession.connecting"
+                                    class="w-full px-3 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <i x-show="arthasSession.connecting && arthasSession.agentId === agent.agent_id" class="fas fa-spinner fa-spin"></i>
+                                    <i x-show="!(arthasSession.connecting && arthasSession.agentId === agent.agent_id)" class="fas fa-terminal"></i>
+                                    <span x-text="arthasSession.connecting && arthasSession.agentId === agent.agent_id ? 'Connecting...' : 'Connect Arthas'"></span>
+                                </button>
+                            </div>
+                        </template>
+                        <div x-show="arthasAgents.length === 0" class="col-span-full text-center py-12 text-gray-500">
+                            <i class="fas fa-server text-4xl mb-3 text-gray-300"></i>
+                            <p>No online instances available</p>
+                            <p class="text-sm mt-1">Make sure your Java agents are connected and online</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </main>

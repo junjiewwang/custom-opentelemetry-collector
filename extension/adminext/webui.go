@@ -95,6 +95,15 @@ func (h *webUIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/svg+xml")
 	case ".ico":
 		w.Header().Set("Content-Type", "image/x-icon")
+	case ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+	case ".woff":
+		w.Header().Set("Content-Type", "font/woff")
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+	case ".ttf":
+		w.Header().Set("Content-Type", "font/ttf")
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
 	}
 	
 	// Serve the file

@@ -35,6 +35,7 @@ type RedisTaskManager struct {
 	logger    *zap.Logger
 	config    Config
 	keyPrefix string
+	helper    *TaskHelper
 
 	mu      sync.RWMutex
 	client  redis.UniversalClient
@@ -52,6 +53,7 @@ func NewRedisTaskManager(logger *zap.Logger, config Config, client redis.Univers
 		logger:    logger,
 		config:    config,
 		keyPrefix: keyPrefix,
+		helper:    NewTaskHelper(),
 		client:    client,
 	}, nil
 }
@@ -97,14 +99,10 @@ func (m *RedisTaskManager) SubmitTaskForAgent(ctx context.Context, agentID strin
 }
 
 func (m *RedisTaskManager) submitTaskToQueue(ctx context.Context, agentID string, task *controlplanev1.Task) error {
-	if task == nil {
-		return errors.New("task cannot be nil")
-	}
-	if task.TaskID == "" {
-		return errors.New("task_id is required")
-	}
-	if task.TaskType == "" {
-		return errors.New("task_type is required")
+	// Validate and auto-fill task fields
+	nowMillis, err := m.helper.ValidateTask(task)
+	if err != nil {
+		return err
 	}
 
 	m.mu.RLock()
@@ -122,12 +120,7 @@ func (m *RedisTaskManager) submitTaskToQueue(ctx context.Context, agentID string
 	}
 
 	// Create task info
-	info := &TaskInfo{
-		Task:      task,
-		Status:    controlplanev1.TaskStatusPending,
-		AgentID:   agentID,
-		CreatedAt: time.Now().UnixNano(),
-	}
+	info := m.helper.NewTaskInfo(task, agentID, nowMillis)
 	infoData, err := json.Marshal(info)
 	if err != nil {
 		return err
@@ -500,7 +493,7 @@ func (m *RedisTaskManager) SetTaskRunning(ctx context.Context, taskID string, ag
 	pipe.HSet(ctx, detailKey,
 		"status", int(controlplanev1.TaskStatusRunning),
 		"agent_id", agentID,
-		"started_at", time.Now().UnixNano(),
+		"started_at_millis", m.helper.NowMillis(),
 	)
 
 	_, err := pipe.Exec(ctx)

@@ -31,18 +31,18 @@ func (h *heapDumpHandler) Execute(ctx context.Context, task *controlplanev1.Task
 	var buf bytes.Buffer
 	if err := pprof.WriteHeapProfile(&buf); err != nil {
 		return &controlplanev1.TaskResult{
-			TaskID:              task.TaskID,
-			Status:              controlplanev1.TaskStatusFailed,
-			ErrorMessage:        "failed to write heap profile: " + err.Error(),
-			CompletedAtUnixNano: time.Now().UnixNano(),
+			TaskID:            task.TaskID,
+			Status:            controlplanev1.TaskStatusFailed,
+			ErrorMessage:      "failed to write heap profile: " + err.Error(),
+			CompletedAtMillis: time.Now().UnixMilli(),
 		}, nil
 	}
 
 	return &controlplanev1.TaskResult{
-		TaskID:              task.TaskID,
-		Status:              controlplanev1.TaskStatusSuccess,
-		ResultData:          buf.Bytes(),
-		CompletedAtUnixNano: time.Now().UnixNano(),
+		TaskID:            task.TaskID,
+		Status:            controlplanev1.TaskStatusSuccess,
+		ResultData:        buf.Bytes(),
+		CompletedAtMillis: time.Now().UnixMilli(),
 	}, nil
 }
 
@@ -63,10 +63,10 @@ func (h *threadDumpHandler) Execute(ctx context.Context, task *controlplanev1.Ta
 	n := runtime.Stack(buf, true)  // true = all goroutines
 	
 	return &controlplanev1.TaskResult{
-		TaskID:              task.TaskID,
-		Status:              controlplanev1.TaskStatusSuccess,
-		ResultData:          buf[:n],
-		CompletedAtUnixNano: time.Now().UnixNano(),
+		TaskID:            task.TaskID,
+		Status:            controlplanev1.TaskStatusSuccess,
+		ResultData:        buf[:n],
+		CompletedAtMillis: time.Now().UnixMilli(),
 	}, nil
 }
 
@@ -103,17 +103,17 @@ func (h *configExportHandler) Execute(ctx context.Context, task *controlplanev1.
 	data, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
 		return &controlplanev1.TaskResult{
-			TaskID:              task.TaskID,
-			Status:              controlplanev1.TaskStatusFailed,
-			ErrorMessage:        "failed to marshal config: " + err.Error(),
-			CompletedAtUnixNano: time.Now().UnixNano(),
+			TaskID:            task.TaskID,
+			Status:            controlplanev1.TaskStatusFailed,
+			ErrorMessage:      "failed to marshal config: " + err.Error(),
+			CompletedAtMillis: time.Now().UnixMilli(),
 		}, nil
 	}
 
 	return &controlplanev1.TaskResult{
-		TaskID:              task.TaskID,
-		Status:              controlplanev1.TaskStatusSuccess,
-		ResultData:          data,
-		CompletedAtUnixNano: time.Now().UnixNano(),
+		TaskID:            task.TaskID,
+		Status:            controlplanev1.TaskStatusSuccess,
+		ResultData:        data,
+		CompletedAtMillis: time.Now().UnixMilli(),
 	}, nil
 }

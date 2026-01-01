@@ -151,7 +151,7 @@ func (e *TaskExecutor) Submit(ctx context.Context, task *controlplanev1.Task) er
 	}
 
 	// Check if task is expired
-	if task.ExpiresAtUnixNano > 0 && time.Now().UnixNano() > task.ExpiresAtUnixNano {
+	if task.ExpiresAtMillis > 0 && time.Now().UnixMilli() > task.ExpiresAtMillis {
 		return errors.New("task has expired")
 	}
 
@@ -248,21 +248,21 @@ func (e *TaskExecutor) processNextTask(workerID int) {
 
 	if !ok {
 		e.storeResult(&controlplanev1.TaskResult{
-			TaskID:              task.TaskID,
-			Status:              controlplanev1.TaskStatusFailed,
-			ErrorMessage:        "no handler for task type: " + task.TaskType,
-			CompletedAtUnixNano: time.Now().UnixNano(),
+			TaskID:            task.TaskID,
+			Status:            controlplanev1.TaskStatusFailed,
+			ErrorMessage:      "no handler for task type: " + task.TaskType,
+			CompletedAtMillis: time.Now().UnixMilli(),
 		})
 		return
 	}
 
 	// Check expiration
-	if task.ExpiresAtUnixNano > 0 && time.Now().UnixNano() > task.ExpiresAtUnixNano {
+	if task.ExpiresAtMillis > 0 && time.Now().UnixMilli() > task.ExpiresAtMillis {
 		e.storeResult(&controlplanev1.TaskResult{
-			TaskID:              task.TaskID,
-			Status:              controlplanev1.TaskStatusTimeout,
-			ErrorMessage:        "task expired before execution",
-			CompletedAtUnixNano: time.Now().UnixNano(),
+			TaskID:            task.TaskID,
+			Status:            controlplanev1.TaskStatusTimeout,
+			ErrorMessage:      "task expired before execution",
+			CompletedAtMillis: time.Now().UnixMilli(),
 		})
 		return
 	}
@@ -286,17 +286,17 @@ func (e *TaskExecutor) processNextTask(workerID int) {
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			result = &controlplanev1.TaskResult{
-				TaskID:              task.TaskID,
-				Status:              controlplanev1.TaskStatusTimeout,
-				ErrorMessage:        "task execution timed out",
-				CompletedAtUnixNano: time.Now().UnixNano(),
+				TaskID:            task.TaskID,
+				Status:            controlplanev1.TaskStatusTimeout,
+				ErrorMessage:      "task execution timed out",
+				CompletedAtMillis: time.Now().UnixMilli(),
 			}
 		} else {
 			result = &controlplanev1.TaskResult{
-				TaskID:              task.TaskID,
-				Status:              controlplanev1.TaskStatusFailed,
-				ErrorMessage:        err.Error(),
-				CompletedAtUnixNano: time.Now().UnixNano(),
+				TaskID:            task.TaskID,
+				Status:            controlplanev1.TaskStatusFailed,
+				ErrorMessage:      err.Error(),
+				CompletedAtMillis: time.Now().UnixMilli(),
 			}
 		}
 	}
@@ -337,7 +337,7 @@ func (pq taskPriorityQueue) Less(i, j int) bool {
 		return pq[i].task.Priority > pq[j].task.Priority
 	}
 	// Earlier creation time first (FIFO for same priority)
-	return pq[i].task.CreatedAtUnixNano < pq[j].task.CreatedAtUnixNano
+	return pq[i].task.CreatedAtMillis < pq[j].task.CreatedAtMillis
 }
 
 func (pq taskPriorityQueue) Swap(i, j int) {

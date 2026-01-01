@@ -116,22 +116,23 @@ type AgentConfig struct {
 
 // Task represents a command to be executed by the agent.
 type Task struct {
-	TaskID            string `json:"task_id"`
-	TaskType          string `json:"task_type"`
-	ParametersJSON    string `json:"parameters_json,omitempty"`
-	Priority          int32  `json:"priority"`
-	TimeoutMillis     int64  `json:"timeout_millis"`
-	CreatedAtUnixNano int64  `json:"created_at_unix_nano"`
-	ExpiresAtUnixNano int64  `json:"expires_at_unix_nano,omitempty"`
+	TaskID           string `json:"task_id"`
+	TaskType         string `json:"task_type"`
+	ParametersJSON   string `json:"parameters_json,omitempty"`
+	Priority         int32  `json:"priority"`
+	TimeoutMillis    int64  `json:"timeout_millis"`
+	CreatedAtMillis  int64  `json:"created_at_millis"`
+	ExpiresAtMillis  int64  `json:"expires_at_millis,omitempty"`
+	TargetAgentID    string `json:"target_agent_id,omitempty"`
 }
 
 // TaskResult contains the outcome of a task execution.
 type TaskResult struct {
-	TaskID              string     `json:"task_id"`
-	Status              TaskStatus `json:"status"`
-	ResultData          []byte     `json:"result_data,omitempty"`
-	ErrorMessage        string     `json:"error_message,omitempty"`
-	CompletedAtUnixNano int64      `json:"completed_at_unix_nano"`
+	TaskID           string     `json:"task_id"`
+	Status           TaskStatus `json:"status"`
+	ResultData       []byte     `json:"result_data,omitempty"`
+	ErrorMessage     string     `json:"error_message,omitempty"`
+	CompletedAtMillis int64     `json:"completed_at_millis"`
 }
 
 // HealthStatus describes the agent's health.

@@ -89,9 +89,9 @@ func TestMemoryTaskManager_SubmitTask_Expired(t *testing.T) {
 	defer tm.Close()
 
 	task := &controlplanev1.Task{
-		TaskID:            "task-1",
-		TaskType:          "test",
-		ExpiresAtUnixNano: time.Now().Add(-1 * time.Hour).UnixNano(), // Already expired
+		TaskID:          "task-1",
+		TaskType:        "test",
+		ExpiresAtMillis: time.Now().Add(-1 * time.Hour).UnixMilli(), // Already expired
 	}
 
 	err = tm.SubmitTask(ctx, task)
@@ -327,7 +327,7 @@ func TestMemoryTaskManager_SetTaskRunning(t *testing.T) {
 	info, _ := tm.GetTaskStatus(ctx, "task-1")
 	assert.Equal(t, controlplanev1.TaskStatusRunning, info.Status)
 	assert.Equal(t, "agent-1", info.AgentID)
-	assert.NotZero(t, info.StartedAt)
+	assert.NotZero(t, info.StartedAtMillis)
 }
 
 func TestMemoryTaskManager_GetPendingTasks(t *testing.T) {

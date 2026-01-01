@@ -16,6 +16,7 @@ const MENU_ITEMS = [
     { id: 'instances', label: 'Instances', icon: 'fas fa-server' },
     { id: 'services', label: 'Services', icon: 'fas fa-sitemap' },
     { id: 'tasks', label: 'Tasks', icon: 'fas fa-tasks' },
+    { id: 'arthas', label: 'Arthas', icon: 'fas fa-terminal' },
 ];
 
 /**
@@ -75,6 +76,21 @@ export function adminApp() {
         instanceStats: {},
         services: [],
         tasks: [],
+        arthasAgents: [],
+
+        // ============================================================================
+        // State - Arthas Terminal
+        // ============================================================================
+        arthasSession: {
+            active: false,
+            agentId: '',
+            agentInfo: null,
+            ws: null,
+            output: '',
+            inputCommand: '',
+            connecting: false,
+            error: '',
+        },
 
         // ============================================================================
         // State - 筛选
@@ -90,6 +106,7 @@ export function adminApp() {
             instances: false,
             services: false,
             tasks: false,
+            arthas: false,
         },
 
         // ============================================================================
@@ -141,6 +158,7 @@ export function adminApp() {
                 instances: () => this.loadInstances(),
                 services: () => this.loadServices(),
                 tasks: () => this.loadTasks(),
+                arthas: () => this.loadArthasAgents(),
             };
 
             if (loaders[view]) loaders[view]();
@@ -381,6 +399,161 @@ export function adminApp() {
 
         viewTaskDetail(task) {
             this.showDetail(`Task: ${task.task_id}`, task);
+        },
+
+        // ============================================================================
+        // Actions - Arthas
+        // ============================================================================
+        async loadArthasAgents() {
+            if (this.loading.arthas) return;
+            this.loading.arthas = true;
+            try {
+                // 加载所有在线实例作为可连接的 Arthas 目标
+                const res = await ApiService.getInstances('');
+                this.arthasAgents = (res.instances || []).filter(i => i.status?.state === 'online');
+            } catch (e) {
+                this.handleError(e, 'Failed to load Arthas agents');
+            } finally {
+                this.loading.arthas = false;
+            }
+        },
+
+        async connectArthas(instance) {
+            if (this.arthasSession.connecting) return;
+            
+            this.arthasSession.connecting = true;
+            this.arthasSession.error = '';
+            this.arthasSession.agentId = instance.agent_id;
+            this.arthasSession.agentInfo = instance;
+            this.arthasSession.output = '';
+
+            try {
+                // 1. 先下发连接 Arthas 的任务给探针
+                this.arthasSession.output += `[System] Sending Arthas attach task to agent...\n`;
+                
+                const taskRes = await ApiService.createTask({
+                    task_type: 'arthas_attach',
+                    target_agent_id: instance.agent_id,
+                    payload: { action: 'attach' },
+                });
+
+                const taskId = taskRes.task_id;
+                this.arthasSession.output += `[System] Task ID: ${taskId}\n`;
+
+                // 2. 等待任务完成（轮询检查）
+                let taskCompleted = false;
+                let retries = 0;
+                const maxRetries = 30; // 最多等待 30 秒
+
+                while (!taskCompleted && retries < maxRetries) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    try {
+                        const taskStatus = await ApiService.getTask(taskId);
+                        if (taskStatus.status === 'completed') {
+                            taskCompleted = true;
+                            this.arthasSession.output += `[System] Arthas attached successfully.\n`;
+                        } else if (taskStatus.status === 'failed') {
+                            throw new Error(taskStatus.error || 'Arthas attach failed');
+                        }
+                    } catch (e) {
+                        if (e.status === 404) {
+                            // 任务可能还没创建完成
+                        } else {
+                            throw e;
+                        }
+                    }
+                    retries++;
+                }
+
+                if (!taskCompleted) {
+                    throw new Error('Arthas attach timeout');
+                }
+
+                // 3. 建立 WebSocket 连接
+                this.arthasSession.output += `[System] Connecting to Arthas terminal...\n`;
+                await this.connectArthasWebSocket(instance.agent_id);
+
+            } catch (e) {
+                this.arthasSession.error = e.message || 'Failed to connect Arthas';
+                this.arthasSession.output += `[Error] ${this.arthasSession.error}\n`;
+                this.showToast(this.arthasSession.error, 'error');
+            } finally {
+                this.arthasSession.connecting = false;
+            }
+        },
+
+        async connectArthasWebSocket(agentId) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/api/v1/arthas/ws?agent_id=${agentId}&api_key=${this.apiKey}`;
+
+            return new Promise((resolve, reject) => {
+                const ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    this.arthasSession.ws = ws;
+                    this.arthasSession.active = true;
+                    this.arthasSession.output += `[System] Connected to Arthas terminal.\n`;
+                    this.arthasSession.output += `[System] Type 'help' for available commands.\n\n`;
+                    resolve();
+                };
+
+                ws.onmessage = (event) => {
+                    const data = event.data;
+                    if (typeof data === 'string') {
+                        this.arthasSession.output += data;
+                        // 自动滚动到底部
+                        this.$nextTick(() => {
+                            const terminal = document.getElementById('arthas-terminal');
+                            if (terminal) terminal.scrollTop = terminal.scrollHeight;
+                        });
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    this.arthasSession.error = 'WebSocket connection error';
+                    this.arthasSession.output += `[Error] WebSocket error\n`;
+                    reject(new Error('WebSocket connection error'));
+                };
+
+                ws.onclose = (event) => {
+                    this.arthasSession.active = false;
+                    this.arthasSession.ws = null;
+                    this.arthasSession.output += `\n[System] Connection closed (code: ${event.code})\n`;
+                };
+
+                // 设置连接超时
+                setTimeout(() => {
+                    if (ws.readyState !== WebSocket.OPEN) {
+                        ws.close();
+                        reject(new Error('WebSocket connection timeout'));
+                    }
+                }, 10000);
+            });
+        },
+
+        sendArthasCommand() {
+            if (!this.arthasSession.ws || !this.arthasSession.inputCommand.trim()) return;
+
+            const cmd = this.arthasSession.inputCommand.trim();
+            this.arthasSession.output += `$ ${cmd}\n`;
+            this.arthasSession.ws.send(cmd + '\n');
+            this.arthasSession.inputCommand = '';
+        },
+
+        disconnectArthas() {
+            if (this.arthasSession.ws) {
+                this.arthasSession.ws.close();
+            }
+            this.arthasSession.active = false;
+            this.arthasSession.ws = null;
+            this.arthasSession.agentId = '';
+            this.arthasSession.agentInfo = null;
+            this.arthasSession.output = '';
+            this.arthasSession.error = '';
+        },
+
+        clearArthasOutput() {
+            this.arthasSession.output = '';
         },
 
         // ============================================================================

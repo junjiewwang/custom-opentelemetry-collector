@@ -19,6 +19,7 @@ import (
 type MemoryTaskManager struct {
 	logger *zap.Logger
 	config Config
+	helper *TaskHelper
 
 	mu             sync.RWMutex
 	globalQueue    *taskPriorityQueue
@@ -39,6 +40,7 @@ func NewMemoryTaskManager(logger *zap.Logger, config Config) *MemoryTaskManager 
 	tm := &MemoryTaskManager{
 		logger:         logger,
 		config:         config,
+		helper:         NewTaskHelper(),
 		globalQueue:    &taskPriorityQueue{},
 		agentQueues:    make(map[string]*taskPriorityQueue),
 		taskDetails:    make(map[string]*TaskInfo),
@@ -66,19 +68,10 @@ func (m *MemoryTaskManager) SubmitTaskForAgent(ctx context.Context, agentID stri
 }
 
 func (m *MemoryTaskManager) submitTaskToQueue(ctx context.Context, agentID string, task *controlplanev1.Task) error {
-	if task == nil {
-		return errors.New("task cannot be nil")
-	}
-	if task.TaskID == "" {
-		return errors.New("task_id is required")
-	}
-	if task.TaskType == "" {
-		return errors.New("task_type is required")
-	}
-
-	// Check if task is expired
-	if task.ExpiresAtUnixNano > 0 && time.Now().UnixNano() > task.ExpiresAtUnixNano {
-		return errors.New("task has expired")
+	// Validate and auto-fill task fields
+	nowMillis, err := m.helper.ValidateTask(task)
+	if err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -90,12 +83,7 @@ func (m *MemoryTaskManager) submitTaskToQueue(ctx context.Context, agentID strin
 	}
 
 	// Store task details
-	m.taskDetails[task.TaskID] = &TaskInfo{
-		Task:      task,
-		Status:    controlplanev1.TaskStatusPending,
-		AgentID:   agentID,
-		CreatedAt: time.Now().UnixNano(),
-	}
+	m.taskDetails[task.TaskID] = m.helper.NewTaskInfo(task, agentID, nowMillis)
 
 	// Add to appropriate queue
 	if agentID == "" {
@@ -294,7 +282,7 @@ func (m *MemoryTaskManager) SetTaskRunning(ctx context.Context, taskID string, a
 
 	if info, ok := m.taskDetails[taskID]; ok {
 		info.Status = controlplanev1.TaskStatusRunning
-		info.StartedAt = time.Now().UnixNano()
+		info.StartedAtMillis = m.helper.NowMillis()
 		info.AgentID = agentID
 	}
 
@@ -358,15 +346,15 @@ func (m *MemoryTaskManager) cleanup() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now().UnixNano()
-	resultTTL := m.config.ResultTTL.Nanoseconds()
+	now := m.helper.NowMillis()
+	resultTTL := m.config.ResultTTL.Milliseconds()
 	if resultTTL <= 0 {
-		resultTTL = (24 * time.Hour).Nanoseconds()
+		resultTTL = (24 * time.Hour).Milliseconds()
 	}
 
 	// Clean up old results
 	for taskID, result := range m.results {
-		if now-result.CompletedAtUnixNano > resultTTL {
+		if now-result.CompletedAtMillis > resultTTL {
 			delete(m.results, taskID)
 			delete(m.taskDetails, taskID)
 			delete(m.cancelledTasks, taskID)
@@ -391,7 +379,7 @@ func (pq taskPriorityQueue) Less(i, j int) bool {
 		return pq[i].task.Priority > pq[j].task.Priority
 	}
 	// Earlier creation time first (FIFO for same priority)
-	return pq[i].task.CreatedAtUnixNano < pq[j].task.CreatedAtUnixNano
+	return pq[i].task.CreatedAtMillis < pq[j].task.CreatedAtMillis
 }
 
 func (pq taskPriorityQueue) Swap(i, j int) {

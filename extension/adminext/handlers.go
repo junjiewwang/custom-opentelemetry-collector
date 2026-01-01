@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
@@ -507,9 +508,9 @@ func (e *Extension) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 如果客户端未提供 task_id，则由服务端生成
 	if task.TaskID == "" {
-		e.handleError(w, errBadRequest("task_id is required"))
-		return
+		task.TaskID = uuid.New().String()
 	}
 
 	if err := e.taskMgr.SubmitTask(r.Context(), task); err != nil {
