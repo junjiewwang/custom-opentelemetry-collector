@@ -5,6 +5,7 @@ package adminext
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -25,12 +26,33 @@ func (e *Extension) newRouter() http.Handler {
 	if e.config.CORS.Enabled {
 		r.Use(e.corsMiddleware)
 	}
+
+	// Health check (outside /api/v1, no auth required)
+	r.Get("/health", e.handleHealth)
+
+	// WebUI - serve embedded static files (no auth required for UI assets)
+	webUI, err := newWebUIHandler()
+	if err == nil {
+		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
+		})
+		r.Get("/ui", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
+		})
+		r.Get("/ui/*", func(w http.ResponseWriter, req *http.Request) {
+			// Strip /ui prefix for file serving
+			req.URL.Path = strings.TrimPrefix(req.URL.Path, "/ui")
+			if req.URL.Path == "" || req.URL.Path == "/" {
+				req.URL.Path = "/index.html"
+			}
+			webUI.ServeHTTP(w, req)
+		})
+	}
+
+	// Apply auth middleware only to API routes
 	if e.config.Auth.Enabled {
 		r.Use(e.authMiddleware)
 	}
-
-	// Health check (outside /api/v1)
-	r.Get("/health", e.handleHealth)
 
 	// API v1 routes
 	r.Route("/api/v1", func(r chi.Router) {
