@@ -533,6 +533,95 @@
     </div>
 
     <script>
+        // ============================================================================
+        // API Module - 统一的 API 请求层
+        // ============================================================================
+        const ApiService = {
+            apiKey: '',
+            
+            setApiKey(key) {
+                this.apiKey = key;
+            },
+            
+            async request(method, path, data = null) {
+                const options = {
+                    method,
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-API-Key': this.apiKey,
+                    },
+                };
+                if (data) options.body = JSON.stringify(data);
+                
+                const res = await fetch(`/api/v1${path}`, options);
+                if (res.status === 401) {
+                    throw { status: 401, message: 'Unauthorized' };
+                }
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw { status: res.status, message: err.error || 'Request failed' };
+                }
+                return res.json();
+            },
+            
+            // Dashboard
+            getDashboard: () => ApiService.request('GET', '/dashboard/overview'),
+            
+            // Apps
+            getApps: () => ApiService.request('GET', '/apps'),
+            createApp: (data) => ApiService.request('POST', '/apps', data),
+            deleteApp: (id) => ApiService.request('DELETE', `/apps/${id}`),
+            regenerateToken: (id) => ApiService.request('POST', `/apps/${id}/token`),
+            
+            // Instances
+            getInstances: (status = '') => ApiService.request('GET', `/instances?status=${status}`),
+            getInstanceStats: () => ApiService.request('GET', '/instances/stats'),
+            kickInstance: (id) => ApiService.request('POST', `/instances/${id}/kick`),
+            
+            // Services
+            getServices: () => ApiService.request('GET', '/services'),
+            
+            // Tasks
+            getTasks: () => ApiService.request('GET', '/tasks'),
+            createTask: (data) => ApiService.request('POST', '/tasks', data),
+            cancelTask: (id) => ApiService.request('DELETE', `/tasks/${id}`),
+        };
+
+        // ============================================================================
+        // Utils Module - 工具函数
+        // ============================================================================
+        const Utils = {
+            formatDate(dateStr) {
+                if (!dateStr) return '-';
+                const date = new Date(dateStr);
+                if (isNaN(date.getTime())) return dateStr;
+                return date.toLocaleString('zh-CN');
+            },
+            
+            copyToClipboard(text) {
+                navigator.clipboard.writeText(text);
+            },
+            
+            truncate(str, len = 20) {
+                if (!str) return '-';
+                return str.length > len ? str.substring(0, len) + '...' : str;
+            },
+        };
+
+        // ============================================================================
+        // Storage Module - 本地存储
+        // ============================================================================
+        const Storage = {
+            API_KEY: 'otel_admin_api_key',
+            
+            getApiKey: () => localStorage.getItem(Storage.API_KEY),
+            setApiKey: (key) => localStorage.setItem(Storage.API_KEY, key),
+            removeApiKey: () => localStorage.removeItem(Storage.API_KEY),
+        };
+
+        // ============================================================================
+        // Main App
+        // ============================================================================
         function adminApp() {
             return {
                 // Auth state
@@ -544,11 +633,13 @@
                 loginLoading: false,
                 loginError: '',
                 
-                // State
+                // Navigation
                 currentView: 'dashboard',
+                
+                // Connection status
                 connected: true,
                 
-                // Data
+                // Data stores
                 dashboard: {},
                 apps: [],
                 instances: [],
@@ -558,6 +649,15 @@
                 
                 // Filters
                 instanceFilter: '',
+                
+                // Loading states
+                loading: {
+                    dashboard: false,
+                    apps: false,
+                    instances: false,
+                    services: false,
+                    tasks: false,
+                },
                 
                 // Modals
                 showCreateAppModal: false,
@@ -572,7 +672,7 @@
                 // Toast
                 toast: { show: false, message: '', type: 'info' },
                 
-                // Menu
+                // Menu config
                 menuItems: [
                     { id: 'dashboard', label: 'Dashboard', icon: 'fas fa-chart-pie' },
                     { id: 'apps', label: 'Applications', icon: 'fas fa-cube' },
@@ -580,257 +680,283 @@
                     { id: 'services', label: 'Services', icon: 'fas fa-sitemap' },
                     { id: 'tasks', label: 'Tasks', icon: 'fas fa-tasks' },
                 ],
-                
-                // Initialize
+
+                // ============================================================================
+                // Lifecycle
+                // ============================================================================
                 async init() {
-                    // Check for saved API key
-                    const savedKey = localStorage.getItem('otel_admin_api_key');
+                    // Try auto-login with saved key
+                    const savedKey = Storage.getApiKey();
                     if (savedKey) {
-                        this.apiKey = savedKey;
                         this.apiKeyInput = savedKey;
-                        // Verify the key is still valid
-                        try {
-                            await this.verifyApiKey(savedKey);
-                            this.authenticated = true;
-                            await this.loadDashboard();
-                            await this.loadApps();
-                        } catch (e) {
-                            // Key invalid, show login
-                            localStorage.removeItem('otel_admin_api_key');
-                            this.apiKey = '';
-                        }
+                        await this.login(true);
                     }
                     
-                    // Auto refresh when authenticated
-                    setInterval(() => {
-                        if (!this.authenticated) return;
-                        if (this.currentView === 'dashboard') this.loadDashboard();
-                        if (this.currentView === 'instances') this.loadInstances();
-                    }, 30000);
+                    // Watch view changes to auto-load data
+                    this.$watch('currentView', (view) => this.onViewChange(view));
+                    
+                    // Auto refresh timer
+                    setInterval(() => this.autoRefresh(), 30000);
                 },
                 
-                // Auth methods
-                async login() {
-                    this.loginLoading = true;
+                onViewChange(view) {
+                    if (!this.authenticated) return;
+                    
+                    const loaders = {
+                        dashboard: () => this.loadDashboard(),
+                        apps: () => this.loadApps(),
+                        instances: () => this.loadInstances(),
+                        services: () => this.loadServices(),
+                        tasks: () => this.loadTasks(),
+                    };
+                    
+                    if (loaders[view]) loaders[view]();
+                },
+                
+                autoRefresh() {
+                    if (!this.authenticated) return;
+                    if (this.currentView === 'dashboard') this.loadDashboard();
+                    if (this.currentView === 'instances') this.loadInstances();
+                },
+
+                // ============================================================================
+                // Auth
+                // ============================================================================
+                async login(silent = false) {
+                    if (!silent) this.loginLoading = true;
                     this.loginError = '';
+                    
                     try {
-                        await this.verifyApiKey(this.apiKeyInput);
+                        ApiService.setApiKey(this.apiKeyInput);
+                        await ApiService.getDashboard();
+                        
                         this.apiKey = this.apiKeyInput;
                         this.authenticated = true;
+                        
                         if (this.rememberApiKey) {
-                            localStorage.setItem('otel_admin_api_key', this.apiKey);
+                            Storage.setApiKey(this.apiKey);
                         }
+                        
+                        // Load initial data
                         await this.loadDashboard();
                         await this.loadApps();
                     } catch (e) {
-                        this.loginError = 'Invalid API Key';
+                        if (!silent) {
+                            this.loginError = e.status === 401 ? 'Invalid API Key' : e.message;
+                        }
+                        Storage.removeApiKey();
                     } finally {
                         this.loginLoading = false;
                     }
-                },
-                
-                async verifyApiKey(key) {
-                    const res = await fetch('/api/v1/dashboard/overview', {
-                        headers: { 'X-API-Key': key }
-                    });
-                    if (!res.ok) throw new Error('Invalid API Key');
-                    return await res.json();
                 },
                 
                 logout() {
                     this.authenticated = false;
                     this.apiKey = '';
                     this.apiKeyInput = '';
-                    localStorage.removeItem('otel_admin_api_key');
+                    ApiService.setApiKey('');
+                    Storage.removeApiKey();
+                    
+                    // Clear data
                     this.dashboard = {};
                     this.apps = [];
                     this.instances = [];
                     this.services = [];
                     this.tasks = [];
+                    this.instanceStats = {};
                 },
-                
-                // API calls
-                async api(method, path, data = null) {
-                    try {
-                        const options = {
-                            method,
-                            headers: { 
-                                'Content-Type': 'application/json',
-                                'X-API-Key': this.apiKey,
-                            },
-                        };
-                        if (data) options.body = JSON.stringify(data);
-                        
-                        const res = await fetch(`/api/v1${path}`, options);
-                        if (res.status === 401) {
-                            this.logout();
-                            throw new Error('Session expired, please login again');
-                        }
-                        if (!res.ok) {
-                            const err = await res.json();
-                            throw new Error(err.error || 'Request failed');
-                        }
-                        return await res.json();
-                    } catch (e) {
-                        this.showToast(e.message, 'error');
-                        throw e;
-                    }
-                },
-                
-                // Dashboard
+
+                // ============================================================================
+                // Data Loaders
+                // ============================================================================
                 async loadDashboard() {
+                    if (this.loading.dashboard) return;
+                    this.loading.dashboard = true;
                     try {
-                        this.dashboard = await this.api('GET', '/dashboard/overview');
+                        this.dashboard = await ApiService.getDashboard();
+                        this.connected = true;
                     } catch (e) {
-                        console.error('Failed to load dashboard:', e);
+                        this.handleError(e, 'Failed to load dashboard');
+                    } finally {
+                        this.loading.dashboard = false;
                     }
                 },
                 
-                // Apps
                 async loadApps() {
+                    if (this.loading.apps) return;
+                    this.loading.apps = true;
                     try {
-                        const res = await this.api('GET', '/apps');
+                        const res = await ApiService.getApps();
                         this.apps = res.apps || [];
                     } catch (e) {
-                        console.error('Failed to load apps:', e);
+                        this.handleError(e, 'Failed to load apps');
+                    } finally {
+                        this.loading.apps = false;
                     }
                 },
                 
+                async loadInstances() {
+                    if (this.loading.instances) return;
+                    this.loading.instances = true;
+                    try {
+                        const [instancesRes, statsRes] = await Promise.all([
+                            ApiService.getInstances(this.instanceFilter),
+                            ApiService.getInstanceStats(),
+                        ]);
+                        this.instances = instancesRes.instances || [];
+                        this.instanceStats = statsRes;
+                    } catch (e) {
+                        this.handleError(e, 'Failed to load instances');
+                    } finally {
+                        this.loading.instances = false;
+                    }
+                },
+                
+                async loadServices() {
+                    if (this.loading.services) return;
+                    this.loading.services = true;
+                    try {
+                        const res = await ApiService.getServices();
+                        this.services = res.services || [];
+                    } catch (e) {
+                        this.handleError(e, 'Failed to load services');
+                    } finally {
+                        this.loading.services = false;
+                    }
+                },
+                
+                async loadTasks() {
+                    if (this.loading.tasks) return;
+                    this.loading.tasks = true;
+                    try {
+                        const res = await ApiService.getTasks();
+                        this.tasks = res.tasks || [];
+                    } catch (e) {
+                        this.handleError(e, 'Failed to load tasks');
+                    } finally {
+                        this.loading.tasks = false;
+                    }
+                },
+
+                // ============================================================================
+                // Actions - Apps
+                // ============================================================================
                 async createApp() {
                     try {
-                        await this.api('POST', '/apps', this.newApp);
+                        await ApiService.createApp(this.newApp);
                         this.showToast('Application created successfully', 'success');
                         this.showCreateAppModal = false;
                         this.newApp = { name: '', description: '' };
                         await this.loadApps();
                     } catch (e) {
-                        console.error('Failed to create app:', e);
+                        this.handleError(e, 'Failed to create app');
                     }
                 },
                 
                 async regenerateToken(app) {
                     if (!confirm(`Regenerate token for "${app.name}"? This will invalidate the current token.`)) return;
                     try {
-                        await this.api('POST', `/apps/${app.id}/token`);
+                        await ApiService.regenerateToken(app.id);
                         this.showToast('Token regenerated successfully', 'success');
                         await this.loadApps();
                     } catch (e) {
-                        console.error('Failed to regenerate token:', e);
+                        this.handleError(e, 'Failed to regenerate token');
                     }
                 },
                 
                 async confirmDeleteApp(app) {
                     if (!confirm(`Delete "${app.name}"? This action cannot be undone.`)) return;
                     try {
-                        await this.api('DELETE', `/apps/${app.id}`);
+                        await ApiService.deleteApp(app.id);
                         this.showToast('Application deleted successfully', 'success');
                         await this.loadApps();
                     } catch (e) {
-                        console.error('Failed to delete app:', e);
+                        this.handleError(e, 'Failed to delete app');
                     }
                 },
                 
                 viewAppDetail(app) {
-                    this.detailTitle = `App: ${app.name}`;
-                    this.detailData = app;
-                    this.showDetailModal = true;
+                    this.showDetail(`App: ${app.name}`, app);
                 },
                 
                 editApp(app) {
-                    // TODO: Implement edit modal
                     this.showToast('Edit feature coming soon', 'info');
                 },
-                
-                // Instances
-                async loadInstances() {
-                    try {
-                        const status = this.instanceFilter || '';
-                        const res = await this.api('GET', `/instances?status=${status}`);
-                        this.instances = res.instances || [];
-                        
-                        const stats = await this.api('GET', '/instances/stats');
-                        this.instanceStats = stats;
-                    } catch (e) {
-                        console.error('Failed to load instances:', e);
-                    }
-                },
-                
+
+                // ============================================================================
+                // Actions - Instances
+                // ============================================================================
                 async kickInstance(instance) {
-                    if (!confirm(`Kick instance "${instance.agent_id}"?`)) return;
+                    if (!confirm(`Kick instance "${Utils.truncate(instance.agent_id)}"?`)) return;
                     try {
-                        await this.api('POST', `/instances/${instance.agent_id}/kick`);
+                        await ApiService.kickInstance(instance.agent_id);
                         this.showToast('Instance kicked successfully', 'success');
                         await this.loadInstances();
                     } catch (e) {
-                        console.error('Failed to kick instance:', e);
+                        this.handleError(e, 'Failed to kick instance');
                     }
                 },
                 
                 viewInstanceDetail(instance) {
-                    this.detailTitle = `Instance: ${instance.agent_id}`;
-                    this.detailData = instance;
-                    this.showDetailModal = true;
+                    this.showDetail(`Instance: ${Utils.truncate(instance.agent_id)}`, instance);
                 },
-                
-                // Services
-                async loadServices() {
-                    try {
-                        const res = await this.api('GET', '/services');
-                        this.services = res.services || [];
-                    } catch (e) {
-                        console.error('Failed to load services:', e);
-                    }
-                },
-                
+
+                // ============================================================================
+                // Actions - Services
+                // ============================================================================
                 viewServiceInstances(service) {
                     this.currentView = 'instances';
-                    // TODO: Filter by service
-                    this.loadInstances();
                 },
-                
-                // Tasks
-                async loadTasks() {
-                    try {
-                        const res = await this.api('GET', '/tasks');
-                        this.tasks = res.tasks || [];
-                    } catch (e) {
-                        console.error('Failed to load tasks:', e);
-                    }
-                },
-                
+
+                // ============================================================================
+                // Actions - Tasks
+                // ============================================================================
                 async cancelTask(task) {
                     if (!confirm(`Cancel task "${task.task_id}"?`)) return;
                     try {
-                        await this.api('DELETE', `/tasks/${task.task_id}`);
+                        await ApiService.cancelTask(task.task_id);
                         this.showToast('Task cancelled successfully', 'success');
                         await this.loadTasks();
                     } catch (e) {
-                        console.error('Failed to cancel task:', e);
+                        this.handleError(e, 'Failed to cancel task');
                     }
                 },
                 
                 viewTaskDetail(task) {
-                    this.detailTitle = `Task: ${task.task_id}`;
-                    this.detailData = task;
+                    this.showDetail(`Task: ${task.task_id}`, task);
+                },
+
+                // ============================================================================
+                // UI Helpers
+                // ============================================================================
+                showDetail(title, data) {
+                    this.detailTitle = title;
+                    this.detailData = data;
                     this.showDetailModal = true;
-                },
-                
-                // Utilities
-                formatDate(dateStr) {
-                    if (!dateStr) return '-';
-                    const date = new Date(dateStr);
-                    if (isNaN(date.getTime())) return dateStr;
-                    return date.toLocaleString('zh-CN');
-                },
-                
-                copyToClipboard(text) {
-                    navigator.clipboard.writeText(text);
-                    this.showToast('Copied to clipboard', 'success');
                 },
                 
                 showToast(message, type = 'info') {
                     this.toast = { show: true, message, type };
                     setTimeout(() => { this.toast.show = false; }, 3000);
+                },
+                
+                handleError(e, defaultMsg) {
+                    if (e.status === 401) {
+                        this.logout();
+                        this.showToast('Session expired, please login again', 'error');
+                    } else {
+                        this.connected = false;
+                        this.showToast(e.message || defaultMsg, 'error');
+                    }
+                },
+                
+                // Utility proxies
+                formatDate: Utils.formatDate,
+                truncate: Utils.truncate,
+                
+                copyToClipboard(text) {
+                    Utils.copyToClipboard(text);
+                    this.showToast('Copied to clipboard', 'success');
                 },
             };
         }
