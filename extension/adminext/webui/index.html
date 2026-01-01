@@ -30,6 +30,49 @@
     </script>
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="adminApp()" x-init="init()">
+    <!-- Login Screen -->
+    <div x-show="!authenticated" x-cloak class="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 slide-in">
+            <div class="text-center mb-8">
+                <div class="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <i class="fas fa-satellite-dish text-primary-600 text-2xl"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-gray-800">OTel Admin</h1>
+                <p class="text-gray-500 mt-1">Control Plane Dashboard</p>
+            </div>
+            <form @submit.prevent="login()">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">API Key</label>
+                        <div class="relative">
+                            <input :type="showApiKey ? 'text' : 'password'" x-model="apiKeyInput" required
+                                class="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 pr-12"
+                                placeholder="Enter your API Key">
+                            <button type="button" @click="showApiKey = !showApiKey" 
+                                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                                <i :class="showApiKey ? 'fas fa-eye-slash' : 'fas fa-eye'"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" id="rememberKey" x-model="rememberApiKey" 
+                            class="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500">
+                        <label for="rememberKey" class="text-sm text-gray-600">Remember API Key</label>
+                    </div>
+                </div>
+                <button type="submit" :disabled="loginLoading"
+                    class="w-full mt-6 px-4 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center justify-center gap-2 disabled:opacity-50">
+                    <i x-show="loginLoading" class="fas fa-spinner fa-spin"></i>
+                    <span x-text="loginLoading ? 'Authenticating...' : 'Login'"></span>
+                </button>
+                <p x-show="loginError" x-text="loginError" class="mt-4 text-center text-sm text-red-500"></p>
+            </form>
+            <p class="mt-6 text-xs text-gray-400 text-center">API Key is configured in the collector config file</p>
+        </div>
+    </div>
+
+    <!-- Main App (shown after login) -->
+    <div x-show="authenticated" x-cloak>
     <!-- Sidebar -->
     <aside class="fixed left-0 top-0 h-full w-64 bg-gray-900 text-white shadow-xl z-50">
         <div class="p-6 border-b border-gray-700">
@@ -52,9 +95,14 @@
             </template>
         </nav>
         <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-700">
-            <div class="flex items-center gap-2 text-sm text-gray-400">
-                <span class="w-2 h-2 rounded-full" :class="connected ? 'bg-green-500' : 'bg-red-500'"></span>
-                <span x-text="connected ? 'Connected' : 'Disconnected'"></span>
+            <div class="flex items-center justify-between text-sm text-gray-400">
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full" :class="connected ? 'bg-green-500' : 'bg-red-500'"></span>
+                    <span x-text="connected ? 'Connected' : 'Disconnected'"></span>
+                </div>
+                <button @click="logout()" class="text-gray-400 hover:text-white transition" title="Logout">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
             </div>
         </div>
     </aside>
@@ -412,6 +460,7 @@
             </div>
         </div>
     </main>
+    </div> <!-- End of authenticated content -->
 
     <!-- Create App Modal -->
     <div x-show="showCreateAppModal" x-cloak 
@@ -486,6 +535,15 @@
     <script>
         function adminApp() {
             return {
+                // Auth state
+                authenticated: false,
+                apiKey: '',
+                apiKeyInput: '',
+                showApiKey: false,
+                rememberApiKey: true,
+                loginLoading: false,
+                loginError: '',
+                
                 // State
                 currentView: 'dashboard',
                 connected: true,
@@ -525,14 +583,70 @@
                 
                 // Initialize
                 async init() {
-                    await this.loadDashboard();
-                    await this.loadApps();
+                    // Check for saved API key
+                    const savedKey = localStorage.getItem('otel_admin_api_key');
+                    if (savedKey) {
+                        this.apiKey = savedKey;
+                        this.apiKeyInput = savedKey;
+                        // Verify the key is still valid
+                        try {
+                            await this.verifyApiKey(savedKey);
+                            this.authenticated = true;
+                            await this.loadDashboard();
+                            await this.loadApps();
+                        } catch (e) {
+                            // Key invalid, show login
+                            localStorage.removeItem('otel_admin_api_key');
+                            this.apiKey = '';
+                        }
+                    }
                     
-                    // Auto refresh
+                    // Auto refresh when authenticated
                     setInterval(() => {
+                        if (!this.authenticated) return;
                         if (this.currentView === 'dashboard') this.loadDashboard();
                         if (this.currentView === 'instances') this.loadInstances();
                     }, 30000);
+                },
+                
+                // Auth methods
+                async login() {
+                    this.loginLoading = true;
+                    this.loginError = '';
+                    try {
+                        await this.verifyApiKey(this.apiKeyInput);
+                        this.apiKey = this.apiKeyInput;
+                        this.authenticated = true;
+                        if (this.rememberApiKey) {
+                            localStorage.setItem('otel_admin_api_key', this.apiKey);
+                        }
+                        await this.loadDashboard();
+                        await this.loadApps();
+                    } catch (e) {
+                        this.loginError = 'Invalid API Key';
+                    } finally {
+                        this.loginLoading = false;
+                    }
+                },
+                
+                async verifyApiKey(key) {
+                    const res = await fetch('/api/v1/dashboard/overview', {
+                        headers: { 'X-API-Key': key }
+                    });
+                    if (!res.ok) throw new Error('Invalid API Key');
+                    return await res.json();
+                },
+                
+                logout() {
+                    this.authenticated = false;
+                    this.apiKey = '';
+                    this.apiKeyInput = '';
+                    localStorage.removeItem('otel_admin_api_key');
+                    this.dashboard = {};
+                    this.apps = [];
+                    this.instances = [];
+                    this.services = [];
+                    this.tasks = [];
                 },
                 
                 // API calls
@@ -540,11 +654,18 @@
                     try {
                         const options = {
                             method,
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: { 
+                                'Content-Type': 'application/json',
+                                'X-API-Key': this.apiKey,
+                            },
                         };
                         if (data) options.body = JSON.stringify(data);
                         
                         const res = await fetch(`/api/v1${path}`, options);
+                        if (res.status === 401) {
+                            this.logout();
+                            throw new Error('Session expired, please login again');
+                        }
                         if (!res.ok) {
                             const err = await res.json();
                             throw new Error(err.error || 'Request failed');

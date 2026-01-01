@@ -20,42 +20,44 @@ import (
 func (e *Extension) newRouter() http.Handler {
 	r := chi.NewRouter()
 
-	// Global middleware
+	// Global middleware (must be defined before any routes)
 	r.Use(middleware.Recoverer)
 	r.Use(e.loggingMiddleware)
 	if e.config.CORS.Enabled {
 		r.Use(e.corsMiddleware)
 	}
 
-	// Health check (outside /api/v1, no auth required)
+	// Health check (no auth required)
 	r.Get("/health", e.handleHealth)
 
 	// WebUI - serve embedded static files (no auth required for UI assets)
 	webUI, err := newWebUIHandler()
 	if err == nil {
+		serveIndex := func(w http.ResponseWriter, req *http.Request) {
+			req.URL.Path = "/index.html"
+			webUI.ServeHTTP(w, req)
+		}
 		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
 			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
 		})
 		r.Get("/ui", func(w http.ResponseWriter, req *http.Request) {
 			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
 		})
+		// Handle /ui/ explicitly (chi's /* doesn't match trailing slash)
+		r.Get("/ui/", serveIndex)
 		r.Get("/ui/*", func(w http.ResponseWriter, req *http.Request) {
 			// Strip /ui prefix for file serving
 			req.URL.Path = strings.TrimPrefix(req.URL.Path, "/ui")
-			if req.URL.Path == "" || req.URL.Path == "/" {
-				req.URL.Path = "/index.html"
-			}
 			webUI.ServeHTTP(w, req)
 		})
 	}
 
-	// Apply auth middleware only to API routes
-	if e.config.Auth.Enabled {
-		r.Use(e.authMiddleware)
-	}
-
-	// API v1 routes
+	// API v1 routes (with optional auth middleware)
 	r.Route("/api/v1", func(r chi.Router) {
+		// Apply auth middleware only to API routes
+		if e.config.Auth.Enabled {
+			r.Use(e.authMiddleware)
+		}
 		// ============================================================================
 		// App Management (App = AppGroup, 1:1 with Token)
 		// ============================================================================
