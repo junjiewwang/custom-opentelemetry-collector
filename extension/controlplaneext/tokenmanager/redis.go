@@ -386,3 +386,104 @@ func (r *RedisTokenManager) RegenerateToken(ctx context.Context, appID string) (
 
 	return app, nil
 }
+
+// SetToken sets a custom token for an app.
+// Uses Redis WATCH for optimistic locking to prevent concurrent token conflicts.
+func (r *RedisTokenManager) SetToken(ctx context.Context, appID string, req *SetTokenRequest) (*AppInfo, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Use WATCH for optimistic locking on the tokens key
+	const maxRetries = 3
+	var lastErr error
+
+	for i := 0; i < maxRetries; i++ {
+		app, err := r.setTokenWithWatch(ctx, appID, req)
+		if err == nil {
+			return app, nil
+		}
+		if errors.Is(err, redis.TxFailedErr) {
+			// Transaction failed due to concurrent modification, retry
+			lastErr = err
+			continue
+		}
+		// Other errors, return immediately
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("failed to set token after %d retries due to concurrent modifications: %w", maxRetries, lastErr)
+}
+
+// setTokenWithWatch performs the token update with WATCH for optimistic locking.
+func (r *RedisTokenManager) setTokenWithWatch(ctx context.Context, appID string, req *SetTokenRequest) (*AppInfo, error) {
+	app, err := r.GetApp(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+
+	oldToken := app.Token
+
+	// Use custom token if provided, otherwise generate one
+	newToken := req.Token
+	if newToken == "" {
+		newToken, err = GenerateToken(0)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Check for duplicate token (excluding current app's token)
+		existingAppID, err := r.client.HGet(ctx, r.tokensKey(), newToken).Result()
+		if err == nil && existingAppID != appID {
+			// Get the app name for a more friendly error message
+			existingApp, _ := r.GetApp(ctx, existingAppID)
+			if existingApp != nil {
+				return nil, fmt.Errorf("token already in use by application '%s'", existingApp.Name)
+			}
+			return nil, errors.New("token already in use by another application")
+		}
+	}
+
+	// If token unchanged, return early
+	if newToken == oldToken {
+		return app, nil
+	}
+
+	app.Token = newToken
+	app.UpdatedAt = time.Now()
+
+	// Serialize
+	data, err := json.Marshal(app)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use WATCH + MULTI/EXEC for optimistic locking
+	err = r.client.Watch(ctx, func(tx *redis.Tx) error {
+		// Re-check token uniqueness within the transaction
+		existingAppID, err := tx.HGet(ctx, r.tokensKey(), newToken).Result()
+		if err == nil && existingAppID != appID {
+			return errors.New("token already in use by another application")
+		}
+
+		// Execute transaction
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, r.appsKey(), appID, string(data))
+			pipe.HDel(ctx, r.tokensKey(), oldToken)
+			pipe.HSet(ctx, r.tokensKey(), newToken, appID)
+			return nil
+		})
+		return err
+	}, r.tokensKey())
+
+	if err != nil {
+		return nil, err
+	}
+
+	r.logger.Info("Token set",
+		zap.String("id", appID),
+		zap.String("name", app.Name),
+	)
+
+	return app, nil
+}

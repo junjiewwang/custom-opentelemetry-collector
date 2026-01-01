@@ -6,6 +6,7 @@ package tokenmanager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -314,6 +315,63 @@ func (m *MemoryTokenManager) RegenerateToken(ctx context.Context, appID string) 
 	m.tokens[newToken] = appID
 
 	m.logger.Info("Token regenerated",
+		zap.String("id", appID),
+		zap.String("name", app.Name),
+	)
+
+	return app, nil
+}
+
+// SetToken sets a custom token for an app.
+func (m *MemoryTokenManager) SetToken(ctx context.Context, appID string, req *SetTokenRequest) (*AppInfo, error) {
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	app, ok := m.apps[appID]
+	if !ok {
+		return nil, errors.New("app not found")
+	}
+
+	oldToken := app.Token
+
+	// Use custom token if provided, otherwise generate one
+	newToken := req.Token
+	if newToken == "" {
+		var err error
+		newToken, err = GenerateToken(0)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Check for duplicate token (excluding current app's token)
+		if existingAppID, exists := m.tokens[newToken]; exists && existingAppID != appID {
+			// Get the app name for a more friendly error message
+			if existingApp, ok := m.apps[existingAppID]; ok {
+				return nil, fmt.Errorf("token already in use by application '%s'", existingApp.Name)
+			}
+			return nil, errors.New("token already in use by another application")
+		}
+	}
+
+	// If token unchanged, return early
+	if newToken == oldToken {
+		return app, nil
+	}
+
+	// Remove old token
+	delete(m.tokens, oldToken)
+
+	app.Token = newToken
+	app.UpdatedAt = time.Now()
+
+	// Add new token mapping
+	m.tokens[newToken] = appID
+
+	m.logger.Info("Token set",
 		zap.String("id", appID),
 		zap.String("name", app.Name),
 	)

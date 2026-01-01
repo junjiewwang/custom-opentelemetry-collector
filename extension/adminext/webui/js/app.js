@@ -29,11 +29,21 @@ const AUTO_REFRESH_INTERVAL = 30000;
 const TOAST_DURATION = 3000;
 
 /**
+ * Token 最大长度（与后端 MaxTokenLength 保持一致）
+ */
+const MAX_TOKEN_LENGTH = 64;
+
+/**
  * 创建 Admin App 实例
  * @returns {Object} Alpine.js data object
  */
 export function adminApp() {
     return {
+        // ============================================================================
+        // Constants (exposed to template)
+        // ============================================================================
+        MAX_TOKEN_LENGTH,
+
         // ============================================================================
         // State - 认证
         // ============================================================================
@@ -88,6 +98,7 @@ export function adminApp() {
         showCreateAppModal: false,
         showDetailModal: false,
         showCreateTaskModal: false,
+        showSetTokenModal: false,
         detailTitle: '',
         detailData: null,
 
@@ -95,6 +106,8 @@ export function adminApp() {
         // State - 表单
         // ============================================================================
         newApp: { name: '', description: '' },
+        setTokenApp: null,
+        customToken: '',
 
         // ============================================================================
         // State - Toast
@@ -273,11 +286,35 @@ export function adminApp() {
             }
         },
 
-        async regenerateToken(app) {
-            if (!confirm(`Regenerate token for "${app.name}"? This will invalidate the current token.`)) return;
+        openSetTokenModal(app) {
+            this.setTokenApp = app;
+            this.customToken = '';
+            this.showSetTokenModal = true;
+        },
+
+        async setCustomToken() {
+            if (!this.setTokenApp || !this.customToken) return;
             try {
-                await ApiService.regenerateToken(app.id);
+                await ApiService.setToken(this.setTokenApp.id, this.customToken);
+                this.showToast('Token updated successfully', 'success');
+                this.showSetTokenModal = false;
+                this.setTokenApp = null;
+                this.customToken = '';
+                await this.loadApps();
+            } catch (e) {
+                this.handleError(e, 'Failed to set token');
+            }
+        },
+
+        async regenerateTokenInModal() {
+            if (!this.setTokenApp) return;
+            if (!confirm(`Generate a new random token for "${this.setTokenApp.name}"? This will invalidate the current token.`)) return;
+            try {
+                await ApiService.regenerateToken(this.setTokenApp.id);
                 this.showToast('Token regenerated successfully', 'success');
+                this.showSetTokenModal = false;
+                this.setTokenApp = null;
+                this.customToken = '';
                 await this.loadApps();
             } catch (e) {
                 this.handleError(e, 'Failed to regenerate token');

@@ -141,6 +141,25 @@ func (e *Extension) regenerateAppToken(w http.ResponseWriter, r *http.Request) {
 	e.writeJSON(w, http.StatusOK, app)
 }
 
+func (e *Extension) setAppToken(w http.ResponseWriter, r *http.Request) {
+	appID := chi.URLParam(r, "appID")
+
+	req, err := decodeJSON[tokenmanager.SetTokenRequest](r)
+	if err != nil {
+		e.handleError(w, errBadRequest(err.Error()))
+		return
+	}
+
+	app, err := e.tokenMgr.SetToken(r.Context(), appID, req)
+	if err != nil {
+		e.handleError(w, err)
+		return
+	}
+
+	e.logger.Info("Token set via API", zap.String("app_id", appID))
+	e.writeJSON(w, http.StatusOK, app)
+}
+
 // ============================================================================
 // App Config Management
 // ============================================================================

@@ -59,6 +59,10 @@ class ApiServiceClass {
         return this.request('POST', `/apps/${id}/token`);
     }
 
+    setToken(id, token) {
+        return this.request('PUT', `/apps/${id}/token`, { token });
+    }
+
     // Instances
     getInstances(status = '') {
         return this.request('GET', `/instances?status=${status}`);

@@ -22,7 +22,6 @@ export const Utils = {
      * @returns {string} 格式化后的日期时间
      */
     formatTimestamp(timestamp) {
-        console.log('[Utils] formatTimestamp called with:', timestamp, typeof timestamp);
         if (!timestamp || timestamp === 0) return '-';
         const date = new Date(timestamp);
         if (isNaN(date.getTime())) return '-';
@@ -35,7 +34,6 @@ export const Utils = {
      * @returns {string} 人类可读的时长
      */
     formatUptime(startTime) {
-        console.log('[Utils] formatUptime called with:', startTime, typeof startTime);
         if (!startTime || startTime === 0) return '-';
         const now = Date.now();
         const diff = now - startTime;

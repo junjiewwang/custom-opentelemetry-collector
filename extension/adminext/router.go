@@ -70,6 +70,7 @@ func (e *Extension) newRouter() http.Handler {
 				r.Put("/", e.updateApp)
 				r.Delete("/", e.deleteApp)
 				r.Post("/token", e.regenerateAppToken)
+				r.Put("/token", e.setAppToken)
 
 				// Config management
 				r.Route("/config", func(r chi.Router) {

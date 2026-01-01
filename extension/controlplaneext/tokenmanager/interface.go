@@ -119,6 +119,23 @@ type UpdateAppRequest struct {
 	Status      string            `json:"status,omitempty"`
 }
 
+// SetTokenRequest is the request to set a custom token for an app.
+type SetTokenRequest struct {
+	// Token is the custom token to set. If empty, a new token will be generated.
+	Token string `json:"token"`
+}
+
+// Validate validates the set token request.
+func (r *SetTokenRequest) Validate() error {
+	if r == nil {
+		return errors.New("request cannot be nil")
+	}
+	if r.Token != "" && len(r.Token) > MaxTokenLength {
+		return errors.New("token exceeds maximum length")
+	}
+	return nil
+}
+
 // TokenValidationResult holds the result of token validation.
 type TokenValidationResult struct {
 	Valid   bool   `json:"valid"`
@@ -152,6 +169,10 @@ type TokenManager interface {
 
 	// RegenerateToken generates a new token for an app (invalidates old token).
 	RegenerateToken(ctx context.Context, appID string) (*AppInfo, error)
+
+	// SetToken sets a custom token for an app (invalidates old token).
+	// If the token is empty, a new token will be generated.
+	SetToken(ctx context.Context, appID string, req *SetTokenRequest) (*AppInfo, error)
 
 	// Start initializes the token manager.
 	Start(ctx context.Context) error
