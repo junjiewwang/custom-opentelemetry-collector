@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/extension/extensioncapabilities"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
@@ -40,6 +41,9 @@ type Extension struct {
 
 	// ControlPlane extension reference (when reusing components)
 	controlPlane controlplaneext.ControlPlane
+
+	// Arthas tunnel extension reference
+	arthasTunnel arthastunnelext.ArthasTunnel
 
 	// Core components (either created locally or reused from controlplane)
 	configMgr configmanager.ConfigManager
@@ -100,6 +104,14 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		}
 	}
 
+	// Initialize Arthas tunnel extension if configured
+	if e.config.ArthasTunnelExtension != "" {
+		if err := e.initArthasTunnel(host); err != nil {
+			e.logger.Warn("Failed to initialize Arthas tunnel extension", zap.Error(err))
+			// Don't fail startup, just log warning
+		}
+	}
+
 	// Start HTTP server
 	if err := e.startHTTPServer(); err != nil {
 		return err
@@ -148,6 +160,25 @@ func (e *Extension) initFromControlPlane(host component.Host) error {
 	)
 
 	return nil
+}
+
+// initArthasTunnel initializes the Arthas tunnel extension reference.
+func (e *Extension) initArthasTunnel(host component.Host) error {
+	arthasTunnelType := component.MustNewType(e.config.ArthasTunnelExtension)
+
+	for id, ext := range host.GetExtensions() {
+		if id.Type() == arthasTunnelType {
+			if tunnel, ok := ext.(arthastunnelext.ArthasTunnel); ok {
+				e.arthasTunnel = tunnel
+				e.logger.Info("Arthas tunnel extension initialized",
+					zap.String("extension", e.config.ArthasTunnelExtension),
+				)
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("arthas tunnel extension %q not found or does not implement ArthasTunnel interface", e.config.ArthasTunnelExtension)
 }
 
 // initOwnComponents creates and starts our own component instances.
@@ -308,6 +339,11 @@ func (e *Extension) GetOnDemandConfigManager() configmanager.OnDemandConfigManag
 	return e.onDemandConfigMgr
 }
 
+// GetArthasTunnel returns the Arthas tunnel extension if available.
+func (e *Extension) GetArthasTunnel() arthastunnelext.ArthasTunnel {
+	return e.arthasTunnel
+}
+
 // Dependencies implements extensioncapabilities.Dependent.
 // This ensures the storage extension and controlplane extension are started before this extension.
 func (e *Extension) Dependencies() []component.ID {
@@ -319,6 +355,11 @@ func (e *Extension) Dependencies() []component.ID {
 	} else if e.config.StorageExtension != "" {
 		// Otherwise depend on storage extension if configured
 		deps = append(deps, component.MustNewID(e.config.StorageExtension))
+	}
+
+	// If using arthas tunnel extension, depend on it
+	if e.config.ArthasTunnelExtension != "" {
+		deps = append(deps, component.MustNewID(e.config.ArthasTunnelExtension))
 	}
 
 	return deps

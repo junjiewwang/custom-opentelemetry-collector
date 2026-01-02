@@ -26,6 +26,10 @@ type Config struct {
 	// This is the recommended configuration to avoid duplicate component instances.
 	ControlPlaneExtension string `mapstructure:"controlplane_extension"`
 
+	// ArthasTunnelExtension is the name of the arthas tunnel extension to use.
+	// When set, admin will expose Arthas-related APIs and WebSocket endpoints.
+	ArthasTunnelExtension string `mapstructure:"arthas_tunnel_extension"`
+
 	// HTTP server configuration.
 	HTTP HTTPConfig `mapstructure:"http"`
 

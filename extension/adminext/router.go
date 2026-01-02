@@ -120,6 +120,20 @@ func (e *Extension) newRouter() http.Handler {
 		// Dashboard
 		// ============================================================================
 		r.Get("/dashboard/overview", e.getDashboardOverview)
+
+		// ============================================================================
+		// Arthas Tunnel (if enabled)
+		// ============================================================================
+		if e.arthasTunnel != nil {
+			r.Route("/arthas", func(r chi.Router) {
+				// List agents with active tunnel connections
+				r.Get("/agents", e.listArthasAgents)
+				// Get agent Arthas status
+				r.Get("/agents/{agentID}/status", e.getAgentArthasStatus)
+				// WebSocket endpoint for browser terminal
+				r.Get("/ws", e.handleArthasWebSocket)
+			})
+		}
 	})
 
 	return r

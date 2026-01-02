@@ -29,10 +29,11 @@ import (
 
 	// Custom components
 	"go.opentelemetry.io/collector/custom/extension/adminext"
+	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/processor/tokenauthprocessor"
-	"go.opentelemetry.io/collector/custom/receiver/enhancedotlpreceiver"
+	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver"
 )
 
 func components() (otelcol.Factories, error) {
@@ -46,6 +47,7 @@ func components() (otelcol.Factories, error) {
 		// Custom extensions
 		storageext.NewFactory(),
 		controlplaneext.NewFactory(),
+		arthastunnelext.NewFactory(),
 		adminext.NewFactory(),
 	)
 	if err != nil {
@@ -56,8 +58,8 @@ func components() (otelcol.Factories, error) {
 	factories.Receivers, err = receiver.MakeFactoryMap(
 		nopreceiver.NewFactory(),
 		otlpreceiver.NewFactory(),
-		// Custom enhanced OTLP receiver
-		enhancedotlpreceiver.NewFactory(),
+		// Custom agent gateway receiver (unified OTLP + ControlPlane + Arthas)
+		agentgatewayreceiver.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

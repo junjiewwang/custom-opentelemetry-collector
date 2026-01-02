@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package enhancedotlpreceiver
+package agentgatewayreceiver
 
 import (
 	"context"
@@ -144,13 +144,7 @@ func dataFormatForContentType(contentType string) string {
 }
 
 // handleTraces handles HTTP traces requests.
-func (r *enhancedOTLPReceiver) handleTraces(w http.ResponseWriter, req *http.Request) {
-	// Validate token from header if enabled
-	tokenResult := r.validateTokenFromHeader(w, req)
-	if !tokenResult.valid {
-		return
-	}
-
+func (r *agentGatewayReceiver) handleTraces(w http.ResponseWriter, req *http.Request) {
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
@@ -173,8 +167,8 @@ func (r *enhancedOTLPReceiver) handleTraces(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	// Inject token into resource attributes if configured
-	r.injectTokenToTraces(td, tokenResult.token)
+	// Inject app ID into resource attributes if configured
+	r.injectAppIDToTraces(td, req.Context())
 
 	ctx := r.obsrepHTTP.StartTracesOp(req.Context())
 	err = r.tracesConsumer.ConsumeTraces(ctx, td)
@@ -189,13 +183,7 @@ func (r *enhancedOTLPReceiver) handleTraces(w http.ResponseWriter, req *http.Req
 }
 
 // handleMetrics handles HTTP metrics requests.
-func (r *enhancedOTLPReceiver) handleMetrics(w http.ResponseWriter, req *http.Request) {
-	// Validate token from header if enabled
-	tokenResult := r.validateTokenFromHeader(w, req)
-	if !tokenResult.valid {
-		return
-	}
-
+func (r *agentGatewayReceiver) handleMetrics(w http.ResponseWriter, req *http.Request) {
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
@@ -218,8 +206,8 @@ func (r *enhancedOTLPReceiver) handleMetrics(w http.ResponseWriter, req *http.Re
 		return
 	}
 
-	// Inject token into resource attributes if configured
-	r.injectTokenToMetrics(md, tokenResult.token)
+	// Inject app ID into resource attributes if configured
+	r.injectAppIDToMetrics(md, req.Context())
 
 	ctx := r.obsrepHTTP.StartMetricsOp(req.Context())
 	err = r.metricsConsumer.ConsumeMetrics(ctx, md)
@@ -234,13 +222,7 @@ func (r *enhancedOTLPReceiver) handleMetrics(w http.ResponseWriter, req *http.Re
 }
 
 // handleLogs handles HTTP logs requests.
-func (r *enhancedOTLPReceiver) handleLogs(w http.ResponseWriter, req *http.Request) {
-	// Validate token from header if enabled
-	tokenResult := r.validateTokenFromHeader(w, req)
-	if !tokenResult.valid {
-		return
-	}
-
+func (r *agentGatewayReceiver) handleLogs(w http.ResponseWriter, req *http.Request) {
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
@@ -263,8 +245,8 @@ func (r *enhancedOTLPReceiver) handleLogs(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	// Inject token into resource attributes if configured
-	r.injectTokenToLogs(ld, tokenResult.token)
+	// Inject app ID into resource attributes if configured
+	r.injectAppIDToLogs(ld, req.Context())
 
 	ctx := r.obsrepHTTP.StartLogsOp(req.Context())
 	err = r.logsConsumer.ConsumeLogs(ctx, ld)
@@ -278,46 +260,61 @@ func (r *enhancedOTLPReceiver) handleLogs(w http.ResponseWriter, req *http.Reque
 	writeOTLPResponse(w, contentType, plogotlp.NewExportResponse())
 }
 
-// ===== Token Injection =====
+// ===== App ID Injection =====
 
-// injectTokenToTraces injects the token into all resource attributes of the traces.
-func (r *enhancedOTLPReceiver) injectTokenToTraces(td ptrace.Traces, token string) {
-	attrKey := r.config.GetTokenAuthInjectAttributeKey()
-	if attrKey == "" || token == "" {
+// injectAppIDToTraces injects the app ID into all resource attributes of the traces.
+func (r *agentGatewayReceiver) injectAppIDToTraces(td ptrace.Traces, ctx context.Context) {
+	attrKey := r.config.TokenAuth.InjectAttributeKey
+	if attrKey == "" {
+		return
+	}
+
+	appID := GetAppIDFromContext(ctx)
+	if appID == "" {
 		return
 	}
 
 	resourceSpans := td.ResourceSpans()
 	for i := 0; i < resourceSpans.Len(); i++ {
 		rs := resourceSpans.At(i)
-		rs.Resource().Attributes().PutStr(attrKey, token)
+		rs.Resource().Attributes().PutStr(attrKey, appID)
 	}
 }
 
-// injectTokenToMetrics injects the token into all resource attributes of the metrics.
-func (r *enhancedOTLPReceiver) injectTokenToMetrics(md pmetric.Metrics, token string) {
-	attrKey := r.config.GetTokenAuthInjectAttributeKey()
-	if attrKey == "" || token == "" {
+// injectAppIDToMetrics injects the app ID into all resource attributes of the metrics.
+func (r *agentGatewayReceiver) injectAppIDToMetrics(md pmetric.Metrics, ctx context.Context) {
+	attrKey := r.config.TokenAuth.InjectAttributeKey
+	if attrKey == "" {
+		return
+	}
+
+	appID := GetAppIDFromContext(ctx)
+	if appID == "" {
 		return
 	}
 
 	resourceMetrics := md.ResourceMetrics()
 	for i := 0; i < resourceMetrics.Len(); i++ {
 		rm := resourceMetrics.At(i)
-		rm.Resource().Attributes().PutStr(attrKey, token)
+		rm.Resource().Attributes().PutStr(attrKey, appID)
 	}
 }
 
-// injectTokenToLogs injects the token into all resource attributes of the logs.
-func (r *enhancedOTLPReceiver) injectTokenToLogs(ld plog.Logs, token string) {
-	attrKey := r.config.GetTokenAuthInjectAttributeKey()
-	if attrKey == "" || token == "" {
+// injectAppIDToLogs injects the app ID into all resource attributes of the logs.
+func (r *agentGatewayReceiver) injectAppIDToLogs(ld plog.Logs, ctx context.Context) {
+	attrKey := r.config.TokenAuth.InjectAttributeKey
+	if attrKey == "" {
+		return
+	}
+
+	appID := GetAppIDFromContext(ctx)
+	if appID == "" {
 		return
 	}
 
 	resourceLogs := ld.ResourceLogs()
 	for i := 0; i < resourceLogs.Len(); i++ {
 		rl := resourceLogs.At(i)
-		rl.Resource().Attributes().PutStr(attrKey, token)
+		rl.Resource().Attributes().PutStr(attrKey, appID)
 	}
 }

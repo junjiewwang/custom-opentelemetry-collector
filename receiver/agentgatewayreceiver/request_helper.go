@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package enhancedotlpreceiver
+package agentgatewayreceiver
 
 import (
 	"encoding/json"
@@ -18,24 +18,16 @@ func decodeJSON[T any](r *http.Request) (*T, error) {
 }
 
 // writeJSON writes a JSON response.
-func writeJSON(w http.ResponseWriter, status int, data any) {
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // writeError writes an error response.
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
-}
-
-// errorResponse is a standard error response structure.
-type errorResponse struct {
-	Error string `json:"error"`
-}
-
-// successResponse is a standard success response structure.
-type successResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message,omitempty"`
+	writeJSON(w, status, map[string]any{
+		"error":   http.StatusText(status),
+		"message": message,
+	})
 }

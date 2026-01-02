@@ -1,43 +1,34 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package enhancedotlpreceiver
+package agentgatewayreceiver
 
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver/longpoll"
 )
 
-// controlHandler handles control plane HTTP requests.
-type controlHandler struct {
-	logger       *zap.Logger
-	controlPlane controlplaneext.ControlPlane
+// controlPlaneHandler handles control plane HTTP requests.
+type controlPlaneHandler struct {
+	logger          *zap.Logger
+	controlPlane    controlplaneext.ControlPlane
+	longPollManager *longpoll.Manager
 }
 
-// newControlHandler creates a new control handler.
-func newControlHandler(logger *zap.Logger, controlPlane controlplaneext.ControlPlane) *controlHandler {
-	return &controlHandler{
-		logger:       logger,
-		controlPlane: controlPlane,
+// newControlPlaneHandler creates a new control plane handler.
+func newControlPlaneHandler(logger *zap.Logger, controlPlane controlplaneext.ControlPlane, longPollManager *longpoll.Manager) *controlPlaneHandler {
+	return &controlPlaneHandler{
+		logger:          logger,
+		controlPlane:    controlPlane,
+		longPollManager: longPollManager,
 	}
-}
-
-// requireControlPlane is a middleware that checks if control plane is available.
-func (h *controlHandler) requireControlPlane(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.controlPlane == nil {
-			writeError(w, http.StatusServiceUnavailable, "control plane not available")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // ============================================================================
@@ -45,7 +36,7 @@ func (h *controlHandler) requireControlPlane(next http.Handler) http.Handler {
 // ============================================================================
 
 // getConfig handles GET /v1/control/config - fetch current config.
-func (h *controlHandler) getConfig(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) getConfig(w http.ResponseWriter, r *http.Request) {
 	config := h.controlPlane.GetCurrentConfig()
 	writeJSON(w, http.StatusOK, &controlplanev1.ConfigResponse{
 		Success: true,
@@ -55,7 +46,7 @@ func (h *controlHandler) getConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // postConfig handles POST /v1/control/config - update config or fetch config.
-func (h *controlHandler) postConfig(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) postConfig(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[controlplanev1.ConfigRequest](r)
 	if err != nil {
 		// Handle empty body as config fetch request
@@ -101,7 +92,7 @@ func (h *controlHandler) postConfig(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 // getTasks handles GET /v1/control/tasks - retrieve task result or pending tasks.
-func (h *controlHandler) getTasks(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) getTasks(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task_id")
 	if taskID == "" {
 		// Return pending tasks
@@ -127,7 +118,7 @@ func (h *controlHandler) getTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // createTask handles POST /v1/control/tasks - submit new task.
-func (h *controlHandler) createTask(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) createTask(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[controlplanev1.TaskRequest](r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -156,7 +147,7 @@ func (h *controlHandler) createTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteTask handles DELETE /v1/control/tasks - cancel task.
-func (h *controlHandler) deleteTask(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) deleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task_id")
 	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "task_id is required")
@@ -180,7 +171,7 @@ func (h *controlHandler) deleteTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // cancelTasks handles POST /v1/control/tasks/cancel - batch cancel tasks.
-func (h *controlHandler) cancelTasks(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) cancelTasks(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[taskCancelRequest](r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -212,15 +203,15 @@ type taskCancelRequest struct {
 // ============================================================================
 
 // getStatus handles GET /v1/control/status - retrieve current status.
-func (h *controlHandler) getStatus(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) getStatus(w http.ResponseWriter, r *http.Request) {
 	status := h.controlPlane.GetStatus()
 	writeJSON(w, http.StatusOK, status)
 }
 
 // postStatus handles POST /v1/control/status - report status and get pending tasks.
-func (h *controlHandler) postStatus(w http.ResponseWriter, r *http.Request) {
-	// Extract AppID from token in header
-	appID := h.extractAppIDFromToken(r)
+func (h *controlPlaneHandler) postStatus(w http.ResponseWriter, r *http.Request) {
+	// Extract AppID from context (set by auth middleware)
+	appID := GetAppIDFromContext(r.Context())
 
 	// Read body for parsing
 	req, err := decodeJSON[json.RawMessage](r)
@@ -265,11 +256,16 @@ func (h *controlHandler) postStatus(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 // registerAgent handles POST /v1/control/register.
-func (h *controlHandler) registerAgent(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) registerAgent(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[agentregistry.AgentInfo](r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
+	}
+
+	// Set AppID from context if not provided
+	if req.AppID == "" {
+		req.AppID = GetAppIDFromContext(r.Context())
 	}
 
 	if err := h.controlPlane.RegisterAgent(r.Context(), req); err != nil {
@@ -289,7 +285,7 @@ func (h *controlHandler) registerAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // unregisterAgent handles POST /v1/control/unregister.
-func (h *controlHandler) unregisterAgent(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) unregisterAgent(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[agentUnregisterRequest](r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -322,7 +318,7 @@ type agentUnregisterRequest struct {
 }
 
 // listAgents handles GET /v1/control/agents.
-func (h *controlHandler) listAgents(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) listAgents(w http.ResponseWriter, r *http.Request) {
 	// Check for agent_id in query
 	agentID := r.URL.Query().Get("agent_id")
 	if agentID != "" {
@@ -349,7 +345,7 @@ func (h *controlHandler) listAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 // getAgentStats handles GET /v1/control/agents/stats.
-func (h *controlHandler) getAgentStats(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) getAgentStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.controlPlane.GetAgentStats(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -363,7 +359,7 @@ func (h *controlHandler) getAgentStats(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 // uploadChunk handles POST /v1/control/upload-chunk.
-func (h *controlHandler) uploadChunk(w http.ResponseWriter, r *http.Request) {
+func (h *controlPlaneHandler) uploadChunk(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[controlplanev1.UploadChunkRequest](r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -384,41 +380,98 @@ func (h *controlHandler) uploadChunk(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
+// Long Polling
+// ============================================================================
+
+// poll handles POST /v1/control/poll - unified long polling endpoint.
+func (h *controlPlaneHandler) poll(w http.ResponseWriter, r *http.Request) {
+	if h.longPollManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "long poll not available")
+		return
+	}
+
+	req, err := decodeJSON[longpoll.PollRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+
+	// Set token from context if not provided
+	if req.Token == "" {
+		req.Token = GetAppIDFromContext(r.Context())
+	}
+
+	// Execute long polling
+	response, err := h.longPollManager.Poll(r.Context(), req)
+	if err != nil {
+		h.logger.Error("Long poll failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+// pollConfig handles POST /v1/control/poll/config - config-only long polling.
+func (h *controlPlaneHandler) pollConfig(w http.ResponseWriter, r *http.Request) {
+	if h.longPollManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "long poll not available")
+		return
+	}
+
+	req, err := decodeJSON[longpoll.PollRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+
+	if req.Token == "" {
+		req.Token = GetAppIDFromContext(r.Context())
+	}
+
+	response, err := h.longPollManager.PollSingle(r.Context(), req, longpoll.LongPollTypeConfig)
+	if err != nil {
+		h.logger.Error("Config poll failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+// pollTasks handles POST /v1/control/poll/tasks - task-only long polling.
+func (h *controlPlaneHandler) pollTasks(w http.ResponseWriter, r *http.Request) {
+	if h.longPollManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "long poll not available")
+		return
+	}
+
+	req, err := decodeJSON[longpoll.PollRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+
+	if req.Token == "" {
+		req.Token = GetAppIDFromContext(r.Context())
+	}
+
+	response, err := h.longPollManager.PollSingle(r.Context(), req, longpoll.LongPollTypeTask)
+	if err != nil {
+		h.logger.Error("Task poll failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+// ============================================================================
 // Helper Methods
 // ============================================================================
 
-// extractAppIDFromToken extracts AppID by validating the token from HTTP header.
-func (h *controlHandler) extractAppIDFromToken(r *http.Request) string {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return ""
-	}
-
-	const bearerPrefix = "Bearer "
-	if !strings.HasPrefix(authHeader, bearerPrefix) {
-		return ""
-	}
-	token := strings.TrimPrefix(authHeader, bearerPrefix)
-	if token == "" {
-		return ""
-	}
-
-	result, err := h.controlPlane.ValidateToken(r.Context(), token)
-	if err != nil {
-		h.logger.Debug("Token validation failed", zap.Error(err))
-		return ""
-	}
-
-	if !result.Valid {
-		h.logger.Debug("Token is invalid", zap.String("reason", result.Reason))
-		return ""
-	}
-
-	return result.AppID
-}
-
 // parseStatusRequest parses status request body, supporting both nested and flat JSON formats.
-func (h *controlHandler) parseStatusRequest(body json.RawMessage, appID string) (*agentregistry.AgentInfo, *controlplanev1.HealthStatus, error) {
+func (h *controlPlaneHandler) parseStatusRequest(body json.RawMessage, appID string) (*agentregistry.AgentInfo, *controlplanev1.HealthStatus, error) {
 	// First try nested format (standard format)
 	var nestedReq controlplanev1.StatusRequest
 	if err := json.Unmarshal(body, &nestedReq); err == nil && nestedReq.Status != nil && nestedReq.Status.AgentID != "" {

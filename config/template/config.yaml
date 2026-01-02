@@ -1,43 +1,84 @@
 # Custom OpenTelemetry Collector Configuration
-# This configuration demonstrates the enhanced OTLP receiver with control plane capabilities.
-# Architecture: storageext -> controlplaneext/adminext
+# This configuration demonstrates the Agent Gateway receiver with unified capabilities.
+# Architecture: storageext -> controlplaneext/adminext -> arthastunnelext (optional)
 
 receivers:
-  # Enhanced OTLP receiver with control plane support
-  # Control plane APIs are served on the same HTTP port (4318) as OTLP
-  enhanced_otlp:
-    # Standard OTLP protocols configuration
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
-      http:
-        endpoint: 0.0.0.0:4318
+  # Agent Gateway Receiver - Unified gateway for all agent communication
+  # Supports: OTLP, Control Plane APIs, Arthas Tunnel (WebSocket)
+  # 
+  # This receiver replaces enhanced_otlp and provides:
+  # - OTLP HTTP/gRPC for traces, metrics, logs
+  # - Control Plane APIs for agent management
+  # - Arthas Tunnel for remote debugging (optional)
+  # - Token-based authentication with middleware
+  agent_gateway:
+    # HTTP server configuration (required)
+    http:
+      endpoint: 0.0.0.0:4318
+      # Optional: TLS configuration
+      # tls:
+      #   cert_file: /path/to/cert.pem
+      #   key_file: /path/to/key.pem
     
-    # Control plane configuration (APIs served on same HTTP port)
+    # gRPC server configuration (optional, for OTLP gRPC)
+    grpc:
+      endpoint: 0.0.0.0:4317
+    
+    # OTLP configuration
+    otlp:
+      enabled: true
+      traces_path: /v1/traces
+      metrics_path: /v1/metrics
+      logs_path: /v1/logs
+    
+    # Control Plane configuration
     # Available endpoints:
-    #   - POST /v1/control/config   - Configuration management
-    #   - POST/GET /v1/control/tasks - Task management
-    #   - POST/GET /v1/control/status - Status reporting
+    #   - GET/POST /v1/control/config   - Configuration management
+    #   - GET/POST /v1/control/tasks    - Task management
+    #   - GET/POST /v1/control/status   - Status reporting
+    #   - POST /v1/control/register     - Agent registration
+    #   - POST /v1/control/unregister   - Agent unregistration
+    #   - GET /v1/control/agents        - List agents
     #   - POST /v1/control/upload-chunk - Chunk upload
-    #   - GET /health - Health check
+    #   - GET /health                   - Health check
     control_plane:
       enabled: true
-      # Optional: customize the URL path prefix (default: /v1/control)
-      # control_url_path_prefix: /v1/control
+      path_prefix: /v1/control
     
-    # Token authentication for OTLP HTTP endpoints (Header-based)
-    # When enabled, agents must provide a valid token in HTTP header
-    # For attribute-based token validation, use the tokenauth processor
+    # Arthas Tunnel configuration (for remote Java debugging)
+    # Requires arthastunnelext extension to be configured
+    arthas_tunnel:
+      enabled: true
+      path: /v1/arthas/ws
+    
+    # Token authentication configuration
+    # Uses middleware for cleaner separation of concerns
     token_auth:
       enabled: true
-      # HTTP header name for token (default: Authorization)
       header_name: "Authorization"
-      # Header value prefix (default: "Bearer ")
       header_prefix: "Bearer "
-      # Inject validated token into resource attributes with this key
-      # This allows downstream processors (like tokenauthprocessor) to access the token
-      # Set to the same value as tokenauthprocessor's attribute_key
-      inject_attribute_key: "token"
+      # Paths that skip authentication
+      skip_paths:
+        - /health
+      # Inject validated app_id into resource attributes
+      # This allows downstream processors to access the app_id
+      inject_attribute_key: "app_id"
+
+  # [DEPRECATED] Enhanced OTLP receiver - Use agent_gateway instead
+  # Kept for backward compatibility, will be removed in future versions
+  # enhanced_otlp:
+  #   protocols:
+  #     grpc:
+  #       endpoint: 0.0.0.0:4317
+  #     http:
+  #       endpoint: 0.0.0.0:4318
+  #   control_plane:
+  #     enabled: true
+  #   token_auth:
+  #     enabled: true
+  #     header_name: "Authorization"
+  #     header_prefix: "Bearer "
+  #     inject_attribute_key: "token"
 
 extensions:
   # Storage extension - provides Redis and Nacos client management
@@ -255,6 +296,33 @@ extensions:
     #   key_prefix: "otel:apps"
     #   token_length: 32
 
+    # Arthas tunnel extension reference (for browser WebSocket connections)
+    # When set, admin will expose Arthas-related APIs:
+    #   - GET /api/v1/arthas/agents           - List agents with Arthas connections
+    #   - GET /api/v1/arthas/agents/{id}/status - Get agent Arthas status
+    #   - GET /api/v1/arthas/ws               - Browser WebSocket endpoint
+    arthas_tunnel_extension: arthas_tunnel
+
+  # Arthas Tunnel extension - Remote Java debugging via WebSocket
+  # Provides bidirectional WebSocket tunnel between browser and Java agent
+  # Architecture:
+  #   Browser <--WebSocket--> adminext <---> arthastunnelext <---> agentgatewayreceiver <--WebSocket--> Java Agent
+  arthas_tunnel:
+    # Maximum concurrent sessions per agent
+    max_sessions_per_agent: 5
+    # Session idle timeout (no activity)
+    session_idle_timeout: 30m
+    # Session maximum duration
+    session_max_duration: 4h
+    # Ping interval for WebSocket keepalive
+    ping_interval: 30s
+    # Pong response timeout
+    pong_timeout: 10s
+    # Output buffer size (bytes)
+    output_buffer_size: 65536  # 64KB
+    # Output flush interval
+    output_flush_interval: 50ms
+
   # Memory limiter extension
   memory_limiter:
     check_interval: 1s
@@ -352,11 +420,12 @@ exporters:
 
 service:
   # Extensions load order: storage must be first (dependency for others)
-  extensions: [storage, controlplane, admin, memory_limiter, zpages]
+  # arthas_tunnel must be before admin (admin depends on it)
+  extensions: [storage, controlplane, arthas_tunnel, admin, memory_limiter, zpages]
   
   pipelines:
     traces:
-      receivers: [enhanced_otlp]
+      receivers: [agent_gateway]
       # tokenauth processor validates token from resource attributes
       # Place it before other processors for early rejection of invalid data
       processors: [tokenauth, memory_limiter, batch]
@@ -369,7 +438,7 @@ service:
       exporters: [prometheusremotewrite]
     
     metrics:
-      receivers: [enhanced_otlp]
+      receivers: [agent_gateway]
       processors: [tokenauth, memory_limiter, batch]
       exporters: [prometheusremotewrite]
     

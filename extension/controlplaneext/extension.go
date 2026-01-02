@@ -395,6 +395,11 @@ func (e *Extension) GetTokenManager() tokenmanager.TokenManager {
 	return e.tokenMgr
 }
 
+// GetStorage returns the storage extension for direct access.
+func (e *Extension) GetStorage() storageext.Storage {
+	return e.storage
+}
+
 // Dependencies implements extensioncapabilities.Dependent.
 // This ensures the storage extension is started before this extension.
 func (e *Extension) Dependencies() []component.ID {

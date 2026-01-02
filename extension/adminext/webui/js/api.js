@@ -86,12 +86,25 @@ class ApiServiceClass {
         return this.request('GET', '/tasks');
     }
 
+    getTask(id) {
+        return this.request('GET', `/tasks/${id}`);
+    }
+
     createTask(data) {
         return this.request('POST', '/tasks', data);
     }
 
     cancelTask(id) {
         return this.request('DELETE', `/tasks/${id}`);
+    }
+
+    // Arthas
+    getArthasAgents() {
+        return this.request('GET', '/arthas/agents');
+    }
+
+    getAgentArthasStatus(agentId) {
+        return this.request('GET', `/arthas/agents/${agentId}/status`);
     }
 }
 

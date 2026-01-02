@@ -123,6 +123,44 @@ code {
     font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
 }
 
+/* Arthas Terminal 样式 */
+#arthas-terminal {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+    background: #1a1a2e;
+    line-height: 1.5;
+}
+
+#arthas-terminal::-webkit-scrollbar {
+    width: 8px;
+}
+
+#arthas-terminal::-webkit-scrollbar-track {
+    background: #16213e;
+}
+
+#arthas-terminal::-webkit-scrollbar-thumb {
+    background: #0f3460;
+    border-radius: 4px;
+}
+
+#arthas-terminal::-webkit-scrollbar-thumb:hover {
+    background: #1a4a7a;
+}
+
+/* Terminal 光标闪烁效果 */
+.terminal-cursor {
+    display: inline-block;
+    width: 8px;
+    height: 16px;
+    background: #22c55e;
+    animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
 /* 响应式调整 */
 @media (max-width: 768px) {
     .sidebar {
