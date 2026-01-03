@@ -76,6 +76,7 @@ export function adminApp() {
         instanceStats: {},
         services: [],
         tasks: [],
+        groupedTasks: [],
         arthasAgents: [],
 
         // ============================================================================
@@ -86,6 +87,7 @@ export function adminApp() {
             agentId: '',
             agentInfo: null,
             ws: null,
+            sessionId: null,  // Terminal session ID
             output: '',
             inputCommand: '',
             connecting: false,
@@ -96,6 +98,7 @@ export function adminApp() {
         // State - 筛选
         // ============================================================================
         instanceFilter: '',
+        taskViewMode: 'grouped', // 'grouped' or 'flat'
 
         // ============================================================================
         // State - 加载状态
@@ -123,6 +126,13 @@ export function adminApp() {
         // State - 表单
         // ============================================================================
         newApp: { name: '', description: '' },
+        newTask: {
+            task_type: '',
+            target_agent_id: '',
+            timeout_millis: 60000,
+            priority: 0,
+            parameters_json: '',
+        },
         setTokenApp: null,
         customToken: '',
 
@@ -281,12 +291,99 @@ export function adminApp() {
             this.loading.tasks = true;
             try {
                 const res = await ApiService.getTasks();
-                this.tasks = res.tasks || [];
+                
+                // Transform TaskInfo to flat structure for display
+                // TaskInfo: { task: {...}, status: number, agent_id, app_id, service_name, created_at_millis, result: {...} }
+                const rawTasks = (res.tasks || []).map(info => {
+                    // Status priority: info.status (top-level) > info.result?.status
+                    const statusNum = (typeof info.status === 'number') ? info.status : (info.result?.status ?? 0);
+                    return {
+                        task_id: info.task?.task_id || '',
+                        task_type: info.task?.task_type || '',
+                        target_agent_id: info.agent_id || info.task?.target_agent_id || '',
+                        app_id: info.app_id || '',
+                        service_name: info.service_name || '',
+                        status: this.taskStatusToString(statusNum),
+                        created_at_millis: info.created_at_millis || info.task?.created_at_millis || 0,
+                        priority: info.task?.priority,
+                        timeout_millis: info.task?.timeout_millis,
+                        parameters: info.task?.parameters,
+                        _raw: info, // Keep raw data for detail view
+                    };
+                });
+                
+                // Sort by created_at_millis descending (newest first)
+                this.tasks = rawTasks.sort((a, b) => (b.created_at_millis || 0) - (a.created_at_millis || 0));
+                
+                // Build grouped structure
+                this.groupedTasks = this.buildGroupedTasks(this.tasks);
             } catch (e) {
                 this.handleError(e, 'Failed to load tasks');
             } finally {
                 this.loading.tasks = false;
             }
+        },
+
+        // Build hierarchical grouped structure: Agent -> Tasks (simplified)
+        // Since app_id and service_name may be empty, we group primarily by agent
+        buildGroupedTasks(tasks) {
+            const agentMap = new Map();
+            
+            for (const task of tasks) {
+                const agentId = task.target_agent_id || '_global_';
+                
+                // Get or create agent group
+                if (!agentMap.has(agentId)) {
+                    agentMap.set(agentId, {
+                        agent_id: agentId === '_global_' ? '' : agentId,
+                        // Use the first task's app_id/service_name as representative
+                        app_id: task.app_id || '',
+                        service_name: task.service_name || '',
+                        expanded: true,
+                        tasks: [],
+                    });
+                }
+                const agentGroup = agentMap.get(agentId);
+                agentGroup.tasks.push(task);
+                
+                // Update app_id/service_name if current is empty but task has value
+                if (!agentGroup.app_id && task.app_id) {
+                    agentGroup.app_id = task.app_id;
+                }
+                if (!agentGroup.service_name && task.service_name) {
+                    agentGroup.service_name = task.service_name;
+                }
+            }
+            
+            // Convert Map to array
+            const result = Array.from(agentMap.values());
+            
+            // Sort: global tasks first, then by agent_id
+            result.sort((a, b) => {
+                if (!a.agent_id && b.agent_id) return -1;
+                if (a.agent_id && !b.agent_id) return 1;
+                // Sort by most recent task time
+                const aTime = a.tasks[0]?.created_at_millis || 0;
+                const bTime = b.tasks[0]?.created_at_millis || 0;
+                return bTime - aTime;
+            });
+            
+            return result;
+        },
+
+        // Convert task status number to string (align with controlplanev1.TaskStatus)
+        // 0=UNSPECIFIED, 1=SUCCESS, 2=FAILED, 3=TIMEOUT, 4=CANCELLED, 5=PENDING, 6=RUNNING
+        taskStatusToString(status) {
+            const statusMap = {
+                0: 'unknown',
+                1: 'success',
+                2: 'failed',
+                3: 'timeout',
+                4: 'cancelled',
+                5: 'pending',
+                6: 'running',
+            };
+            return statusMap[status] || 'unknown';
         },
 
         // ============================================================================
@@ -398,7 +495,51 @@ export function adminApp() {
         },
 
         viewTaskDetail(task) {
-            this.showDetail(`Task: ${task.task_id}`, task);
+            // Show raw TaskInfo data if available
+            this.showDetail(`Task: ${task.task_id}`, task._raw || task);
+        },
+
+        async submitTask() {
+            try {
+                // 构建任务数据
+                const taskData = {
+                    task_type: this.newTask.task_type,
+                    timeout_millis: this.newTask.timeout_millis || 60000,
+                    priority: this.newTask.priority || 0,
+                };
+
+                // 可选字段
+                if (this.newTask.target_agent_id) {
+                    taskData.target_agent_id = this.newTask.target_agent_id;
+                }
+
+                // 解析 parameters JSON
+                if (this.newTask.parameters_json && this.newTask.parameters_json.trim()) {
+                    try {
+                        taskData.parameters = JSON.parse(this.newTask.parameters_json);
+                    } catch (parseErr) {
+                        this.showToast('Invalid JSON in parameters field', 'error');
+                        return;
+                    }
+                }
+
+                await ApiService.createTask(taskData);
+                this.showToast('Task created successfully', 'success');
+                this.showCreateTaskModal = false;
+                
+                // 重置表单
+                this.newTask = {
+                    task_type: '',
+                    target_agent_id: '',
+                    timeout_millis: 60000,
+                    priority: 0,
+                    parameters_json: '',
+                };
+                
+                await this.loadTasks();
+            } catch (e) {
+                this.handleError(e, 'Failed to create task');
+            }
         },
 
         // ============================================================================
@@ -434,7 +575,8 @@ export function adminApp() {
                 const taskRes = await ApiService.createTask({
                     task_type: 'arthas_attach',
                     target_agent_id: instance.agent_id,
-                    payload: { action: 'attach' },
+                    parameters: { action: 'attach' },
+                    timeout_millis: 60000,
                 });
 
                 const taskId = taskRes.task_id;
@@ -449,11 +591,16 @@ export function adminApp() {
                     await new Promise(r => setTimeout(r, 1000));
                     try {
                         const taskStatus = await ApiService.getTask(taskId);
-                        if (taskStatus.status === 'completed') {
+                        // taskStatus could be TaskInfo (has status number) or TaskResult (has status number)
+                        const normalized = (typeof taskStatus?.status === 'number')
+                            ? this.taskStatusToString(taskStatus.status)
+                            : (taskStatus?.status || 'unknown');
+
+                        if (normalized === 'success') {
                             taskCompleted = true;
                             this.arthasSession.output += `[System] Arthas attached successfully.\n`;
-                        } else if (taskStatus.status === 'failed') {
-                            throw new Error(taskStatus.error || 'Arthas attach failed');
+                        } else if (normalized === 'failed' || normalized === 'timeout' || normalized === 'cancelled') {
+                            throw new Error(taskStatus.error_message || taskStatus.error || 'Arthas attach failed');
                         }
                     } catch (e) {
                         if (e.status === 404) {
@@ -483,25 +630,89 @@ export function adminApp() {
         },
 
         async connectArthasWebSocket(agentId) {
+            // Step 1: Get a short-lived WS token (secure, API key in header)
+            const tokenResponse = await ApiService.request('POST', '/auth/ws-token', { purpose: 'arthas_terminal' });
+            
+            if (!tokenResponse.token) {
+                throw new Error('Failed to obtain WebSocket token');
+            }
+            
+            // Step 2: Connect WebSocket with the short-lived token (not API key)
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/api/v1/arthas/ws?agent_id=${agentId}&api_key=${this.apiKey}`;
+            const wsUrl = `${protocol}//${window.location.host}/api/v1/arthas/ws?agent_id=${agentId}&token=${tokenResponse.token}`;
 
             return new Promise((resolve, reject) => {
                 const ws = new WebSocket(wsUrl);
+                let sessionId = null;
+                let terminalReady = false;
 
                 ws.onopen = () => {
                     this.arthasSession.ws = ws;
-                    this.arthasSession.active = true;
-                    this.arthasSession.output += `[System] Connected to Arthas terminal.\n`;
-                    this.arthasSession.output += `[System] Type 'help' for available commands.\n\n`;
-                    resolve();
+                    this.arthasSession.output += `[System] WebSocket connected, opening terminal...\n`;
+                    
+                    // Send OPEN_TERMINAL message to establish terminal session
+                    const openMsg = {
+                        type: 'OPEN_TERMINAL',
+                        payload: {
+                            agentId: agentId,
+                            cols: 120,
+                            rows: 30
+                        }
+                    };
+                    ws.send(JSON.stringify(openMsg));
                 };
 
                 ws.onmessage = (event) => {
-                    const data = event.data;
-                    if (typeof data === 'string') {
-                        this.arthasSession.output += data;
-                        // 自动滚动到底部
+                    try {
+                        const msg = JSON.parse(event.data);
+                        
+                        switch (msg.type) {
+                            case 'TERMINAL_READY':
+                                sessionId = msg.payload.sessionId;
+                                this.arthasSession.sessionId = sessionId;
+                                this.arthasSession.active = true;
+                                terminalReady = true;
+                                this.arthasSession.output += `[System] Terminal ready (session: ${sessionId})\n`;
+                                this.arthasSession.output += `[System] Type 'help' for available commands.\n\n`;
+                                resolve();
+                                break;
+                                
+                            case 'TERMINAL_OUTPUT':
+                                // Decode base64 output
+                                if (msg.payload && msg.payload.data) {
+                                    try {
+                                        const decoded = atob(msg.payload.data);
+                                        this.arthasSession.output += decoded;
+                                    } catch (e) {
+                                        // If not base64, use as-is
+                                        this.arthasSession.output += msg.payload.data;
+                                    }
+                                }
+                                this.$nextTick(() => {
+                                    const terminal = document.getElementById('arthas-terminal');
+                                    if (terminal) terminal.scrollTop = terminal.scrollHeight;
+                                });
+                                break;
+                                
+                            case 'TERMINAL_CLOSED':
+                                this.arthasSession.output += `\n[System] Terminal closed: ${msg.payload?.reason || 'unknown'}\n`;
+                                this.arthasSession.active = false;
+                                break;
+                                
+                            case 'ERROR':
+                                const errMsg = msg.payload?.message || 'Unknown error';
+                                this.arthasSession.output += `[Error] ${errMsg}\n`;
+                                if (!terminalReady) {
+                                    reject(new Error(errMsg));
+                                }
+                                break;
+                                
+                            default:
+                                console.log('Unknown message type:', msg.type);
+                        }
+                    } catch (e) {
+                        // Not JSON, treat as plain text output
+                        this.arthasSession.output += event.data;
                         this.$nextTick(() => {
                             const terminal = document.getElementById('arthas-terminal');
                             if (terminal) terminal.scrollTop = terminal.scrollHeight;
@@ -518,34 +729,63 @@ export function adminApp() {
                 ws.onclose = (event) => {
                     this.arthasSession.active = false;
                     this.arthasSession.ws = null;
+                    this.arthasSession.sessionId = null;
                     this.arthasSession.output += `\n[System] Connection closed (code: ${event.code})\n`;
                 };
 
                 // 设置连接超时
                 setTimeout(() => {
-                    if (ws.readyState !== WebSocket.OPEN) {
+                    if (!terminalReady) {
                         ws.close();
-                        reject(new Error('WebSocket connection timeout'));
+                        reject(new Error('Terminal session timeout'));
                     }
-                }, 10000);
+                }, 30000);
             });
         },
 
         sendArthasCommand() {
             if (!this.arthasSession.ws || !this.arthasSession.inputCommand.trim()) return;
+            if (!this.arthasSession.sessionId) {
+                this.arthasSession.output += `[Error] Terminal session not ready\n`;
+                return;
+            }
 
             const cmd = this.arthasSession.inputCommand.trim();
             this.arthasSession.output += `$ ${cmd}\n`;
-            this.arthasSession.ws.send(cmd + '\n');
+            
+            // Send INPUT message with session ID
+            const inputMsg = {
+                type: 'INPUT',
+                payload: {
+                    sessionId: this.arthasSession.sessionId,
+                    data: cmd + '\n'
+                }
+            };
+            this.arthasSession.ws.send(JSON.stringify(inputMsg));
             this.arthasSession.inputCommand = '';
         },
 
         disconnectArthas() {
             if (this.arthasSession.ws) {
+                // Send CLOSE_TERMINAL message before closing
+                if (this.arthasSession.sessionId) {
+                    const closeMsg = {
+                        type: 'CLOSE_TERMINAL',
+                        payload: {
+                            sessionId: this.arthasSession.sessionId
+                        }
+                    };
+                    try {
+                        this.arthasSession.ws.send(JSON.stringify(closeMsg));
+                    } catch (e) {
+                        // Ignore send errors on close
+                    }
+                }
                 this.arthasSession.ws.close();
             }
             this.arthasSession.active = false;
             this.arthasSession.ws = null;
+            this.arthasSession.sessionId = null;
             this.arthasSession.agentId = '';
             this.arthasSession.agentInfo = null;
             this.arthasSession.output = '';

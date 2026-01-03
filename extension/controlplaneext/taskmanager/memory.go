@@ -59,15 +59,15 @@ var _ TaskManager = (*MemoryTaskManager)(nil)
 
 // SubmitTask submits a task to the global queue.
 func (m *MemoryTaskManager) SubmitTask(ctx context.Context, task *controlplanev1.Task) error {
-	return m.submitTaskToQueue(ctx, "", task)
+	return m.submitTaskToQueue(ctx, nil, task)
 }
 
 // SubmitTaskForAgent submits a task for a specific agent.
-func (m *MemoryTaskManager) SubmitTaskForAgent(ctx context.Context, agentID string, task *controlplanev1.Task) error {
-	return m.submitTaskToQueue(ctx, agentID, task)
+func (m *MemoryTaskManager) SubmitTaskForAgent(ctx context.Context, agentMeta *AgentMeta, task *controlplanev1.Task) error {
+	return m.submitTaskToQueue(ctx, agentMeta, task)
 }
 
-func (m *MemoryTaskManager) submitTaskToQueue(ctx context.Context, agentID string, task *controlplanev1.Task) error {
+func (m *MemoryTaskManager) submitTaskToQueue(_ context.Context, agentMeta *AgentMeta, task *controlplanev1.Task) error {
 	// Validate and auto-fill task fields
 	nowMillis, err := m.helper.ValidateTask(task)
 	if err != nil {
@@ -83,7 +83,13 @@ func (m *MemoryTaskManager) submitTaskToQueue(ctx context.Context, agentID strin
 	}
 
 	// Store task details
-	m.taskDetails[task.TaskID] = m.helper.NewTaskInfo(task, agentID, nowMillis)
+	m.taskDetails[task.TaskID] = m.helper.NewTaskInfo(task, agentMeta, nowMillis)
+
+	// Determine agent ID for queue routing
+	agentID := ""
+	if agentMeta != nil {
+		agentID = agentMeta.AgentID
+	}
 
 	// Add to appropriate queue
 	if agentID == "" {
@@ -169,7 +175,7 @@ func (m *MemoryTaskManager) GetPendingTasks(ctx context.Context, agentID string)
 	// Get from agent-specific queue
 	if queue, ok := m.agentQueues[agentID]; ok {
 		for _, item := range *queue {
-			if !m.cancelledTasks[item.task.TaskID] {
+			if m.helper.IsTaskInfoDispatchable(m.taskDetails[item.task.TaskID], m.cancelledTasks[item.task.TaskID]) {
 				tasks = append(tasks, item.task)
 			}
 		}
@@ -177,7 +183,7 @@ func (m *MemoryTaskManager) GetPendingTasks(ctx context.Context, agentID string)
 
 	// Also include global queue tasks
 	for _, item := range *m.globalQueue {
-		if !m.cancelledTasks[item.task.TaskID] {
+		if m.helper.IsTaskInfoDispatchable(m.taskDetails[item.task.TaskID], m.cancelledTasks[item.task.TaskID]) {
 			tasks = append(tasks, item.task)
 		}
 	}
@@ -192,9 +198,22 @@ func (m *MemoryTaskManager) GetGlobalPendingTasks(ctx context.Context) ([]*contr
 
 	var tasks []*controlplanev1.Task
 	for _, item := range *m.globalQueue {
-		if !m.cancelledTasks[item.task.TaskID] {
+		if m.helper.IsTaskInfoDispatchable(m.taskDetails[item.task.TaskID], m.cancelledTasks[item.task.TaskID]) {
 			tasks = append(tasks, item.task)
 		}
+	}
+
+	return tasks, nil
+}
+
+// GetAllTasks returns all tasks from detail storage.
+func (m *MemoryTaskManager) GetAllTasks(ctx context.Context) ([]*TaskInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var tasks []*TaskInfo
+	for _, info := range m.taskDetails {
+		tasks = append(tasks, info)
 	}
 
 	return tasks, nil
@@ -234,14 +253,36 @@ func (m *MemoryTaskManager) ReportTaskResult(ctx context.Context, result *contro
 
 	m.results[result.TaskID] = result
 
-	// Update task details
+	var agentID string
 	if info, ok := m.taskDetails[result.TaskID]; ok {
-		info.Status = result.Status
-		info.Result = result
-	}
+		m.helper.UpdateTaskInfoWithResult(info, result)
+		agentID = info.AgentID
 
-	// Clear from running tasks
-	delete(m.runningTasks, result.TaskID)
+		effects := m.helper.ResultEffects(result.Status)
+		nowMillis := m.helper.NowMillis()
+
+		if effects.MarkRunning {
+			m.runningTasks[result.TaskID] = agentID
+			m.helper.EnsureStartedAtMillis(info, nowMillis)
+		}
+		if effects.ClearRunning {
+			delete(m.runningTasks, result.TaskID)
+		}
+		if effects.RemoveFromPending {
+			m.removeTaskFromQueues(result.TaskID, agentID)
+		}
+
+		if result.Status == controlplanev1.TaskStatusRunning {
+			m.logger.Debug("Task status updated to RUNNING",
+				zap.String("task_id", result.TaskID),
+				zap.String("agent_id", agentID),
+			)
+			return nil
+		}
+	} else {
+		// No task detail: be conservative and clear running marker.
+		delete(m.runningTasks, result.TaskID)
+	}
 
 	m.logger.Debug("Task result reported",
 		zap.String("task_id", result.TaskID),
@@ -249,6 +290,36 @@ func (m *MemoryTaskManager) ReportTaskResult(ctx context.Context, result *contro
 	)
 
 	return nil
+}
+
+// removeTaskFromQueues removes a task from all pending queues.
+// Must be called with m.mu held (write lock).
+func (m *MemoryTaskManager) removeTaskFromQueues(taskID string, agentID string) {
+	// Remove from global queue
+	m.removeTaskFromQueue(m.globalQueue, taskID)
+
+	// Remove from agent-specific queue if agentID is known
+	if agentID != "" {
+		if queue, ok := m.agentQueues[agentID]; ok {
+			m.removeTaskFromQueue(queue, taskID)
+		}
+	}
+
+	// Also try to remove from all agent queues (in case agentID changed)
+	for _, queue := range m.agentQueues {
+		m.removeTaskFromQueue(queue, taskID)
+	}
+}
+
+// removeTaskFromQueue removes a task with given ID from a priority queue.
+// Must be called with m.mu held (write lock).
+func (m *MemoryTaskManager) removeTaskFromQueue(queue *taskPriorityQueue, taskID string) {
+	for i, item := range *queue {
+		if item.task.TaskID == taskID {
+			heap.Remove(queue, i)
+			return
+		}
+	}
 }
 
 // GetTaskResult retrieves the result of a task.

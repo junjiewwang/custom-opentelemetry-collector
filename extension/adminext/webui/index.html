@@ -12,6 +12,8 @@
     <link rel="stylesheet" href="css/styles.css">
     <!-- App Entry (ES Module) - 必须在 Alpine 之前加载 -->
     <script type="module" src="js/main.js"></script>
+    <!-- Alpine.js Collapse Plugin - 必须在 Alpine.js 之前加载 -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
     <!-- Alpine.js - defer 确保在 DOM 解析完成后执行 -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
@@ -398,6 +400,19 @@
                 <div class="flex items-center justify-between mb-6">
                     <h2 class="text-2xl font-bold text-gray-800">Tasks</h2>
                     <div class="flex items-center gap-3">
+                        <!-- View Mode Toggle -->
+                        <div class="flex items-center bg-gray-100 rounded-lg p-1">
+                            <button @click="taskViewMode = 'grouped'" 
+                                :class="taskViewMode === 'grouped' ? 'bg-white shadow-sm' : ''"
+                                class="px-3 py-1.5 text-sm rounded-md transition" title="Grouped View">
+                                <i class="fas fa-layer-group"></i>
+                            </button>
+                            <button @click="taskViewMode = 'flat'" 
+                                :class="taskViewMode === 'flat' ? 'bg-white shadow-sm' : ''"
+                                class="px-3 py-1.5 text-sm rounded-md transition" title="Flat View">
+                                <i class="fas fa-list"></i>
+                            </button>
+                        </div>
                         <button @click="showCreateTaskModal = true" 
                             class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
                             <i class="fas fa-plus"></i> Create Task
@@ -408,12 +423,111 @@
                     </div>
                 </div>
 
-                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                <!-- Grouped View - Card Layout by Agent -->
+                <div x-show="taskViewMode === 'grouped'" class="space-y-4">
+                    <template x-for="(agentGroup, idx) in groupedTasks" :key="'agent-' + idx">
+                        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <!-- Agent Header -->
+                            <div class="bg-gradient-to-r from-gray-50 to-white px-5 py-3 border-b border-gray-100 flex items-center justify-between cursor-pointer"
+                                @click="agentGroup.expanded = !agentGroup.expanded">
+                                <div class="flex items-center gap-4 flex-wrap">
+                                    <!-- Agent Icon & ID -->
+                                    <div class="flex items-center gap-2">
+                                        <i class="fas fa-server text-gray-400"></i>
+                                        <code class="text-sm bg-gray-100 px-2 py-0.5 rounded font-medium" 
+                                            x-text="agentGroup.agent_id ? agentGroup.agent_id.substring(0, 28) + '...' : 'Global Tasks'"></code>
+                                    </div>
+                                    <!-- App & Service Tags -->
+                                    <div class="flex items-center gap-2">
+                                        <template x-if="agentGroup.app_id">
+                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs">
+                                                <i class="fas fa-cube text-blue-400"></i>
+                                                <span x-text="agentGroup.app_id"></span>
+                                            </span>
+                                        </template>
+                                        <template x-if="agentGroup.service_name">
+                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-50 text-purple-700 rounded text-xs">
+                                                <i class="fas fa-sitemap text-purple-400"></i>
+                                                <span x-text="agentGroup.service_name"></span>
+                                            </span>
+                                        </template>
+                                    </div>
+                                    <!-- Task Count -->
+                                    <span class="px-2 py-0.5 bg-primary-100 text-primary-700 rounded-full text-xs font-medium" 
+                                        x-text="agentGroup.tasks.length + ' task' + (agentGroup.tasks.length > 1 ? 's' : '')"></span>
+                                </div>
+                                <i class="fas fa-chevron-down text-gray-400 transition-transform duration-200" 
+                                    :class="agentGroup.expanded ? 'rotate-180' : ''"></i>
+                            </div>
+                            
+                            <!-- Tasks Table -->
+                            <div x-show="agentGroup.expanded" x-collapse>
+                                <table class="w-full text-sm">
+                                    <thead class="bg-gray-50/50">
+                                        <tr class="text-gray-500 text-xs uppercase tracking-wider">
+                                            <th class="text-left px-5 py-2.5 font-medium">Task ID</th>
+                                            <th class="text-left px-5 py-2.5 font-medium">Type</th>
+                                            <th class="text-left px-5 py-2.5 font-medium">Status</th>
+                                            <th class="text-left px-5 py-2.5 font-medium">Created</th>
+                                            <th class="text-right px-5 py-2.5 font-medium">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-50">
+                                        <template x-for="(task, taskIdx) in agentGroup.tasks" :key="'task-' + (task.task_id || taskIdx)">
+                                            <tr class="hover:bg-gray-50/50 transition-colors">
+                                                <td class="px-5 py-3">
+                                                    <code class="text-xs bg-gray-100 px-2 py-1 rounded" 
+                                                        x-text="task.task_id ? task.task_id.substring(0, 18) + '...' : '-'"></code>
+                                                </td>
+                                                <td class="px-5 py-3">
+                                                    <span class="text-gray-700 font-medium" x-text="task.task_type || '-'"></span>
+                                                </td>
+                                                <td class="px-5 py-3">
+                                                    <span class="px-2.5 py-1 rounded-full text-xs font-medium"
+                                                        :class="{
+                                                            'bg-yellow-100 text-yellow-700': task.status === 'pending',
+                                                            'bg-blue-100 text-blue-700': task.status === 'running',
+                                                            'bg-green-100 text-green-700': task.status === 'success',
+                                                            'bg-red-100 text-red-700': task.status === 'failed',
+                                                            'bg-orange-100 text-orange-700': task.status === 'timeout',
+                                                            'bg-gray-100 text-gray-600': task.status === 'cancelled' || task.status === 'unknown'
+                                                        }"
+                                                        x-text="task.status || 'unknown'"></span>
+                                                </td>
+                                                <td class="px-5 py-3 text-gray-500" x-text="formatTimestamp(task.created_at_millis)"></td>
+                                                <td class="px-5 py-3 text-right">
+                                                    <div class="flex items-center justify-end gap-1">
+                                                        <button @click="viewTaskDetail(task)" 
+                                                            class="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded transition" title="View Details">
+                                                            <i class="fas fa-eye"></i>
+                                                        </button>
+                                                        <button @click="cancelTask(task)" 
+                                                            class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition" title="Cancel">
+                                                            <i class="fas fa-times"></i>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="groupedTasks.length === 0" class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
+                        <i class="fas fa-tasks text-4xl mb-3 text-gray-300"></i>
+                        <p>No tasks found</p>
+                    </div>
+                </div>
+
+                <!-- Flat View (Original Table) -->
+                <div x-show="taskViewMode === 'flat'" class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                     <table class="w-full">
                         <thead class="bg-gray-50 border-b border-gray-100">
                             <tr>
                                 <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Task ID</th>
                                 <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Type</th>
+                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">App / Service</th>
                                 <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Target</th>
                                 <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
                                 <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Created</th>
@@ -421,24 +535,30 @@
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-100">
-                            <template x-for="task in tasks" :key="task.task_id">
+                            <template x-for="(task, idx) in tasks" :key="'flat-' + (task.task_id || idx)">
                                 <tr class="hover:bg-gray-50 transition">
                                     <td class="px-6 py-4">
-                                        <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="task.task_id"></code>
+                                        <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="task.task_id ? task.task_id.substring(0, 16) + '...' : '-'"></code>
                                     </td>
                                     <td class="px-6 py-4 font-medium text-gray-800" x-text="task.task_type || '-'"></td>
-                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="task.target_agent_id || 'All'"></td>
+                                    <td class="px-6 py-4">
+                                        <div class="text-sm text-gray-700" x-text="task.app_id || '-'"></div>
+                                        <div class="text-xs text-gray-400" x-text="task.service_name || ''"></div>
+                                    </td>
+                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="task.target_agent_id ? task.target_agent_id.substring(0, 16) + '...' : 'Global'"></td>
                                     <td class="px-6 py-4">
                                         <span class="px-2 py-1 rounded-full text-sm"
                                             :class="{
                                                 'bg-yellow-100 text-yellow-700': task.status === 'pending',
                                                 'bg-blue-100 text-blue-700': task.status === 'running',
-                                                'bg-green-100 text-green-700': task.status === 'completed',
-                                                'bg-red-100 text-red-700': task.status === 'failed'
+                                                'bg-green-100 text-green-700': task.status === 'success',
+                                                'bg-red-100 text-red-700': task.status === 'failed',
+                                                'bg-orange-100 text-orange-700': task.status === 'timeout',
+                                                'bg-gray-100 text-gray-700': task.status === 'cancelled' || task.status === 'unknown'
                                             }"
-                                            x-text="task.status || 'pending'"></span>
+                                            x-text="task.status || 'unknown'"></span>
                                     </td>
-                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatDate(task.created_at)"></td>
+                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatTimestamp(task.created_at_millis)"></td>
                                     <td class="px-6 py-4 text-right">
                                         <div class="flex items-center justify-end gap-2">
                                             <button @click="viewTaskDetail(task)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
@@ -452,7 +572,7 @@
                                 </tr>
                             </template>
                             <tr x-show="tasks.length === 0">
-                                <td colspan="6" class="px-6 py-12 text-center text-gray-500">
+                                <td colspan="7" class="px-6 py-12 text-center text-gray-500">
                                     <i class="fas fa-tasks text-4xl mb-3 text-gray-300"></i>
                                     <p>No tasks found</p>
                                 </td>
@@ -659,6 +779,68 @@
                             Set Custom Token
                         </button>
                     </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Create Task Modal -->
+    <div x-show="showCreateTaskModal" x-cloak 
+        class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" 
+        @click.self="showCreateTaskModal = false">
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 slide-in">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">Create Task</h3>
+            <form @submit.prevent="submitTask()">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Task Type *</label>
+                        <select x-model="newTask.task_type" required
+                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                            <option value="">Select task type...</option>
+                            <option value="arthas_attach">Arthas Attach</option>
+                            <option value="arthas_detach">Arthas Detach</option>
+                            <option value="heap_dump">Heap Dump</option>
+                            <option value="thread_dump">Thread Dump</option>
+                            <option value="config_export">Config Export</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Target Agent</label>
+                        <select x-model="newTask.target_agent_id"
+                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                            <option value="">All Agents (Global)</option>
+                            <template x-for="inst in instances.filter(i => i.status?.state === 'online')" :key="inst.agent_id">
+                                <option :value="inst.agent_id" x-text="(inst.service_name || 'Unknown') + ' (' + (inst.hostname || inst.agent_id.substring(0, 12)) + ')'"></option>
+                            </template>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-1">Leave empty to broadcast to all agents</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Timeout (ms)</label>
+                        <input type="number" x-model.number="newTask.timeout_millis" min="1000" max="300000"
+                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            placeholder="60000">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Priority</label>
+                        <input type="number" x-model.number="newTask.priority" min="0" max="10"
+                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            placeholder="0">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Parameters (JSON)</label>
+                        <textarea x-model="newTask.parameters_json" rows="3"
+                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm"
+                            placeholder='{"action": "attach"}'></textarea>
+                        <p class="text-xs text-gray-400 mt-1">Optional JSON object for task-specific parameters</p>
+                    </div>
+                </div>
+                <div class="flex justify-end gap-3 mt-6">
+                    <button type="button" @click="showCreateTaskModal = false" 
+                        class="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition">Cancel</button>
+                    <button type="submit" 
+                        class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition">Create Task</button>
                 </div>
             </form>
         </div>

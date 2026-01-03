@@ -314,6 +314,13 @@ type PongMessage struct {
 	TunnelMessage
 }
 
+// NewPongMessage creates a new pong message.
+func NewPongMessage() *PongMessage {
+	return &PongMessage{
+		TunnelMessage: NewTunnelMessage(MessageTypePong),
+	}
+}
+
 // ===== Error Message =====
 
 // ErrorMessage is sent to report errors.

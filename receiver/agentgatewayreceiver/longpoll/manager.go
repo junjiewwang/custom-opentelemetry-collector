@@ -242,13 +242,18 @@ type pollResult struct {
 }
 
 // executePoll executes polling for multiple handlers in parallel.
+// Returns immediately when any handler has changes (early return optimization).
 func (m *Manager) executePoll(ctx context.Context, req *PollRequest, handlers []LongPollHandler) (*CombinedPollResponse, error) {
 	resultCh := make(chan *pollResult, len(handlers))
+
+	// Create a cancellable context for early return
+	pollCtx, cancelPoll := context.WithCancel(ctx)
+	defer cancelPoll()
 
 	// Launch all handlers in parallel
 	for _, handler := range handlers {
 		go func(h LongPollHandler) {
-			result, err := h.Poll(ctx, req)
+			result, err := h.Poll(pollCtx, req)
 			resultCh <- &pollResult{
 				pollType: h.GetType(),
 				result:   result,
@@ -263,6 +268,7 @@ func (m *Manager) executePoll(ctx context.Context, req *PollRequest, handlers []
 	}
 
 	// Wait for all handlers or context cancellation
+	// Early return when any handler has changes
 	for i := 0; i < len(handlers); i++ {
 		select {
 		case r := <-resultCh:
@@ -277,6 +283,14 @@ func (m *Manager) executePoll(ctx context.Context, req *PollRequest, handlers []
 				response.Results[r.pollType] = r.result.Response
 				if r.result.HasChanges {
 					response.HasAnyChanges = true
+					// Early return: cancel other handlers and return immediately
+					m.logger.Debug("Early return: handler has changes",
+						zap.String("type", string(r.pollType)),
+					)
+					cancelPoll()
+					// Collect any remaining results that are already available
+					m.collectRemainingResults(resultCh, response, len(handlers)-i-1)
+					return response, nil
 				}
 			}
 

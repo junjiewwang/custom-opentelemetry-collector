@@ -449,7 +449,7 @@ service:
 
   telemetry:
     logs:
-      level: info
+      level: debug
       development: false  # Set to false to disable stack traces in warn logs
     metrics:
       level: detailed

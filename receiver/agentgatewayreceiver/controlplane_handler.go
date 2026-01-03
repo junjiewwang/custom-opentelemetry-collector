@@ -91,71 +91,70 @@ func (h *controlPlaneHandler) postConfig(w http.ResponseWriter, r *http.Request)
 // Task Management
 // ============================================================================
 
-// getTasks handles GET /v1/control/tasks - retrieve task result or pending tasks.
+// getTasks handles GET /v1/control/tasks - retrieve pending tasks for the agent.
 func (h *controlPlaneHandler) getTasks(w http.ResponseWriter, r *http.Request) {
+	// Get agent ID from context or query
+	agentID := GetAgentIDFromContext(r.Context())
+	if agentID == "" {
+		agentID = r.URL.Query().Get("agent_id")
+	}
+
+	// If task_id is provided, return specific task result
 	taskID := r.URL.Query().Get("task_id")
-	if taskID == "" {
-		// Return pending tasks
-		tasks := h.controlPlane.GetPendingTasks()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"pending_tasks": tasks,
-		})
-		return
-	}
-
-	result, found := h.controlPlane.GetTaskResult(taskID)
-	if !found {
+	if taskID != "" {
+		result, found := h.controlPlane.GetTaskResult(taskID)
+		if !found {
+			writeJSON(w, http.StatusOK, &controlplanev1.TaskResultResponse{
+				Found: false,
+			})
+			return
+		}
 		writeJSON(w, http.StatusOK, &controlplanev1.TaskResultResponse{
-			Found: false,
+			Found:  true,
+			Result: result,
 		})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, &controlplanev1.TaskResultResponse{
-		Found:  true,
-		Result: result,
+	// Return pending tasks for the agent
+	var tasks []*controlplanev1.Task
+	var err error
+
+	if agentID != "" {
+		// Get tasks for specific agent (includes both agent-specific and global tasks)
+		tasks, err = h.controlPlane.GetPendingTasksForAgent(r.Context(), agentID)
+		if err != nil {
+			h.logger.Error("Failed to get pending tasks", zap.Error(err))
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else {
+		// No agent ID - return global pending tasks only
+		tasks = h.controlPlane.GetPendingTasks()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pending_tasks": tasks,
 	})
 }
 
-// createTask handles POST /v1/control/tasks - submit new task.
-func (h *controlPlaneHandler) createTask(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJSON[controlplanev1.TaskRequest](r)
+// reportTaskResult handles POST /v1/control/tasks/result - agent reports task execution result.
+func (h *controlPlaneHandler) reportTaskResult(w http.ResponseWriter, r *http.Request) {
+	req, err := decodeJSON[controlplanev1.TaskResult](r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 
-	if req.Task == nil {
-		writeError(w, http.StatusBadRequest, "task is required")
-		return
-	}
-
-	if err := h.controlPlane.SubmitTask(r.Context(), req.Task); err != nil {
-		h.logger.Error("Failed to submit task", zap.Error(err))
-		writeJSON(w, http.StatusOK, &controlplanev1.TaskResponse{
-			Accepted: false,
-			Message:  err.Error(),
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, &controlplanev1.TaskResponse{
-		Accepted: true,
-		Message:  "task submitted",
-		TaskID:   req.Task.TaskID,
-	})
-}
-
-// deleteTask handles DELETE /v1/control/tasks - cancel task.
-func (h *controlPlaneHandler) deleteTask(w http.ResponseWriter, r *http.Request) {
-	taskID := r.URL.Query().Get("task_id")
-	if taskID == "" {
+	if req.TaskID == "" {
 		writeError(w, http.StatusBadRequest, "task_id is required")
 		return
 	}
 
-	if err := h.controlPlane.CancelTask(r.Context(), taskID); err != nil {
-		h.logger.Error("Failed to cancel task", zap.Error(err))
+	// Report the result through control plane
+	// Note: This requires adding ReportTaskResult to ControlPlane interface
+	if err := h.controlPlane.ReportTaskResult(r.Context(), req); err != nil {
+		h.logger.Error("Failed to report task result", zap.Error(err))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success": false,
 			"message": err.Error(),
@@ -165,37 +164,9 @@ func (h *controlPlaneHandler) deleteTask(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
-		"message": "task cancelled",
-		"task_id": taskID,
+		"message": "task result reported",
+		"task_id": req.TaskID,
 	})
-}
-
-// cancelTasks handles POST /v1/control/tasks/cancel - batch cancel tasks.
-func (h *controlPlaneHandler) cancelTasks(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJSON[taskCancelRequest](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
-	}
-
-	var cancelled, failed []string
-	for _, taskID := range req.TaskIDs {
-		if err := h.controlPlane.CancelTask(r.Context(), taskID); err != nil {
-			failed = append(failed, taskID)
-		} else {
-			cancelled = append(cancelled, taskID)
-		}
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"success":   len(failed) == 0,
-		"cancelled": cancelled,
-		"failed":    failed,
-	})
-}
-
-type taskCancelRequest struct {
-	TaskIDs []string `json:"task_ids"`
 }
 
 // ============================================================================
@@ -401,6 +372,20 @@ func (h *controlPlaneHandler) poll(w http.ResponseWriter, r *http.Request) {
 		req.Token = GetAppIDFromContext(r.Context())
 	}
 
+	// Set agent_id from context/header if not provided in request body
+	if req.AgentID == "" {
+		req.AgentID = GetAgentIDFromContext(r.Context())
+	}
+	if req.AgentID == "" {
+		req.AgentID = r.Header.Get("X-Agent-ID")
+	}
+
+	h.logger.Debug("Long poll request received",
+		zap.String("agent_id", req.AgentID),
+		zap.String("token", req.Token),
+		zap.Int64("timeout_millis", req.TimeoutMillis),
+	)
+
 	// Execute long polling
 	response, err := h.longPollManager.Poll(r.Context(), req)
 	if err != nil {
@@ -429,6 +414,14 @@ func (h *controlPlaneHandler) pollConfig(w http.ResponseWriter, r *http.Request)
 		req.Token = GetAppIDFromContext(r.Context())
 	}
 
+	// Set agent_id from context/header if not provided
+	if req.AgentID == "" {
+		req.AgentID = GetAgentIDFromContext(r.Context())
+	}
+	if req.AgentID == "" {
+		req.AgentID = r.Header.Get("X-Agent-ID")
+	}
+
 	response, err := h.longPollManager.PollSingle(r.Context(), req, longpoll.LongPollTypeConfig)
 	if err != nil {
 		h.logger.Error("Config poll failed", zap.Error(err))
@@ -454,6 +447,14 @@ func (h *controlPlaneHandler) pollTasks(w http.ResponseWriter, r *http.Request) 
 
 	if req.Token == "" {
 		req.Token = GetAppIDFromContext(r.Context())
+	}
+
+	// Set agent_id from context/header if not provided
+	if req.AgentID == "" {
+		req.AgentID = GetAgentIDFromContext(r.Context())
+	}
+	if req.AgentID == "" {
+		req.AgentID = r.Header.Get("X-Agent-ID")
 	}
 
 	response, err := h.longPollManager.PollSingle(r.Context(), req, longpoll.LongPollTypeTask)

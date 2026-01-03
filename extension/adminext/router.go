@@ -59,6 +59,11 @@ func (e *Extension) newRouter() http.Handler {
 			r.Use(e.authMiddleware)
 		}
 		// ============================================================================
+		// Auth - WebSocket Token (for secure WS connections)
+		// ============================================================================
+		r.Post("/auth/ws-token", e.generateWSToken)
+
+		// ============================================================================
 		// App Management (App = AppGroup, 1:1 with Token)
 		// ============================================================================
 		r.Route("/apps", func(r chi.Router) {
@@ -130,7 +135,7 @@ func (e *Extension) newRouter() http.Handler {
 				r.Get("/agents", e.listArthasAgents)
 				// Get agent Arthas status
 				r.Get("/agents/{agentID}/status", e.getAgentArthasStatus)
-				// WebSocket endpoint for browser terminal
+				// WebSocket endpoint for browser terminal (uses WS token auth)
 				r.Get("/ws", e.handleArthasWebSocket)
 			})
 		}

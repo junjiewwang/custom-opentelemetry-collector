@@ -4,7 +4,10 @@
 package adminext
 
 import (
+	"bufio"
 	"encoding/base64"
+	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -83,6 +86,13 @@ func (e *Extension) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Skip auth for WebSocket endpoints (they use their own token-based auth)
+		// WebSocket connections cannot set custom headers, so we use short-lived tokens
+		if isWebSocketRequest(r) && strings.HasSuffix(r.URL.Path, "/ws") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		var authenticated bool
 
 		switch e.config.Auth.Type {
@@ -104,6 +114,14 @@ func (e *Extension) authMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isWebSocketRequest checks if the request is a WebSocket upgrade request.
+func isWebSocketRequest(r *http.Request) bool {
+	// Connection header may contain multiple values like "keep-alive, Upgrade"
+	connectionHeader := strings.ToLower(r.Header.Get("Connection"))
+	return strings.Contains(connectionHeader, "upgrade") &&
+		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }
 
 // authenticateBasic performs basic authentication.
@@ -169,6 +187,10 @@ func (e *Extension) authenticateAPIKey(r *http.Request) bool {
 }
 
 // responseWriter wraps http.ResponseWriter to capture status code.
+//
+// IMPORTANT: some handlers (e.g. gorilla/websocket upgrader) require additional
+// interfaces like http.Hijacker/http.Flusher. When we wrap ResponseWriter we
+// must continue to expose these capabilities.
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
@@ -177,4 +199,29 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return hj.Hijack()
+}
+
+func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := rw.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
 }

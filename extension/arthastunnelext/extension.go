@@ -173,9 +173,26 @@ func (e *Extension) HandleAgentWebSocket(w http.ResponseWriter, r *http.Request)
 
 	e.agentConns.add(agentConn)
 
+	// Prefer agent ID propagated by gateway middleware; fall back to query params.
+	// This allows mapping agent connections immediately, even if the agent doesn't
+	// send a REGISTER message.
+	agentID := r.Header.Get("X-Agent-ID")
+	if agentID == "" {
+		agentID = r.URL.Query().Get("agent_id")
+		if agentID == "" {
+			agentID = r.URL.Query().Get("agentId")
+		}
+	}
+	if agentID != "" {
+		agentConn.agentID = agentID
+		e.agentConns.register(agentConn)
+	}
+
 	e.logger.Info("Agent WebSocket connected",
 		zap.String("conn_id", connID),
 		zap.String("remote_addr", r.RemoteAddr),
+		zap.String("app_id", agentConn.appID),
+		zap.String("agent_id", agentConn.agentID),
 	)
 
 	// Start read and write goroutines
@@ -245,12 +262,25 @@ func (e *Extension) agentWriteLoop(conn *agentConnection) {
 
 // handleAgentTextMessage handles text messages from agent.
 func (e *Extension) handleAgentTextMessage(conn *agentConnection, data []byte) {
+	e.logger.Debug("Received agent text message",
+		zap.String("conn_id", conn.connID),
+		zap.String("data", string(data)),
+	)
+
 	// Parse base message to get type
 	var baseMsg TunnelMessage
 	if err := json.Unmarshal(data, &baseMsg); err != nil {
-		e.logger.Warn("Failed to parse agent message", zap.Error(err))
+		e.logger.Warn("Failed to parse agent message",
+			zap.Error(err),
+			zap.String("raw_data", string(data)),
+		)
 		return
 	}
+
+	e.logger.Debug("Parsed agent message",
+		zap.String("type", string(baseMsg.Type)),
+		zap.String("conn_id", conn.connID),
+	)
 
 	switch baseMsg.Type {
 	case MessageTypeRegister:
@@ -259,6 +289,14 @@ func (e *Extension) handleAgentTextMessage(conn *agentConnection, data []byte) {
 			return
 		}
 		e.handleAgentRegister(conn, &msg)
+
+	case MessageTypePing:
+		// Agent sent PING, respond with PONG
+		conn.lastPingAt = time.Now()
+		pongMsg := NewPongMessage()
+		if err := conn.send(pongMsg); err != nil {
+			e.logger.Debug("Failed to send PONG to agent", zap.Error(err))
+		}
 
 	case MessageTypePong:
 		conn.lastPingAt = time.Now()
@@ -419,15 +457,24 @@ func (e *Extension) handleAgentDisconnect(conn *agentConnection) {
 
 // HandleBrowserWebSocket handles WebSocket connections from browsers.
 func (e *Extension) HandleBrowserWebSocket(w http.ResponseWriter, r *http.Request) {
+	e.logger.Info("HandleBrowserWebSocket called",
+		zap.String("remote_addr", r.RemoteAddr),
+		zap.String("agent_id", r.URL.Query().Get("agent_id")),
+	)
+
 	// Upgrade to WebSocket
 	conn, err := e.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		e.logger.Error("Failed to upgrade browser WebSocket", zap.Error(err))
+		e.logger.Error("Failed to upgrade browser WebSocket",
+			zap.Error(err),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
 		return
 	}
 
 	connID := generateConnID()
 	userID := r.URL.Query().Get("user_id")
+	agentID := r.URL.Query().Get("agent_id")
 	browserConn := newBrowserConnection(connID, userID, conn, e.logger)
 
 	e.browserConns.add(browserConn)
@@ -435,6 +482,7 @@ func (e *Extension) HandleBrowserWebSocket(w http.ResponseWriter, r *http.Reques
 	e.logger.Info("Browser WebSocket connected",
 		zap.String("conn_id", connID),
 		zap.String("user_id", userID),
+		zap.String("agent_id", agentID),
 	)
 
 	// Start read and write goroutines
@@ -490,11 +538,24 @@ func (e *Extension) browserWriteLoop(conn *browserConnection) {
 
 // handleBrowserMessage handles messages from browser.
 func (e *Extension) handleBrowserMessage(conn *browserConnection, data []byte) {
+	e.logger.Debug("Received browser message",
+		zap.String("conn_id", conn.connID),
+		zap.String("data", string(data)),
+	)
+
 	var msg BrowserMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		e.logger.Warn("Failed to parse browser message", zap.Error(err))
+		e.logger.Warn("Failed to parse browser message",
+			zap.Error(err),
+			zap.String("raw_data", string(data)),
+		)
 		return
 	}
+
+	e.logger.Info("Parsed browser message",
+		zap.String("type", string(msg.Type)),
+		zap.String("conn_id", conn.connID),
+	)
 
 	switch msg.Type {
 	case BrowserMessageTypeOpenTerminal:

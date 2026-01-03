@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
@@ -53,6 +54,9 @@ type Extension struct {
 
 	// On-demand config manager (if enabled)
 	onDemandConfigMgr configmanager.OnDemandConfigManager
+
+	// WebSocket token manager for secure WS authentication
+	wsTokenMgr *wsTokenManager
 
 	// Flag to track if we own the components (need to close them on shutdown)
 	ownsComponents bool
@@ -111,6 +115,9 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 			// Don't fail startup, just log warning
 		}
 	}
+
+	// Initialize WebSocket token manager (30 second TTL for tokens)
+	e.wsTokenMgr = newWSTokenManager(30 * time.Second)
 
 	// Start HTTP server
 	if err := e.startHTTPServer(); err != nil {

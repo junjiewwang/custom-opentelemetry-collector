@@ -124,11 +124,25 @@ func (h *TaskPollHandler) CheckImmediate(ctx context.Context, req *PollRequest) 
 		return false, nil, errors.New("redis client not initialized")
 	}
 
+	agentQueueKey := fmt.Sprintf(keyPendingAgent, h.keyPrefix, req.AgentID)
+	globalQueueKey := fmt.Sprintf(keyPendingGlobal, h.keyPrefix)
+
+	h.logger.Debug("CheckImmediate: checking pending tasks",
+		zap.String("agent_id", req.AgentID),
+		zap.String("agent_queue_key", agentQueueKey),
+		zap.String("global_queue_key", globalQueueKey),
+	)
+
 	// Get pending tasks for the agent
 	tasks, err := h.getPendingTasks(ctx, req.AgentID)
 	if err != nil {
 		return false, nil, err
 	}
+
+	h.logger.Debug("CheckImmediate: pending tasks result",
+		zap.String("agent_id", req.AgentID),
+		zap.Int("task_count", len(tasks)),
+	)
 
 	if len(tasks) > 0 {
 		result := &HandlerResult{
@@ -167,15 +181,36 @@ func (h *TaskPollHandler) Poll(ctx context.Context, req *PollRequest) (*HandlerR
 
 	// Register waiter
 	h.waiters.Store(req.AgentID, waiter)
+	h.logger.Debug("Registered waiter for long poll",
+		zap.String("agent_id", req.AgentID),
+		zap.Int("total_waiters", h.GetWaiterCount()),
+	)
 	defer func() {
 		h.waiters.Delete(req.AgentID)
+		h.logger.Debug("Unregistered waiter",
+			zap.String("agent_id", req.AgentID),
+		)
 		cancel()
 	}()
 
 	// Ensure Pub/Sub is active
 	h.startPubSub()
 
-	// Step 3: Wait for task notification or timeout
+	// Step 3: Double-check for tasks after registering waiter
+	// This prevents race condition where task is submitted between
+	// Step 1 check and waiter registration
+	hasChanges, result, err = h.CheckImmediate(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if hasChanges {
+		h.logger.Debug("Found tasks in double-check after waiter registration",
+			zap.String("agent_id", req.AgentID),
+		)
+		return result, nil
+	}
+
+	// Step 4: Wait for task notification or timeout
 	select {
 	case result := <-waiter.resultChan:
 		return result, nil
@@ -226,16 +261,36 @@ func (h *TaskPollHandler) getPendingTasks(ctx context.Context, agentID string) (
 }
 
 // parseAndValidateTask parses and validates a task from Redis.
+// Returns nil if the task should be skipped (cancelled, already completed, etc.)
 func (h *TaskPollHandler) parseAndValidateTask(ctx context.Context, data string, cancelledKey string) (*controlplanev1.Task, error) {
 	var task controlplanev1.Task
 	if err := json.Unmarshal([]byte(data), &task); err != nil {
 		return nil, err
 	}
 
-	// Check if cancelled
+	// Check if cancelled (fast path using cancelled set)
 	cancelled, err := h.redisClient.SIsMember(ctx, cancelledKey, task.TaskID).Result()
 	if err == nil && cancelled {
 		return nil, nil // Skip cancelled task
+	}
+
+	// Check task status from detail storage
+	// Only dispatch tasks that are in dispatchable states (PENDING/RUNNING)
+	detailKey := fmt.Sprintf(keyTaskDetail, h.keyPrefix, task.TaskID)
+	detailData, err := h.redisClient.Get(ctx, detailKey).Result()
+	if err == nil && detailData != "" {
+		var taskInfo struct {
+			Status controlplanev1.TaskStatus `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(detailData), &taskInfo); err == nil {
+			if !taskInfo.Status.IsDispatchable() {
+				h.logger.Debug("Skipping non-dispatchable task",
+					zap.String("task_id", task.TaskID),
+					zap.String("status", taskInfo.Status.String()),
+				)
+				return nil, nil // Skip task with terminal status
+			}
+		}
 	}
 
 	return &task, nil
@@ -245,11 +300,43 @@ func (h *TaskPollHandler) parseAndValidateTask(ctx context.Context, data string,
 func (h *TaskPollHandler) startPubSub() {
 	h.pubsubOnce.Do(func() {
 		channel := fmt.Sprintf(keyEventSubmitted, h.keyPrefix)
+		h.logger.Info("Starting Redis Pub/Sub subscriber",
+			zap.String("channel", channel),
+			zap.String("key_prefix", h.keyPrefix),
+		)
+
 		h.pubsub = h.redisClient.Subscribe(context.Background(), channel)
 
+		// Wait for subscription confirmation BEFORE starting message handler
+		// This ensures we don't miss any messages
+		msg, err := h.pubsub.Receive(context.Background())
+		if err != nil {
+			h.logger.Error("Failed to confirm Pub/Sub subscription",
+				zap.String("channel", channel),
+				zap.Error(err),
+			)
+			return
+		}
+
+		// Verify it's a subscription confirmation
+		switch v := msg.(type) {
+		case *redis.Subscription:
+			h.logger.Info("Pub/Sub subscription confirmed",
+				zap.String("channel", v.Channel),
+				zap.String("kind", v.Kind),
+				zap.Int("count", v.Count),
+			)
+		default:
+			h.logger.Warn("Unexpected message type during subscription",
+				zap.String("channel", channel),
+				zap.Any("message", msg),
+			)
+		}
+
+		// Now start the message handler goroutine
 		go h.handlePubSubMessages()
 
-		h.logger.Info("Started Redis Pub/Sub subscriber", zap.String("channel", channel))
+		h.logger.Info("Started Redis Pub/Sub subscriber goroutine", zap.String("channel", channel))
 	})
 }
 
@@ -257,16 +344,40 @@ func (h *TaskPollHandler) startPubSub() {
 func (h *TaskPollHandler) handlePubSubMessages() {
 	defer close(h.pubsubDone)
 
-	ch := h.pubsub.Channel()
+	h.logger.Info("Pub/Sub message handler started, waiting for messages...")
 
-	for msg := range ch {
+	// Use ReceiveMessage instead of Channel() to avoid message loss
+	// Channel() has an internal buffer that may drop messages
+	for {
 		if !h.running.Load() {
+			h.logger.Info("Pub/Sub handler stopping")
 			return
 		}
 
+		// ReceiveMessage blocks until a message is received or context is cancelled
+		msg, err := h.pubsub.ReceiveMessage(context.Background())
+		if err != nil {
+			// Check if we're shutting down
+			if !h.running.Load() {
+				return
+			}
+			h.logger.Warn("Error receiving Pub/Sub message",
+				zap.Error(err),
+			)
+			continue
+		}
+
+		h.logger.Info("Pub/Sub message received",
+			zap.String("channel", msg.Channel),
+			zap.String("payload", msg.Payload),
+		)
+
 		// msg.Payload is the taskID
 		taskID := msg.Payload
-		h.logger.Debug("Received task submitted event", zap.String("task_id", taskID))
+		h.logger.Debug("Received task submitted event via Pub/Sub",
+			zap.String("task_id", taskID),
+			zap.Int("waiter_count", h.GetWaiterCount()),
+		)
 
 		// Get task details to determine target agent
 		task, targetAgentID, err := h.getTaskDetails(context.Background(), taskID)
@@ -279,15 +390,32 @@ func (h *TaskPollHandler) handlePubSubMessages() {
 		}
 
 		if task == nil {
+			h.logger.Warn("Task details not found",
+				zap.String("task_id", taskID),
+			)
 			continue
 		}
+
+		h.logger.Debug("Task details retrieved for notification",
+			zap.String("task_id", taskID),
+			zap.String("target_agent_id", targetAgentID),
+			zap.String("task_target_agent_id", task.TargetAgentID),
+		)
 
 		// Notify appropriate waiters
 		if targetAgentID == "" {
 			// Global task - notify all waiters
+			h.logger.Debug("Notifying all waiters for global task",
+				zap.String("task_id", taskID),
+				zap.Int("waiter_count", h.GetWaiterCount()),
+			)
 			h.notifyAllWaiters(task)
 		} else {
 			// Agent-specific task
+			h.logger.Debug("Notifying specific waiter for agent task",
+				zap.String("task_id", taskID),
+				zap.String("target_agent_id", targetAgentID),
+			)
 			h.notifyWaiter(targetAgentID, task)
 		}
 	}
@@ -319,6 +447,17 @@ func (h *TaskPollHandler) getTaskDetails(ctx context.Context, taskID string) (*c
 
 // notifyWaiter notifies a specific waiter.
 func (h *TaskPollHandler) notifyWaiter(agentID string, task *controlplanev1.Task) {
+	// Log all registered waiters for debugging
+	var registeredAgents []string
+	h.waiters.Range(func(key, _ interface{}) bool {
+		registeredAgents = append(registeredAgents, key.(string))
+		return true
+	})
+	h.logger.Debug("Looking for waiter",
+		zap.String("target_agent_id", agentID),
+		zap.Strings("registered_waiters", registeredAgents),
+	)
+
 	if waiterVal, ok := h.waiters.Load(agentID); ok {
 		waiter := waiterVal.(*TaskWaiter)
 
@@ -329,13 +468,22 @@ func (h *TaskPollHandler) notifyWaiter(agentID string, task *controlplanev1.Task
 
 		select {
 		case waiter.resultChan <- result:
-			h.logger.Debug("Notified waiter of new task",
+			h.logger.Debug("Successfully notified waiter of new task",
 				zap.String("agent_id", agentID),
 				zap.String("task_id", task.TaskID),
 			)
 		default:
-			// Waiter already processed or timed out
+			h.logger.Warn("Failed to notify waiter (channel full or closed)",
+				zap.String("agent_id", agentID),
+				zap.String("task_id", task.TaskID),
+			)
 		}
+	} else {
+		h.logger.Warn("No waiter found for agent",
+			zap.String("target_agent_id", agentID),
+			zap.Strings("registered_waiters", registeredAgents),
+			zap.String("task_id", task.TaskID),
+		)
 	}
 }
 

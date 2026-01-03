@@ -15,7 +15,7 @@ import (
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
 )
 
-func newTestMemoryTaskManager(t *testing.T) *MemoryTaskManager {
+func newTestMemoryTaskManager(_ *testing.T) *MemoryTaskManager {
 	logger := zap.NewNop()
 	config := Config{
 		ResultTTL:      1 * time.Hour,
@@ -112,13 +112,16 @@ func TestMemoryTaskManager_SubmitTaskForAgent(t *testing.T) {
 		TaskType: "test",
 	}
 
-	err = tm.SubmitTaskForAgent(ctx, "agent-1", task)
+	agentMeta := &AgentMeta{AgentID: "agent-1", AppID: "app-1", ServiceName: "svc-1"}
+	err = tm.SubmitTaskForAgent(ctx, agentMeta, task)
 	require.NoError(t, err)
 
 	// Verify task is in agent queue
 	info, err := tm.GetTaskStatus(ctx, "task-1")
 	require.NoError(t, err)
 	assert.Equal(t, "agent-1", info.AgentID)
+	assert.Equal(t, "app-1", info.AppID)
+	assert.Equal(t, "svc-1", info.ServiceName)
 }
 
 func TestMemoryTaskManager_FetchTask(t *testing.T) {
@@ -187,7 +190,7 @@ func TestMemoryTaskManager_FetchTask_AgentSpecific(t *testing.T) {
 		TaskID:   "agent-task",
 		TaskType: "test",
 	}
-	_ = tm.SubmitTaskForAgent(ctx, "agent-1", agentTask)
+	_ = tm.SubmitTaskForAgent(ctx, &AgentMeta{AgentID: "agent-1"}, agentTask)
 
 	// Submit global task
 	globalTask := &controlplanev1.Task{
@@ -276,6 +279,43 @@ func TestMemoryTaskManager_ReportTaskResult(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, found)
 	assert.Equal(t, controlplanev1.TaskStatusSuccess, retrieved.Status)
+}
+
+func TestMemoryTaskManager_ReportTaskResult_Running_RemovesFromQueue(t *testing.T) {
+	tm := newTestMemoryTaskManager(t)
+	ctx := context.Background()
+
+	err := tm.Start(ctx)
+	require.NoError(t, err)
+	defer tm.Close()
+
+	// Submit task for specific agent
+	task := &controlplanev1.Task{TaskID: "task-1", TaskType: "test"}
+	err = tm.SubmitTaskForAgent(ctx, &AgentMeta{AgentID: "agent-1"}, task)
+	require.NoError(t, err)
+
+	// Verify it is pending
+	pending, err := tm.GetPendingTasks(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, "task-1", pending[0].TaskID)
+
+	// Report RUNNING (agent accepted and started)
+	running := &controlplanev1.TaskResult{TaskID: "task-1", Status: controlplanev1.TaskStatusRunning, AgentID: "agent-1"}
+	err = tm.ReportTaskResult(ctx, running)
+	require.NoError(t, err)
+
+	// Should be removed from pending queues
+	pending, err = tm.GetPendingTasks(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, pending, 0)
+
+	// Status should be RUNNING with started_at set
+	info, err := tm.GetTaskStatus(ctx, "task-1")
+	require.NoError(t, err)
+	assert.Equal(t, controlplanev1.TaskStatusRunning, info.Status)
+	assert.Equal(t, "agent-1", info.AgentID)
+	assert.NotZero(t, info.StartedAtMillis)
 }
 
 func TestMemoryTaskManager_ReportTaskResult_Validation(t *testing.T) {
@@ -375,7 +415,7 @@ func TestMemoryTaskManager_GetGlobalPendingTasks(t *testing.T) {
 		TaskID:   "agent-task",
 		TaskType: "test",
 	}
-	_ = tm.SubmitTaskForAgent(ctx, "agent-1", agentTask)
+	_ = tm.SubmitTaskForAgent(ctx, &AgentMeta{AgentID: "agent-1"}, agentTask)
 
 	// Get global pending
 	tasks, err := tm.GetGlobalPendingTasks(ctx)

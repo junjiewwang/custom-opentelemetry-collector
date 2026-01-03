@@ -4,7 +4,9 @@
 package adminext
 
 import (
+	"bufio"
 	"encoding/base64"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func newTestExtension(t *testing.T, config *Config) *Extension {
+func newTestExtension(_ *testing.T, config *Config) *Extension {
 	if config == nil {
 		config = createDefaultConfig()
 	}
@@ -411,6 +413,29 @@ func TestAuthMiddleware_UnknownAuthType(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
+type hijackableResponseWriter struct {
+	header http.Header
+}
+
+func (h *hijackableResponseWriter) Header() http.Header {
+	if h.header == nil {
+		h.header = make(http.Header)
+	}
+	return h.header
+}
+
+func (h *hijackableResponseWriter) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (h *hijackableResponseWriter) WriteHeader(int) {}
+
+func (h *hijackableResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	c1, c2 := net.Pipe()
+	_ = c2.Close()
+	return c1, bufio.NewReadWriter(bufio.NewReader(c1), bufio.NewWriter(c1)), nil
+}
+
 func TestResponseWriter(t *testing.T) {
 	rr := httptest.NewRecorder()
 	rw := &responseWriter{ResponseWriter: rr, statusCode: http.StatusOK}
@@ -422,4 +447,17 @@ func TestResponseWriter(t *testing.T) {
 	rw.WriteHeader(http.StatusNotFound)
 	assert.Equal(t, http.StatusNotFound, rw.statusCode)
 	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+func TestResponseWriter_HijackerPassthrough(t *testing.T) {
+	h := &hijackableResponseWriter{}
+	rw := &responseWriter{ResponseWriter: h, statusCode: http.StatusOK}
+
+	hj, ok := any(rw).(http.Hijacker)
+	assert.True(t, ok)
+
+	conn, _, err := hj.Hijack()
+	assert.NoError(t, err)
+	assert.NotNil(t, conn)
+	_ = conn.Close()
 }

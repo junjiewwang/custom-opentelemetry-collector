@@ -90,15 +90,15 @@ func (m *RedisTaskManager) Start(ctx context.Context) error {
 
 // SubmitTask submits a task to the global queue.
 func (m *RedisTaskManager) SubmitTask(ctx context.Context, task *controlplanev1.Task) error {
-	return m.submitTaskToQueue(ctx, "", task)
+	return m.submitTaskToQueue(ctx, nil, task)
 }
 
 // SubmitTaskForAgent submits a task for a specific agent.
-func (m *RedisTaskManager) SubmitTaskForAgent(ctx context.Context, agentID string, task *controlplanev1.Task) error {
-	return m.submitTaskToQueue(ctx, agentID, task)
+func (m *RedisTaskManager) SubmitTaskForAgent(ctx context.Context, agentMeta *AgentMeta, task *controlplanev1.Task) error {
+	return m.submitTaskToQueue(ctx, agentMeta, task)
 }
 
-func (m *RedisTaskManager) submitTaskToQueue(ctx context.Context, agentID string, task *controlplanev1.Task) error {
+func (m *RedisTaskManager) submitTaskToQueue(ctx context.Context, agentMeta *AgentMeta, task *controlplanev1.Task) error {
 	// Validate and auto-fill task fields
 	nowMillis, err := m.helper.ValidateTask(task)
 	if err != nil {
@@ -120,10 +120,16 @@ func (m *RedisTaskManager) submitTaskToQueue(ctx context.Context, agentID string
 	}
 
 	// Create task info
-	info := m.helper.NewTaskInfo(task, agentID, nowMillis)
+	info := m.helper.NewTaskInfo(task, agentMeta, nowMillis)
 	infoData, err := json.Marshal(info)
 	if err != nil {
 		return err
+	}
+
+	// Determine agent ID for queue routing
+	agentID := ""
+	if agentMeta != nil {
+		agentID = agentMeta.AgentID
 	}
 
 	// Determine queue key
@@ -147,16 +153,35 @@ func (m *RedisTaskManager) submitTaskToQueue(ctx context.Context, agentID string
 
 	// Publish event
 	eventKey := fmt.Sprintf(keyEventSubmitted, m.keyPrefix)
-	pipe.Publish(ctx, eventKey, task.TaskID)
+	publishCmd := pipe.Publish(ctx, eventKey, task.TaskID)
 
-	_, err = pipe.Exec(ctx)
+	results, err := pipe.Exec(ctx)
 	if err != nil {
 		return err
 	}
 
-	m.logger.Debug("Task submitted to Redis",
+	// Check publish result
+	if publishCmd.Err() != nil {
+		m.logger.Warn("Pub/Sub publish failed",
+			zap.String("task_id", task.TaskID),
+			zap.String("event_key", eventKey),
+			zap.Error(publishCmd.Err()),
+		)
+	} else {
+		subscribers := publishCmd.Val()
+		m.logger.Info("Pub/Sub message published",
+			zap.String("task_id", task.TaskID),
+			zap.String("event_key", eventKey),
+			zap.Int64("subscribers", subscribers),
+			zap.Int("pipeline_results", len(results)),
+		)
+	}
+
+	m.logger.Debug("Task submitted to Redis with Pub/Sub notification",
 		zap.String("task_id", task.TaskID),
 		zap.String("agent_id", agentID),
+		zap.String("queue_key", queueKey),
+		zap.String("event_key", eventKey),
 	)
 
 	return nil
@@ -316,6 +341,50 @@ func (m *RedisTaskManager) GetGlobalPendingTasks(ctx context.Context) ([]*contro
 	return tasks, nil
 }
 
+// GetAllTasks returns all tasks from detail storage.
+func (m *RedisTaskManager) GetAllTasks(ctx context.Context) ([]*TaskInfo, error) {
+	m.mu.RLock()
+	client := m.client
+	m.mu.RUnlock()
+
+	if client == nil {
+		return nil, errors.New("redis client not initialized")
+	}
+
+	// Scan for all detail keys: otel:tasks:detail:*
+	pattern := fmt.Sprintf("%s:detail:*", m.keyPrefix)
+	var tasks []*TaskInfo
+
+	iter := client.Scan(ctx, 0, pattern, 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+
+		// Get the task detail
+		data, err := client.Get(ctx, key).Result()
+		if err != nil {
+			if err == redis.Nil {
+				continue
+			}
+			m.logger.Warn("Failed to get task detail", zap.String("key", key), zap.Error(err))
+			continue
+		}
+
+		var taskInfo TaskInfo
+		if err := json.Unmarshal([]byte(data), &taskInfo); err != nil {
+			m.logger.Warn("Failed to unmarshal task info", zap.String("key", key), zap.Error(err))
+			continue
+		}
+
+		tasks = append(tasks, &taskInfo)
+	}
+
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
 // CancelTask cancels a task by ID.
 func (m *RedisTaskManager) CancelTask(ctx context.Context, taskID string) error {
 	m.mu.RLock()
@@ -330,18 +399,32 @@ func (m *RedisTaskManager) CancelTask(ctx context.Context, taskID string) error 
 	detailKey := fmt.Sprintf(keyTaskDetail, m.keyPrefix, taskID)
 	eventKey := fmt.Sprintf(keyEventCancelled, m.keyPrefix)
 
+	// Load detail JSON (detailKey is stored via SET, not HASH)
+	data, err := client.Get(ctx, detailKey).Result()
+	if err == redis.Nil {
+		return errors.New("task not found: " + taskID)
+	}
+	if err != nil {
+		return err
+	}
+
+	var info TaskInfo
+	if err := json.Unmarshal([]byte(data), &info); err != nil {
+		return err
+	}
+	info.Status = controlplanev1.TaskStatusCancelled
+
+	updated, err := json.Marshal(&info)
+	if err != nil {
+		return err
+	}
+
 	pipe := client.TxPipeline()
-
-	// Add to cancelled set
 	pipe.SAdd(ctx, cancelledKey, taskID)
-
-	// Update task detail status
-	pipe.HSet(ctx, detailKey, "status", int(controlplanev1.TaskStatusCancelled))
-
-	// Publish cancel event
+	pipe.Set(ctx, detailKey, updated, m.config.ResultTTL)
 	pipe.Publish(ctx, eventKey, taskID)
 
-	_, err := pipe.Exec(ctx)
+	_, err = pipe.Exec(ctx)
 	if err != nil {
 		return err
 	}
@@ -388,19 +471,72 @@ func (m *RedisTaskManager) ReportTaskResult(ctx context.Context, result *control
 	runningKey := fmt.Sprintf(keyRunning, m.keyPrefix)
 	eventKey := fmt.Sprintf(keyEventCompleted, m.keyPrefix)
 
+	// Load and update task detail JSON (detailKey is stored via SET, not HASH)
+	data, err := client.Get(ctx, detailKey).Result()
+	if err != nil && err != redis.Nil {
+		return err
+	}
+
+	var info TaskInfo
+	if err == nil {
+		if err := json.Unmarshal([]byte(data), &info); err != nil {
+			return err
+		}
+	}
+
+	// Update fields using helper
+	agentIDBefore := info.AgentID
+	m.helper.UpdateTaskInfoWithResult(&info, result)
+	agentID := info.AgentID
+	if agentIDBefore != "" && agentID == "" {
+		agentID = agentIDBefore
+	}
+
+	nowMillis := m.helper.NowMillis()
+	m.helper.EnsureStartedAtMillis(&info, nowMillis)
+	updatedInfo, err := json.Marshal(&info)
+	if err != nil {
+		return err
+	}
+
+	effects := m.helper.ResultEffects(result.Status)
+	taskJSON, _ := json.Marshal(info.Task)
+
 	pipe := client.TxPipeline()
-
-	// Store result
 	pipe.Set(ctx, resultKey, resultData, m.config.ResultTTL)
+	pipe.Set(ctx, detailKey, updatedInfo, m.config.ResultTTL)
 
-	// Update task detail
-	pipe.HSet(ctx, detailKey, "status", int(result.Status), "result", resultData)
+	if effects.MarkRunning {
+		pipe.HSet(ctx, runningKey, result.TaskID, agentID)
+	}
+	if effects.ClearRunning {
+		pipe.HDel(ctx, runningKey, result.TaskID)
+	}
+	if effects.PublishCompleted {
+		pipe.Publish(ctx, eventKey, result.TaskID)
+	}
+	if effects.RemoveFromPending && len(taskJSON) > 0 {
+		globalQueueKey := fmt.Sprintf(keyPendingGlobal, m.keyPrefix)
+		pipe.LRem(ctx, globalQueueKey, 0, string(taskJSON))
 
-	// Remove from running
-	pipe.HDel(ctx, runningKey, result.TaskID)
+		if agentID != "" {
+			agentQueueKey := fmt.Sprintf(keyPendingAgent, m.keyPrefix, agentID)
+			pipe.LRem(ctx, agentQueueKey, 0, string(taskJSON))
+		}
+	}
 
-	// Publish completion event
-	pipe.Publish(ctx, eventKey, result.TaskID)
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	if result.Status == controlplanev1.TaskStatusRunning {
+		m.logger.Debug("Task status updated to RUNNING",
+			zap.String("task_id", result.TaskID),
+			zap.String("agent_id", agentID),
+		)
+		return nil
+	}
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
@@ -484,19 +620,34 @@ func (m *RedisTaskManager) SetTaskRunning(ctx context.Context, taskID string, ag
 	runningKey := fmt.Sprintf(keyRunning, m.keyPrefix)
 	detailKey := fmt.Sprintf(keyTaskDetail, m.keyPrefix, taskID)
 
+	now := m.helper.NowMillis()
+
+	// Load detail JSON (detailKey is stored via SET, not HASH)
+	data, err := client.Get(ctx, detailKey).Result()
+	if err == redis.Nil {
+		return errors.New("task not found: " + taskID)
+	}
+	if err != nil {
+		return err
+	}
+
+	var info TaskInfo
+	if err := json.Unmarshal([]byte(data), &info); err != nil {
+		return err
+	}
+	info.Status = controlplanev1.TaskStatusRunning
+	info.AgentID = agentID
+	info.StartedAtMillis = now
+
+	updated, err := json.Marshal(&info)
+	if err != nil {
+		return err
+	}
+
 	pipe := client.TxPipeline()
-
-	// Set running mapping
 	pipe.HSet(ctx, runningKey, taskID, agentID)
-
-	// Update task detail
-	pipe.HSet(ctx, detailKey,
-		"status", int(controlplanev1.TaskStatusRunning),
-		"agent_id", agentID,
-		"started_at_millis", m.helper.NowMillis(),
-	)
-
-	_, err := pipe.Exec(ctx)
+	pipe.Set(ctx, detailKey, updated, m.config.ResultTTL)
+	_, err = pipe.Exec(ctx)
 	return err
 }
 

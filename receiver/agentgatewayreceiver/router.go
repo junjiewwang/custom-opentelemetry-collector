@@ -96,30 +96,27 @@ func (r *agentGatewayReceiver) registerControlPlaneRoutes(router chi.Router) {
 	handler := newControlPlaneHandler(r.logger, r.controlPlane, r.longPollManager)
 
 	router.Route(prefix, func(cr chi.Router) {
-		// Configuration management
+		// Configuration management (agent pulls config)
 		cr.Get("/config", handler.getConfig)
 		cr.Post("/config", handler.postConfig)
 
-		// Task management
+		// Task management (agent pulls tasks, reports results)
+		// Note: Task creation is done via adminext, not here
 		cr.Get("/tasks", handler.getTasks)
-		cr.Post("/tasks", handler.createTask)
-		cr.Delete("/tasks", handler.deleteTask)
-		cr.Post("/tasks/cancel", handler.cancelTasks)
+		cr.Post("/tasks/result", handler.reportTaskResult) // Agent reports task result
 
-		// Status and heartbeat
+		// Status and heartbeat (agent reports status)
 		cr.Get("/status", handler.getStatus)
 		cr.Post("/status", handler.postStatus)
 
-		// Agent registration and management
+		// Agent registration (agent self-registration)
 		cr.Post("/register", handler.registerAgent)
 		cr.Post("/unregister", handler.unregisterAgent)
-		cr.Get("/agents", handler.listAgents)
-		cr.Get("/agents/stats", handler.getAgentStats)
 
-		// Chunk upload
+		// Chunk upload (agent uploads data chunks)
 		cr.Post("/upload-chunk", handler.uploadChunk)
 
-		// Long polling endpoints
+		// Long polling endpoints (agent waits for config/tasks)
 		cr.Post("/poll", handler.poll)              // Unified poll for config and tasks
 		cr.Post("/poll/config", handler.pollConfig) // Config-only poll
 		cr.Post("/poll/tasks", handler.pollTasks)   // Task-only poll

@@ -39,8 +39,11 @@ type ControlPlane interface {
 
 	// Task management
 	SubmitTask(ctx context.Context, task *controlplanev1.Task) error
+	SubmitTaskForAgent(ctx context.Context, agentID string, task *controlplanev1.Task) error
 	GetTaskResult(taskID string) (*controlplanev1.TaskResult, bool)
 	GetPendingTasks() []*controlplanev1.Task
+	GetPendingTasksForAgent(ctx context.Context, agentID string) ([]*controlplanev1.Task, error)
+	ReportTaskResult(ctx context.Context, result *controlplanev1.TaskResult) error
 	CancelTask(ctx context.Context, taskID string) error
 	IsTaskCancelled(ctx context.Context, taskID string) (bool, error)
 
@@ -269,6 +272,25 @@ func (e *Extension) SubmitTask(ctx context.Context, task *controlplanev1.Task) e
 	return e.taskMgr.SubmitTask(ctx, task)
 }
 
+// SubmitTaskForAgent implements ControlPlane.
+func (e *Extension) SubmitTaskForAgent(ctx context.Context, agentID string, task *controlplanev1.Task) error {
+	// 查询 Agent 信息以获取 AppID 和 ServiceName
+	var agentMeta *taskmanager.AgentMeta
+	if agent, err := e.agentReg.GetAgent(ctx, agentID); err == nil && agent != nil {
+		agentMeta = &taskmanager.AgentMeta{
+			AgentID:     agent.AgentID,
+			AppID:       agent.AppID,
+			ServiceName: agent.ServiceName,
+		}
+	} else {
+		// Agent 不存在或查询失败，仅使用 AgentID
+		agentMeta = &taskmanager.AgentMeta{
+			AgentID: agentID,
+		}
+	}
+	return e.taskMgr.SubmitTaskForAgent(ctx, agentMeta, task)
+}
+
 // GetTaskResult implements ControlPlane.
 func (e *Extension) GetTaskResult(taskID string) (*controlplanev1.TaskResult, bool) {
 	result, found, _ := e.taskMgr.GetTaskResult(context.Background(), taskID)
@@ -279,6 +301,16 @@ func (e *Extension) GetTaskResult(taskID string) (*controlplanev1.TaskResult, bo
 func (e *Extension) GetPendingTasks() []*controlplanev1.Task {
 	tasks, _ := e.taskMgr.GetGlobalPendingTasks(context.Background())
 	return tasks
+}
+
+// GetPendingTasksForAgent implements ControlPlane.
+func (e *Extension) GetPendingTasksForAgent(ctx context.Context, agentID string) ([]*controlplanev1.Task, error) {
+	return e.taskMgr.GetPendingTasks(ctx, agentID)
+}
+
+// ReportTaskResult implements ControlPlane.
+func (e *Extension) ReportTaskResult(ctx context.Context, result *controlplanev1.TaskResult) error {
+	return e.taskMgr.ReportTaskResult(ctx, result)
 }
 
 // CancelTask implements ControlPlane.

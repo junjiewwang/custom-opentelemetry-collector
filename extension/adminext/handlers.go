@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
 )
@@ -492,7 +493,8 @@ func (e *Extension) kickInstance(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 func (e *Extension) listTasks(w http.ResponseWriter, r *http.Request) {
-	tasks, err := e.taskMgr.GetGlobalPendingTasks(r.Context())
+	// Get all tasks from detail storage (includes all statuses and agent-specific tasks)
+	tasks, err := e.taskMgr.GetAllTasks(r.Context())
 	if err != nil {
 		e.handleError(w, err)
 		return
@@ -513,9 +515,34 @@ func (e *Extension) createTask(w http.ResponseWriter, r *http.Request) {
 		task.TaskID = uuid.New().String()
 	}
 
-	if err := e.taskMgr.SubmitTask(r.Context(), task); err != nil {
-		e.handleError(w, err)
-		return
+	// 根据是否指定 target_agent_id 决定提交到哪个队列
+	if task.TargetAgentID != "" {
+		// 查询 Agent 信息以获取 AppID 和 ServiceName
+		var agentMeta *taskmanager.AgentMeta
+		if agent, err := e.agentReg.GetAgent(r.Context(), task.TargetAgentID); err == nil && agent != nil {
+			agentMeta = &taskmanager.AgentMeta{
+				AgentID:     agent.AgentID,
+				AppID:       agent.AppID,
+				ServiceName: agent.ServiceName,
+			}
+		} else {
+			// Agent 不存在或查询失败，仅使用 AgentID
+			agentMeta = &taskmanager.AgentMeta{
+				AgentID: task.TargetAgentID,
+			}
+		}
+
+		// 提交到 agent 专属队列
+		if err := e.taskMgr.SubmitTaskForAgent(r.Context(), agentMeta, task); err != nil {
+			e.handleError(w, err)
+			return
+		}
+	} else {
+		// 提交到全局队列
+		if err := e.taskMgr.SubmitTask(r.Context(), task); err != nil {
+			e.handleError(w, err)
+			return
+		}
 	}
 
 	e.writeJSON(w, http.StatusOK, successResponse("task submitted", map[string]any{"task_id": task.TaskID}))

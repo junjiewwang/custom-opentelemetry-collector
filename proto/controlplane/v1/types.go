@@ -6,6 +6,11 @@
 // In production, these would be generated using protoc.
 package controlplanev1
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // SamplerType enumerates available sampler types.
 type SamplerType int32
 
@@ -67,6 +72,72 @@ func (s TaskStatus) String() string {
 	}
 }
 
+// IsDispatchable returns true if the task with this status should be dispatched to agents.
+// Only PENDING and RUNNING tasks need to be dispatched:
+// - PENDING: task waiting to be picked up
+// - RUNNING: task may need to be re-dispatched (e.g., agent reconnected)
+// Terminal states (SUCCESS/FAILED/TIMEOUT/CANCELLED) should NOT be dispatched.
+func (s TaskStatus) IsDispatchable() bool {
+	return s == TaskStatusPending || s == TaskStatusRunning
+}
+
+// IsTerminal returns true if the task has reached a final state.
+// Terminal tasks should be removed from pending queues.
+func (s TaskStatus) IsTerminal() bool {
+	switch s {
+	case TaskStatusSuccess, TaskStatusFailed, TaskStatusTimeout, TaskStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// UnmarshalJSON supports both number and string formats for TaskStatus.
+//
+// We keep the wire format flexible to accommodate agents that send status as strings
+// (e.g. "FAILED", "STALE", "EXPIRED"). The server will normalize these into
+// stable TaskStatus values.
+func (s *TaskStatus) UnmarshalJSON(data []byte) error {
+	// Try number first
+	var num int32
+	if err := json.Unmarshal(data, &num); err == nil {
+		*s = TaskStatus(num)
+		return nil
+	}
+
+	// Then try string
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+
+	switch strings.ToUpper(str) {
+	case "SUCCESS":
+		*s = TaskStatusSuccess
+	case "FAILED", "FAILURE":
+		*s = TaskStatusFailed
+	case "TIMEOUT":
+		*s = TaskStatusTimeout
+	case "CANCELLED", "CANCELED":
+		*s = TaskStatusCancelled
+	case "PENDING":
+		*s = TaskStatusPending
+	case "RUNNING":
+		*s = TaskStatusRunning
+	case "EXPIRED", "STALE", "REJECTED":
+		// These are failure reasons; normalize to FAILED.
+		*s = TaskStatusFailed
+	default:
+		*s = TaskStatusUnspecified
+	}
+	return nil
+}
+
+// MarshalJSON encodes TaskStatus as a number.
+func (s TaskStatus) MarshalJSON() ([]byte, error) {
+	return json.Marshal(int32(s))
+}
+
 // HealthState enumerates possible health states.
 type HealthState int32
 
@@ -116,23 +187,46 @@ type AgentConfig struct {
 
 // Task represents a command to be executed by the agent.
 type Task struct {
-	TaskID           string `json:"task_id"`
-	TaskType         string `json:"task_type"`
-	ParametersJSON   string `json:"parameters_json,omitempty"`
-	Priority         int32  `json:"priority"`
-	TimeoutMillis    int64  `json:"timeout_millis"`
-	CreatedAtMillis  int64  `json:"created_at_millis"`
-	ExpiresAtMillis  int64  `json:"expires_at_millis,omitempty"`
-	TargetAgentID    string `json:"target_agent_id,omitempty"`
+	TaskID                   string         `json:"task_id"`
+	TaskType                 string         `json:"task_type"`
+	Parameters               map[string]any `json:"parameters,omitempty"`
+	Priority                 int32          `json:"priority"`
+	TimeoutMillis            int64          `json:"timeout_millis"`
+	CreatedAtMillis          int64          `json:"created_at_millis"`
+	ExpiresAtMillis          int64          `json:"expires_at_millis,omitempty"`
+	MaxAcceptableDelayMillis int64          `json:"max_acceptable_delay_millis,omitempty"`
+	TargetAgentID            string         `json:"target_agent_id,omitempty"`
 }
 
 // TaskResult contains the outcome of a task execution.
+//
+// NOTE: This struct is used for JSON APIs. Keep fields backward-compatible.
+// Agents may send additional fields; the server will ignore unknown fields.
 type TaskResult struct {
-	TaskID           string     `json:"task_id"`
-	Status           TaskStatus `json:"status"`
-	ResultData       []byte     `json:"result_data,omitempty"`
-	ErrorMessage     string     `json:"error_message,omitempty"`
-	CompletedAtMillis int64     `json:"completed_at_millis"`
+	TaskID string `json:"task_id"`
+
+	// AgentID is optional but highly recommended for observability.
+	AgentID string `json:"agent_id,omitempty"`
+
+	// Status is the normalized execution status.
+	// We recommend agents use stable values: SUCCESS/FAILED/TIMEOUT/CANCELLED.
+	Status TaskStatus `json:"status"`
+
+	// ErrorCode provides machine-readable failure reason, e.g. TASK_STALE/TASK_EXPIRED.
+	ErrorCode string `json:"error_code,omitempty"`
+
+	// ErrorMessage provides human-readable details.
+	ErrorMessage string `json:"error_message,omitempty"`
+
+	// Result is optional structured JSON produced by the agent (already JSON, not escaped).
+	Result json.RawMessage `json:"result,omitempty"`
+
+	// ResultData is optional binary payload (base64 in JSON).
+	ResultData []byte `json:"result_data,omitempty"`
+
+	StartedAtMillis      int64 `json:"started_at_millis,omitempty"`
+	CompletedAtMillis    int64 `json:"completed_at_millis"`
+	ExecutionTimeMillis  int64 `json:"execution_time_millis,omitempty"`
 }
 
 // HealthStatus describes the agent's health.
