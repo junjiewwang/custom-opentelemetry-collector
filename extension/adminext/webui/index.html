@@ -691,7 +691,7 @@
                             <thead class="bg-gray-50 border-b border-gray-100">
                                 <tr>
                                     <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Instance</th>
-                                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Host</th>
+                                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">IP</th>
                                     <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Arthas Status</th>
                                     <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Tunnel</th>
                                     <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
@@ -705,18 +705,16 @@
                                             <div class="text-xs text-gray-400 font-mono" x-text="inst.agent_id?.substring(0, 24) + '...'"></div>
                                         </td>
                                         <td class="px-6 py-4">
-                                            <div class="text-gray-800" x-text="inst.hostname || '-'"></div>
-                                            <div class="text-sm text-gray-500" x-text="inst.ip || '-'"></div>
+                                            <div class="text-gray-800" x-text="inst.ip || '-'"></div>
                                         </td>
                                         <td class="px-6 py-4">
                                             <div class="flex items-center gap-2">
                                                 <span class="px-2 py-1 rounded-full text-xs font-medium"
                                                     :class="{
                                                         'bg-green-100 text-green-700': inst.arthasStatus?.state === 'running',
-                                                        'bg-gray-100 text-gray-600': inst.arthasStatus?.state === 'stopped',
-                                                        'bg-yellow-100 text-yellow-700': inst.arthasStatus?.state === 'unknown'
+                                                        'bg-gray-100 text-gray-600': inst.arthasStatus?.state === 'stopped'
                                                     }"
-                                                    x-text="inst.arthasStatus?.state || 'unknown'"></span>
+                                                    x-text="inst.arthasStatus?.state || 'stopped'"></span>
                                                 <span x-show="inst.arthasStatus?.arthasVersion" 
                                                     class="text-xs text-gray-400" 
                                                     x-text="'v' + inst.arthasStatus?.arthasVersion"></span>

@@ -1,8 +1,8 @@
 /**
  * Terminal Manager with xterm.js
- * Version: 20260105-v2 (JSON format)
+ * Version: 20260105-v3 (resize fix)
  */
-console.log('[TerminalManager] Loading version 20260105-v2 (JSON format)');
+console.log('[TerminalManager] Loading version 20260105-v3 (resize fix)');
 
 class TerminalManager {
     constructor() {
@@ -18,19 +18,51 @@ class TerminalManager {
             globalResizeTimeout = setTimeout(() => {
                 // Refit all visible terminals
                 for (const [sessionId, terminal] of this.terminals.entries()) {
-                    if (terminal.element && !terminal.element.classList.contains('hidden')) {
-                        try {
-                            terminal.fitAddon.fit();
-                            // Scroll to bottom after resize
-                            terminal.xterm.scrollToBottom();
-                            this.notifyTerminalResizeBySessionId(sessionId, terminal.fitAddon);
-                        } catch (error) {
-                            console.error(`Error refitting terminal ${sessionId}:`, error);
-                        }
+                    if (terminal.element && terminal.element.style.display !== 'none') {
+                        this.fitAndNotify(sessionId);
                     }
                 }
-            }, 150);
+            }, 100);
         });
+    }
+
+    /**
+     * Unified method to fit terminal and notify server about resize
+     * Following official pattern: notify server first, then fit
+     * @param {string} sessionId - Terminal session ID
+     */
+    fitAndNotify(sessionId) {
+        const terminal = this.terminals.get(sessionId);
+        if (!terminal) return;
+
+        try {
+            const dimensions = terminal.fitAddon.proposeDimensions();
+            if (!dimensions) return;
+
+            const { cols, rows } = dimensions;
+
+            // 1. Send resize message to server via WebSocket (if connected)
+            const ws = this.websockets.get(sessionId);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const resizeMessage = JSON.stringify({ action: 'resize', cols, rows });
+                ws.send(resizeMessage);
+                console.log(`[Terminal] Sent resize to server: ${cols}x${rows}`);
+            }
+
+            // 2. Fit terminal to container
+            terminal.fitAddon.fit();
+
+            // 3. Scroll to bottom
+            terminal.xterm.scrollToBottom();
+
+            // 4. Also dispatch event for any external listeners
+            const event = new CustomEvent('terminalResize', {
+                detail: { sessionId, serviceName: terminal.serviceName, ip: terminal.ip, cols, rows }
+            });
+            document.dispatchEvent(event);
+        } catch (error) {
+            console.error(`[Terminal] Error fitting terminal ${sessionId}:`, error);
+        }
     }
 
     /**
@@ -127,41 +159,7 @@ class TerminalManager {
         const xtermContainer = terminalElement.querySelector('.xterm-container');
         xterm.open(xtermContainer);
 
-        // Fit terminal to container with proper timing
-        setTimeout(() => {
-            fitAddon.fit();
-            // Scroll to bottom to ensure last line is visible
-            xterm.scrollToBottom();
-            // Send initial size to server
-            this.notifyTerminalResizeBySessionId(sessionId, fitAddon);
-        }, 100);
-
-        // Handle window resize with debounce
-        let resizeTimeout;
-        const resizeObserver = new ResizeObserver(() => {
-            clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(() => {
-                try {
-                    fitAddon.fit();
-                    // Scroll to bottom after resize to ensure last line is visible
-                    xterm.scrollToBottom();
-                    // Notify server about size change
-                    this.notifyTerminalResizeBySessionId(sessionId, fitAddon);
-                } catch (error) {
-                    console.error('Error fitting terminal:', error);
-                }
-            }, 100);
-        });
-        resizeObserver.observe(xtermContainer);
-
-        // Write welcome message
-        xterm.writeln('\x1b[32mArthas Terminal Connected\x1b[0m');
-        xterm.writeln(`\x1b[90mService: ${serviceName}\x1b[0m`);
-        xterm.writeln(`\x1b[90mInstance: ${ip}\x1b[0m`);
-        xterm.writeln(`\x1b[90mType 'help' for available commands\x1b[0m`);
-        xterm.writeln('');
-
-        // Create terminal object
+        // Create terminal object first (needed for fitAndNotify)
         const terminal = {
             element: terminalElement,
             sessionId,
@@ -170,16 +168,42 @@ class TerminalManager {
             xterm,
             fitAddon,
             searchAddon,
-            resizeObserver,
+            resizeObserver: null, // will be set below
             currentLine: '',
             historyIndex: -1
         };
 
+        // Store terminal with sessionId as key (needed for fitAndNotify)
+        this.terminals.set(sessionId, terminal);
+
+        // Initial fit - use requestAnimationFrame for better timing
+        requestAnimationFrame(() => {
+            // First fit without notifying (WebSocket not ready yet)
+            fitAddon.fit();
+            xterm.scrollToBottom();
+            console.log(`[Terminal] Initial fit: ${fitAddon.proposeDimensions()?.cols}x${fitAddon.proposeDimensions()?.rows}`);
+        });
+
+        // Handle container resize with ResizeObserver
+        let resizeTimeout;
+        const resizeObserver = new ResizeObserver(() => {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                this.fitAndNotify(sessionId);
+            }, 100);
+        });
+        resizeObserver.observe(xtermContainer);
+        terminal.resizeObserver = resizeObserver;
+
+        // Write welcome message
+        xterm.writeln('\x1b[32mArthas Terminal Connected\x1b[0m');
+        xterm.writeln(`\x1b[90mService: ${serviceName}\x1b[0m`);
+        xterm.writeln(`\x1b[90mInstance: ${ip}\x1b[0m`);
+        xterm.writeln(`\x1b[90mType 'help' for available commands\x1b[0m`);
+        xterm.writeln('');
+
         // Bind event handlers
         this.bindTerminalEvents(terminal);
-
-        // Store terminal with sessionId as key
-        this.terminals.set(sessionId, terminal);
         
         // Add to container
         const container = document.getElementById('terminalContainer');
@@ -486,10 +510,10 @@ class TerminalManager {
         this.activeTerminal = sessionId;
         terminal.xterm.focus();
         
-        // Refit terminal
-        setTimeout(() => {
-            terminal.fitAddon.fit();
-        }, 0);
+        // Refit terminal and notify server
+        requestAnimationFrame(() => {
+            this.fitAndNotify(sessionId);
+        });
     }
 
     /**
@@ -581,11 +605,7 @@ class TerminalManager {
      * Resize terminal by sessionId
      */
     resizeTerminalBySessionId(sessionId) {
-        const terminal = this.terminals.get(sessionId);
-        
-        if (!terminal) return;
-
-        terminal.fitAddon.fit();
+        this.fitAndNotify(sessionId);
     }
 
     /**
@@ -692,11 +712,22 @@ class TerminalManager {
 
     /**
      * Set WebSocket for terminal by sessionId
+     * Also sends initial terminal size to server
      * @param {string} sessionId - Terminal session ID
      * @param {WebSocket} ws - WebSocket instance
      */
     setWebSocket(sessionId, ws) {
         this.websockets.set(sessionId, ws);
+        
+        // Send initial terminal size once WebSocket is ready
+        // Use a small delay to ensure WebSocket is fully open
+        if (ws.readyState === WebSocket.OPEN) {
+            this.fitAndNotify(sessionId);
+        } else {
+            ws.addEventListener('open', () => {
+                this.fitAndNotify(sessionId);
+            }, { once: true });
+        }
     }
 
     /**

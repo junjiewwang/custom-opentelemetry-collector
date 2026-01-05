@@ -102,10 +102,6 @@ class ApiServiceClass {
     getArthasAgents() {
         return this.request('GET', '/arthas/agents');
     }
-
-    getAgentArthasStatus(agentId) {
-        return this.request('GET', `/arthas/agents/${agentId}/status`);
-    }
 }
 
 // 单例导出

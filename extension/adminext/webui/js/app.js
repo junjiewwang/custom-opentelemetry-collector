@@ -628,6 +628,11 @@ export function adminApp() {
 
         /**
          * 加载所有在线实例，并获取各实例的 Arthas 状态
+         * 
+         * 设计说明：
+         * - 后端 ListConnectedAgents 返回已注册且健康的 agent 列表
+         * - 如果 agent 在 tunnel 列表中，说明 Arthas 已连接，可以进行 terminal 操作
+         * - 不再调用 getAgentArthasStatus，tunnel 连接即表示 Arthas 运行中
          */
         async loadArthasAgents() {
             if (this.loading.arthas) return;
@@ -638,62 +643,42 @@ export function adminApp() {
                 const onlineInstances = (instancesRes.instances || []).filter(i => i.status?.state === 'online');
 
                 // 2. 获取 tunnel 在线列表（用于判断 tunnel_ready）
-                // 注意：Arthas 注册时的 agentId 格式是 {hostname}-{pid}-{timestamp}
-                // 这和 OTel 的 agent_id 是一致的
+                // 后端 ListConnectedAgents 返回的是已注册且健康的 agent
+                // 字段：agent_id, app_id, service_name, ip, version, connected_at, last_ping_at
                 let tunnelAgentsByAgentId = new Map();
                 try {
                     const tunnelAgents = await ApiService.getArthasAgents();
                     for (const a of (tunnelAgents || [])) {
-                        // 用 agentId 作为 key 来匹配
-                        if (a.agentId) {
-                            tunnelAgentsByAgentId.set(a.agentId, a);
+                        // 用 agent_id 作为 key 来匹配
+                        if (a.agent_id) {
+                            tunnelAgentsByAgentId.set(a.agent_id, a);
                         }
                     }
                 } catch (e) {
                     // 接口不可用时忽略
                 }
 
-                // 3. 为每个实例获取 Arthas 状态
-                const instancesWithStatus = await Promise.all(
-                    onlineInstances.map(async (inst) => {
-                        // 通过 agent_id 匹配 tunnel agent
-                        const tunnelInfo = tunnelAgentsByAgentId.get(inst.agent_id);
-                        let arthasStatus = {
-                            state: 'unknown',
-                            arthasVersion: '',
-                            activeSessions: 0,
-                            tunnelReady: !!tunnelInfo,
-                            // 保存 tunnel 的 agentId，用于 connect
-                            tunnelAgentId: tunnelInfo?.agentId || '',
-                        };
+                // 3. 为每个实例构建 Arthas 状态
+                const instancesWithStatus = onlineInstances.map((inst) => {
+                    // 通过 agent_id 匹配 tunnel agent
+                    const tunnelInfo = tunnelAgentsByAgentId.get(inst.agent_id);
+                    
+                    // tunnel 连接即表示 Arthas 运行中
+                    const arthasStatus = {
+                        state: tunnelInfo ? 'running' : 'stopped',
+                        arthasVersion: tunnelInfo?.version || '',
+                        tunnelReady: !!tunnelInfo,
+                        // 保存 tunnel 的 agent_id，用于 connect
+                        tunnelAgentId: tunnelInfo?.agent_id || '',
+                    };
 
-                        // 如果 tunnel 已连接，尝试获取详细状态
-                        if (tunnelInfo) {
-                            try {
-                                const status = await ApiService.getAgentArthasStatus(tunnelInfo.agentId);
-                                arthasStatus = {
-                                    // tunnel 已连接说明 Arthas 正在运行
-                                    state: status.state === 'unknown' ? 'running' : status.state,
-                                    arthasVersion: status.arthasVersion || tunnelInfo.arthasVersion || tunnelInfo.version || '',
-                                    activeSessions: status.activeSessions || 0,
-                                    tunnelReady: true,
-                                    tunnelAgentId: tunnelInfo.agentId,
-                                };
-                            } catch (e) {
-                                // 获取失败时使用 tunnel 信息
-                                arthasStatus.state = 'running'; // tunnel 连接说明 Arthas 在运行
-                                arthasStatus.arthasVersion = tunnelInfo.arthasVersion || tunnelInfo.version || '';
-                            }
-                        }
-
-                        return {
-                            ...inst,
-                            arthasStatus,
-                            // 操作状态
-                            operating: false,
-                        };
-                    })
-                );
+                    return {
+                        ...inst,
+                        arthasStatus,
+                        // 操作状态
+                        operating: false,
+                    };
+                });
 
                 this.arthasInstances = instancesWithStatus;
                 // 兼容旧的 arthasAgents（用于 Terminal 连接）
@@ -707,6 +692,10 @@ export function adminApp() {
 
         /**
          * 刷新单个实例的 Arthas 状态
+         * 
+         * 设计说明：
+         * - 通过 tunnel 列表判断 agent 是否在线
+         * - tunnel 连接即表示 Arthas 运行中，不再调用 getAgentArthasStatus
          */
         async refreshInstanceArthasStatus(agentId) {
             const inst = this.arthasInstances.find(i => i.agent_id === agentId);
@@ -717,35 +706,22 @@ export function adminApp() {
                 let tunnelInfo = null;
                 try {
                     const tunnelAgents = await ApiService.getArthasAgents();
-                    tunnelInfo = (tunnelAgents || []).find(a => a.agentId === agentId);
+                    tunnelInfo = (tunnelAgents || []).find(a => a.agent_id === agentId);
                 } catch (e) {}
 
                 if (tunnelInfo) {
-                    // tunnel 已连接，获取详细状态
-                    try {
-                        const status = await ApiService.getAgentArthasStatus(tunnelInfo.agentId);
-                        inst.arthasStatus = {
-                            state: status.state === 'unknown' ? 'running' : status.state,
-                            arthasVersion: status.arthasVersion || tunnelInfo.arthasVersion || tunnelInfo.version || '',
-                            activeSessions: status.activeSessions || 0,
-                            tunnelReady: true,
-                            tunnelAgentId: tunnelInfo.agentId,
-                        };
-                    } catch (e) {
-                        inst.arthasStatus = {
-                            state: 'running',
-                            arthasVersion: tunnelInfo.arthasVersion || tunnelInfo.version || '',
-                            activeSessions: 0,
-                            tunnelReady: true,
-                            tunnelAgentId: tunnelInfo.agentId,
-                        };
-                    }
+                    // tunnel 已连接，Arthas 运行中
+                    inst.arthasStatus = {
+                        state: 'running',
+                        arthasVersion: tunnelInfo.version || '',
+                        tunnelReady: true,
+                        tunnelAgentId: tunnelInfo.agent_id,
+                    };
                 } else {
                     // tunnel 未连接
                     inst.arthasStatus = {
                         state: 'stopped',
                         arthasVersion: inst.arthasStatus?.arthasVersion || '',
-                        activeSessions: 0,
                         tunnelReady: false,
                         tunnelAgentId: '',
                     };
@@ -909,6 +885,10 @@ export function adminApp() {
         /**
          * 等待 Tunnel 连接成功（带重试）
          * Arthas attach 成功后，需要等待 Arthas 连接到 tunnel server
+         * 
+         * 设计说明：
+         * - 后端返回的字段是 agent_id, version 等（snake_case）
+         * - tunnel 连接即表示 Arthas 运行中
          */
         async waitForTunnelConnection(instance, maxWaitSeconds = 30) {
             const pollInterval = 2000; // 每 2 秒检查一次
@@ -926,8 +906,8 @@ export function adminApp() {
                     const tunnelAgents = await ApiService.getArthasAgents();
                     console.log('[Arthas] Got tunnel agents:', tunnelAgents);
                     
-                    // 通过 agent_id 匹配（Arthas 注册时使用的 id 和 OTel agent_id 一致）
-                    const tunnelInfo = (tunnelAgents || []).find(a => a.agentId === instance.agent_id);
+                    // 通过 agent_id 匹配（后端返回 snake_case 字段）
+                    const tunnelInfo = (tunnelAgents || []).find(a => a.agent_id === instance.agent_id);
                     console.log('[Arthas] Looking for agent_id:', instance.agent_id, 'found:', tunnelInfo);
                     
                     if (tunnelInfo) {
@@ -936,10 +916,9 @@ export function adminApp() {
                         if (inst) {
                             inst.arthasStatus = {
                                 state: 'running',
-                                arthasVersion: tunnelInfo.arthasVersion || tunnelInfo.version || '',
-                                activeSessions: 0,
+                                arthasVersion: tunnelInfo.version || '',
                                 tunnelReady: true,
-                                tunnelAgentId: tunnelInfo.agentId,
+                                tunnelAgentId: tunnelInfo.agent_id,
                             };
                             
                             // 更新 arthasAgents
@@ -1049,7 +1028,7 @@ export function adminApp() {
 
                     // Create terminal UI using terminalManager
                     const serviceName = instance.service_name || 'unknown';
-                    const ip = instance.hostname || instance.ip || '';
+                    const ip = instance.ip || '';
                     window.terminalManager.createTerminal(sessionId, serviceName, ip);
                     
                     // Bind WebSocket to terminal

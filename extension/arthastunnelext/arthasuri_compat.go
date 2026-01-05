@@ -60,13 +60,35 @@ type compatAgent struct {
 	remoteAddr string
 
 	conn      *websocket.Conn
+	writeMu   sync.Mutex // protects concurrent writes to conn (ping vs startTunnel)
 	closeOnce sync.Once
 
 	connectedAt time.Time
 	lastPingAt  time.Time
 }
 
+// safeWriteMessage writes a message to the agent connection with mutex protection.
+func (a *compatAgent) safeWriteMessage(messageType int, data []byte) error {
+	if a == nil || a.conn == nil {
+		return errors.New("agent or connection is nil")
+	}
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	return a.conn.WriteMessage(messageType, data)
+}
+
+// safeWriteControl writes a control message to the agent connection with mutex protection.
+func (a *compatAgent) safeWriteControl(messageType int, data []byte, deadline time.Time) error {
+	if a == nil || a.conn == nil {
+		return errors.New("agent or connection is nil")
+	}
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	return a.conn.WriteControl(messageType, data, deadline)
+}
+
 type compatPendingConn struct {
+	sessionID          string // returned to browser immediately
 	clientConnectionID string
 	agentID            string
 
@@ -75,6 +97,61 @@ type compatPendingConn struct {
 	createdAt time.Time
 	tunnelCh  chan *websocket.Conn
 	closeOnce sync.Once
+}
+
+// ANSI color codes for terminal output.
+const (
+	ansiReset  = "\033[0m"
+	ansiGreen  = "\033[32m"
+	ansiYellow = "\033[33m"
+	ansiRed    = "\033[31m"
+	ansiCyan   = "\033[36m"
+)
+
+// Browser session status constants.
+const (
+	statusConnecting    = "connecting"
+	statusWaitingTunnel = "waiting_tunnel"
+	statusReady         = "ready"
+	statusTimeout       = "timeout"
+	statusError         = "error"
+	statusClosed        = "closed"
+)
+
+// formatTerminalStatus formats a status message with ANSI colors for terminal display.
+func formatTerminalStatus(status, message string) string {
+	var color string
+	var icon string
+	switch status {
+	case statusConnecting, statusWaitingTunnel:
+		color = ansiCyan
+		icon = "[*]"
+	case statusReady:
+		color = ansiGreen
+		icon = "[+]"
+	case statusTimeout:
+		color = ansiYellow
+		icon = "[!]"
+	case statusError:
+		color = ansiRed
+		icon = "[-]"
+	case statusClosed:
+		color = ansiYellow
+		icon = "[!]"
+	default:
+		color = ansiReset
+		icon = "[.]"
+	}
+	return color + icon + " " + message + ansiReset + "\r\n"
+}
+
+// sendBrowserStatus sends a status message to the browser connection as raw terminal text.
+func sendBrowserStatus(conn *websocket.Conn, sessionID, status, message string) error {
+	_ = sessionID // sessionID reserved for future use
+	if conn == nil {
+		return errors.New("browser connection is nil")
+	}
+	return conn.WriteMessage(websocket.TextMessage, []byte(formatTerminalStatus(status, message)))
 }
 
 func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config) *arthasURICompat {
@@ -407,7 +484,8 @@ func (s *arthasURICompat) runAgentControlLoops(ctx *compatConnContext, a *compat
 			case <-readDone:
 				return
 			case <-t.C:
-				_ = ctx.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+				// Use safeWriteControl to protect against concurrent writes.
+				_ = a.safeWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
 			}
 		}
 	}()
@@ -425,12 +503,15 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 
 	if agentID == "" {
 		ctx.logger.Warn("[connectArthas] Missing agent id in request")
-		_ = writeClose(ctx.conn, 2000, "missing id")
+		_ = sendBrowserStatus(ctx.conn, "", statusError, "Missing agent ID parameter")
 		_ = ctx.conn.Close()
 		return
 	}
 
-	// List all registered agents for debugging
+	// Generate sessionID immediately for browser.
+	sessionID := randomUpperAlphaNum(20)
+
+	// Step 1: Strong validation - Agent must be registered (prerequisite).
 	s.mu.Lock()
 	agent := s.agents[agentID]
 	registeredAgentIDs := make([]string, 0, len(s.agents))
@@ -441,31 +522,46 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 
 	ctx.logger.Info("[connectArthas] Looking up agent",
 		zap.String("requested_agent_id", agentID),
+		zap.String("session_id", sessionID),
 		zap.Strings("registered_agents", registeredAgentIDs),
 		zap.Bool("agent_found", agent != nil),
 	)
 
+	// Strong validation: if agent not found, return error immediately.
 	if agent == nil || agent.conn == nil {
-		ctx.logger.Warn("[connectArthas] Agent not found or connection is nil",
+		ctx.logger.Warn("[connectArthas] Agent not online",
 			zap.String("requested_agent_id", agentID),
 			zap.Bool("agent_nil", agent == nil),
 			zap.Bool("conn_nil", agent != nil && agent.conn == nil),
 		)
-		_ = writeClose(ctx.conn, 2000, "agent not found")
+		_ = sendBrowserStatus(ctx.conn, sessionID, statusError,
+			"Agent is offline. Please ensure the target application has started Arthas and connected to the server.")
 		_ = ctx.conn.Close()
 		return
 	}
 
 	ctx.logger.Info("[connectArthas] Agent found",
 		zap.String("agent_id", agentID),
+		zap.String("session_id", sessionID),
 		zap.String("agent_app_name", agent.appName),
 		zap.String("agent_arthas_version", agent.arthasVersion),
 		zap.String("agent_remote_addr", agent.remoteAddr),
 		zap.Time("agent_connected_at", agent.connectedAt),
 	)
 
+	// Step 2: Send initial status to browser immediately.
+	if err := sendBrowserStatus(ctx.conn, sessionID, statusConnecting, "Connecting to agent..."); err != nil {
+		ctx.logger.Error("[connectArthas] Failed to send initial status to browser",
+			zap.String("session_id", sessionID),
+			zap.Error(err),
+		)
+		_ = ctx.conn.Close()
+		return
+	}
+
 	clientConnID := randomUpperAlphaNum(20)
 	pending := &compatPendingConn{
+		sessionID:          sessionID,
 		clientConnectionID: clientConnID,
 		agentID:            agentID,
 		browserConn:        ctx.conn,
@@ -473,7 +569,7 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		tunnelCh:           make(chan *websocket.Conn, 1),
 	}
 
-	// Register pending before sending startTunnel.
+	// Step 3: Register pending before sending startTunnel.
 	s.mu.Lock()
 	if s.cfg.MaxPendingConnections > 0 && len(s.pending) >= s.cfg.MaxPendingConnections {
 		s.mu.Unlock()
@@ -481,7 +577,7 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 			zap.Int("pending_count", len(s.pending)),
 			zap.Int("max_pending", s.cfg.MaxPendingConnections),
 		)
-		_ = writeClose(ctx.conn, 2000, "server busy")
+		_ = sendBrowserStatus(ctx.conn, sessionID, statusError, "Server busy, please try again later")
 		_ = ctx.conn.Close()
 		return
 	}
@@ -491,11 +587,12 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 
 	ctx.logger.Info("[connectArthas] Registered pending connection",
 		zap.String("agent_id", agentID),
+		zap.String("session_id", sessionID),
 		zap.String("client_connection_id", clientConnID),
 		zap.Int("total_pending", pendingCount),
 	)
 
-	// Send startTunnel to agent control connection.
+	// Step 4: Send startTunnel to agent via the existing agentRegister connection.
 	vals := url.Values{}
 	vals.Set("method", string(methodStartTunnel))
 	vals.Set("id", agentID)
@@ -504,16 +601,20 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 
 	ctx.logger.Info("[connectArthas] Sending startTunnel to agent",
 		zap.String("agent_id", agentID),
+		zap.String("session_id", sessionID),
 		zap.String("client_connection_id", clientConnID),
 		zap.String("startTunnel_message", startTunnel),
 	)
 
-	if err := agent.conn.WriteMessage(websocket.TextMessage, []byte(startTunnel)); err != nil {
+	// Use safeWriteMessage to protect against concurrent writes (ping vs startTunnel).
+	if err := agent.safeWriteMessage(websocket.TextMessage, []byte(startTunnel)); err != nil {
 		ctx.logger.Error("[connectArthas] Failed to send startTunnel to agent",
 			zap.String("agent_id", agentID),
+			zap.String("session_id", sessionID),
 			zap.String("client_connection_id", clientConnID),
 			zap.Error(err),
 		)
+		_ = sendBrowserStatus(ctx.conn, sessionID, statusError, "Failed to notify agent, please try again later")
 		pending.close("startTunnel send failed")
 		s.mu.Lock()
 		delete(s.pending, clientConnID)
@@ -521,13 +622,23 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		return
 	}
 
+	// Step 5: Send waiting status to browser.
+	if err := sendBrowserStatus(ctx.conn, sessionID, statusWaitingTunnel, "Waiting for agent to establish tunnel..."); err != nil {
+		ctx.logger.Warn("[connectArthas] Failed to send waiting status to browser",
+			zap.String("session_id", sessionID),
+			zap.Error(err),
+		)
+		// Continue anyway, browser might still receive tunnel.
+	}
+
 	ctx.logger.Info("[connectArthas] startTunnel sent successfully, waiting for agent openTunnel",
 		zap.String("agent_id", agentID),
+		zap.String("session_id", sessionID),
 		zap.String("client_connection_id", clientConnID),
 		zap.Duration("timeout", s.connectTimeout()),
 	)
 
-	// Wait openTunnel.
+	// Step 6: Wait for openTunnel from agent.
 	timeout := s.connectTimeout()
 	t := time.NewTimer(timeout)
 	defer t.Stop()
@@ -536,8 +647,10 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 	case <-s.ctx.Done():
 		ctx.logger.Warn("[connectArthas] Server shutdown while waiting for openTunnel",
 			zap.String("agent_id", agentID),
+			zap.String("session_id", sessionID),
 			zap.String("client_connection_id", clientConnID),
 		)
+		_ = sendBrowserStatus(ctx.conn, sessionID, statusClosed, "Server is under maintenance, please try again later")
 		pending.close("server shutdown")
 		s.mu.Lock()
 		delete(s.pending, clientConnID)
@@ -546,9 +659,11 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 	case <-t.C:
 		ctx.logger.Error("[connectArthas] Timeout waiting for agent openTunnel",
 			zap.String("agent_id", agentID),
+			zap.String("session_id", sessionID),
 			zap.String("client_connection_id", clientConnID),
 			zap.Duration("timeout", timeout),
 		)
+		_ = sendBrowserStatus(ctx.conn, sessionID, statusTimeout, "Timeout waiting for agent response, please check network or retry")
 		pending.close("timeout waiting for openTunnel")
 		s.mu.Lock()
 		delete(s.pending, clientConnID)
@@ -562,12 +677,23 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 
 		ctx.logger.Info("[connectArthas] openTunnel received, tunnel bound successfully",
 			zap.String("agent_id", agentID),
+			zap.String("session_id", sessionID),
 			zap.String("client_connection_id", clientConnID),
 			zap.String("tunnel_remote_addr", tunnelConn.RemoteAddr().String()),
 		)
 
+		// Step 7: Send ready status to browser.
+		if err := sendBrowserStatus(ctx.conn, sessionID, statusReady, "Connected successfully, terminal is ready"); err != nil {
+			ctx.logger.Warn("[connectArthas] Failed to send ready status to browser",
+				zap.String("session_id", sessionID),
+				zap.Error(err),
+			)
+			// Continue anyway, relay should still work.
+		}
+
 		ctx.logger.Info("[connectArthas] Starting WebSocket relay",
 			zap.String("agent_id", agentID),
+			zap.String("session_id", sessionID),
 			zap.String("client_connection_id", clientConnID),
 			zap.String("browser_addr", ctx.remoteAddr),
 			zap.String("agent_tunnel_addr", tunnelConn.RemoteAddr().String()),
@@ -659,6 +785,69 @@ func (s *arthasURICompat) pongTimeout() time.Duration {
 		return s.cfg.PongTimeout
 	}
 	return 60 * time.Second
+}
+
+// ListAgents returns a snapshot of all connected and healthy agents.
+func (s *arthasURICompat) ListAgents() []*ConnectedAgent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	agents := make([]*ConnectedAgent, 0, len(s.agents))
+	for _, a := range s.agents {
+		if a == nil || a.conn == nil {
+			continue
+		}
+		// Filter out timed-out agents.
+		if s.isAgentTimeout(a) {
+			continue
+		}
+		agents = append(agents, a.toConnectedAgent())
+	}
+	return agents
+}
+
+// IsAgentOnline checks if agent is registered and healthy (lastPingAt not timeout).
+func (s *arthasURICompat) IsAgentOnline(agentID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a := s.agents[agentID]
+	if a == nil || a.conn == nil {
+		return false
+	}
+	return !s.isAgentTimeout(a)
+}
+
+// isAgentTimeout checks if agent's lastPingAt exceeds pongTimeout.
+// Caller must hold s.mu lock.
+func (s *arthasURICompat) isAgentTimeout(a *compatAgent) bool {
+	if a == nil {
+		return true
+	}
+	return time.Since(a.lastPingAt) > s.pongTimeout()
+}
+
+// toConnectedAgent converts compatAgent to the public ConnectedAgent struct.
+func (a *compatAgent) toConnectedAgent() *ConnectedAgent {
+	if a == nil {
+		return nil
+	}
+
+	// Parse IP from remoteAddr ("ip:port" -> "ip").
+	ip := a.remoteAddr
+	if idx := strings.LastIndex(a.remoteAddr, ":"); idx > 0 {
+		ip = a.remoteAddr[:idx]
+	}
+
+	return &ConnectedAgent{
+		AgentID:     a.agentID,
+		AppID:       a.appID,
+		ServiceName: a.appName,
+		IP:          ip,
+		Version:     a.arthasVersion,
+		ConnectedAt: a.connectedAt,
+		LastPingAt:  a.lastPingAt,
+	}
 }
 
 func (s *arthasURICompat) connectTimeout() time.Duration {

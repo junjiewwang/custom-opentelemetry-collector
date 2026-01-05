@@ -5,7 +5,6 @@ package arthastunnelext
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"sync"
 
@@ -106,74 +105,12 @@ func (e *Extension) ListConnectedAgents() []*ConnectedAgent {
 	if e.compat == nil {
 		return nil
 	}
-
-	e.compat.mu.Lock()
-	agents := make([]*ConnectedAgent, 0, len(e.compat.agents))
-	for _, a := range e.compat.agents {
-		if a == nil || a.conn == nil {
-			continue
-		}
-		agents = append(agents, &ConnectedAgent{
-			AgentID:      a.agentID,
-			AppID:        a.appID,
-			ServiceName:  a.appName,
-			Hostname:     "",
-			IP:           "",
-			Version:      a.arthasVersion,
-			ConnectedAt:  a.connectedAt,
-			LastPingAt:   a.lastPingAt,
-			ArthasStatus: nil,
-		})
-	}
-	e.compat.mu.Unlock()
-	return agents
+	return e.compat.ListAgents()
 }
 
 func (e *Extension) IsAgentConnected(agentID string) bool {
 	if e.compat == nil {
 		return false
 	}
-	e.compat.mu.Lock()
-	a := e.compat.agents[agentID]
-	e.compat.mu.Unlock()
-	return a != nil && a.conn != nil
+	return e.compat.IsAgentOnline(agentID)
 }
-
-func (e *Extension) GetAgentArthasStatus(agentID string) (*ArthasStatus, error) {
-	if e.compat == nil {
-		return nil, errors.New("arthas tunnel not started")
-	}
-	e.compat.mu.Lock()
-	a := e.compat.agents[agentID]
-	e.compat.mu.Unlock()
-	if a == nil || a.conn == nil {
-		return nil, errors.New("agent not connected")
-	}
-	// In compat mode without httpProxy/terminal protocol integration, status is unknown.
-	return &ArthasStatus{
-		State:          "unknown",
-		ArthasVersion:  a.arthasVersion,
-		ActiveSessions: 0,
-		MaxSessions:    0,
-		UptimeMs:       0,
-	}, nil
-}
-
-// ===== Deprecated methods from previous JSON terminal protocol =====
-
-func (e *Extension) OpenTerminal(agentID, userID string, cols, rows int) (string, error) {
-	return "", errors.New("OpenTerminal is not supported in arthas-uri compat mode")
-}
-
-func (e *Extension) CloseTerminal(sessionID string) error {
-	return errors.New("CloseTerminal is not supported in arthas-uri compat mode")
-}
-
-func (e *Extension) SendTerminalInput(sessionID, data string) error {
-	return errors.New("SendTerminalInput is not supported in arthas-uri compat mode")
-}
-
-func (e *Extension) ResizeTerminal(sessionID string, cols, rows int) error {
-	return errors.New("ResizeTerminal is not supported in arthas-uri compat mode")
-}
-
