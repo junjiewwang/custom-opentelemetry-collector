@@ -133,8 +133,10 @@ func (e *Extension) newRouter() http.Handler {
 			r.Route("/arthas", func(r chi.Router) {
 				// List agents with active tunnel connections
 				r.Get("/agents", e.listArthasAgents)
-				// Get agent Arthas status
-				r.Get("/agents/{agentID}/status", e.getAgentArthasStatus)
+				// Agent-specific routes
+				r.Route("/agents/{agentID}", func(r chi.Router) {
+					r.Get("/status", e.getAgentArthasStatus)
+				})
 				// WebSocket endpoint for browser terminal (uses WS token auth)
 				r.Get("/ws", e.handleArthasWebSocket)
 			})

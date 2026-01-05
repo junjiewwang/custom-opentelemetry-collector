@@ -4,9 +4,13 @@
  */
 
 import { adminApp } from './app.js';
+import terminalManager from './terminal.js';
 
 // 将 adminApp 注册到全局，供 Alpine.js 使用
 window.adminApp = adminApp;
+
+// 将 terminalManager 注册到全局，供 app.js 使用
+window.terminalManager = terminalManager;
 
 // 使用 Alpine 的 alpine:init 事件注册 data 组件
 document.addEventListener('alpine:init', () => {
