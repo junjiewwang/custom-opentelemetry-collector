@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -63,8 +64,8 @@ type compatAgent struct {
 	writeMu   sync.Mutex // protects concurrent writes to conn (ping vs startTunnel)
 	closeOnce sync.Once
 
-	connectedAt time.Time
-	lastPingAt  time.Time
+	connectedAt int64 // unix nano, set once at registration
+	lastPongAt  int64 // unix nano, updated atomically on pong
 }
 
 // safeWriteMessage writes a message to the agent connection with mutex protection.
@@ -382,6 +383,7 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 		remoteAddr = ra
 	}
 
+	now := time.Now().UnixNano()
 	a := &compatAgent{
 		agentID:       agentID,
 		appName:       appName,
@@ -389,8 +391,8 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 		appID:         appID,
 		remoteAddr:    remoteAddr,
 		conn:          ctx.conn,
-		connectedAt:   time.Now(),
-		lastPingAt:    time.Now(),
+		connectedAt:   now,
+		lastPongAt:    now,
 	}
 
 	// Replace old agent connection if exists.
@@ -426,6 +428,10 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 	s.mu.Lock()
 	if cur, ok := s.agents[agentID]; ok && cur == a {
 		delete(s.agents, agentID)
+		ctx.logger.Info("Agent disconnected and removed from registry",
+			zap.String("agent_id", agentID),
+			zap.Duration("connection_duration", time.Since(time.Unix(0, a.connectedAt))),
+		)
 	}
 	s.mu.Unlock()
 }
@@ -451,13 +457,19 @@ func (s *arthasURICompat) runAgentControlLoops(ctx *compatConnContext, a *compat
 	// We don't implement httpProxy in this phase; frames are ignored.
 	readDone := make(chan struct{})
 
-	// Configure pong handler to track liveness.
-	_ = ctx.conn.SetReadDeadline(time.Now().Add(s.pongTimeout()))
+	// Use livenessTimeout for ReadDeadline (unified with ListAgents filter).
+	livenessTimeout := s.livenessTimeout()
+
+	// Configure pong handler to track liveness (atomic update).
+	_ = ctx.conn.SetReadDeadline(time.Now().Add(livenessTimeout))
 	ctx.conn.SetPongHandler(func(string) error {
-		a.lastPingAt = time.Now()
-		_ = ctx.conn.SetReadDeadline(time.Now().Add(s.pongTimeout()))
+		atomic.StoreInt64(&a.lastPongAt, time.Now().UnixNano())
+		_ = ctx.conn.SetReadDeadline(time.Now().Add(livenessTimeout))
 		return nil
 	})
+
+	// Send first ping immediately to reduce initial window without pong update.
+	_ = a.safeWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
 
 	s.wg.Add(1)
 	go func() {
@@ -546,7 +558,7 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		zap.String("agent_app_name", agent.appName),
 		zap.String("agent_arthas_version", agent.arthasVersion),
 		zap.String("agent_remote_addr", agent.remoteAddr),
-		zap.Time("agent_connected_at", agent.connectedAt),
+		zap.Time("agent_connected_at", time.Unix(0, agent.connectedAt)),
 	)
 
 	// Step 2: Send initial status to browser immediately.
@@ -777,7 +789,7 @@ func (s *arthasURICompat) pingInterval() time.Duration {
 	if s.cfg.PingInterval > 0 {
 		return s.cfg.PingInterval
 	}
-	return 30 * time.Second
+	return 20 * time.Second
 }
 
 func (s *arthasURICompat) pongTimeout() time.Duration {
@@ -785,6 +797,19 @@ func (s *arthasURICompat) pongTimeout() time.Duration {
 		return s.cfg.PongTimeout
 	}
 	return 60 * time.Second
+}
+
+func (s *arthasURICompat) livenessGrace() time.Duration {
+	if s.cfg.LivenessGrace > 0 {
+		return s.cfg.LivenessGrace
+	}
+	return 30 * time.Second
+}
+
+// livenessTimeout returns the unified timeout for both ReadDeadline and ListAgents filter.
+// livenessTimeout = pongTimeout + livenessGrace
+func (s *arthasURICompat) livenessTimeout() time.Duration {
+	return s.pongTimeout() + s.livenessGrace()
 }
 
 // ListAgents returns a snapshot of all connected and healthy agents.
@@ -818,16 +843,18 @@ func (s *arthasURICompat) IsAgentOnline(agentID string) bool {
 	return !s.isAgentTimeout(a)
 }
 
-// isAgentTimeout checks if agent's lastPingAt exceeds pongTimeout.
-// Caller must hold s.mu lock.
+// isAgentTimeout checks if agent's lastPongAt exceeds livenessTimeout.
+// Uses atomic read to avoid data race with pong handler.
 func (s *arthasURICompat) isAgentTimeout(a *compatAgent) bool {
 	if a == nil {
 		return true
 	}
-	return time.Since(a.lastPingAt) > s.pongTimeout()
+	lastPong := atomic.LoadInt64(&a.lastPongAt)
+	return time.Since(time.Unix(0, lastPong)) > s.livenessTimeout()
 }
 
 // toConnectedAgent converts compatAgent to the public ConnectedAgent struct.
+// Uses atomic read for lastPongAt to avoid data race.
 func (a *compatAgent) toConnectedAgent() *ConnectedAgent {
 	if a == nil {
 		return nil
@@ -845,8 +872,8 @@ func (a *compatAgent) toConnectedAgent() *ConnectedAgent {
 		ServiceName: a.appName,
 		IP:          ip,
 		Version:     a.arthasVersion,
-		ConnectedAt: a.connectedAt,
-		LastPingAt:  a.lastPingAt,
+		ConnectedAt: time.Unix(0, a.connectedAt),
+		LastPingAt:  time.Unix(0, atomic.LoadInt64(&a.lastPongAt)),
 	}
 }
 

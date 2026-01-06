@@ -29,12 +29,18 @@ type Config struct {
 	// ===== Keepalive options (mainly for agentRegister control connections) =====
 
 	// PingInterval is the interval between ping control frames.
-	// Default: 30s
+	// Default: 20s
 	PingInterval time.Duration `mapstructure:"ping_interval"`
 
-	// PongTimeout is the timeout for pong response.
+	// PongTimeout is the base timeout for pong response.
 	// Default: 60s
 	PongTimeout time.Duration `mapstructure:"pong_timeout"`
+
+	// LivenessGrace is the additional grace period added to PongTimeout
+	// to determine the actual liveness timeout (used for ReadDeadline and ListAgents filter).
+	// livenessTimeout = PongTimeout + LivenessGrace
+	// Default: 30s
+	LivenessGrace time.Duration `mapstructure:"liveness_grace"`
 
 	// ===== Legacy fields (kept for compatibility; unused in compat mode) =====
 
@@ -61,8 +67,9 @@ func createDefaultConfig() *Config {
 		StrictIngressMethodAllowlist: true,
 		MaxPendingConnections:        10000,
 
-		PingInterval: 30 * time.Second,
-		PongTimeout:  60 * time.Second,
+		PingInterval:  20 * time.Second,
+		PongTimeout:   60 * time.Second,
+		LivenessGrace: 30 * time.Second,
 
 		// Legacy defaults
 		MaxSessionsPerAgent:       5,

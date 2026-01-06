@@ -314,10 +314,13 @@ extensions:
     session_idle_timeout: 30m
     # Session maximum duration
     session_max_duration: 4h
-    # Ping interval for WebSocket keepalive
-    ping_interval: 30s
-    # Pong response timeout
-    pong_timeout: 10s
+    # Ping interval for WebSocket keepalive (send ping every 20s)
+    ping_interval: 20s
+    # Pong response timeout (base timeout for pong response)
+    pong_timeout: 60s
+    # Liveness grace period (additional buffer for network jitter)
+    # Effective liveness timeout = pong_timeout + liveness_grace = 90s
+    liveness_grace: 30s
     # Output buffer size (bytes)
     output_buffer_size: 65536  # 64KB
     # Output flush interval
