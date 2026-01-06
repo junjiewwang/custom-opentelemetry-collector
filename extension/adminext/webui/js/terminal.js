@@ -1,8 +1,8 @@
 /**
  * Terminal Manager with xterm.js
- * Version: 20260105-v3 (resize fix)
+ * Version: 20260105-v4 (last line visibility fix)
  */
-console.log('[TerminalManager] Loading version 20260105-v3 (resize fix)');
+console.log('[TerminalManager] Loading version 20260105-v4 (last line visibility fix)');
 
 class TerminalManager {
     constructor() {
@@ -39,7 +39,10 @@ class TerminalManager {
             const dimensions = terminal.fitAddon.proposeDimensions();
             if (!dimensions) return;
 
-            const { cols, rows } = dimensions;
+            const { cols } = dimensions;
+            // Reduce rows by 1 to ensure last line is fully visible
+            // This compensates for padding and potential rounding errors
+            const rows = Math.max(1, dimensions.rows - 1);
 
             // 1. Send resize message to server via WebSocket (if connected)
             const ws = this.websockets.get(sessionId);
@@ -49,8 +52,8 @@ class TerminalManager {
                 console.log(`[Terminal] Sent resize to server: ${cols}x${rows}`);
             }
 
-            // 2. Fit terminal to container
-            terminal.fitAddon.fit();
+            // 2. Resize terminal with adjusted dimensions
+            terminal.xterm.resize(cols, rows);
 
             // 3. Scroll to bottom
             terminal.xterm.scrollToBottom();
@@ -178,10 +181,15 @@ class TerminalManager {
 
         // Initial fit - use requestAnimationFrame for better timing
         requestAnimationFrame(() => {
-            // First fit without notifying (WebSocket not ready yet)
-            fitAddon.fit();
-            xterm.scrollToBottom();
-            console.log(`[Terminal] Initial fit: ${fitAddon.proposeDimensions()?.cols}x${fitAddon.proposeDimensions()?.rows}`);
+            // First fit with adjusted rows (WebSocket not ready yet, so no server notification)
+            const dimensions = fitAddon.proposeDimensions();
+            if (dimensions) {
+                const cols = dimensions.cols;
+                const rows = Math.max(1, dimensions.rows - 1);
+                xterm.resize(cols, rows);
+                xterm.scrollToBottom();
+                console.log(`[Terminal] Initial fit: ${cols}x${rows}`);
+            }
         });
 
         // Handle container resize with ResizeObserver
