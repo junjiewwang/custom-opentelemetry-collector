@@ -17,6 +17,9 @@ import (
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+
+	"go.opentelemetry.io/collector/custom/extension/arthastunnelext/pending"
+	"go.opentelemetry.io/collector/custom/extension/arthastunnelext/registry"
 )
 
 type wsIngress string
@@ -47,9 +50,13 @@ type arthasURICompat struct {
 
 	upgrader websocket.Upgrader
 
+	// Local state (always used)
 	mu      sync.Mutex
 	agents  map[string]*compatAgent
 	pending map[string]*compatPendingConn
+
+	// Distributed manager (optional, nil in local mode)
+	distributed *DistributedManager
 }
 
 type compatAgent struct {
@@ -155,7 +162,7 @@ func sendBrowserStatus(conn *websocket.Conn, sessionID, status, message string) 
 	return conn.WriteMessage(websocket.TextMessage, []byte(formatTerminalStatus(status, message)))
 }
 
-func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config) *arthasURICompat {
+func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config, distributed *DistributedManager) *arthasURICompat {
 	baseCtx := ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -174,8 +181,9 @@ func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config) *a
 				return true
 			},
 		},
-		agents:  make(map[string]*compatAgent),
-		pending: make(map[string]*compatPendingConn),
+		agents:      make(map[string]*compatAgent),
+		pending:     make(map[string]*compatPendingConn),
+		distributed: distributed,
 	}
 }
 
@@ -406,6 +414,32 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 	s.agents[agentID] = a
 	s.mu.Unlock()
 
+	// Register in distributed registry if enabled
+	if s.distributed != nil {
+		ip := remoteAddr
+		if idx := strings.LastIndex(remoteAddr, ":"); idx > 0 {
+			ip = remoteAddr[:idx]
+		}
+		agentInfo := &registry.AgentInfo{
+			AgentID:       agentID,
+			AppID:         appID,
+			AppName:       appName,
+			ArthasVersion: arthasVersion,
+			IP:            ip,
+			RemoteAddr:    remoteAddr,
+			NodeID:        s.distributed.NodeID(),
+			NodeAddr:      s.distributed.NodeAddr(),
+			ConnectedAt:   time.Unix(0, now),
+			LastPongAt:    time.Unix(0, now),
+		}
+		if err := s.distributed.Registry().Register(s.ctx, agentInfo); err != nil {
+			ctx.logger.Warn("Failed to register agent in distributed registry",
+				zap.String("agent_id", agentID),
+				zap.Error(err),
+			)
+		}
+	}
+
 	ctx.logger.Info("Agent registered",
 		zap.String("agent_id", agentID),
 		zap.String("app_name", appName),
@@ -434,6 +468,16 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 		)
 	}
 	s.mu.Unlock()
+
+	// Unregister from distributed registry
+	if s.distributed != nil {
+		if err := s.distributed.Registry().Unregister(s.ctx, agentID); err != nil {
+			ctx.logger.Warn("Failed to unregister agent from distributed registry",
+				zap.String("agent_id", agentID),
+				zap.Error(err),
+			)
+		}
+	}
 }
 
 func (s *arthasURICompat) resolveAgentRegisterParams(q url.Values) (agentID string, appName string, arthasVersion string) {
@@ -463,8 +507,14 @@ func (s *arthasURICompat) runAgentControlLoops(ctx *compatConnContext, a *compat
 	// Configure pong handler to track liveness (atomic update).
 	_ = ctx.conn.SetReadDeadline(time.Now().Add(livenessTimeout))
 	ctx.conn.SetPongHandler(func(string) error {
-		atomic.StoreInt64(&a.lastPongAt, time.Now().UnixNano())
-		_ = ctx.conn.SetReadDeadline(time.Now().Add(livenessTimeout))
+		pongTime := time.Now()
+		atomic.StoreInt64(&a.lastPongAt, pongTime.UnixNano())
+		_ = ctx.conn.SetReadDeadline(pongTime.Add(livenessTimeout))
+
+		// Record pong for batched Redis update in distributed mode
+		if s.distributed != nil {
+			s.distributed.RecordPong(a.agentID, pongTime)
+		}
 		return nil
 	})
 
@@ -523,28 +573,45 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 	// Generate sessionID immediately for browser.
 	sessionID := randomUpperAlphaNum(20)
 
-	// Step 1: Strong validation - Agent must be registered (prerequisite).
+	// Step 1: Check if agent is online (local first, then distributed registry)
+	var agent *compatAgent
+	var agentNodeAddr string
+	var isLocalAgent bool
+
 	s.mu.Lock()
-	agent := s.agents[agentID]
+	agent = s.agents[agentID]
 	registeredAgentIDs := make([]string, 0, len(s.agents))
 	for id := range s.agents {
 		registeredAgentIDs = append(registeredAgentIDs, id)
 	}
 	s.mu.Unlock()
 
+	isLocalAgent = agent != nil && agent.conn != nil
+
+	// In distributed mode, check if agent is on another node
+	if !isLocalAgent && s.distributed != nil {
+		var err error
+		agentNodeAddr, err = s.distributed.GetAgentNodeAddr(s.ctx, agentID)
+		if err != nil {
+			ctx.logger.Warn("[connectArthas] Failed to lookup agent in distributed registry",
+				zap.String("agent_id", agentID),
+				zap.Error(err),
+			)
+		}
+	}
+
 	ctx.logger.Info("[connectArthas] Looking up agent",
 		zap.String("requested_agent_id", agentID),
 		zap.String("session_id", sessionID),
-		zap.Strings("registered_agents", registeredAgentIDs),
-		zap.Bool("agent_found", agent != nil),
+		zap.Strings("local_agents", registeredAgentIDs),
+		zap.Bool("local_agent_found", isLocalAgent),
+		zap.String("remote_node_addr", agentNodeAddr),
 	)
 
-	// Strong validation: if agent not found, return error immediately.
-	if agent == nil || agent.conn == nil {
+	// If agent not found anywhere, return error
+	if !isLocalAgent && agentNodeAddr == "" {
 		ctx.logger.Warn("[connectArthas] Agent not online",
 			zap.String("requested_agent_id", agentID),
-			zap.Bool("agent_nil", agent == nil),
-			zap.Bool("conn_nil", agent != nil && agent.conn == nil),
 		)
 		_ = sendBrowserStatus(ctx.conn, sessionID, statusError,
 			"Agent is offline. Please ensure the target application has started Arthas and connected to the server.")
@@ -552,7 +619,19 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		return
 	}
 
-	ctx.logger.Info("[connectArthas] Agent found",
+	// If agent is on another node, proxy the request
+	if !isLocalAgent && agentNodeAddr != "" {
+		ctx.logger.Info("[connectArthas] Agent is on another node, proxying request",
+			zap.String("agent_id", agentID),
+			zap.String("session_id", sessionID),
+			zap.String("target_node", agentNodeAddr),
+		)
+		s.proxyConnectArthas(ctx, agentID, sessionID, agentNodeAddr)
+		return
+	}
+
+	// Agent is local, proceed with normal flow
+	ctx.logger.Info("[connectArthas] Agent found locally",
 		zap.String("agent_id", agentID),
 		zap.String("session_id", sessionID),
 		zap.String("agent_app_name", agent.appName),
@@ -572,7 +651,7 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 	}
 
 	clientConnID := randomUpperAlphaNum(20)
-	pending := &compatPendingConn{
+	localPending := &compatPendingConn{
 		sessionID:          sessionID,
 		clientConnectionID: clientConnID,
 		agentID:            agentID,
@@ -593,9 +672,28 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		_ = ctx.conn.Close()
 		return
 	}
-	s.pending[clientConnID] = pending
+	s.pending[clientConnID] = localPending
 	pendingCount := len(s.pending)
 	s.mu.Unlock()
+
+	// Also register in distributed pending store if enabled
+	if s.distributed != nil {
+		pendingInfo := &pending.PendingInfo{
+			ClientConnID: clientConnID,
+			SessionID:    sessionID,
+			AgentID:      agentID,
+			NodeID:       s.distributed.NodeID(),
+			NodeAddr:     s.distributed.NodeAddr(),
+			CreatedAt:    localPending.createdAt,
+		}
+		if err := s.distributed.PendingStore().CreateWithBrowserConn(s.ctx, pendingInfo, ctx.conn); err != nil {
+			ctx.logger.Warn("[connectArthas] Failed to register pending in distributed store",
+				zap.String("client_connection_id", clientConnID),
+				zap.Error(err),
+			)
+			// Continue with local only
+		}
+	}
 
 	ctx.logger.Info("[connectArthas] Registered pending connection",
 		zap.String("agent_id", agentID),
@@ -627,10 +725,8 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 			zap.Error(err),
 		)
 		_ = sendBrowserStatus(ctx.conn, sessionID, statusError, "Failed to notify agent, please try again later")
-		pending.close("startTunnel send failed")
-		s.mu.Lock()
-		delete(s.pending, clientConnID)
-		s.mu.Unlock()
+		localPending.close("startTunnel send failed")
+		s.cleanupPending(clientConnID)
 		return
 	}
 
@@ -663,10 +759,8 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 			zap.String("client_connection_id", clientConnID),
 		)
 		_ = sendBrowserStatus(ctx.conn, sessionID, statusClosed, "Server is under maintenance, please try again later")
-		pending.close("server shutdown")
-		s.mu.Lock()
-		delete(s.pending, clientConnID)
-		s.mu.Unlock()
+		localPending.close("server shutdown")
+		s.cleanupPending(clientConnID)
 		return
 	case <-t.C:
 		ctx.logger.Error("[connectArthas] Timeout waiting for agent openTunnel",
@@ -676,16 +770,12 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 			zap.Duration("timeout", timeout),
 		)
 		_ = sendBrowserStatus(ctx.conn, sessionID, statusTimeout, "Timeout waiting for agent response, please check network or retry")
-		pending.close("timeout waiting for openTunnel")
-		s.mu.Lock()
-		delete(s.pending, clientConnID)
-		s.mu.Unlock()
+		localPending.close("timeout waiting for openTunnel")
+		s.cleanupPending(clientConnID)
 		return
-	case tunnelConn := <-pending.tunnelCh:
+	case tunnelConn := <-localPending.tunnelCh:
 		// Success: remove pending and start relay.
-		s.mu.Lock()
-		delete(s.pending, clientConnID)
-		s.mu.Unlock()
+		s.cleanupPending(clientConnID)
 
 		ctx.logger.Info("[connectArthas] openTunnel received, tunnel bound successfully",
 			zap.String("agent_id", agentID),
@@ -716,6 +806,46 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 	}
 }
 
+// proxyConnectArthas proxies the connectArthas request to another node.
+func (s *arthasURICompat) proxyConnectArthas(ctx *compatConnContext, agentID, sessionID, targetNodeAddr string) {
+	if s.distributed == nil || s.distributed.Proxy() == nil {
+		ctx.logger.Error("[connectArthas] Distributed proxy not available")
+		_ = sendBrowserStatus(ctx.conn, sessionID, statusError, "Internal error: distributed proxy not available")
+		_ = ctx.conn.Close()
+		return
+	}
+
+	// Send status to browser
+	if err := sendBrowserStatus(ctx.conn, sessionID, statusConnecting, "Connecting to agent (cross-node)..."); err != nil {
+		ctx.logger.Warn("[connectArthas] Failed to send connecting status",
+			zap.Error(err),
+		)
+	}
+
+	// Proxy the WebSocket connection to the target node
+	err := s.distributed.Proxy().ProxyConnectArthas(s.ctx, targetNodeAddr, ctx.conn, agentID)
+	if err != nil {
+		ctx.logger.Error("[connectArthas] Failed to proxy to target node",
+			zap.String("agent_id", agentID),
+			zap.String("target_node", targetNodeAddr),
+			zap.Error(err),
+		)
+		_ = sendBrowserStatus(ctx.conn, sessionID, statusError, "Failed to connect to agent node")
+		_ = ctx.conn.Close()
+	}
+}
+
+// cleanupPending removes a pending connection from both local and distributed stores.
+func (s *arthasURICompat) cleanupPending(clientConnID string) {
+	s.mu.Lock()
+	delete(s.pending, clientConnID)
+	s.mu.Unlock()
+
+	if s.distributed != nil {
+		_ = s.distributed.PendingStore().Delete(s.ctx, clientConnID)
+	}
+}
+
 func (s *arthasURICompat) handleOpenTunnel(ctx *compatConnContext) {
 	clientConnID := firstNonEmpty(
 		ctx.query.Get("clientConnectionId"),
@@ -734,9 +864,9 @@ func (s *arthasURICompat) handleOpenTunnel(ctx *compatConnContext) {
 		return
 	}
 
-	// List all pending connections for debugging
+	// Step 1: Check local pending first
 	s.mu.Lock()
-	pending := s.pending[clientConnID]
+	localPending := s.pending[clientConnID]
 	pendingIDs := make([]string, 0, len(s.pending))
 	for id := range s.pending {
 		pendingIDs = append(pendingIDs, id)
@@ -745,43 +875,87 @@ func (s *arthasURICompat) handleOpenTunnel(ctx *compatConnContext) {
 
 	ctx.logger.Info("[openTunnel] Looking up pending connection",
 		zap.String("client_connection_id", clientConnID),
-		zap.Strings("all_pending_ids", pendingIDs),
-		zap.Bool("pending_found", pending != nil),
+		zap.Strings("local_pending_ids", pendingIDs),
+		zap.Bool("local_pending_found", localPending != nil),
 	)
 
-	if pending == nil {
-		ctx.logger.Warn("[openTunnel] No pending connection found",
+	// If found locally, deliver directly
+	if localPending != nil {
+		ctx.logger.Info("[openTunnel] Found local pending connection, attempting to bind tunnel",
 			zap.String("client_connection_id", clientConnID),
-			zap.Strings("available_pending_ids", pendingIDs),
+			zap.String("pending_agent_id", localPending.agentID),
+			zap.Time("pending_created_at", localPending.createdAt),
+			zap.Duration("wait_duration", time.Since(localPending.createdAt)),
 		)
-		_ = writeClose(ctx.conn, 2000, "no pending connection")
+
+		select {
+		case localPending.tunnelCh <- ctx.conn:
+			ctx.logger.Info("[openTunnel] Tunnel bound successfully (local)",
+				zap.String("client_connection_id", clientConnID),
+				zap.String("agent_id", localPending.agentID),
+				zap.String("tunnel_remote_addr", ctx.remoteAddr),
+			)
+			return
+		default:
+			// Already delivered.
+			ctx.logger.Warn("[openTunnel] Tunnel already bound (duplicate openTunnel?)",
+				zap.String("client_connection_id", clientConnID),
+			)
+			_ = writeClose(ctx.conn, 2000, "tunnel already bound")
+			_ = ctx.conn.Close()
+			return
+		}
+	}
+
+	// Step 2: In distributed mode, check if pending is on another node
+	if s.distributed != nil {
+		pendingInfo, err := s.distributed.PendingStore().Get(s.ctx, clientConnID)
+		if err != nil {
+			ctx.logger.Warn("[openTunnel] Failed to lookup pending in distributed store",
+				zap.String("client_connection_id", clientConnID),
+				zap.Error(err),
+			)
+		}
+
+		if pendingInfo != nil && pendingInfo.NodeID != s.distributed.NodeID() {
+			// Pending is on another node, proxy the tunnel
+			ctx.logger.Info("[openTunnel] Pending is on another node, proxying tunnel",
+				zap.String("client_connection_id", clientConnID),
+				zap.String("target_node_id", pendingInfo.NodeID),
+				zap.String("target_node_addr", pendingInfo.NodeAddr),
+			)
+			s.proxyOpenTunnel(ctx, clientConnID, pendingInfo.NodeAddr)
+			return
+		}
+	}
+
+	// Not found anywhere
+	ctx.logger.Warn("[openTunnel] No pending connection found",
+		zap.String("client_connection_id", clientConnID),
+		zap.Strings("available_local_pending_ids", pendingIDs),
+	)
+	_ = writeClose(ctx.conn, 2000, "no pending connection")
+	_ = ctx.conn.Close()
+}
+
+// proxyOpenTunnel proxies the openTunnel request to another node.
+func (s *arthasURICompat) proxyOpenTunnel(ctx *compatConnContext, clientConnID, targetNodeAddr string) {
+	if s.distributed == nil || s.distributed.Proxy() == nil {
+		ctx.logger.Error("[openTunnel] Distributed proxy not available")
+		_ = writeClose(ctx.conn, 2000, "internal error")
 		_ = ctx.conn.Close()
 		return
 	}
 
-	ctx.logger.Info("[openTunnel] Found pending connection, attempting to bind tunnel",
-		zap.String("client_connection_id", clientConnID),
-		zap.String("pending_agent_id", pending.agentID),
-		zap.Time("pending_created_at", pending.createdAt),
-		zap.Duration("wait_duration", time.Since(pending.createdAt)),
-	)
-
-	select {
-	case pending.tunnelCh <- ctx.conn:
-		ctx.logger.Info("[openTunnel] Tunnel bound successfully",
+	err := s.distributed.Proxy().ProxyOpenTunnel(s.ctx, targetNodeAddr, ctx.conn, clientConnID)
+	if err != nil {
+		ctx.logger.Error("[openTunnel] Failed to proxy to target node",
 			zap.String("client_connection_id", clientConnID),
-			zap.String("agent_id", pending.agentID),
-			zap.String("tunnel_remote_addr", ctx.remoteAddr),
+			zap.String("target_node", targetNodeAddr),
+			zap.Error(err),
 		)
-		return
-	default:
-		// Already delivered.
-		ctx.logger.Warn("[openTunnel] Tunnel already bound (duplicate openTunnel?)",
-			zap.String("client_connection_id", clientConnID),
-		)
-		_ = writeClose(ctx.conn, 2000, "tunnel already bound")
+		_ = writeClose(ctx.conn, 2000, "proxy failed")
 		_ = ctx.conn.Close()
-		return
 	}
 }
 
@@ -813,7 +987,34 @@ func (s *arthasURICompat) livenessTimeout() time.Duration {
 }
 
 // ListAgents returns a snapshot of all connected and healthy agents.
+// In distributed mode, returns agents from all nodes via Redis.
 func (s *arthasURICompat) ListAgents() []*ConnectedAgent {
+	// In distributed mode, use the registry to get all agents
+	if s.distributed != nil {
+		agentInfos, err := s.distributed.Registry().List(s.ctx)
+		if err != nil {
+			s.logger.Warn("Failed to list agents from distributed registry, falling back to local",
+				zap.Error(err),
+			)
+			// Fall through to local
+		} else {
+			agents := make([]*ConnectedAgent, 0, len(agentInfos))
+			for _, info := range agentInfos {
+				agents = append(agents, &ConnectedAgent{
+					AgentID:     info.AgentID,
+					AppID:       info.AppID,
+					ServiceName: info.AppName,
+					IP:          info.IP,
+					Version:     info.ArthasVersion,
+					ConnectedAt: info.ConnectedAt,
+					LastPingAt:  info.LastPongAt,
+				})
+			}
+			return agents
+		}
+	}
+
+	// Local mode or fallback
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -832,15 +1033,31 @@ func (s *arthasURICompat) ListAgents() []*ConnectedAgent {
 }
 
 // IsAgentOnline checks if agent is registered and healthy (lastPingAt not timeout).
+// In distributed mode, checks both local and Redis registry.
 func (s *arthasURICompat) IsAgentOnline(agentID string) bool {
+	// Check local first
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	a := s.agents[agentID]
-	if a == nil || a.conn == nil {
-		return false
+	s.mu.Unlock()
+
+	if a != nil && a.conn != nil && !s.isAgentTimeout(a) {
+		return true
 	}
-	return !s.isAgentTimeout(a)
+
+	// In distributed mode, check Redis registry
+	if s.distributed != nil {
+		info, err := s.distributed.Registry().Get(s.ctx, agentID)
+		if err != nil {
+			s.logger.Warn("Failed to check agent in distributed registry",
+				zap.String("agent_id", agentID),
+				zap.Error(err),
+			)
+			return false
+		}
+		return info != nil
+	}
+
+	return false
 }
 
 // isAgentTimeout checks if agent's lastPongAt exceeds livenessTimeout.

@@ -308,12 +308,24 @@ extensions:
   # Architecture:
   #   Browser <--WebSocket--> adminext <---> arthastunnelext <---> agentgatewayreceiver <--WebSocket--> Java Agent
   arthas_tunnel:
-    # Maximum concurrent sessions per agent
-    max_sessions_per_agent: 5
-    # Session idle timeout (no activity)
-    session_idle_timeout: 30m
-    # Session maximum duration
-    session_max_duration: 4h
+    # ===== Arthas-URI compat mode options =====
+    
+    # Timeout for waiting agent openTunnel after connectArthas
+    # Default: 20s (aligned with official tunnel-server)
+    compat_connect_timeout: 20s
+    
+    # Restrict which method is allowed on each ingress
+    # - agentgateway ingress: agentRegister/openTunnel
+    # - admin ingress: connectArthas
+    # Default: true
+    strict_ingress_method_allowlist: true
+    
+    # Maximum pending connectArthas waiting for openTunnel (0 = unlimited)
+    # Default: 10000
+    max_pending_connections: 10000
+    
+    # ===== Keepalive options (for agentRegister control connections) =====
+    
     # Ping interval for WebSocket keepalive (send ping every 20s)
     ping_interval: 20s
     # Pong response timeout (base timeout for pong response)
@@ -321,6 +333,88 @@ extensions:
     # Liveness grace period (additional buffer for network jitter)
     # Effective liveness timeout = pong_timeout + liveness_grace = 90s
     liveness_grace: 30s
+    
+    # ===== Distributed mode options (for multi-replica deployment) =====
+    
+    distributed:
+      # Enable distributed mode with Redis-based agent registry
+      # When disabled, only local agents are visible
+      enabled: true
+      
+      # Unique identifier for this collector replica
+      # If empty, defaults to POD_NAME or HOSTNAME environment variable
+      node_id: ""
+      
+      # How this node advertises itself to other nodes
+      advertise:
+        # Discovery mode: "auto" | "pod_ip" | "pod_dns" | "host_ip" | "static"
+        # - auto: Try static_addr -> POD_IP env -> network interface detection
+        # - pod_ip: Use POD_IP environment variable
+        # - pod_dns: Use POD_NAME.HEADLESS_SERVICE.NAMESPACE.svc format
+        # - host_ip: Use HOST_IP environment variable
+        # - static: Use static_addr directly
+        mode: auto
+        # Static address when mode is "static" (format: "host:port")
+        static_addr: ""
+        # Port for internal communication (0 = reuse admin HTTP port)
+        port: 0
+        # Headless service name for pod_dns mode
+        headless_service: ""
+        # Environment variable names (for K8s)
+        pod_ip_env_key: "POD_IP"
+        pod_name_env_key: "POD_NAME"
+        pod_namespace_env_key: "POD_NAMESPACE"
+      
+      # Redis connection name from storageext
+      redis_name: default
+      
+      # Prefix for all Redis keys (include env/cluster info for isolation)
+      key_prefix: "arthas:tunnel"
+      
+      # TTL for agent index entries in Redis
+      # Should be > liveness_timeout (pong_timeout + liveness_grace)
+      index_ttl: 120s
+      
+      # TTL for pending connection entries in Redis
+      # Should be > compat_connect_timeout
+      pending_ttl: 60s
+      
+      # Interval for batching liveness updates to Redis
+      # Reduces Redis write pressure from frequent pong updates
+      liveness_update_interval: 10s
+      
+      # Interval for node self-registration heartbeat
+      node_heartbeat_interval: 10s
+      
+      # Path prefix for internal cross-node proxy endpoints
+      internal_path_prefix: "/internal/v1/arthas"
+      
+      # Authentication for internal cross-node communication
+      internal_auth:
+        # Pre-shared token (required when distributed mode is enabled)
+        token: "internal-token"
+        # HTTP header name for the token
+        header_name: "X-Internal-Token"
+      
+      # Maximum concurrent proxy sessions per node (0 = unlimited)
+      max_proxy_sessions: 1000
+      
+      # Write timeout for proxy connections
+      proxy_write_timeout: 10s
+      
+      # Retries when claiming a pending connection
+      # Handles race condition where openTunnel arrives before pending is written to Redis
+      pending_claim_retries: 3
+      pending_claim_retry_interval: 100ms
+    
+    # ===== Legacy fields (kept for compatibility; unused in compat mode) =====
+    
+    # Maximum concurrent sessions per agent
+    max_sessions_per_agent: 5
+    # Session idle timeout (no activity)
+    session_idle_timeout: 30m
+    # Session maximum duration
+    session_max_duration: 4h
     # Output buffer size (bytes)
     output_buffer_size: 65536  # 64KB
     # Output flush interval
