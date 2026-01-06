@@ -147,6 +147,233 @@ code {
     background: #1a4a7a;
 }
 
+/* xterm.js Terminal 滚动条样式 - 透明淡化 + 防遮挡 */
+
+/*
+ * 滚动条防遮挡策略：
+ * 1. CSS: scrollbar-gutter: stable 为滚动条预留空间（支持的浏览器）
+ * 2. JS: cols - 1 作为兜底方案（确保跨浏览器兼容）
+ * 3. 视觉: 默认弱化，hover 增强
+ */
+
+/* 为滚动条预留空间，防止内容被遮挡 */
+.xterm-container .xterm-viewport {
+    scrollbar-gutter: stable;
+    /* Firefox 滚动条样式 */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* Firefox: hover 时滚动条更明显 */
+.xterm-container:hover .xterm-viewport {
+    scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+
+/* WebKit 浏览器 (Chrome, Safari, Edge) */
+.xterm-container .xterm-viewport::-webkit-scrollbar {
+    width: 6px;
+    background: transparent;
+}
+
+.xterm-container .xterm-viewport::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.xterm-container .xterm-viewport::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+/* 容器 hover: 滚动条逐渐显现 */
+.xterm-container:hover .xterm-viewport::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.35);
+}
+
+/* 滚动条 hover: 更明显，便于拖动 */
+.xterm-container .xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.5);
+}
+
+/* 滚动条拖动中: 最明显 */
+.xterm-container .xterm-viewport::-webkit-scrollbar-thumb:active {
+    background: rgba(255, 255, 255, 0.65);
+}
+
+/* ==================== VSCode-style Terminal Search Box ==================== */
+
+.terminal-search-box {
+    position: absolute;
+    top: 56px;  /* Below header */
+    right: 16px;
+    width: 320px;
+    background: #252526;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    z-index: 100;
+    padding: 8px;
+    
+    /* Hidden by default */
+    transform: translateX(340px);
+    opacity: 0;
+    visibility: hidden;
+    transition: transform 0.2s ease, opacity 0.2s ease, visibility 0.2s;
+}
+
+.terminal-search-box.visible {
+    transform: translateX(0);
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Search input row */
+.search-input-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.search-icon {
+    width: 16px;
+    height: 16px;
+    color: #858585;
+    flex-shrink: 0;
+}
+
+.search-input {
+    flex: 1;
+    min-width: 0;
+    background: #3c3c3c;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    color: #cccccc;
+    font-size: 13px;
+    padding: 4px 8px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.search-input:focus {
+    border-color: #007acc;
+}
+
+.search-input::placeholder {
+    color: #6e6e6e;
+}
+
+.search-input-error {
+    border-color: #f14c4c !important;
+    background: rgba(241, 76, 76, 0.1);
+}
+
+/* Match count */
+.match-count {
+    font-size: 12px;
+    color: #858585;
+    white-space: nowrap;
+    padding: 0 4px;
+    min-width: 50px;
+    text-align: center;
+}
+
+.match-count.no-match {
+    color: #f48771;
+}
+
+.match-count.has-match {
+    color: #89d185;
+}
+
+.match-count.wrap-around {
+    color: #dcdcaa;
+}
+
+/* Navigation buttons */
+.search-nav-btn,
+.search-close-btn {
+    width: 22px;
+    height: 22px;
+    padding: 3px;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: #cccccc;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.15s;
+}
+
+.search-nav-btn:hover,
+.search-close-btn:hover {
+    background: #094771;
+}
+
+.search-nav-btn:active,
+.search-close-btn:active {
+    background: #0a5a8c;
+}
+
+.search-nav-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.search-nav-btn svg,
+.search-close-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* Search options row */
+.search-options-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    padding-left: 20px;  /* Align with input */
+}
+
+.search-option {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.search-option input[type="checkbox"] {
+    display: none;
+}
+
+.search-option span {
+    font-size: 11px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    color: #858585;
+    padding: 2px 4px;
+    border-radius: 2px;
+    border: 1px solid transparent;
+    transition: all 0.15s;
+}
+
+.search-option:hover span {
+    color: #cccccc;
+    background: #3c3c3c;
+}
+
+.search-option input[type="checkbox"]:checked + span {
+    color: #ffffff;
+    background: #094771;
+    border-color: #007acc;
+}
+
+.search-error {
+    font-size: 11px;
+    color: #f48771;
+    margin-left: auto;
+}
+
 /* Terminal 光标闪烁效果 */
 .terminal-cursor {
     display: inline-block;

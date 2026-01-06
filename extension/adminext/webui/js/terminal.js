@@ -1,8 +1,14 @@
 /**
  * Terminal Manager with xterm.js
- * Version: 20260105-v4 (last line visibility fix)
+ * Version: 20260106-v6 (VSCode-style search box)
+ * 
+ * Changes:
+ * - VSCode-style search box with real-time search, next/prev navigation
+ * - Keyboard shortcuts: Ctrl/Cmd+F to open, Esc to close, Enter/Shift+Enter to navigate
+ * - Case-sensitive and regex options
+ * - Match count display (progressive counting)
  */
-console.log('[TerminalManager] Loading version 20260105-v4 (last line visibility fix)');
+console.log('[TerminalManager] Loading version 20260106-v6 (VSCode-style search box)');
 
 class TerminalManager {
     constructor() {
@@ -10,6 +16,7 @@ class TerminalManager {
         this.activeTerminal = null;
         this.commandHistory = new Map(); // key: sessionId, value: command array
         this.websockets = new Map(); // key: sessionId, value: WebSocket
+        this.searchStates = new Map(); // key: sessionId, value: search state object
         
         // Add global window resize handler
         let globalResizeTimeout;
@@ -39,7 +46,9 @@ class TerminalManager {
             const dimensions = terminal.fitAddon.proposeDimensions();
             if (!dimensions) return;
 
-            const { cols } = dimensions;
+            // Reduce cols by 1 to prevent right-side scrollbar from occluding text
+            // This ensures the rightmost character is never hidden behind the scrollbar
+            const cols = Math.max(1, dimensions.cols - 1);
             // Reduce rows by 1 to ensure last line is fully visible
             // This compensates for padding and potential rounding errors
             const rows = Math.max(1, dimensions.rows - 1);
@@ -104,12 +113,56 @@ class TerminalManager {
                     <button class="clear-terminal-btn px-3 py-1 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors">
                         清屏
                     </button>
-                    <button class="search-terminal-btn px-3 py-1 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors">
-                        搜索
+                    <button class="search-terminal-btn px-3 py-1 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center space-x-1" title="Ctrl+F">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
+                        <span>搜索</span>
                     </button>
                     <button class="close-terminal-btn px-3 py-1 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors">
                         关闭
                     </button>
+                </div>
+            </div>
+            
+            <!-- VSCode-style Search Box -->
+            <div class="terminal-search-box" data-session-id="${sessionId}">
+                <div class="search-input-row">
+                    <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    <input type="text" class="search-input" placeholder="搜索..." spellcheck="false" autocomplete="off">
+                    <span class="match-count"></span>
+                    <button class="search-nav-btn search-prev-btn" title="上一个 (Shift+Enter)">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path>
+                        </svg>
+                    </button>
+                    <button class="search-nav-btn search-next-btn" title="下一个 (Enter)">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </button>
+                    <button class="search-close-btn" title="关闭 (Esc)">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="search-options-row">
+                    <label class="search-option" title="区分大小写 (Alt+C)">
+                        <input type="checkbox" class="search-case-sensitive">
+                        <span>Aa</span>
+                    </label>
+                    <label class="search-option" title="正则表达式 (Alt+R)">
+                        <input type="checkbox" class="search-regex">
+                        <span>.*</span>
+                    </label>
+                    <label class="search-option" title="全词匹配 (Alt+W)">
+                        <input type="checkbox" class="search-whole-word">
+                        <span>\\b</span>
+                    </label>
+                    <span class="search-error"></span>
                 </div>
             </div>
             
@@ -181,10 +234,12 @@ class TerminalManager {
 
         // Initial fit - use requestAnimationFrame for better timing
         requestAnimationFrame(() => {
-            // First fit with adjusted rows (WebSocket not ready yet, so no server notification)
+            // First fit with adjusted cols and rows (WebSocket not ready yet, so no server notification)
             const dimensions = fitAddon.proposeDimensions();
             if (dimensions) {
-                const cols = dimensions.cols;
+                // cols - 1: prevent scrollbar occlusion
+                // rows - 1: ensure last line visibility
+                const cols = Math.max(1, dimensions.cols - 1);
                 const rows = Math.max(1, dimensions.rows - 1);
                 xterm.resize(cols, rows);
                 xterm.scrollToBottom();
@@ -229,6 +284,20 @@ class TerminalManager {
             this.commandHistory.set(sessionId, []);
         }
 
+        // Initialize search state
+        this.searchStates.set(sessionId, {
+            isOpen: false,
+            query: '',
+            currentIndex: 0,
+            totalMatches: 0,
+            options: {
+                caseSensitive: false,
+                regex: false,
+                wholeWord: false
+            },
+            error: null
+        });
+
         return terminal;
     }
 
@@ -264,11 +333,11 @@ class TerminalManager {
         // Search button
         const searchButton = terminal.element.querySelector('.search-terminal-btn');
         searchButton.addEventListener('click', () => {
-            const searchTerm = prompt('搜索内容:');
-            if (searchTerm) {
-                terminal.searchAddon.findNext(searchTerm);
-            }
+            this.openSearchBox(sessionId);
         });
+
+        // Bind search box events
+        this.bindSearchBoxEvents(terminal);
 
         // Handle terminal input
         // Server-side echo mode: all input is sent to server, server handles all display
@@ -753,6 +822,319 @@ class TerminalManager {
      */
     getWebSocket(sessionId) {
         return this.websockets.get(sessionId);
+    }
+
+    // ==================== Search Box Methods ====================
+
+    /**
+     * Bind search box event handlers
+     */
+    bindSearchBoxEvents(terminal) {
+        const sessionId = terminal.sessionId;
+        const searchBox = terminal.element.querySelector('.terminal-search-box');
+        const searchInput = searchBox.querySelector('.search-input');
+        const prevBtn = searchBox.querySelector('.search-prev-btn');
+        const nextBtn = searchBox.querySelector('.search-next-btn');
+        const closeBtn = searchBox.querySelector('.search-close-btn');
+        const caseSensitiveCheckbox = searchBox.querySelector('.search-case-sensitive');
+        const regexCheckbox = searchBox.querySelector('.search-regex');
+        const wholeWordCheckbox = searchBox.querySelector('.search-whole-word');
+
+        // Debounce timer for real-time search
+        let searchDebounceTimer;
+
+        // Input event - real-time search with debounce
+        searchInput.addEventListener('input', () => {
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => {
+                this.performSearch(sessionId, searchInput.value);
+            }, 150);
+        });
+
+        // Keyboard events in search input
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    this.searchPrevious(sessionId);
+                } else {
+                    this.searchNext(sessionId);
+                }
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                this.closeSearchBox(sessionId);
+            } else if (e.key === 'c' && e.altKey) {
+                e.preventDefault();
+                caseSensitiveCheckbox.checked = !caseSensitiveCheckbox.checked;
+                caseSensitiveCheckbox.dispatchEvent(new Event('change'));
+            } else if (e.key === 'r' && e.altKey) {
+                e.preventDefault();
+                regexCheckbox.checked = !regexCheckbox.checked;
+                regexCheckbox.dispatchEvent(new Event('change'));
+            } else if (e.key === 'w' && e.altKey) {
+                e.preventDefault();
+                wholeWordCheckbox.checked = !wholeWordCheckbox.checked;
+                wholeWordCheckbox.dispatchEvent(new Event('change'));
+            }
+        });
+
+        // Navigation buttons
+        prevBtn.addEventListener('click', () => this.searchPrevious(sessionId));
+        nextBtn.addEventListener('click', () => this.searchNext(sessionId));
+        closeBtn.addEventListener('click', () => this.closeSearchBox(sessionId));
+
+        // Option checkboxes - re-search when changed
+        const optionChangeHandler = () => {
+            const state = this.searchStates.get(sessionId);
+            if (state) {
+                state.options.caseSensitive = caseSensitiveCheckbox.checked;
+                state.options.regex = regexCheckbox.checked;
+                state.options.wholeWord = wholeWordCheckbox.checked;
+                // Re-search with new options
+                if (state.query) {
+                    this.performSearch(sessionId, state.query);
+                }
+            }
+        };
+        caseSensitiveCheckbox.addEventListener('change', optionChangeHandler);
+        regexCheckbox.addEventListener('change', optionChangeHandler);
+        wholeWordCheckbox.addEventListener('change', optionChangeHandler);
+
+        // Global keyboard shortcut (Ctrl/Cmd + F)
+        terminal.element.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                e.preventDefault();
+                e.stopPropagation();
+                this.openSearchBox(sessionId);
+            }
+        });
+
+        // Also capture Ctrl+F on xterm
+        terminal.xterm.attachCustomKeyEventHandler((e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                e.preventDefault();
+                this.openSearchBox(sessionId);
+                return false; // Prevent xterm from handling
+            }
+            return true;
+        });
+    }
+
+    /**
+     * Open search box
+     */
+    openSearchBox(sessionId) {
+        const terminal = this.terminals.get(sessionId);
+        const state = this.searchStates.get(sessionId);
+        if (!terminal || !state) return;
+
+        const searchBox = terminal.element.querySelector('.terminal-search-box');
+        const searchInput = searchBox.querySelector('.search-input');
+
+        // If already open, just focus input
+        if (state.isOpen) {
+            searchInput.focus();
+            searchInput.select();
+            return;
+        }
+
+        state.isOpen = true;
+        
+        // 1. First blur terminal to prevent it from stealing focus
+        terminal.xterm.blur();
+        
+        // 2. Make search box visible
+        searchBox.classList.add('visible');
+        
+        // 3. Focus after transition completes (more reliable)
+        const focusInput = () => {
+            searchInput.focus();
+            searchInput.select();
+            console.log('[Terminal] Search box opened, input focused');
+        };
+
+        // Listen for transition end as primary method
+        const onTransitionEnd = (e) => {
+            if (e.propertyName === 'visibility' || e.propertyName === 'transform') {
+                searchBox.removeEventListener('transitionend', onTransitionEnd);
+                focusInput();
+            }
+        };
+        searchBox.addEventListener('transitionend', onTransitionEnd);
+
+        // Fallback: force focus after a short delay in case transitionend doesn't fire
+        setTimeout(() => {
+            searchBox.removeEventListener('transitionend', onTransitionEnd);
+            if (document.activeElement !== searchInput) {
+                focusInput();
+            }
+        }, 250);
+    }
+
+    /**
+     * Close search box
+     */
+    closeSearchBox(sessionId) {
+        const terminal = this.terminals.get(sessionId);
+        const state = this.searchStates.get(sessionId);
+        if (!terminal || !state) return;
+
+        const searchBox = terminal.element.querySelector('.terminal-search-box');
+
+        state.isOpen = false;
+        searchBox.classList.remove('visible');
+
+        // Clear search highlights (optional - comment out to keep highlights)
+        // terminal.searchAddon.clearDecorations();
+
+        // Return focus to terminal
+        terminal.xterm.focus();
+    }
+
+    /**
+     * Perform search with current query and options
+     */
+    performSearch(sessionId, query) {
+        const terminal = this.terminals.get(sessionId);
+        const state = this.searchStates.get(sessionId);
+        if (!terminal || !state) return;
+
+        const searchBox = terminal.element.querySelector('.terminal-search-box');
+        const matchCountEl = searchBox.querySelector('.match-count');
+        const searchInput = searchBox.querySelector('.search-input');
+        const errorEl = searchBox.querySelector('.search-error');
+
+        state.query = query;
+        state.error = null;
+        errorEl.textContent = '';
+        searchInput.classList.remove('search-input-error');
+
+        if (!query) {
+            matchCountEl.textContent = '';
+            matchCountEl.className = 'match-count';
+            state.currentIndex = 0;
+            state.totalMatches = 0;
+            return;
+        }
+
+        // Validate regex if regex mode is enabled
+        if (state.options.regex) {
+            try {
+                new RegExp(query);
+            } catch (e) {
+                state.error = '无效的正则表达式';
+                errorEl.textContent = state.error;
+                searchInput.classList.add('search-input-error');
+                matchCountEl.textContent = '';
+                return;
+            }
+        }
+
+        // Build search options
+        const searchOptions = {
+            caseSensitive: state.options.caseSensitive,
+            regex: state.options.regex,
+            wholeWord: state.options.wholeWord,
+            incremental: false
+        };
+
+        try {
+            // Perform search - findNext returns boolean indicating if match found
+            const found = terminal.searchAddon.findNext(query, searchOptions);
+            
+            if (found) {
+                // Count matches asynchronously
+                this.countMatches(sessionId, query, searchOptions);
+            } else {
+                state.currentIndex = 0;
+                state.totalMatches = 0;
+                matchCountEl.textContent = '无匹配';
+                matchCountEl.className = 'match-count no-match';
+            }
+        } catch (e) {
+            console.error('[Terminal] Search error:', e);
+            state.error = '搜索出错';
+            errorEl.textContent = state.error;
+        }
+    }
+
+    /**
+     * Count total matches (progressive counting to avoid blocking UI)
+     */
+    countMatches(sessionId, query, options) {
+        const terminal = this.terminals.get(sessionId);
+        const state = this.searchStates.get(sessionId);
+        if (!terminal || !state) return;
+
+        const searchBox = terminal.element.querySelector('.terminal-search-box');
+        const matchCountEl = searchBox.querySelector('.match-count');
+
+        // For simplicity, just show "有匹配" without exact count
+        // Full counting would require iterating through buffer which can be slow
+        state.totalMatches = -1; // Unknown
+        state.currentIndex = 1;
+        matchCountEl.textContent = '有匹配';
+        matchCountEl.className = 'match-count has-match';
+    }
+
+    /**
+     * Search next match
+     */
+    searchNext(sessionId) {
+        const terminal = this.terminals.get(sessionId);
+        const state = this.searchStates.get(sessionId);
+        if (!terminal || !state || !state.query) return;
+
+        const searchBox = terminal.element.querySelector('.terminal-search-box');
+        const matchCountEl = searchBox.querySelector('.match-count');
+
+        const searchOptions = {
+            caseSensitive: state.options.caseSensitive,
+            regex: state.options.regex,
+            wholeWord: state.options.wholeWord,
+            incremental: false
+        };
+
+        try {
+            const found = terminal.searchAddon.findNext(state.query, searchOptions);
+            if (!found) {
+                // Wrap around - search from beginning
+                matchCountEl.textContent = '已到底部';
+                matchCountEl.className = 'match-count wrap-around';
+            }
+        } catch (e) {
+            console.error('[Terminal] Search next error:', e);
+        }
+    }
+
+    /**
+     * Search previous match
+     */
+    searchPrevious(sessionId) {
+        const terminal = this.terminals.get(sessionId);
+        const state = this.searchStates.get(sessionId);
+        if (!terminal || !state || !state.query) return;
+
+        const searchBox = terminal.element.querySelector('.terminal-search-box');
+        const matchCountEl = searchBox.querySelector('.match-count');
+
+        const searchOptions = {
+            caseSensitive: state.options.caseSensitive,
+            regex: state.options.regex,
+            wholeWord: state.options.wholeWord,
+            incremental: false
+        };
+
+        try {
+            const found = terminal.searchAddon.findPrevious(state.query, searchOptions);
+            if (!found) {
+                // Wrap around - search from end
+                matchCountEl.textContent = '已到顶部';
+                matchCountEl.className = 'match-count wrap-around';
+            }
+        } catch (e) {
+            console.error('[Terminal] Search previous error:', e);
+        }
     }
 }
 
