@@ -104,12 +104,6 @@ class TerminalManager {
                     </div>
                 </div>
                 <div class="flex items-center space-x-2">
-                    <button class="minimize-terminal-btn px-3 py-1 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center space-x-1">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
-                        </svg>
-                        <span>返回主页</span>
-                    </button>
                     <button class="clear-terminal-btn px-3 py-1 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors">
                         清屏
                     </button>
@@ -306,12 +300,6 @@ class TerminalManager {
      */
     bindTerminalEvents(terminal) {
         const sessionId = terminal.sessionId;
-
-        // Minimize button (return to main page)
-        const minimizeButton = terminal.element.querySelector('.minimize-terminal-btn');
-        minimizeButton.addEventListener('click', () => {
-            this.minimizeTerminalBySessionId(sessionId);
-        });
 
         // Close buttons - with confirmation
         const closeButtons = terminal.element.querySelectorAll('.close-terminal-btn');
@@ -715,36 +703,6 @@ class TerminalManager {
         for (const [sessionId, terminal] of this.terminals.entries()) {
             if (terminal.serviceName === serviceName && terminal.ip === ip) {
                 this.focusTerminalBySessionId(sessionId);
-                return;
-            }
-        }
-    }
-
-    /**
-     * Minimize terminal by sessionId (hide but keep connection)
-     */
-    minimizeTerminalBySessionId(sessionId) {
-        const terminal = this.terminals.get(sessionId);
-        
-        if (!terminal) return;
-
-        // Hide terminal window
-        terminal.element.style.display = 'none';
-
-        // Dispatch event to update session state
-        const event = new CustomEvent('terminalMinimized', {
-            detail: { sessionId: sessionId, serviceName: terminal.serviceName, ip: terminal.ip }
-        });
-        document.dispatchEvent(event);
-    }
-
-    /**
-     * Minimize terminal (legacy method)
-     */
-    minimizeTerminal(serviceName, ip) {
-        for (const [sessionId, terminal] of this.terminals.entries()) {
-            if (terminal.serviceName === serviceName && terminal.ip === ip) {
-                this.minimizeTerminalBySessionId(sessionId);
                 return;
             }
         }
