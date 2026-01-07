@@ -111,7 +111,9 @@ func NewDistributedManager(
 		WriteTimeout:        int(cfg.Distributed.ProxyWriteTimeout.Seconds()),
 		MaxProxySessions:    cfg.Distributed.MaxProxySessions,
 	}
-	dm.proxy = proxy.NewWSProxy(logger, proxyConfig, localPendingStore)
+	// Use dm.pendingStore (RedisPendingStore) as the tunnel deliverer
+	// This ensures that internal openTunnel requests can deliver to local pending
+	dm.proxy = proxy.NewWSProxy(logger, proxyConfig, dm.pendingStore)
 
 	// Create liveness updater for batched Redis updates
 	dm.livenessUpdater = NewLivenessUpdater(
@@ -309,8 +311,8 @@ type defaultLivenessChecker struct {
 	timeout time.Duration
 }
 
-func (c *defaultLivenessChecker) IsTimeout(lastPongAt time.Time) bool {
-	return time.Since(lastPongAt) > c.timeout
+func (c *defaultLivenessChecker) IsTimeout(lastPongAtMilli int64) bool {
+	return time.Since(time.UnixMilli(lastPongAtMilli)) > c.timeout
 }
 
 func (c *defaultLivenessChecker) LivenessTimeout() time.Duration {

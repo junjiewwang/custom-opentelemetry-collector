@@ -6,6 +6,7 @@ package controlplaneext
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.uber.org/zap"
@@ -138,7 +139,10 @@ func (f *ComponentFactory) CreateTaskManager(cfg taskmanager.Config) (taskmanage
 }
 
 // CreateAgentRegistry creates the appropriate AgentRegistry based on config.
+// The returned registry is wrapped with CachingRegistry for stats caching.
 func (f *ComponentFactory) CreateAgentRegistry(cfg agentregistry.Config) (agentregistry.AgentRegistry, error) {
+	var registry agentregistry.AgentRegistry
+
 	switch cfg.Type {
 	case "redis":
 		if f.storage == nil {
@@ -152,11 +156,24 @@ func (f *ComponentFactory) CreateAgentRegistry(cfg agentregistry.Config) (agentr
 		if err != nil {
 			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
 		}
-		return agentregistry.NewRedisAgentRegistry(f.logger, cfg, client)
+		var createErr error
+		registry, createErr = agentregistry.NewRedisAgentRegistry(f.logger, cfg, client)
+		if createErr != nil {
+			return nil, createErr
+		}
 
 	default:
-		return agentregistry.NewMemoryAgentRegistry(f.logger, cfg), nil
+		registry = agentregistry.NewMemoryAgentRegistry(f.logger, cfg)
 	}
+
+	// Wrap with CachingRegistry for stats caching (decorator pattern)
+	// This provides transparent caching for GetAgentStats without modifying
+	// the underlying implementations.
+	cacheTTL := cfg.StatsCacheTTL
+	if cacheTTL == 0 {
+		cacheTTL = 5 * time.Second // Default cache TTL
+	}
+	return agentregistry.NewCachingRegistry(registry, cacheTTL), nil
 }
 
 // CreateTokenManager creates the appropriate TokenManager based on config.

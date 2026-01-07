@@ -56,7 +56,7 @@ type Extension struct {
 	onDemandConfigMgr configmanager.OnDemandConfigManager
 
 	// WebSocket token manager for secure WS authentication
-	wsTokenMgr *wsTokenManager
+	wsTokenMgr WSTokenManager
 
 	// Flag to track if we own the components (need to close them on shutdown)
 	ownsComponents bool
@@ -116,8 +116,10 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		}
 	}
 
-	// Initialize WebSocket token manager (30 second TTL for tokens)
-	e.wsTokenMgr = newWSTokenManager(30 * time.Second)
+	// Initialize WebSocket token manager based on configuration
+	if err := e.initWSTokenManager(host); err != nil {
+		return fmt.Errorf("failed to initialize WS token manager: %w", err)
+	}
 
 	// Start HTTP server
 	if err := e.startHTTPServer(); err != nil {
@@ -186,6 +188,65 @@ func (e *Extension) initArthasTunnel(host component.Host) error {
 	}
 
 	return fmt.Errorf("arthas tunnel extension %q not found or does not implement ArthasTunnel interface", e.config.ArthasTunnelExtension)
+}
+
+// initWSTokenManager initializes the WebSocket token manager based on configuration.
+func (e *Extension) initWSTokenManager(host component.Host) error {
+	cfg := e.config.WSToken
+	ttl := cfg.TTL
+	if ttl <= 0 {
+		ttl = 30 * time.Second
+	}
+
+	switch cfg.Type {
+	case "redis":
+		// Get storage extension to access Redis client
+		var storage storageext.Storage
+		if e.storage != nil {
+			storage = e.storage
+		} else if e.config.ControlPlaneExtension != "" {
+			// When using controlplane extension, get storage from there
+			if cpExt, ok := e.controlPlane.(*controlplaneext.Extension); ok {
+				storage = cpExt.GetStorage()
+			}
+		}
+
+		if storage == nil {
+			// Try to get storage extension directly
+			storageExtName := e.config.StorageExtension
+			if storageExtName == "" {
+				storageExtName = "storage" // Default name
+			}
+			var err error
+			storage, err = controlplaneext.GetStorageExtension(host, storageExtName, e.logger)
+			if err != nil {
+				return fmt.Errorf("ws_token.type is 'redis' but storage extension not available: %w", err)
+			}
+		}
+
+		redisClient, err := storage.GetRedis(cfg.RedisName)
+		if err != nil || redisClient == nil {
+			return fmt.Errorf("redis connection %q not found for ws_token: %w", cfg.RedisName, err)
+		}
+
+		e.wsTokenMgr = newRedisWSTokenManager(e.logger, redisClient, cfg.KeyPrefix, ttl)
+		e.logger.Info("WS token manager initialized with Redis backend",
+			zap.String("redis_name", cfg.RedisName),
+			zap.String("key_prefix", cfg.KeyPrefix),
+			zap.Duration("ttl", ttl),
+		)
+
+	case "memory", "":
+		e.wsTokenMgr = newMemoryWSTokenManager(ttl)
+		e.logger.Info("WS token manager initialized with memory backend",
+			zap.Duration("ttl", ttl),
+		)
+
+	default:
+		return fmt.Errorf("unsupported ws_token.type: %s (must be 'memory' or 'redis')", cfg.Type)
+	}
+
+	return nil
 }
 
 // initOwnComponents creates and starts our own component instances.
@@ -287,6 +348,13 @@ func (e *Extension) Shutdown(ctx context.Context) error {
 	if e.server != nil {
 		if err := e.server.Shutdown(ctx); err != nil {
 			e.logger.Warn("Error shutting down HTTP server", zap.Error(err))
+		}
+	}
+
+	// Close WS token manager
+	if e.wsTokenMgr != nil {
+		if err := e.wsTokenMgr.Close(); err != nil {
+			e.logger.Warn("Error closing WS token manager", zap.Error(err))
 		}
 	}
 

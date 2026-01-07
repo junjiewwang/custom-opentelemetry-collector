@@ -4,13 +4,14 @@
 package adminext
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
 	"time"
 )
 
-// wsTokenManager manages short-lived tokens for WebSocket authentication.
+// WSTokenManager manages short-lived tokens for WebSocket authentication.
 // This provides a secure way to authenticate WebSocket connections without
 // exposing long-lived API keys in URLs.
 //
@@ -19,14 +20,23 @@ import (
 // 2. Server generates a short-lived token (default 30s TTL, single-use)
 // 3. Client connects to WebSocket with the token in URL: /api/v1/arthas/ws?token=xxx
 // 4. Server validates and consumes the token (one-time use)
-type wsTokenManager struct {
-	mu     sync.RWMutex
-	tokens map[string]*wsToken
-	ttl    time.Duration
+type WSTokenManager interface {
+	// GenerateToken creates a new short-lived token.
+	GenerateToken(ctx context.Context, userID, purpose string) (*WSToken, error)
+
+	// ValidateAndConsume validates a token and removes it (single-use).
+	// Returns the token info if valid, nil otherwise.
+	ValidateAndConsume(ctx context.Context, tokenStr, purpose string) *WSToken
+
+	// Count returns the number of active tokens (for monitoring).
+	Count(ctx context.Context) int
+
+	// Close releases any resources.
+	Close() error
 }
 
-// wsToken represents a short-lived WebSocket authentication token.
-type wsToken struct {
+// WSToken represents a short-lived WebSocket authentication token.
+type WSToken struct {
 	Token     string    `json:"token"`
 	UserID    string    `json:"user_id,omitempty"`
 	Purpose   string    `json:"purpose"` // e.g., "arthas_terminal"
@@ -34,123 +44,122 @@ type wsToken struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// newWSTokenManager creates a new WebSocket token manager.
-func newWSTokenManager(ttl time.Duration) *wsTokenManager {
+// generateRandomToken generates a random token string.
+func generateRandomToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// memoryWSTokenManager is an in-memory implementation of WSTokenManager.
+// Suitable for single-node deployments.
+type memoryWSTokenManager struct {
+	mu      sync.RWMutex
+	tokens  map[string]*WSToken
+	ttl     time.Duration
+	closeCh chan struct{}
+}
+
+// newMemoryWSTokenManager creates a new in-memory WebSocket token manager.
+func newMemoryWSTokenManager(ttl time.Duration) *memoryWSTokenManager {
 	if ttl <= 0 {
-		ttl = 30 * time.Second // Default 30 seconds
+		ttl = 30 * time.Second
 	}
-	
-	m := &wsTokenManager{
-		tokens: make(map[string]*wsToken),
-		ttl:    ttl,
+
+	m := &memoryWSTokenManager{
+		tokens:  make(map[string]*WSToken),
+		ttl:     ttl,
+		closeCh: make(chan struct{}),
 	}
-	
+
 	// Start cleanup goroutine
 	go m.cleanupLoop()
-	
+
 	return m
 }
 
 // GenerateToken creates a new short-lived token.
-func (m *wsTokenManager) GenerateToken(userID, purpose string) *wsToken {
+func (m *memoryWSTokenManager) GenerateToken(_ context.Context, userID, purpose string) (*WSToken, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
-	// Generate random token
-	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	tokenStr := hex.EncodeToString(b)
-	
+
+	tokenStr := generateRandomToken()
 	now := time.Now()
-	token := &wsToken{
+	token := &WSToken{
 		Token:     tokenStr,
 		UserID:    userID,
 		Purpose:   purpose,
 		CreatedAt: now,
 		ExpiresAt: now.Add(m.ttl),
 	}
-	
+
 	m.tokens[tokenStr] = token
-	return token
+	return token, nil
 }
 
 // ValidateAndConsume validates a token and removes it (single-use).
-// Returns the token info if valid, nil otherwise.
-func (m *wsTokenManager) ValidateAndConsume(tokenStr, purpose string) *wsToken {
+func (m *memoryWSTokenManager) ValidateAndConsume(_ context.Context, tokenStr, purpose string) *WSToken {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	token, exists := m.tokens[tokenStr]
 	if !exists {
 		return nil
 	}
-	
+
 	// Remove token (single-use)
 	delete(m.tokens, tokenStr)
-	
+
 	// Check expiration
 	if time.Now().After(token.ExpiresAt) {
 		return nil
 	}
-	
+
 	// Check purpose if specified
 	if purpose != "" && token.Purpose != purpose {
 		return nil
 	}
-	
+
 	return token
 }
 
-// Validate validates a token without consuming it.
-// Useful for checking if a token is valid before establishing connection.
-func (m *wsTokenManager) Validate(tokenStr, purpose string) bool {
+// Count returns the number of active tokens.
+func (m *memoryWSTokenManager) Count(_ context.Context) int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
-	token, exists := m.tokens[tokenStr]
-	if !exists {
-		return false
-	}
-	
-	// Check expiration
-	if time.Now().After(token.ExpiresAt) {
-		return false
-	}
-	
-	// Check purpose if specified
-	if purpose != "" && token.Purpose != purpose {
-		return false
-	}
-	
-	return true
+	return len(m.tokens)
+}
+
+// Close stops the cleanup goroutine.
+func (m *memoryWSTokenManager) Close() error {
+	close(m.closeCh)
+	return nil
 }
 
 // cleanupLoop periodically removes expired tokens.
-func (m *wsTokenManager) cleanupLoop() {
+func (m *memoryWSTokenManager) cleanupLoop() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	
-	for range ticker.C {
-		m.cleanup()
+
+	for {
+		select {
+		case <-m.closeCh:
+			return
+		case <-ticker.C:
+			m.cleanup()
+		}
 	}
 }
 
 // cleanup removes expired tokens.
-func (m *wsTokenManager) cleanup() {
+func (m *memoryWSTokenManager) cleanup() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	now := time.Now()
 	for tokenStr, token := range m.tokens {
 		if now.After(token.ExpiresAt) {
 			delete(m.tokens, tokenStr)
 		}
 	}
-}
-
-// Count returns the number of active tokens (for monitoring).
-func (m *wsTokenManager) Count() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.tokens)
 }

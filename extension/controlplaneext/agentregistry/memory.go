@@ -310,16 +310,17 @@ func (m *MemoryAgentRegistry) GetInstancesByService(ctx context.Context, appID, 
 }
 
 // GetAgentStats returns statistics about registered agents.
+// Optimized to minimize lock hold time: snapshot agents under lock, calculate stats outside lock.
 func (m *MemoryAgentRegistry) GetAgentStats(ctx context.Context) (*AgentStats, error) {
+	// Take a snapshot under read lock (fast)
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// Convert map to slice for statsHelper
 	agents := make([]*AgentInfo, 0, len(m.agents))
 	for _, agent := range m.agents {
 		agents = append(agents, agent)
 	}
+	m.mu.RUnlock()
 
+	// Calculate stats outside lock (doesn't block write operations)
 	return m.statsHelper.CalculateStats(agents), nil
 }
 

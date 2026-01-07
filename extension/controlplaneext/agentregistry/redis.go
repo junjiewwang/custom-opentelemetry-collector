@@ -31,6 +31,7 @@ type RedisAgentRegistry struct {
 	logger       *zap.Logger
 	config       Config
 	keys         *KeyBuilder
+	loader       *RedisLoader // Batch loader for efficient multi-key reads
 	statusHelper *StatusHelper
 	statsHelper  *StatsHelper
 
@@ -48,10 +49,13 @@ func NewRedisAgentRegistry(logger *zap.Logger, config Config, client redis.Unive
 		keyPrefix = "otel:agents"
 	}
 
+	keys := NewKeyBuilderWithMode(keyPrefix, config.InstanceKeyMode)
+
 	return &RedisAgentRegistry{
 		logger:       logger,
 		config:       config,
-		keys:         NewKeyBuilderWithMode(keyPrefix, config.InstanceKeyMode),
+		keys:         keys,
+		loader:       NewRedisLoader(client, keys),
 		statusHelper: NewStatusHelper(),
 		statsHelper:  NewStatsHelper(),
 		client:       client,
@@ -296,31 +300,12 @@ func (r *RedisAgentRegistry) GetOnlineAgents(ctx context.Context) ([]*AgentInfo,
 		return nil, err
 	}
 
-	var agents []*AgentInfo
-	for _, fullPath := range fullPaths {
-		appGroupB64, serviceNameB64, instanceKey, err := r.keys.ParseFullKeyPath(fullPath)
-		if err != nil {
-			continue
-		}
-
-		instanceInfoKey := r.keys.InstanceKeyFromParts(appGroupB64, serviceNameB64, instanceKey)
-		data, err := client.Get(ctx, instanceInfoKey).Result()
-		if err != nil {
-			continue
-		}
-
-		var agent AgentInfo
-		if err := json.Unmarshal([]byte(data), &agent); err != nil {
-			continue
-		}
-		agents = append(agents, &agent)
-	}
-
-	return agents, nil
+	// Use batch loader for efficient retrieval
+	return r.loader.LoadAgentsByFullPaths(ctx, fullPaths)
 }
 
 // GetAllAgents returns all agents (including offline ones within InstanceTTL).
-// This uses the _ids hash to get all agent IDs, then fetches their info.
+// This uses the _ids hash to get all agent IDs, then fetches their info using batch loader.
 func (r *RedisAgentRegistry) GetAllAgents(ctx context.Context) ([]*AgentInfo, error) {
 	client := r.getClient()
 	if client == nil {
@@ -328,33 +313,13 @@ func (r *RedisAgentRegistry) GetAllAgents(ctx context.Context) ([]*AgentInfo, er
 	}
 
 	// Get all agent ID -> fullPath mappings from _ids hash
-	agentPaths, err := client.HGetAll(ctx, r.keys.AgentIDsKey()).Result()
+	agentPaths, err := r.loader.GetAllAgentPaths(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var agents []*AgentInfo
-	for _, fullPath := range agentPaths {
-		appIDEsc, serviceNameEsc, instanceKey, err := r.keys.ParseFullKeyPath(fullPath)
-		if err != nil {
-			continue
-		}
-
-		instanceInfoKey := r.keys.InstanceKeyFromParts(appIDEsc, serviceNameEsc, instanceKey)
-		data, err := client.Get(ctx, instanceInfoKey).Result()
-		if err != nil {
-			// Instance info expired (TTL), skip it
-			continue
-		}
-
-		var agent AgentInfo
-		if err := json.Unmarshal([]byte(data), &agent); err != nil {
-			continue
-		}
-		agents = append(agents, &agent)
-	}
-
-	return agents, nil
+	// Use batch loader for efficient retrieval (reduces N+1 to 2 Redis calls)
+	return r.loader.LoadAgentsByPaths(ctx, agentPaths)
 }
 
 // GetAgentsByLabel returns agents matching the specified label.
@@ -452,25 +417,8 @@ func (r *RedisAgentRegistry) GetInstancesByService(ctx context.Context, appID, s
 		return nil, err
 	}
 
-	appIDB64 := r.keys.Encode(appID)
-	serviceNameB64 := r.keys.Encode(serviceName)
-
-	var agents []*AgentInfo
-	for _, instanceKey := range instanceKeys {
-		instanceInfoKey := r.keys.InstanceKeyFromParts(appIDB64, serviceNameB64, instanceKey)
-		data, err := client.Get(ctx, instanceInfoKey).Result()
-		if err != nil {
-			continue
-		}
-
-		var agent AgentInfo
-		if err := json.Unmarshal([]byte(data), &agent); err != nil {
-			continue
-		}
-		agents = append(agents, &agent)
-	}
-
-	return agents, nil
+	// Use batch loader for efficient retrieval
+	return r.loader.LoadAgentsByInstanceKeys(ctx, appID, serviceName, instanceKeys)
 }
 
 // GetAgentStats returns statistics about registered agents.

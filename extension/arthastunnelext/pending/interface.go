@@ -37,6 +37,10 @@ type PendingStore interface {
 	// Returns error if the pending already exists.
 	Create(ctx context.Context, info *PendingInfo) error
 
+	// CreateWithBrowserConn creates a pending with the browser connection.
+	// This is the primary method used by connectArthas to register a pending.
+	CreateWithBrowserConn(ctx context.Context, info *PendingInfo, browserConn *websocket.Conn) error
+
 	// Get retrieves pending info by client connection ID.
 	// Returns nil if not found.
 	Get(ctx context.Context, clientConnID string) (*PendingInfo, error)

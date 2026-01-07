@@ -71,7 +71,7 @@ func (r *LocalRegistry) UpdateLiveness(_ context.Context, agentID string, lastPo
 	defer r.mu.Unlock()
 
 	if info, ok := r.agents[agentID]; ok {
-		info.LastPongAt = lastPongAt
+		info.LastPongAt = lastPongAt.UnixMilli()
 	}
 	return nil
 }

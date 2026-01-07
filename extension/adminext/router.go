@@ -30,6 +30,18 @@ func (e *Extension) newRouter() http.Handler {
 	// Health check (no auth required)
 	r.Get("/health", e.handleHealth)
 
+	// ============================================================================
+	// Internal proxy routes for distributed Arthas tunnel (no admin auth)
+	// ============================================================================
+	// These routes handle cross-node proxy requests in distributed mode.
+	// Authentication is handled internally via X-Internal-Token header.
+	// Must be registered before /api/v1 routes to avoid auth middleware.
+	if e.arthasTunnel != nil && e.arthasTunnel.IsDistributedMode() {
+		internalPrefix := e.arthasTunnel.GetInternalPathPrefix()
+		// Use Mount to delegate all requests under the prefix to the tunnel handler
+		r.Mount(internalPrefix, http.HandlerFunc(e.arthasTunnel.HandleInternalProxy))
+	}
+
 	// WebUI - serve embedded static files (no auth required for UI assets)
 	webUI, err := newWebUIHandler()
 	if err == nil {

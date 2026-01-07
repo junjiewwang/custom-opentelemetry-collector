@@ -34,11 +34,14 @@ type AgentInfo struct {
 	// NodeAddr is the internal address of the collector replica for cross-node proxy.
 	NodeAddr string `json:"node_addr"`
 
-	// ConnectedAt is when the agent first connected.
-	ConnectedAt time.Time `json:"connected_at"`
+	// ConnectedAt is when the agent first connected (UnixMilli).
+	// Note: Using milliseconds instead of nanoseconds to avoid JSON precision loss
+	// when serializing through Redis Lua cjson (which converts large numbers to scientific notation).
+	ConnectedAt int64 `json:"connected_at"`
 
-	// LastPongAt is when the last pong was received.
-	LastPongAt time.Time `json:"last_pong_at"`
+	// LastPongAt is when the last pong was received (UnixMilli).
+	// Note: Using milliseconds instead of nanoseconds to avoid JSON precision loss.
+	LastPongAt int64 `json:"last_pong_at"`
 }
 
 // AgentRegistry defines the interface for agent registration and lookup.
@@ -77,8 +80,8 @@ type AgentRegistry interface {
 
 // LivenessChecker is used to determine if an agent is still alive.
 type LivenessChecker interface {
-	// IsTimeout returns true if the agent has timed out based on lastPongAt.
-	IsTimeout(lastPongAt time.Time) bool
+	// IsTimeout returns true if the agent has timed out based on lastPongAt (UnixMilli).
+	IsTimeout(lastPongAtMilli int64) bool
 
 	// LivenessTimeout returns the timeout duration.
 	LivenessTimeout() time.Duration

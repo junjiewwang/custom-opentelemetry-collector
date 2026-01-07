@@ -166,71 +166,9 @@ func (p *WSProxy) ProxyOpenTunnel(ctx context.Context, targetNodeAddr string, ag
 	return nil
 }
 
-// HandleInternalProxy handles incoming internal proxy requests.
-func (p *WSProxy) HandleInternalProxy(w http.ResponseWriter, r *http.Request) {
-	// Validate internal token
-	token := r.Header.Get(p.config.InternalTokenHeader)
-	if token != p.config.InternalToken {
-		p.logger.Warn("Invalid internal token",
-			zap.String("remote_addr", r.RemoteAddr),
-			zap.String("path", r.URL.Path),
-		)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// Parse path to determine action
-	path := strings.TrimPrefix(r.URL.Path, p.config.InternalPathPrefix)
-	path = strings.TrimPrefix(path, "/proxy/")
-
-	switch {
-	case strings.HasPrefix(path, "connect"):
-		p.handleInternalConnect(w, r)
-	case strings.HasPrefix(path, "opentunnel"):
-		p.handleInternalOpenTunnel(w, r)
-	default:
-		http.Error(w, "Not Found", http.StatusNotFound)
-	}
-}
-
-// handleInternalConnect handles proxied connectArthas requests.
-func (p *WSProxy) handleInternalConnect(w http.ResponseWriter, r *http.Request) {
-	agentID := r.URL.Query().Get("id")
-	if agentID == "" {
-		http.Error(w, "Missing agent ID", http.StatusBadRequest)
-		return
-	}
-
-	conn, err := p.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		p.logger.Error("Failed to upgrade internal connect WebSocket",
-			zap.Error(err),
-		)
-		return
-	}
-
-	p.logger.Info("Internal connect request received",
-		zap.String("agent_id", agentID),
-		zap.String("remote_addr", r.RemoteAddr),
-	)
-
-	// The actual handling is done by the distributed manager
-	// which will call the local handleConnectArthas
-	// For now, we just keep the connection open for relay
-	// The caller (ProxyConnectArthas) will handle the relay
-
-	// This connection will be used by the relay in ProxyConnectArthas
-	// Just keep it alive until closed
-	for {
-		_, _, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-	}
-}
-
-// handleInternalOpenTunnel handles proxied openTunnel requests.
-func (p *WSProxy) handleInternalOpenTunnel(w http.ResponseWriter, r *http.Request) {
+// HandleInternalOpenTunnel handles proxied openTunnel requests from other nodes.
+// Token validation is done by the caller (Extension.HandleInternalProxy).
+func (p *WSProxy) HandleInternalOpenTunnel(w http.ResponseWriter, r *http.Request) {
 	clientConnID := r.URL.Query().Get("clientConnectionId")
 	if clientConnID == "" {
 		http.Error(w, "Missing clientConnectionId", http.StatusBadRequest)

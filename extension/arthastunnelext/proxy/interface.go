@@ -20,9 +20,9 @@ type CrossNodeProxy interface {
 	// This is called when openTunnel arrives at a node different from where pending was created.
 	ProxyOpenTunnel(ctx context.Context, targetNodeAddr string, agentConn *websocket.Conn, clientConnID string) error
 
-	// HandleInternalProxy handles incoming internal proxy requests from other nodes.
-	// This should be mounted at the internal path prefix.
-	HandleInternalProxy(w http.ResponseWriter, r *http.Request)
+	// HandleInternalOpenTunnel handles incoming internal openTunnel proxy requests.
+	// Token validation is done by the caller (Extension.HandleInternalProxy).
+	HandleInternalOpenTunnel(w http.ResponseWriter, r *http.Request)
 
 	// Close releases any resources.
 	Close() error

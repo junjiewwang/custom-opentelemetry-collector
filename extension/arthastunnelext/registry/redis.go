@@ -67,7 +67,7 @@ func (r *RedisRegistry) Register(ctx context.Context, info *AgentInfo) error {
 	pipe.Set(ctx, r.agentKey(info.AgentID), data, r.indexTTL)
 
 	// Add to online ZSET with lastPongAt as score (for efficient listing)
-	score := float64(info.LastPongAt.UnixNano())
+	score := float64(info.LastPongAt)
 	pipe.ZAdd(ctx, r.onlineZSetKey(), redis.Z{
 		Score:  score,
 		Member: info.AgentID,
@@ -153,7 +153,7 @@ func (r *RedisRegistry) UpdateLiveness(ctx context.Context, agentID string, last
 
 	err := script.Run(ctx, r.client,
 		[]string{r.agentKey(agentID), r.onlineZSetKey()},
-		lastPongAt.UnixNano(),
+		lastPongAt.UnixMilli(),
 		int(r.indexTTL.Seconds()),
 		agentID,
 	).Err()
@@ -184,8 +184,8 @@ func (r *RedisRegistry) Get(ctx context.Context, agentID string) (*AgentInfo, er
 // List returns all healthy agents from Redis.
 // Uses ZSET to efficiently filter by lastPongAt.
 func (r *RedisRegistry) List(ctx context.Context) ([]*AgentInfo, error) {
-	// Calculate the minimum score (oldest acceptable lastPongAt)
-	minScore := float64(time.Now().Add(-r.livenessChecker.LivenessTimeout()).UnixNano())
+	// Calculate the minimum score (oldest acceptable lastPongAt in milliseconds)
+	minScore := float64(time.Now().Add(-r.livenessChecker.LivenessTimeout()).UnixMilli())
 
 	// Get agent IDs with score >= minScore (healthy agents)
 	agentIDs, err := r.client.ZRangeByScore(ctx, r.onlineZSetKey(), &redis.ZRangeBy{
@@ -322,7 +322,7 @@ func (r *RedisRegistry) CleanupStaleAgents(ctx context.Context, aliveNodes map[s
 
 // CleanupExpiredAgents removes agents that have timed out.
 func (r *RedisRegistry) CleanupExpiredAgents(ctx context.Context) error {
-	maxScore := float64(time.Now().Add(-r.livenessChecker.LivenessTimeout()).UnixNano())
+	maxScore := float64(time.Now().Add(-r.livenessChecker.LivenessTimeout()).UnixMilli())
 
 	// Remove expired agents from ZSET
 	removed, err := r.client.ZRemRangeByScore(ctx, r.onlineZSetKey(), "-inf",

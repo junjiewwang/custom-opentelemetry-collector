@@ -156,6 +156,9 @@ extensions:
       # Enable hierarchy indexes for GetApps/GetServicesByApp/GetInstancesByService queries
       # When disabled, reduces Redis keys per agent
       enable_hierarchy_index: true
+      # Stats cache TTL for GetAgentStats (reduces Redis calls for /api/v1/instances/stats)
+      # Set to 0 to disable caching (not recommended for production)
+      stats_cache_ttl: 5s
     
     # Task manager configuration
     task_manager:
@@ -255,6 +258,15 @@ extensions:
           - "your-api-key-1"
           - "your-api-key-2"
     
+    # WebSocket token configuration for secure WS authentication
+    # In distributed mode (multiple collector replicas), use Redis to share tokens
+    # so that a token generated on one replica can be validated on another.
+    ws_token:
+      type: redis  # "memory" or "redis" (use "redis" for distributed deployments)
+      redis_name: default  # Reference to redis connection name
+      key_prefix: "otel:ws_token:"
+      ttl: 30s  # Token time-to-live
+    
     # NOTE: The following component configs are only used when controlplane_extension is NOT set.
     # When controlplane_extension is set, these are ignored and components are reused from controlplane.
     #
@@ -340,6 +352,10 @@ extensions:
       # Enable distributed mode with Redis-based agent registry
       # When disabled, only local agents are visible
       enabled: true
+      
+      # Storage extension to depend on (ensures correct startup order)
+      # Default: "storage"
+      storage_extension: storage
       
       # Unique identifier for this collector replica
       # If empty, defaults to POD_NAME or HOSTNAME environment variable
@@ -546,7 +562,7 @@ service:
 
   telemetry:
     logs:
-      level: debug
+      level: info
       development: false  # Set to false to disable stack traces in warn logs
     metrics:
       level: detailed

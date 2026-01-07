@@ -5,18 +5,25 @@ package arthastunnelext
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
+	"go.opentelemetry.io/collector/extension/extensioncapabilities"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 )
 
-var _ extension.Extension = (*Extension)(nil)
-var _ ArthasTunnel = (*Extension)(nil)
+// Ensure Extension implements the required interfaces.
+var (
+	_ extension.Extension             = (*Extension)(nil)
+	_ extensioncapabilities.Dependent = (*Extension)(nil)
+	_ ArthasTunnel                    = (*Extension)(nil)
+)
 
 // Extension implements an Arthas tunnel-server compatible extension.
 //
@@ -62,13 +69,15 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 func (e *Extension) start(ctx context.Context, host component.Host) error {
 	e.ctx, e.cancel = context.WithCancel(ctx)
 
-	// If distributed mode is enabled, get storage extension
+	// If distributed mode is enabled, initialize it (must succeed, no fallback)
 	if e.config.IsDistributedEnabled() {
 		if err := e.initDistributed(host); err != nil {
-			e.logger.Warn("Failed to initialize distributed mode, falling back to local mode",
+			// Do not fallback to local mode - fail fast with clear error message
+			e.logger.Error("Failed to initialize distributed mode",
 				zap.Error(err),
+				zap.String("hint", "Check storage extension configuration and Redis connection"),
 			)
-			// Continue with local mode
+			return fmt.Errorf("distributed mode initialization failed: %w", err)
 		}
 	}
 
@@ -165,12 +174,78 @@ func (e *Extension) HandleBrowserWebSocket(w http.ResponseWriter, r *http.Reques
 
 // HandleInternalProxy handles internal cross-node proxy requests.
 // This should be mounted at the internal path prefix by adminext.
+//
+// Routes:
+//   - /proxy/connect?id=<agentID>: Proxied connectArthas, runs full handleConnectArthas flow
+//   - /proxy/opentunnel?clientConnectionId=<id>: Proxied openTunnel, delivers to local pending
 func (e *Extension) HandleInternalProxy(w http.ResponseWriter, r *http.Request) {
-	if e.distributed == nil || e.distributed.Proxy() == nil {
+	if e.distributed == nil {
 		http.Error(w, "distributed mode not enabled", http.StatusServiceUnavailable)
 		return
 	}
-	e.distributed.Proxy().HandleInternalProxy(w, r)
+
+	// Validate internal token
+	token := r.Header.Get(e.config.Distributed.InternalAuth.HeaderName)
+	if token != e.config.Distributed.InternalAuth.Token {
+		e.logger.Warn("Invalid internal token",
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("path", r.URL.Path),
+		)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse path to determine action
+	// Path format: /internal/v1/arthas/proxy/connect or /internal/v1/arthas/proxy/opentunnel
+	path := strings.TrimPrefix(r.URL.Path, e.config.Distributed.InternalPathPrefix)
+	path = strings.TrimPrefix(path, "/proxy/")
+
+	switch {
+	case strings.HasPrefix(path, "connect"):
+		// Proxied connectArthas: run full handleConnectArthas flow on this node
+		// The internal WS acts as the "browser" connection
+		e.handleInternalConnect(w, r)
+
+	case strings.HasPrefix(path, "opentunnel"):
+		// Proxied openTunnel: deliver tunnel to local pending
+		// This still uses WSProxy because it needs TunnelDeliverer
+		if e.distributed.Proxy() == nil {
+			http.Error(w, "proxy not available", http.StatusServiceUnavailable)
+			return
+		}
+		e.distributed.Proxy().HandleInternalOpenTunnel(w, r)
+
+	default:
+		http.Error(w, "Not Found", http.StatusNotFound)
+	}
+}
+
+// handleInternalConnect handles proxied connectArthas requests from other nodes.
+// It treats the internal WebSocket as a browser connection and runs the full
+// handleConnectArthas flow (pending registration, startTunnel, openTunnel wait, relay).
+//
+// This uses a dedicated internal entry point (HandleInternalConnectArthas) instead
+// of the generic handleWS dispatcher, ensuring internal protocol is decoupled from
+// external method-based dispatch.
+func (e *Extension) handleInternalConnect(w http.ResponseWriter, r *http.Request) {
+	if e.compat == nil {
+		http.Error(w, "arthas tunnel not started", http.StatusServiceUnavailable)
+		return
+	}
+
+	agentID := r.URL.Query().Get("id")
+	if agentID == "" {
+		http.Error(w, "Missing agent ID", http.StatusBadRequest)
+		return
+	}
+
+	e.logger.Info("Internal connect request received",
+		zap.String("agent_id", agentID),
+		zap.String("remote_addr", r.RemoteAddr),
+	)
+
+	// Use dedicated internal entry point - no method dispatch needed
+	e.compat.HandleInternalConnectArthas(w, r, agentID)
 }
 
 // ===== ArthasTunnel API used by adminext =====
@@ -197,6 +272,24 @@ func (e *Extension) IsDistributedMode() bool {
 // GetInternalPathPrefix returns the internal path prefix for cross-node proxy.
 func (e *Extension) GetInternalPathPrefix() string {
 	return e.config.Distributed.InternalPathPrefix
+}
+
+// Dependencies implements extensioncapabilities.Dependent.
+// This ensures the storage extension is started before this extension
+// when distributed mode is enabled.
+func (e *Extension) Dependencies() []component.ID {
+	// Only declare dependency when distributed mode is enabled
+	if !e.config.IsDistributedEnabled() {
+		return nil
+	}
+
+	// Use the configured storage extension name
+	storageExtName := e.config.Distributed.StorageExtension
+	if storageExtName == "" {
+		storageExtName = "storage" // Default name
+	}
+
+	return []component.ID{component.MustNewID(storageExtName)}
 }
 
 // Errors

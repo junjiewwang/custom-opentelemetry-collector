@@ -47,7 +47,12 @@ func (e *Extension) generateWSToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate token (userID can be extracted from auth context if needed)
-	token := e.wsTokenMgr.GenerateToken("", req.Purpose)
+	token, err := e.wsTokenMgr.GenerateToken(r.Context(), "", req.Purpose)
+	if err != nil {
+		e.logger.Error("Failed to generate WS token", zap.Error(err))
+		http.Error(w, `{"error":"Failed to generate token"}`, http.StatusInternalServerError)
+		return
+	}
 
 	response := WSTokenResponse{
 		Token:     token.Token,
@@ -116,7 +121,7 @@ func (e *Extension) handleArthasWebSocket(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tokenInfo := e.wsTokenMgr.ValidateAndConsume(token, "arthas_terminal")
+	tokenInfo := e.wsTokenMgr.ValidateAndConsume(r.Context(), token, "arthas_terminal")
 	if tokenInfo == nil {
 		e.logger.Warn("WebSocket connection rejected: invalid or expired token",
 			zap.String("remote_addr", r.RemoteAddr),

@@ -39,6 +39,10 @@ type Config struct {
 	// Auth configuration.
 	Auth AuthConfig `mapstructure:"auth"`
 
+	// WSToken configuration for WebSocket authentication tokens.
+	// In distributed mode (multiple collector replicas), use Redis to share tokens.
+	WSToken WSTokenConfig `mapstructure:"ws_token"`
+
 	// ConfigManager configuration.
 	ConfigManager configmanager.Config `mapstructure:"config_manager"`
 
@@ -136,6 +140,38 @@ type APIKeyAuthConfig struct {
 	Keys []string `mapstructure:"keys"`
 }
 
+// WSTokenConfig defines WebSocket token manager settings.
+// In distributed mode (multiple collector replicas), use Redis to share tokens
+// so that a token generated on one replica can be validated on another.
+type WSTokenConfig struct {
+	// Type is the storage type: "memory" or "redis".
+	// Use "redis" for distributed deployments with multiple collector replicas.
+	// Default: "memory"
+	Type string `mapstructure:"type"`
+
+	// RedisName is the name of the Redis connection from storage extension.
+	// Only used when Type is "redis".
+	RedisName string `mapstructure:"redis_name"`
+
+	// KeyPrefix is the prefix for Redis keys.
+	// Default: "otel:ws_token:"
+	KeyPrefix string `mapstructure:"key_prefix"`
+
+	// TTL is the token time-to-live duration.
+	// Default: 30s
+	TTL time.Duration `mapstructure:"ttl"`
+}
+
+// DefaultWSTokenConfig returns the default WebSocket token configuration.
+func DefaultWSTokenConfig() WSTokenConfig {
+	return WSTokenConfig{
+		Type:      "memory",
+		RedisName: "default",
+		KeyPrefix: "otel:ws_token:",
+		TTL:       30 * time.Second,
+	}
+}
+
 // Validate checks if the configuration is valid.
 func (cfg *Config) Validate() error {
 	if cfg.HTTP.Endpoint == "" {
@@ -205,6 +241,7 @@ func createDefaultConfig() *Config {
 				Header: "X-API-Key",
 			},
 		},
+		WSToken:       DefaultWSTokenConfig(),
 		ConfigManager: configmanager.DefaultConfig(),
 		TaskManager:   taskmanager.DefaultConfig(),
 		AgentRegistry: agentregistry.DefaultConfig(),

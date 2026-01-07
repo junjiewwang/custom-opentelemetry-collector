@@ -71,6 +71,11 @@ type DistributedConfig struct {
 	// Default: false
 	Enabled bool `mapstructure:"enabled"`
 
+	// StorageExtension is the name of the storage extension to depend on.
+	// This ensures the storage extension is started before arthas_tunnel.
+	// Default: "storage"
+	StorageExtension string `mapstructure:"storage_extension"`
+
 	// NodeID is the unique identifier for this collector replica.
 	// If empty, defaults to HOSTNAME or POD_NAME environment variable.
 	// Default: "" (auto-detect)
@@ -309,6 +314,7 @@ func createDefaultConfig() *Config {
 
 		Distributed: DistributedConfig{
 			Enabled:                   false,
+			StorageExtension:          "storage",
 			NodeID:                    "",
 			RedisName:                 "default",
 			KeyPrefix:                 "arthas:tunnel",

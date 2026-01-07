@@ -235,6 +235,12 @@ type Config struct {
 	// Use "host_ip" when multiple instances may run on the same host (e.g., containers).
 	// Default: "host"
 	InstanceKeyMode string `mapstructure:"instance_key_mode"`
+
+	// StatsCacheTTL is the TTL for GetAgentStats cache.
+	// This uses a decorator pattern to cache stats results, reducing Redis calls.
+	// Set to 0 to disable caching (not recommended for production).
+	// Default: 5s
+	StatsCacheTTL time.Duration `mapstructure:"stats_cache_ttl"`
 }
 
 // Instance key mode constants
@@ -258,7 +264,8 @@ func DefaultConfig() Config {
 		HeartbeatTTL:         30 * time.Second, // Heartbeat key TTL (2-3x heartbeat interval)
 		OfflineCheckInterval: 10 * time.Second,
 		EnableEvents:         true,
-		EnableHierarchyIndex: true,               // Enable by default for backward compatibility
+		EnableHierarchyIndex: true,                // Enable by default for backward compatibility
 		InstanceKeyMode:      InstanceKeyModeHost, // Use simpler format by default
+		StatsCacheTTL:        5 * time.Second,     // Cache stats for 5 seconds
 	}
 }

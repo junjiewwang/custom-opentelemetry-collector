@@ -19,11 +19,23 @@ type ArthasTunnel interface {
 	// This is called by adminext when a browser connects to /api/v1/arthas/ws.
 	HandleBrowserWebSocket(w http.ResponseWriter, r *http.Request)
 
+	// HandleInternalProxy handles internal cross-node proxy requests.
+	// This is called by adminext to handle requests at the internal path prefix.
+	// Internal authentication (token validation) is handled within this method.
+	HandleInternalProxy(w http.ResponseWriter, r *http.Request)
+
 	// ListConnectedAgents returns all registered agents that are healthy.
 	ListConnectedAgents() []*ConnectedAgent
 
 	// IsAgentConnected checks if an agent is registered AND healthy (lastPingAt not timeout).
 	IsAgentConnected(agentID string) bool
+
+	// IsDistributedMode returns true if distributed mode is enabled and active.
+	IsDistributedMode() bool
+
+	// GetInternalPathPrefix returns the internal path prefix for cross-node proxy.
+	// This is used by adminext to mount the internal proxy handler.
+	GetInternalPathPrefix() string
 }
 
 // ConnectedAgent represents an agent with an active tunnel connection.
