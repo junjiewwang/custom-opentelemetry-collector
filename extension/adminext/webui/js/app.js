@@ -106,7 +106,10 @@ export function adminApp() {
         // State - 筛选
         // ============================================================================
         instanceFilter: '',
-        taskViewMode: 'grouped', // 'grouped' or 'flat'
+        taskViewMode: 'tree', // 'tree' (层级树) or 'flat' (扁平列表)
+        taskFilterOnlyFailed: false, // 只看异常
+        taskSearchQuery: '', // 搜索关键词
+        taskTreeData: [], // 层级树数据: App -> Service -> Instance -> Task
 
         // ============================================================================
         // State - 加载状态
@@ -168,6 +171,11 @@ export function adminApp() {
 
             // 监听 terminalManager 事件
             this.setupTerminalEventListeners();
+
+            // 初始加载当前视图的数据（确保页面刷新时数据被加载）
+            if (this.authenticated && this.currentView) {
+                this.onViewChange(this.currentView);
+            }
         },
 
         /**
@@ -371,33 +379,64 @@ export function adminApp() {
             this.loading.tasks = true;
             try {
                 const res = await ApiService.getTasks();
+                console.log('[loadTasks] API response, tasks count:', res.tasks?.length);
                 
                 // Transform TaskInfo to flat structure for display
-                // TaskInfo: { task: {...}, status: number, agent_id, app_id, service_name, created_at_millis, result: {...} }
-                const rawTasks = (res.tasks || []).map(info => {
+                // 兼容两种数据结构：
+                // 1. 嵌套结构：{task: {task_id, ...}, status, agent_id, ...}
+                // 2. 扁平结构：{task_id, task_type, status, ...}（task 为 null 或不存在）
+                const rawTasks = (res.tasks || []).map((info, index) => {
+                    // 兼容两种结构：如果有 task 字段则取 task，否则直接用 info
+                    const task = info.task || {};
+                    
+                    // 字段取值优先级：task对象 > 顶层字段 > 默认值
+                    const taskId = task.task_id || info.task_id || '';
+                    const taskType = task.task_type || info.task_type || '';
+                    const targetAgentId = info.agent_id || task.target_agent_id || info.target_agent_id || '';
+                    const createdAt = info.created_at_millis || task.created_at_millis || 0;
+                    
+                    // 调试：找出空 task_id 的来源
+                    if (!taskId) {
+                        console.warn(`[loadTasks] Task at index ${index} has empty task_id:`, info);
+                    }
+                    
                     // Status priority: info.status (top-level) > info.result?.status
                     const statusNum = (typeof info.status === 'number') ? info.status : (info.result?.status ?? 0);
+                    
                     return {
-                        task_id: info.task?.task_id || '',
-                        task_type: info.task?.task_type || '',
-                        target_agent_id: info.agent_id || info.task?.target_agent_id || '',
+                        task_id: taskId,
+                        task_type: taskType,
+                        target_agent_id: targetAgentId,
                         app_id: info.app_id || '',
                         service_name: info.service_name || '',
                         status: this.taskStatusToString(statusNum),
-                        created_at_millis: info.created_at_millis || info.task?.created_at_millis || 0,
-                        priority: info.task?.priority,
-                        timeout_millis: info.task?.timeout_millis,
-                        parameters: info.task?.parameters,
+                        created_at_millis: createdAt,
+                        priority: task.priority,
+                        timeout_millis: task.timeout_millis,
+                        parameters: task.parameters,
                         _raw: info, // Keep raw data for detail view
                     };
                 });
                 
-                // Sort by created_at_millis descending (newest first)
-                this.tasks = rawTasks.sort((a, b) => (b.created_at_millis || 0) - (a.created_at_millis || 0));
+                // 过滤掉 task_id 为空的无效任务
+                const validTasks = rawTasks.filter(task => task.task_id);
+                console.log('[loadTasks] rawTasks count:', rawTasks.length, ', validTasks count:', validTasks.length);
+                if (validTasks.length > 0) {
+                    console.log('[loadTasks] first valid task:', validTasks[0]);
+                }
                 
-                // Build grouped structure
+                // Sort by created_at_millis descending (newest first)
+                this.tasks = validTasks.sort((a, b) => (b.created_at_millis || 0) - (a.created_at_millis || 0));
+                console.log('[loadTasks] this.tasks assigned, count:', this.tasks.length);
+                
+                // Build hierarchical tree structure: App -> Service -> Instance -> Task
+                this.taskTreeData = this.buildTaskTree(this.tasks);
+                console.log('[loadTasks] taskTreeData built, count:', this.taskTreeData.length);
+                
+                // Build grouped structure (legacy, for compatibility)
                 this.groupedTasks = this.buildGroupedTasks(this.tasks);
             } catch (e) {
+                console.error('[loadTasks] error:', e);
                 this.handleError(e, 'Failed to load tasks');
             } finally {
                 this.loading.tasks = false;
@@ -449,6 +488,284 @@ export function adminApp() {
             });
             
             return result;
+        },
+
+        /**
+         * Build hierarchical tree structure: App -> Service -> Instance -> Task
+         * 
+         * 设计说明：
+         * - App: 按 app_id 分组，无 app_id 的归入 "未分类"
+         * - Service: 按 service_name 分组
+         * - Instance: 按 target_agent_id 分组（作为实例标识）
+         * - Task: 具体任务
+         * 
+         * 每个节点包含：
+         * - id: 唯一标识
+         * - name: 显示名称
+         * - type: 'app' | 'service' | 'instance' | 'task'
+         * - expanded: 是否展开
+         * - stats: { total, running, failed, success, pending }
+         * - children: 子节点数组
+         * - lastUpdatedAt: 最近更新时间（用于排序）
+         */
+        buildTaskTree(tasks) {
+            // 应用筛选
+            let filteredTasks = tasks;
+            
+            // 只看异常筛选
+            if (this.taskFilterOnlyFailed) {
+                filteredTasks = tasks.filter(t => t.status === 'failed' || t.status === 'timeout');
+            }
+            
+            // 搜索筛选
+            if (this.taskSearchQuery && this.taskSearchQuery.trim()) {
+                const query = this.taskSearchQuery.toLowerCase().trim();
+                filteredTasks = filteredTasks.filter(t => 
+                    (t.task_id && t.task_id.toLowerCase().includes(query)) ||
+                    (t.app_id && t.app_id.toLowerCase().includes(query)) ||
+                    (t.service_name && t.service_name.toLowerCase().includes(query)) ||
+                    (t.target_agent_id && t.target_agent_id.toLowerCase().includes(query)) ||
+                    (t.task_type && t.task_type.toLowerCase().includes(query))
+                );
+            }
+            
+            // 构建 App -> Service -> Instance -> Task 层级
+            const appMap = new Map();
+            
+            for (const task of filteredTasks) {
+                const appId = task.app_id || '_uncategorized_';
+                const serviceName = task.service_name || '_unknown_service_';
+                const instanceId = task.target_agent_id || '_global_';
+                
+                // 获取或创建 App 节点
+                if (!appMap.has(appId)) {
+                    appMap.set(appId, {
+                        id: `app-${appId}`,
+                        name: appId === '_uncategorized_' ? '未分类' : appId,
+                        type: 'app',
+                        expanded: false, // 默认折叠，有异常时自动展开
+                        stats: { total: 0, running: 0, failed: 0, success: 0, pending: 0, timeout: 0 },
+                        children: new Map(), // service_name -> serviceNode
+                        lastUpdatedAt: 0,
+                    });
+                }
+                const appNode = appMap.get(appId);
+                
+                // 获取或创建 Service 节点
+                if (!appNode.children.has(serviceName)) {
+                    appNode.children.set(serviceName, {
+                        id: `svc-${appId}-${serviceName}`,
+                        name: serviceName === '_unknown_service_' ? '未知服务' : serviceName,
+                        type: 'service',
+                        expanded: false,
+                        stats: { total: 0, running: 0, failed: 0, success: 0, pending: 0, timeout: 0 },
+                        children: new Map(), // instance_id -> instanceNode
+                        lastUpdatedAt: 0,
+                    });
+                }
+                const serviceNode = appNode.children.get(serviceName);
+                
+                // 获取或创建 Instance 节点
+                if (!serviceNode.children.has(instanceId)) {
+                    serviceNode.children.set(instanceId, {
+                        id: `inst-${appId}-${serviceName}-${instanceId}`,
+                        name: instanceId === '_global_' ? '全局任务' : instanceId,
+                        fullId: instanceId === '_global_' ? '' : instanceId,
+                        type: 'instance',
+                        expanded: false,
+                        stats: { total: 0, running: 0, failed: 0, success: 0, pending: 0, timeout: 0 },
+                        tasks: [],
+                        lastUpdatedAt: 0,
+                    });
+                }
+                const instanceNode = serviceNode.children.get(instanceId);
+                
+                // 添加任务到 Instance
+                instanceNode.tasks.push(task);
+                
+                // 更新统计
+                const status = task.status || 'unknown';
+                instanceNode.stats.total++;
+                if (status === 'running') instanceNode.stats.running++;
+                else if (status === 'failed') instanceNode.stats.failed++;
+                else if (status === 'success') instanceNode.stats.success++;
+                else if (status === 'pending') instanceNode.stats.pending++;
+                else if (status === 'timeout') instanceNode.stats.timeout++;
+                
+                // 更新最近更新时间
+                const taskTime = task.created_at_millis || 0;
+                if (taskTime > instanceNode.lastUpdatedAt) instanceNode.lastUpdatedAt = taskTime;
+            }
+            
+            // 转换 Map 为数组，并聚合统计
+            const result = [];
+            
+            for (const [appId, appNode] of appMap) {
+                const appChildren = [];
+                
+                for (const [serviceName, serviceNode] of appNode.children) {
+                    const serviceChildren = [];
+                    
+                    for (const [instanceId, instanceNode] of serviceNode.children) {
+                        // 按时间排序任务
+                        instanceNode.tasks.sort((a, b) => (b.created_at_millis || 0) - (a.created_at_millis || 0));
+                        
+                        // 聚合到 Service
+                        serviceNode.stats.total += instanceNode.stats.total;
+                        serviceNode.stats.running += instanceNode.stats.running;
+                        serviceNode.stats.failed += instanceNode.stats.failed;
+                        serviceNode.stats.success += instanceNode.stats.success;
+                        serviceNode.stats.pending += instanceNode.stats.pending;
+                        serviceNode.stats.timeout += instanceNode.stats.timeout;
+                        if (instanceNode.lastUpdatedAt > serviceNode.lastUpdatedAt) {
+                            serviceNode.lastUpdatedAt = instanceNode.lastUpdatedAt;
+                        }
+                        
+                        // Instance 有异常则自动展开
+                        if (instanceNode.stats.failed > 0 || instanceNode.stats.timeout > 0) {
+                            instanceNode.expanded = true;
+                        }
+                        
+                        serviceChildren.push(instanceNode);
+                    }
+                    
+                    // 按异常优先 + 时间排序 Instance
+                    serviceChildren.sort((a, b) => {
+                        const aFailed = a.stats.failed + a.stats.timeout;
+                        const bFailed = b.stats.failed + b.stats.timeout;
+                        if (aFailed !== bFailed) return bFailed - aFailed;
+                        return b.lastUpdatedAt - a.lastUpdatedAt;
+                    });
+                    
+                    serviceNode.children = serviceChildren;
+                    
+                    // 聚合到 App
+                    appNode.stats.total += serviceNode.stats.total;
+                    appNode.stats.running += serviceNode.stats.running;
+                    appNode.stats.failed += serviceNode.stats.failed;
+                    appNode.stats.success += serviceNode.stats.success;
+                    appNode.stats.pending += serviceNode.stats.pending;
+                    appNode.stats.timeout += serviceNode.stats.timeout;
+                    if (serviceNode.lastUpdatedAt > appNode.lastUpdatedAt) {
+                        appNode.lastUpdatedAt = serviceNode.lastUpdatedAt;
+                    }
+                    
+                    // Service 有异常则自动展开
+                    if (serviceNode.stats.failed > 0 || serviceNode.stats.timeout > 0) {
+                        serviceNode.expanded = true;
+                    }
+                    
+                    appChildren.push(serviceNode);
+                }
+                
+                // 按异常优先 + 时间排序 Service
+                appChildren.sort((a, b) => {
+                    const aFailed = a.stats.failed + a.stats.timeout;
+                    const bFailed = b.stats.failed + b.stats.timeout;
+                    if (aFailed !== bFailed) return bFailed - aFailed;
+                    return b.lastUpdatedAt - a.lastUpdatedAt;
+                });
+                
+                appNode.children = appChildren;
+                
+                // App 有异常则自动展开
+                if (appNode.stats.failed > 0 || appNode.stats.timeout > 0) {
+                    appNode.expanded = true;
+                }
+                
+                result.push(appNode);
+            }
+            
+            // 按异常优先 + 时间排序 App
+            result.sort((a, b) => {
+                const aFailed = a.stats.failed + a.stats.timeout;
+                const bFailed = b.stats.failed + b.stats.timeout;
+                if (aFailed !== bFailed) return bFailed - aFailed;
+                return b.lastUpdatedAt - a.lastUpdatedAt;
+            });
+            
+            return result;
+        },
+
+        /**
+         * 格式化短 ID（前4位...后4位）
+         */
+        formatShortId(id) {
+            if (!id || id.length <= 12) return id || '-';
+            return `${id.slice(0, 4)}...${id.slice(-4)}`;
+        },
+
+        /**
+         * 格式化相对时间
+         */
+        formatRelativeTime(timestamp) {
+            if (!timestamp) return '-';
+            const diff = Date.now() - timestamp;
+            if (diff < 60000) return '刚刚';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
+            if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
+            return `${Math.floor(diff / 86400000)}天前`;
+        },
+
+        /**
+         * 切换节点展开状态
+         */
+        toggleTreeNode(node) {
+            node.expanded = !node.expanded;
+        },
+
+        /**
+         * 展开所有节点
+         */
+        expandAllTreeNodes() {
+            const expandAll = (nodes) => {
+                for (const node of nodes) {
+                    node.expanded = true;
+                    if (node.children && Array.isArray(node.children)) {
+                        expandAll(node.children);
+                    }
+                }
+            };
+            expandAll(this.taskTreeData);
+        },
+
+        /**
+         * 折叠所有节点
+         */
+        collapseAllTreeNodes() {
+            const collapseAll = (nodes) => {
+                for (const node of nodes) {
+                    node.expanded = false;
+                    if (node.children && Array.isArray(node.children)) {
+                        collapseAll(node.children);
+                    }
+                }
+            };
+            collapseAll(this.taskTreeData);
+        },
+
+        /**
+         * 应用任务筛选（只看异常、搜索）
+         */
+        applyTaskFilter() {
+            this.taskTreeData = this.buildTaskTree(this.tasks);
+        },
+
+        /**
+         * 获取任务统计摘要
+         */
+        getTaskStats() {
+            const stats = { total: 0, running: 0, failed: 0, success: 0, pending: 0, timeout: 0 };
+            for (const task of this.tasks) {
+                stats.total++;
+                const status = task.status || 'unknown';
+                if (status === 'running') stats.running++;
+                else if (status === 'failed') stats.failed++;
+                else if (status === 'success') stats.success++;
+                else if (status === 'pending') stats.pending++;
+                else if (status === 'timeout') stats.timeout++;
+            }
+            return stats;
         },
 
         // Convert task status number to string (align with controlplanev1.TaskStatus)
