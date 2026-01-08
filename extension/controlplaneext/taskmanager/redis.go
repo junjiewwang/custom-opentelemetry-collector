@@ -342,7 +342,10 @@ func (m *RedisTaskManager) GetGlobalPendingTasks(ctx context.Context) ([]*contro
 }
 
 // GetAllTasks returns all tasks from detail storage.
+// Optimized: uses batched SCAN + MGET to reduce network round trips.
 func (m *RedisTaskManager) GetAllTasks(ctx context.Context) ([]*TaskInfo, error) {
+	startTime := time.Now()
+
 	m.mu.RLock()
 	client := m.client
 	m.mu.RUnlock()
@@ -353,36 +356,100 @@ func (m *RedisTaskManager) GetAllTasks(ctx context.Context) ([]*TaskInfo, error)
 
 	// Scan for all detail keys: otel:tasks:detail:*
 	pattern := fmt.Sprintf("%s:detail:*", m.keyPrefix)
-	var tasks []*TaskInfo
 
+	// Batch size for MGET (avoid too large requests)
+	const batchSize = 200
+
+	var tasks []*TaskInfo
+	var keyBatch []string
+	var scanCount, mgetCount, unmarshalErrors int
+
+	scanStart := time.Now()
 	iter := client.Scan(ctx, 0, pattern, 100).Iterator()
 	for iter.Next(ctx) {
-		key := iter.Val()
+		keyBatch = append(keyBatch, iter.Val())
+		scanCount++
 
-		// Get the task detail
-		data, err := client.Get(ctx, key).Result()
-		if err != nil {
-			if err == redis.Nil {
-				continue
-			}
-			m.logger.Warn("Failed to get task detail", zap.String("key", key), zap.Error(err))
+		// Process batch when it reaches batchSize
+		if len(keyBatch) >= batchSize {
+			batchTasks, errors := m.fetchTaskBatch(ctx, client, keyBatch)
+			tasks = append(tasks, batchTasks...)
+			unmarshalErrors += errors
+			mgetCount++
+			keyBatch = keyBatch[:0] // Reset batch
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	scanDuration := time.Since(scanStart)
+
+	// Process remaining keys
+	mgetStart := time.Now()
+	if len(keyBatch) > 0 {
+		batchTasks, errors := m.fetchTaskBatch(ctx, client, keyBatch)
+		tasks = append(tasks, batchTasks...)
+		unmarshalErrors += errors
+		mgetCount++
+	}
+	mgetDuration := time.Since(mgetStart)
+
+	totalDuration := time.Since(startTime)
+
+	// Log performance metrics
+	m.logger.Debug("GetAllTasks completed",
+		zap.Int("total_keys", scanCount),
+		zap.Int("total_tasks", len(tasks)),
+		zap.Int("mget_batches", mgetCount),
+		zap.Int("unmarshal_errors", unmarshalErrors),
+		zap.Duration("scan_duration", scanDuration),
+		zap.Duration("mget_duration", mgetDuration),
+		zap.Duration("total_duration", totalDuration),
+	)
+
+	return tasks, nil
+}
+
+// fetchTaskBatch fetches a batch of tasks using MGET and unmarshals them.
+func (m *RedisTaskManager) fetchTaskBatch(ctx context.Context, client redis.UniversalClient, keys []string) ([]*TaskInfo, int) {
+	if len(keys) == 0 {
+		return nil, 0
+	}
+
+	results, err := client.MGet(ctx, keys...).Result()
+	if err != nil {
+		m.logger.Warn("Failed to MGET task details", zap.Int("key_count", len(keys)), zap.Error(err))
+		return nil, 0
+	}
+
+	tasks := make([]*TaskInfo, 0, len(results))
+	unmarshalErrors := 0
+
+	for i, data := range results {
+		if data == nil {
+			continue
+		}
+
+		dataStr, ok := data.(string)
+		if !ok {
 			continue
 		}
 
 		var taskInfo TaskInfo
-		if err := json.Unmarshal([]byte(data), &taskInfo); err != nil {
-			m.logger.Warn("Failed to unmarshal task info", zap.String("key", key), zap.Error(err))
+		if err := json.Unmarshal([]byte(dataStr), &taskInfo); err != nil {
+			m.logger.Warn("Failed to unmarshal task info",
+				zap.String("key", keys[i]),
+				zap.Error(err),
+			)
+			unmarshalErrors++
 			continue
 		}
 
 		tasks = append(tasks, &taskInfo)
 	}
 
-	if err := iter.Err(); err != nil {
-		return nil, err
-	}
-
-	return tasks, nil
+	return tasks, unmarshalErrors
 }
 
 // CancelTask cancels a task by ID.
