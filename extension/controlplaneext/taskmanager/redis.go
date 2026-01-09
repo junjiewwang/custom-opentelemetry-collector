@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,11 +114,8 @@ func (m *RedisTaskManager) submitTaskToQueue(ctx context.Context, agentMeta *Age
 		return errors.New("redis client not initialized")
 	}
 
-	// Serialize task
-	taskData, err := json.Marshal(task)
-	if err != nil {
-		return err
-	}
+	// Note: pending queues store only task_id (not Task JSON) to keep payload small and
+	// make pending removal robust across versions.
 
 	// Create task info
 	info := m.helper.NewTaskInfo(task, agentMeta, nowMillis)
@@ -148,8 +146,8 @@ func (m *RedisTaskManager) submitTaskToQueue(ctx context.Context, agentMeta *Age
 	// Store task details
 	pipe.Set(ctx, detailKey, infoData, m.config.ResultTTL)
 
-	// Add to queue
-	pipe.LPush(ctx, queueKey, taskData)
+	// Add to queue (store task_id)
+	pipe.LPush(ctx, queueKey, task.TaskID)
 
 	// Publish event
 	eventKey := fmt.Sprintf(keyEventSubmitted, m.keyPrefix)
@@ -208,7 +206,7 @@ func (m *RedisTaskManager) FetchTask(ctx context.Context, agentID string, timeou
 		// Try agent queue (non-blocking)
 		result, err := client.RPop(ctx, agentQueueKey).Result()
 		if err == nil {
-			task, err := m.parseAndValidateTask(ctx, result, cancelledKey)
+			task, err := m.resolvePendingTask(ctx, client, result, cancelledKey)
 			if err == nil && task != nil {
 				return task, nil
 			}
@@ -235,7 +233,7 @@ func (m *RedisTaskManager) FetchTask(ctx context.Context, agentID string, timeou
 		}
 
 		if len(results) >= 2 {
-			task, err := m.parseAndValidateTask(ctx, results[1], cancelledKey)
+			task, err := m.resolvePendingTask(ctx, client, results[1], cancelledKey)
 			if err == nil && task != nil {
 				return task, nil
 			}
@@ -245,26 +243,76 @@ func (m *RedisTaskManager) FetchTask(ctx context.Context, agentID string, timeou
 	return nil, nil // Timeout
 }
 
-// parseAndValidateTask parses and validates a task from Redis.
-func (m *RedisTaskManager) parseAndValidateTask(ctx context.Context, data string, cancelledKey string) (*controlplanev1.Task, error) {
-	var task controlplanev1.Task
-	if err := json.Unmarshal([]byte(data), &task); err != nil {
-		return nil, err
+// resolvePendingTask resolves a pending queue item to a Task.
+//
+// Pending queue item format:
+// - New format: task_id (string)
+// - Legacy format: JSON encoded controlplanev1.Task
+//
+// For robustness across upgrades, we support both.
+func (m *RedisTaskManager) resolvePendingTask(ctx context.Context, client redis.UniversalClient, pendingValue string, cancelledKey string) (*controlplanev1.Task, error) {
+	value := strings.TrimSpace(pendingValue)
+	if value == "" {
+		return nil, nil
+	}
+
+	// Extract task_id (and legacy task if value is JSON)
+	taskID := value
+	var legacyTask *controlplanev1.Task
+	if strings.HasPrefix(value, "{") {
+		var t controlplanev1.Task
+		if err := json.Unmarshal([]byte(value), &t); err != nil {
+			// Corrupted entry: skip
+			m.logger.Warn("Failed to unmarshal legacy pending task JSON", zap.Error(err))
+			return nil, nil
+		}
+		if t.TaskID == "" {
+			return nil, nil
+		}
+		legacyTask = &t
+		taskID = t.TaskID
+	}
+	if taskID == "" {
+		return nil, nil
 	}
 
 	// Check if cancelled
-	m.mu.RLock()
-	client := m.client
-	m.mu.RUnlock()
-
-	if client != nil {
-		cancelled, err := client.SIsMember(ctx, cancelledKey, task.TaskID).Result()
-		if err == nil && cancelled {
-			return nil, nil // Skip cancelled task
-		}
+	cancelled, err := client.SIsMember(ctx, cancelledKey, taskID).Result()
+	if err == nil && cancelled {
+		return nil, nil
+	}
+	if err != nil && err != redis.Nil {
+		return nil, err
 	}
 
-	return &task, nil
+	// Prefer reading from detail storage for current status semantics.
+	detailKey := fmt.Sprintf(keyTaskDetail, m.keyPrefix, taskID)
+	data, err := client.Get(ctx, detailKey).Result()
+	if err == redis.Nil {
+		// Detail missing: fall back to legacy task if present.
+		if legacyTask != nil {
+			return legacyTask, nil
+		}
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var info TaskInfo
+	if err := json.Unmarshal([]byte(data), &info); err != nil {
+		return nil, err
+	}
+	if info.Task == nil {
+		return nil, nil
+	}
+
+	// Only dispatch tasks in dispatchable states.
+	if !m.helper.IsTaskInfoDispatchable(&info, false) {
+		return nil, nil
+	}
+
+	return info.Task, nil
 }
 
 // GetPendingTasks returns all pending tasks for an agent.
@@ -290,7 +338,7 @@ func (m *RedisTaskManager) GetPendingTasks(ctx context.Context, agentID string) 
 	}
 
 	for _, data := range agentTasks {
-		task, err := m.parseAndValidateTask(ctx, data, cancelledKey)
+		task, err := m.resolvePendingTask(ctx, client, data, cancelledKey)
 		if err == nil && task != nil {
 			tasks = append(tasks, task)
 		}
@@ -303,7 +351,7 @@ func (m *RedisTaskManager) GetPendingTasks(ctx context.Context, agentID string) 
 	}
 
 	for _, data := range globalTasks {
-		task, err := m.parseAndValidateTask(ctx, data, cancelledKey)
+		task, err := m.resolvePendingTask(ctx, client, data, cancelledKey)
 		if err == nil && task != nil {
 			tasks = append(tasks, task)
 		}
@@ -332,7 +380,7 @@ func (m *RedisTaskManager) GetGlobalPendingTasks(ctx context.Context) ([]*contro
 
 	var tasks []*controlplanev1.Task
 	for _, data := range results {
-		task, err := m.parseAndValidateTask(ctx, data, cancelledKey)
+		task, err := m.resolvePendingTask(ctx, client, data, cancelledKey)
 		if err == nil && task != nil {
 			tasks = append(tasks, task)
 		}
@@ -559,15 +607,22 @@ func (m *RedisTaskManager) ReportTaskResult(ctx context.Context, result *control
 		agentID = agentIDBefore
 	}
 
-	nowMillis := m.helper.NowMillis()
-	m.helper.EnsureStartedAtMillis(&info, nowMillis)
+	effects := m.helper.ResultEffects(result.Status)
+	if effects.MarkRunning {
+		nowMillis := m.helper.NowMillis()
+		m.helper.EnsureStartedAtMillis(&info, nowMillis)
+	}
 	updatedInfo, err := json.Marshal(&info)
 	if err != nil {
 		return err
 	}
 
-	effects := m.helper.ResultEffects(result.Status)
-	taskJSON, _ := json.Marshal(info.Task)
+	var taskJSON string
+	if info.Task != nil {
+		if b, err := json.Marshal(info.Task); err == nil {
+			taskJSON = string(b)
+		}
+	}
 
 	pipe := client.TxPipeline()
 	pipe.Set(ctx, resultKey, resultData, m.config.ResultTTL)
@@ -582,13 +637,21 @@ func (m *RedisTaskManager) ReportTaskResult(ctx context.Context, result *control
 	if effects.PublishCompleted {
 		pipe.Publish(ctx, eventKey, result.TaskID)
 	}
-	if effects.RemoveFromPending && len(taskJSON) > 0 {
+	if effects.RemoveFromPending {
 		globalQueueKey := fmt.Sprintf(keyPendingGlobal, m.keyPrefix)
-		pipe.LRem(ctx, globalQueueKey, 0, string(taskJSON))
+		// New format: pending stores task_id
+		pipe.LRem(ctx, globalQueueKey, 0, result.TaskID)
+		// Legacy format cleanup: pending stores Task JSON
+		if taskJSON != "" {
+			pipe.LRem(ctx, globalQueueKey, 0, taskJSON)
+		}
 
 		if agentID != "" {
 			agentQueueKey := fmt.Sprintf(keyPendingAgent, m.keyPrefix, agentID)
-			pipe.LRem(ctx, agentQueueKey, 0, string(taskJSON))
+			pipe.LRem(ctx, agentQueueKey, 0, result.TaskID)
+			if taskJSON != "" {
+				pipe.LRem(ctx, agentQueueKey, 0, taskJSON)
+			}
 		}
 	}
 
@@ -603,11 +666,6 @@ func (m *RedisTaskManager) ReportTaskResult(ctx context.Context, result *control
 			zap.String("agent_id", agentID),
 		)
 		return nil
-	}
-
-	_, err = pipe.Exec(ctx)
-	if err != nil {
-		return err
 	}
 
 	m.logger.Debug("Task result reported",

@@ -91,9 +91,10 @@ func (m *MemoryTaskManager) submitTaskToQueue(_ context.Context, agentMeta *Agen
 		agentID = agentMeta.AgentID
 	}
 
-	// Add to appropriate queue
+	// Add to appropriate queue (store task_id only; other fields are copied for ordering)
+	item := &taskItem{taskID: task.TaskID, priority: task.Priority, createdAtMillis: task.CreatedAtMillis}
 	if agentID == "" {
-		heap.Push(m.globalQueue, &taskItem{task: task})
+		heap.Push(m.globalQueue, item)
 	} else {
 		queue, ok := m.agentQueues[agentID]
 		if !ok {
@@ -101,7 +102,7 @@ func (m *MemoryTaskManager) submitTaskToQueue(_ context.Context, agentMeta *Agen
 			heap.Init(queue)
 			m.agentQueues[agentID] = queue
 		}
-		heap.Push(queue, &taskItem{task: task})
+		heap.Push(queue, item)
 	}
 
 	m.logger.Debug("Task submitted",
@@ -132,31 +133,43 @@ func (m *MemoryTaskManager) FetchTask(ctx context.Context, agentID string, timeo
 		// Try agent-specific queue first
 		if queue, ok := m.agentQueues[agentID]; ok && queue.Len() > 0 {
 			item := heap.Pop(queue).(*taskItem)
-			task := item.task
+			taskID := item.taskID
 
 			// Skip cancelled tasks
-			if m.cancelledTasks[task.TaskID] {
+			if m.cancelledTasks[taskID] {
+				m.mu.Unlock()
+				continue
+			}
+
+			info := m.taskDetails[taskID]
+			if info == nil || info.Task == nil {
 				m.mu.Unlock()
 				continue
 			}
 
 			m.mu.Unlock()
-			return task, nil
+			return info.Task, nil
 		}
 
 		// Try global queue
 		if m.globalQueue.Len() > 0 {
 			item := heap.Pop(m.globalQueue).(*taskItem)
-			task := item.task
+			taskID := item.taskID
 
 			// Skip cancelled tasks
-			if m.cancelledTasks[task.TaskID] {
+			if m.cancelledTasks[taskID] {
+				m.mu.Unlock()
+				continue
+			}
+
+			info := m.taskDetails[taskID]
+			if info == nil || info.Task == nil {
 				m.mu.Unlock()
 				continue
 			}
 
 			m.mu.Unlock()
-			return task, nil
+			return info.Task, nil
 		}
 		m.mu.Unlock()
 
@@ -175,16 +188,20 @@ func (m *MemoryTaskManager) GetPendingTasks(ctx context.Context, agentID string)
 	// Get from agent-specific queue
 	if queue, ok := m.agentQueues[agentID]; ok {
 		for _, item := range *queue {
-			if m.helper.IsTaskInfoDispatchable(m.taskDetails[item.task.TaskID], m.cancelledTasks[item.task.TaskID]) {
-				tasks = append(tasks, item.task)
+			taskID := item.taskID
+			info := m.taskDetails[taskID]
+			if info != nil && info.Task != nil && m.helper.IsTaskInfoDispatchable(info, m.cancelledTasks[taskID]) {
+				tasks = append(tasks, info.Task)
 			}
 		}
 	}
 
 	// Also include global queue tasks
 	for _, item := range *m.globalQueue {
-		if m.helper.IsTaskInfoDispatchable(m.taskDetails[item.task.TaskID], m.cancelledTasks[item.task.TaskID]) {
-			tasks = append(tasks, item.task)
+		taskID := item.taskID
+		info := m.taskDetails[taskID]
+		if info != nil && info.Task != nil && m.helper.IsTaskInfoDispatchable(info, m.cancelledTasks[taskID]) {
+			tasks = append(tasks, info.Task)
 		}
 	}
 
@@ -198,8 +215,10 @@ func (m *MemoryTaskManager) GetGlobalPendingTasks(ctx context.Context) ([]*contr
 
 	var tasks []*controlplanev1.Task
 	for _, item := range *m.globalQueue {
-		if m.helper.IsTaskInfoDispatchable(m.taskDetails[item.task.TaskID], m.cancelledTasks[item.task.TaskID]) {
-			tasks = append(tasks, item.task)
+		taskID := item.taskID
+		info := m.taskDetails[taskID]
+		if info != nil && info.Task != nil && m.helper.IsTaskInfoDispatchable(info, m.cancelledTasks[taskID]) {
+			tasks = append(tasks, info.Task)
 		}
 	}
 
@@ -315,7 +334,7 @@ func (m *MemoryTaskManager) removeTaskFromQueues(taskID string, agentID string) 
 // Must be called with m.mu held (write lock).
 func (m *MemoryTaskManager) removeTaskFromQueue(queue *taskPriorityQueue, taskID string) {
 	for i, item := range *queue {
-		if item.task.TaskID == taskID {
+		if item.taskID == taskID {
 			heap.Remove(queue, i)
 			return
 		}
@@ -434,9 +453,13 @@ func (m *MemoryTaskManager) cleanup() {
 }
 
 // taskItem wraps a task for the priority queue.
+// We intentionally store only task_id in the queue to keep queue payload small and
+// consistent with Redis backend; ordering fields are copied to keep heap ordering stable.
 type taskItem struct {
-	task  *controlplanev1.Task
-	index int
+	taskID          string
+	priority        int32
+	createdAtMillis int64
+	index           int
 }
 
 // taskPriorityQueue implements heap.Interface for task priority.
@@ -446,11 +469,11 @@ func (pq taskPriorityQueue) Len() int { return len(pq) }
 
 func (pq taskPriorityQueue) Less(i, j int) bool {
 	// Higher priority first
-	if pq[i].task.Priority != pq[j].task.Priority {
-		return pq[i].task.Priority > pq[j].task.Priority
+	if pq[i].priority != pq[j].priority {
+		return pq[i].priority > pq[j].priority
 	}
 	// Earlier creation time first (FIFO for same priority)
-	return pq[i].task.CreatedAtMillis < pq[j].task.CreatedAtMillis
+	return pq[i].createdAtMillis < pq[j].createdAtMillis
 }
 
 func (pq taskPriorityQueue) Swap(i, j int) {
