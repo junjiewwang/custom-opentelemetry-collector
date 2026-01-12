@@ -15,7 +15,8 @@ import (
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
 )
 
-func newTestMemoryTaskManager(_ *testing.T) *MemoryTaskManager {
+// newTestTaskManager creates a TaskManager using the new architecture for testing.
+func newTestTaskManager(_ *testing.T) TaskManager {
 	logger := zap.NewNop()
 	config := Config{
 		ResultTTL:      1 * time.Hour,
@@ -23,11 +24,12 @@ func newTestMemoryTaskManager(_ *testing.T) *MemoryTaskManager {
 		QueueSize:      100,
 		DefaultTimeout: 30 * time.Second,
 	}
-	return NewMemoryTaskManager(logger, config)
+	tm, _ := NewTaskManager(logger, config, nil)
+	return tm
 }
 
-func TestMemoryTaskManager_SubmitTask(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_SubmitTask(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -49,8 +51,8 @@ func TestMemoryTaskManager_SubmitTask(t *testing.T) {
 	assert.Equal(t, controlplanev1.TaskStatusPending, info.Status)
 }
 
-func TestMemoryTaskManager_SubmitTask_Validation(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_SubmitTask_Validation(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -80,8 +82,8 @@ func TestMemoryTaskManager_SubmitTask_Validation(t *testing.T) {
 	assert.Contains(t, err.Error(), "already exists")
 }
 
-func TestMemoryTaskManager_SubmitTask_Expired(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_SubmitTask_Expired(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -99,8 +101,8 @@ func TestMemoryTaskManager_SubmitTask_Expired(t *testing.T) {
 	assert.Contains(t, err.Error(), "expired")
 }
 
-func TestMemoryTaskManager_SubmitTaskForAgent(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_SubmitTaskForAgent(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -124,8 +126,8 @@ func TestMemoryTaskManager_SubmitTaskForAgent(t *testing.T) {
 	assert.Equal(t, "svc-1", info.ServiceName)
 }
 
-func TestMemoryTaskManager_FetchTask(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_FetchTask(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -146,8 +148,8 @@ func TestMemoryTaskManager_FetchTask(t *testing.T) {
 	assert.Equal(t, "task-1", fetched.TaskID)
 }
 
-func TestMemoryTaskManager_FetchTask_Priority(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_FetchTask_Priority(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -177,8 +179,8 @@ func TestMemoryTaskManager_FetchTask_Priority(t *testing.T) {
 	assert.Equal(t, "low", fetched.TaskID)
 }
 
-func TestMemoryTaskManager_FetchTask_AgentSpecific(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_FetchTask_AgentSpecific(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -204,8 +206,8 @@ func TestMemoryTaskManager_FetchTask_AgentSpecific(t *testing.T) {
 	assert.Equal(t, "agent-task", fetched.TaskID)
 }
 
-func TestMemoryTaskManager_FetchTask_Timeout(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_FetchTask_Timeout(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -222,8 +224,8 @@ func TestMemoryTaskManager_FetchTask_Timeout(t *testing.T) {
 	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond)
 }
 
-func TestMemoryTaskManager_CancelTask(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_CancelTask(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -250,8 +252,8 @@ func TestMemoryTaskManager_CancelTask(t *testing.T) {
 	assert.Equal(t, controlplanev1.TaskStatusCancelled, info.Status)
 }
 
-func TestMemoryTaskManager_ReportTaskResult(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_ReportTaskResult(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -281,8 +283,8 @@ func TestMemoryTaskManager_ReportTaskResult(t *testing.T) {
 	assert.Equal(t, controlplanev1.TaskStatusSuccess, retrieved.Status)
 }
 
-func TestMemoryTaskManager_ReportTaskResult_Running_RemovesFromQueue(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_ReportTaskResult_Running_RemovesFromQueue(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -318,8 +320,8 @@ func TestMemoryTaskManager_ReportTaskResult_Running_RemovesFromQueue(t *testing.
 	assert.NotZero(t, info.StartedAtMillis)
 }
 
-func TestMemoryTaskManager_ReportTaskResult_Validation(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_ReportTaskResult_Validation(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -331,8 +333,8 @@ func TestMemoryTaskManager_ReportTaskResult_Validation(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot be nil")
 }
 
-func TestMemoryTaskManager_GetTaskStatus_NotFound(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_GetTaskStatus_NotFound(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -344,8 +346,8 @@ func TestMemoryTaskManager_GetTaskStatus_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
-func TestMemoryTaskManager_SetTaskRunning(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_SetTaskRunning(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -370,8 +372,8 @@ func TestMemoryTaskManager_SetTaskRunning(t *testing.T) {
 	assert.NotZero(t, info.StartedAtMillis)
 }
 
-func TestMemoryTaskManager_GetPendingTasks(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_GetPendingTasks(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -393,8 +395,8 @@ func TestMemoryTaskManager_GetPendingTasks(t *testing.T) {
 	assert.Len(t, tasks, 3)
 }
 
-func TestMemoryTaskManager_GetGlobalPendingTasks(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_GetGlobalPendingTasks(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)
@@ -423,8 +425,8 @@ func TestMemoryTaskManager_GetGlobalPendingTasks(t *testing.T) {
 	assert.Len(t, tasks, 2)
 }
 
-func TestMemoryTaskManager_StartClose(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_StartClose(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	// Start
@@ -444,8 +446,8 @@ func TestMemoryTaskManager_StartClose(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestMemoryTaskManager_ConcurrentAccess(t *testing.T) {
-	tm := newTestMemoryTaskManager(t)
+func TestTaskManager_ConcurrentAccess(t *testing.T) {
+	tm := newTestTaskManager(t)
 	ctx := context.Background()
 
 	err := tm.Start(ctx)

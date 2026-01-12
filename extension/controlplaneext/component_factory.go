@@ -117,9 +117,11 @@ func (f *ComponentFactory) CreateConfigManagerWithOnDemand(cfg configmanager.Con
 }
 
 // CreateTaskManager creates the appropriate TaskManager based on config.
+// Uses the new service/store architecture for better separation of concerns.
 func (f *ComponentFactory) CreateTaskManager(cfg taskmanager.Config) (taskmanager.TaskManager, error) {
-	switch cfg.Type {
-	case "redis":
+	var redisClient taskmanager.RedisClient
+
+	if cfg.Type == "redis" {
 		if f.storage == nil {
 			return nil, fmt.Errorf("storage extension required for redis task manager")
 		}
@@ -131,11 +133,10 @@ func (f *ComponentFactory) CreateTaskManager(cfg taskmanager.Config) (taskmanage
 		if err != nil {
 			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
 		}
-		return taskmanager.NewRedisTaskManager(f.logger, cfg, client)
-
-	default:
-		return taskmanager.NewMemoryTaskManager(f.logger, cfg), nil
+		redisClient = client
 	}
+
+	return taskmanager.NewTaskManager(f.logger, cfg, redisClient)
 }
 
 // CreateAgentRegistry creates the appropriate AgentRegistry based on config.

@@ -96,7 +96,7 @@ func (h *TaskHelper) ResultEffects(status controlplanev1.TaskStatus) TaskResultE
 	_ = h // keep method receiver for future extensions
 	if status == controlplanev1.TaskStatusRunning {
 		return TaskResultEffects{
-			MarkRunning:      true,
+			MarkRunning:       true,
 			RemoveFromPending: true,
 		}
 	}
@@ -149,4 +149,52 @@ func (h *TaskHelper) IsTaskInfoDispatchable(info *TaskInfo, isCancelled bool) bo
 		return true
 	}
 	return info.Status.IsDispatchable()
+}
+
+// ValidateResult validates a TaskResult before processing.
+func (h *TaskHelper) ValidateResult(result *controlplanev1.TaskResult) error {
+	if result == nil {
+		return errors.New("result cannot be nil")
+	}
+	return nil
+}
+
+// ExtractAgentID extracts the agent ID from AgentMeta, returning empty string if nil.
+func (h *TaskHelper) ExtractAgentID(agentMeta *AgentMeta) string {
+	if agentMeta != nil {
+		return agentMeta.AgentID
+	}
+	return ""
+}
+
+// ResolveAgentID determines the effective agent ID after a result update.
+// It prefers the new agentID from result, but falls back to the previous one if empty.
+func (h *TaskHelper) ResolveAgentID(agentIDBefore string, agentIDAfter string) string {
+	if agentIDAfter != "" {
+		return agentIDAfter
+	}
+	return agentIDBefore
+}
+
+// MarkTaskInfoRunning updates TaskInfo fields when marking a task as running.
+func (h *TaskHelper) MarkTaskInfoRunning(info *TaskInfo, agentID string, nowMillis int64) {
+	if info == nil {
+		return
+	}
+	info.Status = controlplanev1.TaskStatusRunning
+	info.AgentID = agentID
+	info.StartedAtMillis = nowMillis
+}
+
+// MarkTaskInfoCancelled updates TaskInfo status to cancelled.
+func (h *TaskHelper) MarkTaskInfoCancelled(info *TaskInfo) {
+	if info == nil {
+		return
+	}
+	info.Status = controlplanev1.TaskStatusCancelled
+}
+
+// ErrTaskNotFound returns a standardized "task not found" error.
+func (h *TaskHelper) ErrTaskNotFound(taskID string) error {
+	return errors.New("task not found: " + taskID)
 }
