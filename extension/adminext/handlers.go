@@ -551,23 +551,28 @@ func (e *Extension) createTask(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) getTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 
+	// Priority 1: Get task info from detail storage (authoritative source)
+	// TaskInfo contains the full state machine status and is always up-to-date
+	info, err := e.taskMgr.GetTaskStatus(r.Context(), taskID)
+	if err == nil && info != nil {
+		e.writeJSON(w, http.StatusOK, info)
+		return
+	}
+
+	// Priority 2: Fallback to result storage (for orphan results without detail)
 	result, found, err := e.taskMgr.GetTaskResult(r.Context(), taskID)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
-	if !found {
-		info, err := e.taskMgr.GetTaskStatus(r.Context(), taskID)
-		if err != nil {
-			e.handleError(w, errNotFound("task not found"))
-			return
-		}
-		e.writeJSON(w, http.StatusOK, info)
+	if found {
+		e.writeJSON(w, http.StatusOK, result)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, result)
+	// Task not found in either storage
+	e.handleError(w, errNotFound("task not found"))
 }
 
 func (e *Extension) cancelTask(w http.ResponseWriter, r *http.Request) {

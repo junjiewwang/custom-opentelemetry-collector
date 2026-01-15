@@ -17,11 +17,11 @@ import (
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
 )
 
-// Redis key patterns (must match taskmanager/redis.go)
+// Redis key patterns (must match taskmanager/store/redis.go)
 const (
 	keyPendingGlobal  = "%s:pending:global"        // List: global pending tasks
 	keyPendingAgent   = "%s:pending:%s"            // List: agent-specific pending tasks
-	keyTaskDetail     = "%s:detail:%s"             // Hash: task details
+	keyTaskDetail     = "%s:detail:%s"             // String: task details JSON
 	keyCancelled      = "%s:cancelled"             // Set: cancelled task IDs
 	keyEventSubmitted = "%s:events:task:submitted" // Pub/Sub channel
 )
@@ -238,7 +238,7 @@ func (h *TaskPollHandler) getPendingTasks(ctx context.Context, agentID string) (
 	}
 
 	for _, data := range agentTasks {
-		task, err := h.parseAndValidateTask(ctx, data, cancelledKey)
+		task, err := h.parseAndValidateTask(ctx, data, cancelledKey, agentQueueKey)
 		if err == nil && task != nil {
 			tasks = append(tasks, task)
 		}
@@ -251,7 +251,7 @@ func (h *TaskPollHandler) getPendingTasks(ctx context.Context, agentID string) (
 	}
 
 	for _, data := range globalTasks {
-		task, err := h.parseAndValidateTask(ctx, data, cancelledKey)
+		task, err := h.parseAndValidateTask(ctx, data, cancelledKey, globalQueueKey)
 		if err == nil && task != nil {
 			tasks = append(tasks, task)
 		}
@@ -261,8 +261,9 @@ func (h *TaskPollHandler) getPendingTasks(ctx context.Context, agentID string) (
 }
 
 // parseAndValidateTask parses and validates a task from Redis.
-// Returns nil if the task should be skipped (cancelled, already completed, etc.)
-func (h *TaskPollHandler) parseAndValidateTask(ctx context.Context, data string, cancelledKey string) (*controlplanev1.Task, error) {
+// Returns nil if the task should be skipped (cancelled, already completed, detail not found, etc.)
+// The queueKey parameter is used to remove orphan tasks from the pending queue.
+func (h *TaskPollHandler) parseAndValidateTask(ctx context.Context, data string, cancelledKey string, queueKey string) (*controlplanev1.Task, error) {
 	var task controlplanev1.Task
 	if err := json.Unmarshal([]byte(data), &task); err != nil {
 		return nil, err
@@ -278,18 +279,38 @@ func (h *TaskPollHandler) parseAndValidateTask(ctx context.Context, data string,
 	// Only dispatch tasks that are in dispatchable states (PENDING/RUNNING)
 	detailKey := fmt.Sprintf(keyTaskDetail, h.keyPrefix, task.TaskID)
 	detailData, err := h.redisClient.Get(ctx, detailKey).Result()
-	if err == nil && detailData != "" {
-		var taskInfo struct {
-			Status controlplanev1.TaskStatus `json:"status"`
+
+	// If detail not found, this is an orphan task (detail expired but pending entry remains)
+	// Remove it from pending queue and skip
+	if err == redis.Nil {
+		h.logger.Warn("Orphan task detected: detail not found, removing from pending queue",
+			zap.String("task_id", task.TaskID),
+			zap.String("queue_key", queueKey),
+		)
+		// Remove from pending queue (best effort)
+		if queueKey != "" {
+			_ = h.redisClient.LRem(ctx, queueKey, 0, data).Err()
 		}
-		if err := json.Unmarshal([]byte(detailData), &taskInfo); err == nil {
-			if !taskInfo.Status.IsDispatchable() {
-				h.logger.Debug("Skipping non-dispatchable task",
-					zap.String("task_id", task.TaskID),
-					zap.String("status", taskInfo.Status.String()),
-				)
-				return nil, nil // Skip task with terminal status
-			}
+		return nil, nil // Skip orphan task
+	}
+	if err != nil {
+		h.logger.Warn("Failed to get task detail",
+			zap.String("task_id", task.TaskID),
+			zap.Error(err),
+		)
+		return nil, nil // Skip on error
+	}
+
+	var taskInfo struct {
+		Status controlplanev1.TaskStatus `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(detailData), &taskInfo); err == nil {
+		if !taskInfo.Status.IsDispatchable() {
+			h.logger.Debug("Skipping non-dispatchable task",
+				zap.String("task_id", task.TaskID),
+				zap.String("status", taskInfo.Status.String()),
+			)
+			return nil, nil // Skip task with terminal status
 		}
 	}
 

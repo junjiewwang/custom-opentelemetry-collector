@@ -6,6 +6,7 @@ package taskmanager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"go.uber.org/zap"
@@ -305,8 +306,15 @@ func (s *TaskService) ReportTaskResult(ctx context.Context, result *controlplane
 	nowMillis := s.helper.NowMillis()
 	applyRes, err := s.store.ApplyTaskResult(ctx, result.TaskID, result, nowMillis)
 	if err != nil {
-		// If task not found, still save the result
+		// If task not found, still save the result (best effort).
+		// This typically indicates store/keyPrefix mismatch across components.
 		if errors.Is(err, store.ErrTaskNotFound) {
+			s.logger.Warn("Task result reported but task detail not found; result saved only",
+				zap.String("task_id", result.TaskID),
+				zap.String("status", result.Status.String()),
+				zap.String("agent_id", result.AgentID),
+				zap.String("store", fmt.Sprintf("%T", s.store)),
+			)
 			_ = s.store.SaveResult(ctx, result)
 			_ = s.store.ClearRunning(ctx, result.TaskID)
 			return nil

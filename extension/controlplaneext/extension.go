@@ -69,9 +69,9 @@ type ControlPlane interface {
 
 // Ensure Extension implements the required interfaces.
 var (
-	_ extension.Extension          = (*Extension)(nil)
+	_ extension.Extension             = (*Extension)(nil)
 	_ extensioncapabilities.Dependent = (*Extension)(nil)
-	_ ControlPlane                 = (*Extension)(nil)
+	_ ControlPlane                    = (*Extension)(nil)
 )
 
 // Extension implements the control plane extension.
@@ -405,6 +405,12 @@ func (e *Extension) ValidateToken(ctx context.Context, token string) (*TokenVali
 // GetAgentID returns the agent's unique identifier.
 func (e *Extension) GetAgentID() string {
 	return e.agentID
+}
+
+// GetTaskManagerConfig returns the task manager configuration.
+// Useful for components that need to align with the same Redis/key prefix.
+func (e *Extension) GetTaskManagerConfig() taskmanager.Config {
+	return e.config.TaskManager
 }
 
 // GetTaskManager returns the task manager for direct access.

@@ -373,17 +373,48 @@ func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
 		}
 	}
 
-	// Create and register task handler if Redis is available
-	if storage.HasRedis("default") {
-		redisClient, err := storage.GetDefaultRedis()
-		if err != nil {
-			r.logger.Warn("Failed to get Redis client for task handler", zap.Error(err))
+	// Create and register task handler.
+	// IMPORTANT: must align with controlplane's task_manager Redis config (redis_name/key_prefix)
+	// otherwise agents may poll tasks from one Redis namespace but report results to another.
+	taskCfg := r.controlPlaneExt.GetTaskManagerConfig()
+	if taskCfg.Type == "redis" {
+		redisName := taskCfg.RedisName
+		if redisName == "" {
+			redisName = "default"
+		}
+		keyPrefix := taskCfg.KeyPrefix
+		if keyPrefix == "" {
+			keyPrefix = "otel:tasks"
+		}
+
+		if !storage.HasRedis(redisName) {
+			r.logger.Warn("Redis connection for task long poll not available",
+				zap.String("redis_name", redisName),
+				zap.String("key_prefix", keyPrefix),
+			)
 		} else {
-			taskHandler := longpoll.NewTaskPollHandler(r.logger, redisClient, "otel:tasks")
-			if err := r.longPollManager.RegisterHandler(taskHandler); err != nil {
-				r.logger.Warn("Failed to register task poll handler", zap.Error(err))
+			redisClient, err := storage.GetRedis(redisName)
+			if err != nil {
+				r.logger.Warn("Failed to get Redis client for task handler",
+					zap.String("redis_name", redisName),
+					zap.Error(err),
+				)
+			} else {
+				taskHandler := longpoll.NewTaskPollHandler(r.logger, redisClient, keyPrefix)
+				if err := r.longPollManager.RegisterHandler(taskHandler); err != nil {
+					r.logger.Warn("Failed to register task poll handler", zap.Error(err))
+				} else {
+					r.logger.Info("Task long poll handler initialized",
+						zap.String("redis_name", redisName),
+						zap.String("key_prefix", keyPrefix),
+					)
+				}
 			}
 		}
+	} else {
+		r.logger.Info("Task manager is not redis; skipping task long poll handler",
+			zap.String("task_manager_type", taskCfg.Type),
+		)
 	}
 
 	// Start the manager
