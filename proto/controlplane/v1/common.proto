@@ -1,0 +1,66 @@
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+syntax = "proto3";
+
+package io.opentelemetry.extension.controlplane.proto.v1;
+
+option go_package = "go.opentelemetry.io/collector/custom/proto/controlplane/v1;controlplanev1";
+option java_package = "io.opentelemetry.sdk.extension.controlplane.proto.v1";
+option java_outer_classname = "CommonProtos";
+
+// Agent 身份标识
+message AgentIdentity {
+  // Agent 唯一标识: ${hostname}-${pid}-${startTimeMillis}
+  string agent_id = 1;
+
+  // 主机名
+  string host_name = 2;
+
+  // 进程 ID
+  string process_id = 3;
+
+  // SDK 版本
+  string sdk_version = 4;
+
+  // 服务名称
+  string service_name = 5;
+
+  // 服务命名空间
+  string service_namespace = 6;
+
+  // Agent 启动时间 (毫秒时间戳)
+  int64 start_time_millis = 7;
+
+  // 扩展属性
+  map<string, string> attributes = 8;
+}
+
+// 配置版本信息
+message ConfigVersion {
+  // 配置版本号
+  string version = 1;
+
+  // 配置时间戳 (毫秒时间戳)
+  int64 timestamp_millis = 2;
+
+  // ETag (用于 HTTP 缓存)
+  string etag = 3;
+}
+
+// 通用响应状态
+message ResponseStatus {
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+    CODE_OK = 1;
+    CODE_ERROR = 2;
+    CODE_NOT_FOUND = 3;
+    CODE_INVALID_ARGUMENT = 4;
+    CODE_UNAVAILABLE = 5;
+  }
+
+  Code code = 1;
+  string message = 2;
+}

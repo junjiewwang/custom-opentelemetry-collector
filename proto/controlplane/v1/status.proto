@@ -1,98 +1,169 @@
-// Copyright The OpenTelemetry Authors
-// SPDX-License-Identifier: Apache-2.0
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 syntax = "proto3";
 
-package controlplane.v1;
+package io.opentelemetry.extension.controlplane.proto.v1;
 
 option go_package = "go.opentelemetry.io/collector/custom/proto/controlplane/v1;controlplanev1";
+option java_package = "io.opentelemetry.sdk.extension.controlplane.proto.v1";
+option java_outer_classname = "StatusProtos";
 
-import "custom/proto/controlplane/v1/task.proto";
+import "controlplane/v1/common.proto";
+import "controlplane/v1/config.proto";
+import "controlplane/v1/task.proto";
 
-// AgentStatus represents the current state of an agent.
-message AgentStatus {
-    // Unique identifier for this agent.
-    string agent_id = 1;
-    
-    // Status report timestamp in Unix nanoseconds.
-    int64 timestamp_unix_nano = 2;
-    
-    // Current health status.
-    HealthStatus health = 3;
-    
-    // Recently completed tasks.
-    repeated TaskResult completed_tasks = 4;
-    
-    // Agent metrics (key-value pairs).
-    map<string, string> metrics = 5;
-}
-
-// HealthStatus describes the agent's health.
-message HealthStatus {
-    // Overall health state.
-    HealthState state = 1;
-    
-    // Success rate (0.0 to 1.0).
-    double success_rate = 2;
-    
-    // Total successful operations.
-    int64 success_count = 3;
-    
-    // Total failed operations.
-    int64 failure_count = 4;
-    
-    // Currently applied configuration version.
-    string current_config_version = 5;
-}
-
-// HealthState enumerates possible health states.
-enum HealthState {
-    HEALTH_STATE_UNSPECIFIED = 0;
-    HEALTH_STATE_HEALTHY = 1;
-    HEALTH_STATE_DEGRADED = 2;
-    HEALTH_STATE_UNHEALTHY = 3;
-}
-
-// StatusRequest is sent to report agent status.
+// 状态上报请求
 message StatusRequest {
-    AgentStatus status = 1;
+  // Agent 身份标识
+  AgentIdentity agent_identity = 1;
+
+  // Agent ID 字符串（与 DTO 兼容，优先使用此字段）
+  string agent_id = 7;
+
+  // Agent 状态
+  AgentStatus agent_status = 2;
+
+  // JVM 指标
+  JvmMetrics jvm_metrics = 3;
+
+  // 任务执行结果
+  repeated TaskResult task_results = 4;
+
+  // 配置确认
+  ConfigAcknowledgement config_ack = 5;
+
+  // 上报时间 (毫秒时间戳)
+  int64 timestamp_millis = 6;
+
+  // 状态数据（JSON 字节数据，与 DTO 兼容）
+  bytes status_data = 8;
 }
 
-// StatusResponse is returned after status report.
+// 状态上报响应
 message StatusResponse {
-    bool received = 1;
-    string message = 2;
-    
-    // Optional: pending tasks for this agent.
-    repeated Task pending_tasks = 3;
+  // 响应状态
+  ResponseStatus status = 1;
+
+  // 服务端时间 (毫秒时间戳)
+  int64 server_time_millis = 2;
+
+  // 下次上报建议间隔 (毫秒)
+  int64 suggested_report_interval_millis = 3;
+
+  // 已确认接收的任务结果 ID 列表
+  repeated string acknowledged_task_ids = 4;
+
+  // 是否成功（与 DTO 兼容）
+  bool success = 5;
+
+  // 错误信息（与 DTO 兼容）
+  string error_message = 6;
 }
 
-// UploadChunkRequest is sent to upload large data in chunks.
-message UploadChunkRequest {
-    // Task ID this chunk belongs to.
-    string task_id = 1;
-    
-    // Chunk sequence number (0-based).
-    int32 chunk_index = 2;
-    
-    // Total number of chunks.
-    int32 total_chunks = 3;
-    
-    // Chunk data.
-    bytes data = 4;
-    
-    // Checksum of this chunk (optional).
-    string checksum = 5;
+// Agent 状态
+message AgentStatus {
+  // 运行状态
+  enum RunningState {
+    RUNNING_STATE_UNSPECIFIED = 0;
+    RUNNING_STATE_STARTING = 1;
+    RUNNING_STATE_RUNNING = 2;
+    RUNNING_STATE_STOPPING = 3;
+    RUNNING_STATE_STOPPED = 4;
+  }
+
+  RunningState state = 1;
+
+  // OTLP 导出状态
+  OtlpExportStatus otlp_status = 2;
+
+  // 控制平面连接状态
+  ControlPlaneStatus control_plane_status = 3;
+
+  // 当前配置版本
+  string current_config_version = 4;
+
+  // Agent 运行时长 (毫秒)
+  int64 uptime_millis = 5;
 }
 
-// UploadChunkResponse is returned after chunk upload.
-message UploadChunkResponse {
-    bool success = 1;
-    string message = 2;
-    
-    // Number of chunks received so far.
-    int32 chunks_received = 3;
-    
-    // Whether all chunks have been received.
-    bool complete = 4;
+// OTLP 导出状态
+message OtlpExportStatus {
+  // 健康状态
+  enum HealthState {
+    HEALTH_STATE_UNSPECIFIED = 0;
+    HEALTH_STATE_UNKNOWN = 1;
+    HEALTH_STATE_HEALTHY = 2;
+    HEALTH_STATE_DEGRADED = 3;
+    HEALTH_STATE_UNHEALTHY = 4;
+  }
+
+  HealthState state = 1;
+
+  // 最后一次成功导出时间 (毫秒时间戳)
+  int64 last_success_time_millis = 2;
+
+  // 最后一次失败时间 (毫秒时间戳)
+  int64 last_failure_time_millis = 3;
+
+  // 成功导出计数
+  int64 success_count = 4;
+
+  // 失败导出计数
+  int64 failure_count = 5;
+
+  // 最后错误信息
+  string last_error_message = 6;
+}
+
+// 控制平面连接状态
+message ControlPlaneStatus {
+  // 连接状态
+  enum ConnectionState {
+    CONNECTION_STATE_UNSPECIFIED = 0;
+    CONNECTION_STATE_CONNECTED = 1;
+    CONNECTION_STATE_CONNECTING = 2;
+    CONNECTION_STATE_DISCONNECTED = 3;
+    CONNECTION_STATE_WAITING_FOR_OTLP = 4;  // 等待 OTLP 恢复
+  }
+
+  ConnectionState state = 1;
+
+  // 最后一次连接时间 (毫秒时间戳)
+  int64 last_connected_time_millis = 2;
+
+  // 重连次数
+  int32 reconnect_count = 3;
+}
+
+// JVM 指标
+message JvmMetrics {
+  // 堆内存使用 (字节)
+  int64 heap_memory_used = 1;
+
+  // 堆内存最大 (字节)
+  int64 heap_memory_max = 2;
+
+  // 非堆内存使用 (字节)
+  int64 non_heap_memory_used = 3;
+
+  // 线程数
+  int32 thread_count = 4;
+
+  // 守护线程数
+  int32 daemon_thread_count = 5;
+
+  // GC 次数
+  int64 gc_count = 6;
+
+  // GC 耗时 (毫秒)
+  int64 gc_time_millis = 7;
+
+  // CPU 使用率 (0.0 ~ 1.0)
+  double cpu_usage = 8;
+
+  // 系统负载
+  double system_load_average = 9;
 }

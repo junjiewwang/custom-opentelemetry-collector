@@ -24,6 +24,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver/longpoll"
 )
 
@@ -238,6 +239,13 @@ func (r *agentGatewayReceiver) startGRPCServer(ctx context.Context, host compone
 			consumer: r.logsConsumer,
 			obsrep:   r.obsrepGRPC,
 		})
+	}
+
+	// Register ControlPlane gRPC service (shares the same gRPC port with OTLP).
+	if r.config.ControlPlane.Enabled && r.controlPlane != nil {
+		svc := newControlPlaneService(r.logger, r.controlPlane, r.longPollManager)
+		controlplanev1.RegisterControlPlaneServiceServer(r.serverGRPC, newControlPlaneGRPCServer(r, svc))
+		r.logger.Info("Registered control plane gRPC service")
 	}
 
 	r.logger.Info("Starting gRPC server", zap.String("endpoint", r.config.GRPC.NetAddr.Endpoint))

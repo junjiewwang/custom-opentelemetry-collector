@@ -6,7 +6,7 @@ package taskmanager
 import (
 	"fmt"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // StateTransitionResult describes the outcome of a state transition validation.

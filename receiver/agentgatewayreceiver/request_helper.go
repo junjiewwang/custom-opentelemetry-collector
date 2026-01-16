@@ -4,30 +4,67 @@
 package agentgatewayreceiver
 
 import (
-	"encoding/json"
+	"compress/gzip"
+	"errors"
+	"io"
 	"net/http"
+	"strings"
+
+	"google.golang.org/protobuf/proto"
 )
 
-// decodeJSON decodes JSON request body into the given type.
-func decodeJSON[T any](r *http.Request) (*T, error) {
-	var v T
-	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
-		return nil, err
+const (
+	contentTypeProtobuf = "application/x-protobuf"
+	maxProtobufBodySize = 64 << 20 // 64MiB
+)
+
+func wantsGzip(r *http.Request) bool {
+	// Typical value: "gzip" or "gzip, deflate, br"
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip")
+}
+
+func isProtobufContentType(ct string) bool {
+	if ct == "" {
+		return false
 	}
-	return &v, nil
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, contentTypeProtobuf)
 }
 
-// writeJSON writes a JSON response.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+func decodeProtobuf(r *http.Request, msg proto.Message) error {
+	if !isProtobufContentType(r.Header.Get("Content-Type")) {
+		return errors.New("invalid content-type: expected application/x-protobuf")
+	}
+
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxProtobufBodySize))
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return errors.New("empty request body")
+	}
+	return proto.Unmarshal(data, msg)
 }
 
-// writeError writes an error response.
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]any{
-		"error":   http.StatusText(status),
-		"message": message,
-	})
+func writeProtobuf(w http.ResponseWriter, r *http.Request, httpStatus int, msg proto.Message) {
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		http.Error(w, "failed to marshal response", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", contentTypeProtobuf)
+
+	if wantsGzip(r) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.WriteHeader(httpStatus)
+		gz := gzip.NewWriter(w)
+		defer func() { _ = gz.Close() }()
+		_, _ = gz.Write(data)
+		return
+	}
+
+	w.WriteHeader(httpStatus)
+	_, _ = w.Write(data)
 }

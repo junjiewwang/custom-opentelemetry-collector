@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager/store"
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // TaskService provides high-level task management operations.

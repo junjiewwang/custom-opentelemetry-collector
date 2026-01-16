@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 func TestStatusHelper_InitializeStatus(t *testing.T) {

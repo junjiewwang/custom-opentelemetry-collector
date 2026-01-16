@@ -4,580 +4,95 @@
 package agentgatewayreceiver
 
 import (
-	"encoding/json"
 	"net/http"
 
-	"go.uber.org/zap"
-
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
-	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver/longpoll"
+	"go.uber.org/zap"
 )
 
-// controlPlaneHandler handles control plane HTTP requests.
+// controlPlaneHandler handles control plane HTTP requests (Protobuf binary only).
+//
+// Wire format:
+// - Request:  application/x-protobuf (bytes)
+// - Response: application/x-protobuf (bytes), optional gzip
+//
+// Error model:
+// - Business errors are returned as 200 with ResponseStatus in the protobuf payload.
+// - Auth/transport errors use HTTP status codes (e.g. 401/429/503).
+//
+// This is aligned with the Java agent Transport (HttpTransport/GrpcTransport).
+
 type controlPlaneHandler struct {
-	logger          *zap.Logger
-	controlPlane    controlplaneext.ControlPlane
-	longPollManager *longpoll.Manager
+	logger *zap.Logger
+	svc    *controlPlaneService
 }
 
-// newControlPlaneHandler creates a new control plane handler.
-func newControlPlaneHandler(logger *zap.Logger, controlPlane controlplaneext.ControlPlane, longPollManager *longpoll.Manager) *controlPlaneHandler {
-	return &controlPlaneHandler{
-		logger:          logger,
-		controlPlane:    controlPlane,
-		longPollManager: longPollManager,
+func newControlPlaneHandler(logger *zap.Logger, svc *controlPlaneService) *controlPlaneHandler {
+	return &controlPlaneHandler{logger: logger, svc: svc}
+}
+
+func (h *controlPlaneHandler) unifiedPoll(w http.ResponseWriter, r *http.Request) {
+	req := &controlplanev1.UnifiedPollRequest{}
+	if err := decodeProtobuf(r, req); err != nil {
+		h.logger.Debug("Invalid UnifiedPoll request", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
+	resp := h.svc.UnifiedPoll(r.Context(), req)
+	writeProtobuf(w, r, http.StatusOK, resp)
 }
 
-// ============================================================================
-// Configuration Management
-// ============================================================================
-
-// getConfig handles GET /v1/control/config - fetch current config.
 func (h *controlPlaneHandler) getConfig(w http.ResponseWriter, r *http.Request) {
-	config := h.controlPlane.GetCurrentConfig()
-	writeJSON(w, http.StatusOK, &controlplanev1.ConfigResponse{
-		Success: true,
-		Message: "current configuration",
-		Config:  config,
-	})
+	req := &controlplanev1.ConfigRequest{}
+	if err := decodeProtobuf(r, req); err != nil {
+		h.logger.Debug("Invalid GetConfig request", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	resp := h.svc.GetConfig(r.Context(), req)
+	writeProtobuf(w, r, http.StatusOK, resp)
 }
 
-// postConfig handles POST /v1/control/config - update config or fetch config.
-func (h *controlPlaneHandler) postConfig(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJSON[controlplanev1.ConfigRequest](r)
-	if err != nil {
-		// Handle empty body as config fetch request
-		config := h.controlPlane.GetCurrentConfig()
-		writeJSON(w, http.StatusOK, &controlplanev1.ConfigResponse{
-			Success: true,
-			Message: "current configuration",
-			Config:  config,
-		})
-		return
-	}
-
-	// If no config provided, treat as fetch request
-	if req.Config == nil {
-		config := h.controlPlane.GetCurrentConfig()
-		writeJSON(w, http.StatusOK, &controlplanev1.ConfigResponse{
-			Success: true,
-			Message: "current configuration",
-			Config:  config,
-		})
-		return
-	}
-
-	// Update config
-	if err := h.controlPlane.UpdateConfig(r.Context(), req.Config); err != nil {
-		h.logger.Error("Failed to update config", zap.Error(err))
-		writeJSON(w, http.StatusOK, &controlplanev1.ConfigResponse{
-			Success: false,
-			Message: err.Error(),
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, &controlplanev1.ConfigResponse{
-		Success:        true,
-		Message:        "configuration updated",
-		AppliedVersion: req.Config.ConfigVersion,
-	})
-}
-
-// ============================================================================
-// Task Management
-// ============================================================================
-
-// getTasks handles GET /v1/control/tasks - retrieve pending tasks for the agent.
 func (h *controlPlaneHandler) getTasks(w http.ResponseWriter, r *http.Request) {
-	// Get agent ID from context or query
-	agentID := GetAgentIDFromContext(r.Context())
-	if agentID == "" {
-		agentID = r.URL.Query().Get("agent_id")
-	}
-
-	// If task_id is provided, return specific task result
-	taskID := r.URL.Query().Get("task_id")
-	if taskID != "" {
-		result, found := h.controlPlane.GetTaskResult(taskID)
-		if !found {
-			writeJSON(w, http.StatusOK, &controlplanev1.TaskResultResponse{
-				Found: false,
-			})
-			return
-		}
-		writeJSON(w, http.StatusOK, &controlplanev1.TaskResultResponse{
-			Found:  true,
-			Result: result,
-		})
+	req := &controlplanev1.TaskRequest{}
+	if err := decodeProtobuf(r, req); err != nil {
+		h.logger.Debug("Invalid GetTasks request", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// Return pending tasks for the agent
-	var tasks []*controlplanev1.Task
-	var err error
-
-	if agentID != "" {
-		// Get tasks for specific agent (includes both agent-specific and global tasks)
-		tasks, err = h.controlPlane.GetPendingTasksForAgent(r.Context(), agentID)
-		if err != nil {
-			h.logger.Error("Failed to get pending tasks", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	} else {
-		// No agent ID - return global pending tasks only
-		tasks = h.controlPlane.GetPendingTasks()
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"pending_tasks": tasks,
-	})
+	resp := h.svc.GetTasks(r.Context(), req)
+	writeProtobuf(w, r, http.StatusOK, resp)
 }
 
-// reportTaskResult handles POST /v1/control/tasks/result - agent reports task execution result.
+func (h *controlPlaneHandler) reportStatus(w http.ResponseWriter, r *http.Request) {
+	req := &controlplanev1.StatusRequest{}
+	if err := decodeProtobuf(r, req); err != nil {
+		h.logger.Debug("Invalid ReportStatus request", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	resp := h.svc.ReportStatus(r.Context(), req)
+	writeProtobuf(w, r, http.StatusOK, resp)
+}
+
 func (h *controlPlaneHandler) reportTaskResult(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJSON[controlplanev1.TaskResult](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+	req := &controlplanev1.TaskResultRequest{}
+	if err := decodeProtobuf(r, req); err != nil {
+		h.logger.Debug("Invalid ReportTaskResult request", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	if req.TaskID == "" {
-		writeError(w, http.StatusBadRequest, "task_id is required")
-		return
-	}
-
-	// Report the result through control plane
-	// Note: This requires adding ReportTaskResult to ControlPlane interface
-	if err := h.controlPlane.ReportTaskResult(r.Context(), req); err != nil {
-		h.logger.Error("Failed to report task result", zap.Error(err))
-		writeJSON(w, http.StatusOK, map[string]any{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"success": true,
-		"message": "task result reported",
-		"task_id": req.TaskID,
-	})
+	resp := h.svc.ReportTaskResult(r.Context(), req)
+	writeProtobuf(w, r, http.StatusOK, resp)
 }
 
-// ============================================================================
-// Status Management
-// ============================================================================
-
-// getStatus handles GET /v1/control/status - retrieve current status.
-func (h *controlPlaneHandler) getStatus(w http.ResponseWriter, r *http.Request) {
-	status := h.controlPlane.GetStatus()
-	writeJSON(w, http.StatusOK, status)
-}
-
-// postStatus handles POST /v1/control/status - report status and get pending tasks.
-func (h *controlPlaneHandler) postStatus(w http.ResponseWriter, r *http.Request) {
-	// Extract AppID from context (set by auth middleware)
-	appID := GetAppIDFromContext(r.Context())
-
-	// Read body for parsing
-	req, err := decodeJSON[json.RawMessage](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+func (h *controlPlaneHandler) uploadChunkedResult(w http.ResponseWriter, r *http.Request) {
+	req := &controlplanev1.ChunkedTaskResult{}
+	if err := decodeProtobuf(r, req); err != nil {
+		h.logger.Debug("Invalid UploadChunkedResult request", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// Parse status request
-	agentInfo, health, parseErr := h.parseStatusRequest(*req, appID)
-	if parseErr != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+parseErr.Error())
-		return
-	}
-
-	// Update health if provided
-	if health != nil {
-		h.controlPlane.UpdateHealth(health)
-	}
-
-	// If agent_id is provided, auto-register or update heartbeat (upsert semantics)
-	if agentInfo != nil && agentInfo.AgentID != "" {
-		if err := h.controlPlane.RegisterOrHeartbeatAgent(r.Context(), agentInfo); err != nil {
-			h.logger.Warn("Failed to register/heartbeat agent",
-				zap.String("agent_id", agentInfo.AgentID),
-				zap.Error(err),
-			)
-		}
-	}
-
-	// Return pending tasks
-	pendingTasks := h.controlPlane.GetPendingTasks()
-	writeJSON(w, http.StatusOK, &controlplanev1.StatusResponse{
-		Received:     true,
-		Message:      "status received",
-		PendingTasks: pendingTasks,
-	})
-}
-
-// ============================================================================
-// Agent Management
-// ============================================================================
-
-// registerAgent handles POST /v1/control/register.
-func (h *controlPlaneHandler) registerAgent(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJSON[agentregistry.AgentInfo](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
-	}
-
-	// Set AppID from context if not provided
-	if req.AppID == "" {
-		req.AppID = GetAppIDFromContext(r.Context())
-	}
-
-	if err := h.controlPlane.RegisterAgent(r.Context(), req); err != nil {
-		h.logger.Error("Failed to register agent", zap.Error(err))
-		writeJSON(w, http.StatusOK, map[string]any{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"success":  true,
-		"agent_id": req.AgentID,
-		"message":  "agent registered",
-	})
-}
-
-// unregisterAgent handles POST /v1/control/unregister.
-func (h *controlPlaneHandler) unregisterAgent(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJSON[agentUnregisterRequest](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
-	}
-
-	if req.AgentID == "" {
-		writeError(w, http.StatusBadRequest, "agent_id is required")
-		return
-	}
-
-	if err := h.controlPlane.UnregisterAgent(r.Context(), req.AgentID); err != nil {
-		h.logger.Error("Failed to unregister agent", zap.Error(err))
-		writeJSON(w, http.StatusOK, map[string]any{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"success":  true,
-		"agent_id": req.AgentID,
-		"message":  "agent unregistered",
-	})
-}
-
-type agentUnregisterRequest struct {
-	AgentID string `json:"agent_id"`
-}
-
-// listAgents handles GET /v1/control/agents.
-func (h *controlPlaneHandler) listAgents(w http.ResponseWriter, r *http.Request) {
-	// Check for agent_id in query
-	agentID := r.URL.Query().Get("agent_id")
-	if agentID != "" {
-		agent, err := h.controlPlane.GetAgent(r.Context(), agentID)
-		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, agent)
-		return
-	}
-
-	// Get all online agents
-	agents, err := h.controlPlane.GetOnlineAgents(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"agents": agents,
-		"total":  len(agents),
-	})
-}
-
-// getAgentStats handles GET /v1/control/agents/stats.
-func (h *controlPlaneHandler) getAgentStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.controlPlane.GetAgentStats(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, stats)
-}
-
-// ============================================================================
-// Chunk Upload
-// ============================================================================
-
-// uploadChunk handles POST /v1/control/upload-chunk.
-func (h *controlPlaneHandler) uploadChunk(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeJSON[controlplanev1.UploadChunkRequest](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
-	}
-
-	resp, err := h.controlPlane.UploadChunk(r.Context(), req)
-	if err != nil {
-		h.logger.Error("Failed to handle chunk upload", zap.Error(err))
-		writeJSON(w, http.StatusOK, &controlplanev1.UploadChunkResponse{
-			Success: false,
-			Message: err.Error(),
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// ============================================================================
-// Long Polling
-// ============================================================================
-
-// poll handles POST /v1/control/poll - unified long polling endpoint.
-func (h *controlPlaneHandler) poll(w http.ResponseWriter, r *http.Request) {
-	if h.longPollManager == nil {
-		writeError(w, http.StatusServiceUnavailable, "long poll not available")
-		return
-	}
-
-	req, err := decodeJSON[longpoll.PollRequest](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
-		return
-	}
-
-	// Set token from context if not provided
-	if req.Token == "" {
-		req.Token = GetAppIDFromContext(r.Context())
-	}
-
-	// Set agent_id from context/header if not provided in request body
-	if req.AgentID == "" {
-		req.AgentID = GetAgentIDFromContext(r.Context())
-	}
-	if req.AgentID == "" {
-		req.AgentID = r.Header.Get("X-Agent-ID")
-	}
-
-	h.logger.Debug("Long poll request received",
-		zap.String("agent_id", req.AgentID),
-		zap.String("token", req.Token),
-		zap.Int64("timeout_millis", req.TimeoutMillis),
-	)
-
-	// Execute long polling
-	response, err := h.longPollManager.Poll(r.Context(), req)
-	if err != nil {
-		h.logger.Error("Long poll failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, response)
-}
-
-// pollConfig handles POST /v1/control/poll/config - config-only long polling.
-func (h *controlPlaneHandler) pollConfig(w http.ResponseWriter, r *http.Request) {
-	if h.longPollManager == nil {
-		writeError(w, http.StatusServiceUnavailable, "long poll not available")
-		return
-	}
-
-	req, err := decodeJSON[longpoll.PollRequest](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
-		return
-	}
-
-	if req.Token == "" {
-		req.Token = GetAppIDFromContext(r.Context())
-	}
-
-	// Set agent_id from context/header if not provided
-	if req.AgentID == "" {
-		req.AgentID = GetAgentIDFromContext(r.Context())
-	}
-	if req.AgentID == "" {
-		req.AgentID = r.Header.Get("X-Agent-ID")
-	}
-
-	response, err := h.longPollManager.PollSingle(r.Context(), req, longpoll.LongPollTypeConfig)
-	if err != nil {
-		h.logger.Error("Config poll failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, response)
-}
-
-// pollTasks handles POST /v1/control/poll/tasks - task-only long polling.
-func (h *controlPlaneHandler) pollTasks(w http.ResponseWriter, r *http.Request) {
-	if h.longPollManager == nil {
-		writeError(w, http.StatusServiceUnavailable, "long poll not available")
-		return
-	}
-
-	req, err := decodeJSON[longpoll.PollRequest](r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
-		return
-	}
-
-	if req.Token == "" {
-		req.Token = GetAppIDFromContext(r.Context())
-	}
-
-	// Set agent_id from context/header if not provided
-	if req.AgentID == "" {
-		req.AgentID = GetAgentIDFromContext(r.Context())
-	}
-	if req.AgentID == "" {
-		req.AgentID = r.Header.Get("X-Agent-ID")
-	}
-
-	response, err := h.longPollManager.PollSingle(r.Context(), req, longpoll.LongPollTypeTask)
-	if err != nil {
-		h.logger.Error("Task poll failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, response)
-}
-
-// ============================================================================
-// Helper Methods
-// ============================================================================
-
-// parseStatusRequest parses status request body, supporting both nested and flat JSON formats.
-func (h *controlPlaneHandler) parseStatusRequest(body json.RawMessage, appID string) (*agentregistry.AgentInfo, *controlplanev1.HealthStatus, error) {
-	// First try nested format (standard format)
-	var nestedReq controlplanev1.StatusRequest
-	if err := json.Unmarshal(body, &nestedReq); err == nil && nestedReq.Status != nil && nestedReq.Status.AgentID != "" {
-		agentInfo := &agentregistry.AgentInfo{
-			AgentID:  nestedReq.Status.AgentID,
-			AppID:    appID,
-			Hostname: nestedReq.Status.Hostname,
-			IP:       nestedReq.Status.IP,
-			Version:  nestedReq.Status.Version,
-			Status: &agentregistry.AgentStatus{
-				Health: nestedReq.Status.Health,
-			},
-		}
-		if nestedReq.Status.Labels != nil {
-			agentInfo.Labels = nestedReq.Status.Labels
-			if svcName, ok := nestedReq.Status.Labels["service.name"]; ok {
-				agentInfo.ServiceName = svcName
-			}
-		}
-		if nestedReq.Status.Health != nil && agentInfo.Status != nil {
-			agentInfo.Status.ConfigVersion = nestedReq.Status.Health.CurrentConfigVersion
-		}
-		return agentInfo, nestedReq.Status.Health, nil
-	}
-
-	// Try flat format (Java agent format)
-	var flatReq javaAgentStatusRequest
-	if err := json.Unmarshal(body, &flatReq); err != nil {
-		return nil, nil, err
-	}
-
-	if flatReq.AgentID == "" {
-		return nil, nil, nil
-	}
-
-	agentInfo := &agentregistry.AgentInfo{
-		AgentID:     flatReq.AgentID,
-		AppID:       appID,
-		ServiceName: flatReq.ServiceName,
-		Hostname:    flatReq.Hostname,
-		IP:          flatReq.IP,
-		Version:     flatReq.SDKVersion,
-		StartTime:   flatReq.StartupTimestamp,
-		Labels: map[string]string{
-			"service.name":      flatReq.ServiceName,
-			"service.namespace": flatReq.ServiceNamespace,
-			"process.pid":       flatReq.ProcessID,
-		},
-	}
-
-	health := &controlplanev1.HealthStatus{}
-	switch flatReq.RunningState {
-	case "RUNNING":
-		health.State = controlplanev1.HealthStateHealthy
-	case "STARTING":
-		health.State = controlplanev1.HealthStateDegraded
-	default:
-		health.State = controlplanev1.HealthStateUnhealthy
-	}
-
-	if flatReq.SpanExportStats != nil {
-		health.SuccessRate = flatReq.SpanExportStats.SuccessRate
-		health.SuccessCount = flatReq.SpanExportStats.SuccessCount
-		health.FailureCount = flatReq.SpanExportStats.FailureCount
-	}
-
-	agentInfo.Status = &agentregistry.AgentStatus{
-		Health: health,
-	}
-
-	h.logger.Debug("Parsed Java agent status request",
-		zap.String("agent_id", agentInfo.AgentID),
-		zap.String("app_id", agentInfo.AppID),
-		zap.String("service_name", agentInfo.ServiceName),
-		zap.String("hostname", agentInfo.Hostname),
-	)
-
-	return agentInfo, health, nil
-}
-
-// javaAgentStatusRequest represents the flat status format sent by Java agent.
-type javaAgentStatusRequest struct {
-	AgentID          string           `json:"agentId"`
-	Hostname         string           `json:"hostname"`
-	ProcessID        string           `json:"processId"`
-	IP               string           `json:"ip"`
-	SDKVersion       string           `json:"sdkVersion"`
-	ServiceNamespace string           `json:"serviceNamespace"`
-	ServiceName      string           `json:"serviceName"`
-	StartupTimestamp int64            `json:"startupTimestamp"`
-	RunningState     string           `json:"runningState"`
-	UptimeMs         int64            `json:"uptimeMs"`
-	Timestamp        int64            `json:"timestamp"`
-	ConnectionState  string           `json:"connectionState"`
-	ConfigPollCount  int64            `json:"configPollCount"`
-	TaskPollCount    int64            `json:"taskPollCount"`
-	StatusReportCnt  int64            `json:"statusReportCount"`
-	OTLPHealthState  string           `json:"otlpHealthState"`
-	SpanExportStats  *spanExportStats `json:"spanExportStats"`
-}
-
-// spanExportStats represents span export statistics from Java agent.
-type spanExportStats struct {
-	TotalExports int64   `json:"totalExports"`
-	SuccessRate  float64 `json:"successRate"`
-	SuccessCount int64   `json:"successCount"`
-	FailureCount int64   `json:"failureCount"`
+	resp := h.svc.UploadChunkedResult(r.Context(), req)
+	writeProtobuf(w, r, http.StatusOK, resp)
 }

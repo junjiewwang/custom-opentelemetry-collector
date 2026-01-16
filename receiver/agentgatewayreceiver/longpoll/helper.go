@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // ComputeEtag computes an ETag for the given config.

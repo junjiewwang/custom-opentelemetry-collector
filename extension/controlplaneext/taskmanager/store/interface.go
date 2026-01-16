@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // QueueGlobal is the queue ID for the global pending queue.

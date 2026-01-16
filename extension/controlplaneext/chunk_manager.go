@@ -5,7 +5,7 @@ package controlplaneext
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"sync"
@@ -13,7 +13,7 @@ import (
 
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // ChunkManager manages chunked uploads.
@@ -59,17 +59,18 @@ func (m *ChunkManager) HandleChunk(ctx context.Context, req *controlplanev1.Uplo
 		return nil, errors.New("chunk_index out of range")
 	}
 
-	// Verify checksum if provided
-	if req.Checksum != "" {
-		hash := sha256.Sum256(req.Data)
-		actualChecksum := hex.EncodeToString(hash[:])
-		if actualChecksum != req.Checksum {
-			return &controlplanev1.UploadChunkResponse{
-				Success: false,
-				Message: "checksum mismatch",
-			}, nil
+		// Verify checksum if provided (MD5, aligned with probe contract)
+		if req.Checksum != "" {
+			hash := md5.Sum(req.Data)
+			actualChecksum := hex.EncodeToString(hash[:])
+			if actualChecksum != req.Checksum {
+				return &controlplanev1.UploadChunkResponse{
+					Success: false,
+					Message: "checksum mismatch",
+				}, nil
+			}
 		}
-	}
+
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

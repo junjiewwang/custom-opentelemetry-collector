@@ -93,33 +93,20 @@ func (r *agentGatewayReceiver) registerOTLPRoutes(router chi.Router) {
 // registerControlPlaneRoutes registers control plane API endpoints.
 func (r *agentGatewayReceiver) registerControlPlaneRoutes(router chi.Router) {
 	prefix := r.config.GetControlPlanePathPrefix()
-	handler := newControlPlaneHandler(r.logger, r.controlPlane, r.longPollManager)
+
+	// NOTE: Control plane HTTP endpoints use Protobuf binary (application/x-protobuf) only.
+	// This is aligned with the Java agent Transport (HttpTransport/GrpcTransport).
+	svc := newControlPlaneService(r.logger, r.controlPlane, r.longPollManager)
+	handler := newControlPlaneHandler(r.logger, svc)
 
 	router.Route(prefix, func(cr chi.Router) {
-		// Configuration management (agent pulls config)
-		cr.Get("/config", handler.getConfig)
-		cr.Post("/config", handler.postConfig)
-
-		// Task management (agent pulls tasks, reports results)
-		// Note: Task creation is done via adminext, not here
-		cr.Get("/tasks", handler.getTasks)
-		cr.Post("/tasks/result", handler.reportTaskResult) // Agent reports task result
-
-		// Status and heartbeat (agent reports status)
-		cr.Get("/status", handler.getStatus)
-		cr.Post("/status", handler.postStatus)
-
-		// Agent registration (agent self-registration)
-		cr.Post("/register", handler.registerAgent)
-		cr.Post("/unregister", handler.unregisterAgent)
-
-		// Chunk upload (agent uploads data chunks)
-		cr.Post("/upload-chunk", handler.uploadChunk)
-
-		// Long polling endpoints (agent waits for config/tasks)
-		cr.Post("/poll", handler.poll)              // Unified poll for config and tasks
-		cr.Post("/poll/config", handler.pollConfig) // Config-only poll
-		cr.Post("/poll/tasks", handler.pollTasks)   // Task-only poll
+		// === Probe contract (Transport.Operation) ===
+		cr.Post("/poll", handler.unifiedPoll)             // UnifiedPollRequest -> UnifiedPollResponse
+		cr.Post("/poll/config", handler.getConfig)        // ConfigRequest -> ConfigResponse
+		cr.Post("/poll/tasks", handler.getTasks)          // TaskRequest -> TaskResponse
+		cr.Post("/status", handler.reportStatus)          // StatusRequest -> StatusResponse
+		cr.Post("/tasks/result", handler.reportTaskResult) // TaskResultRequest -> TaskResultResponse
+		cr.Post("/upload-chunk", handler.uploadChunkedResult) // ChunkedTaskResult -> ChunkedUploadResponse
 	})
 
 	r.logger.Info("Registered control plane endpoints", zap.String("prefix", prefix))

@@ -1,75 +1,159 @@
-// Copyright The OpenTelemetry Authors
-// SPDX-License-Identifier: Apache-2.0
+/*
+ * Copyright The OpenTelemetry Authors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 syntax = "proto3";
 
-package controlplane.v1;
+package io.opentelemetry.extension.controlplane.proto.v1;
 
 option go_package = "go.opentelemetry.io/collector/custom/proto/controlplane/v1;controlplanev1";
+option java_package = "io.opentelemetry.sdk.extension.controlplane.proto.v1";
+option java_outer_classname = "ConfigProtos";
 
-// AgentConfig represents the configuration to be pushed to agents.
+import "controlplane/v1/common.proto";
+
+// 配置拉取请求
+message ConfigRequest {
+  // Agent 身份标识
+  AgentIdentity agent_identity = 1;
+
+  // Agent ID 字符串（与 DTO 兼容，优先使用此字段）
+  string agent_id = 5;
+
+  // 当前配置版本 (首次请求为空)
+  ConfigVersion current_version = 2;
+
+  // 当前配置版本字符串（与 DTO 兼容）
+  string current_config_version = 6;
+
+  // 当前配置 ETag（与 DTO 兼容）
+  string current_etag = 7;
+
+  // 长轮询超时时间 (毫秒)
+  int64 long_poll_timeout_millis = 3;
+}
+
+// 配置拉取响应
+message ConfigResponse {
+  // 响应状态
+  ResponseStatus status = 1;
+
+  // 配置内容 (如果有变更)
+  AgentConfig config = 2;
+
+  // 是否有配置变更
+  bool has_changes = 3;
+
+  // 下次轮询建议间隔 (毫秒)
+  int64 suggested_poll_interval_millis = 4;
+
+  // 配置版本字符串（与 DTO 兼容）
+  string config_version = 5;
+
+  // 配置 ETag（与 DTO 兼容）
+  string etag = 6;
+
+  // 是否成功（与 DTO 兼容）
+  bool success = 7;
+
+  // 错误信息（与 DTO 兼容）
+  string error_message = 8;
+}
+
+// Agent 配置 (所有字段均支持热更新)
 message AgentConfig {
-    // Version of this configuration for tracking changes.
-    string config_version = 1;
-    
-    // Sampler configuration.
-    SamplerConfig sampler = 2;
-    
-    // Batch processor configuration.
-    BatchConfig batch = 3;
-    
-    // Dynamic resource attributes to be added to telemetry data.
-    map<string, string> dynamic_resource_attributes = 4;
-    
-    // Extension-specific configuration in JSON format.
-    string extension_config_json = 5;
+  // 配置版本
+  ConfigVersion version = 1;
+
+  // 采样配置
+  SamplerConfig sampler = 2;
+
+  // 批处理配置
+  BatchConfig batch = 3;
+
+  // 动态资源属性
+  map<string, string> dynamic_resource_attributes = 4;
+
+  // 扩展配置 (JSON 格式)
+  string extension_config_json = 5;
 }
 
-// SamplerConfig defines sampling behavior.
+// 采样配置
 message SamplerConfig {
-    // Type of sampler to use.
-    SamplerType type = 1;
-    
-    // Sampling ratio (0.0 to 1.0) for TRACE_ID_RATIO sampler.
-    double ratio = 2;
-    
-    // Rules for RULE_BASED sampler (JSON format).
-    string rules_json = 3;
-}
-
-// SamplerType enumerates available sampler types.
-enum SamplerType {
+  // 采样器类型
+  enum SamplerType {
     SAMPLER_TYPE_UNSPECIFIED = 0;
     SAMPLER_TYPE_ALWAYS_ON = 1;
     SAMPLER_TYPE_ALWAYS_OFF = 2;
     SAMPLER_TYPE_TRACE_ID_RATIO = 3;
     SAMPLER_TYPE_PARENT_BASED = 4;
     SAMPLER_TYPE_RULE_BASED = 5;
+  }
+
+  SamplerType type = 1;
+
+  // 采样率 (0.0 ~ 1.0)
+  double ratio = 2;
+
+  // 采样规则
+  repeated SamplerRule rules = 3;
 }
 
-// BatchConfig defines batch processor settings.
+// 采样规则
+message SamplerRule {
+  // 规则名称
+  string name = 1;
+
+  // Span 名称匹配模式 (正则表达式)
+  string span_name_pattern = 2;
+
+  // 属性匹配条件
+  map<string, string> attribute_match = 3;
+
+  // 命中规则的采样率
+  double ratio = 4;
+
+  // 规则优先级 (数值越大优先级越高)
+  int32 priority = 5;
+}
+
+// 批处理配置
 message BatchConfig {
-    // Maximum number of spans/metrics/logs in a single batch.
-    int32 max_export_batch_size = 1;
-    
-    // Maximum number of items waiting in queue.
-    int32 max_queue_size = 2;
-    
-    // Delay between batch exports in milliseconds.
-    int64 schedule_delay_millis = 3;
-    
-    // Export timeout in milliseconds.
-    int64 export_timeout_millis = 4;
+  // 批处理大小
+  int32 max_export_batch_size = 1;
+
+  // 队列大小
+  int32 max_queue_size = 2;
+
+  // 调度延迟 (毫秒)
+  int64 schedule_delay_millis = 3;
+
+  // 导出超时 (毫秒)
+  int64 export_timeout_millis = 4;
 }
 
-// ConfigRequest is sent by the control plane to update agent configuration.
-message ConfigRequest {
-    AgentConfig config = 1;
-}
+// 配置确认请求 (通过状态上报实现)
+message ConfigAcknowledgement {
+  // 配置版本
+  string config_version = 1;
 
-// ConfigResponse is returned after processing a configuration update.
-message ConfigResponse {
-    bool success = 1;
-    string message = 2;
-    string applied_version = 3;
+  // 确认状态
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_APPLIED = 1;      // 完全生效
+    STATUS_PARTIAL = 2;      // 部分生效
+    STATUS_FAILED = 3;       // 应用失败
+  }
+
+  Status status = 2;
+
+  // 已生效的配置字段
+  repeated string applied_fields = 3;
+
+  // 失败的配置字段
+  repeated string failed_fields = 4;
+
+  // 错误信息
+  string error_message = 5;
 }

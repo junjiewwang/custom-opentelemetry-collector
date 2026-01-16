@@ -6,7 +6,7 @@ package agentregistry
 import (
 	"time"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // StatusHelper provides common status management logic for AgentRegistry implementations.

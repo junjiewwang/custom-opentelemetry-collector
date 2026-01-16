@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
+	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // AgentRegistry defines the interface for agent registration and status management.
