@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 func newTestMemoryStore(t *testing.T) *MemoryTaskStore {
@@ -30,11 +30,11 @@ func TestMemoryTaskStore_SaveAndGetTaskInfo(t *testing.T) {
 	ctx := context.Background()
 
 	info := &TaskInfo{
-		Task: &controlplanev1.Task{
-			TaskID:   "task-1",
-			TaskType: "test",
+		Task: &model.Task{
+			ID:       "task-1",
+			TypeName: "test",
 		},
-		Status:          controlplanev1.TaskStatusPending,
+		Status:          model.TaskStatusPending,
 		CreatedAtMillis: time.Now().UnixMilli(),
 	}
 
@@ -46,8 +46,8 @@ func TestMemoryTaskStore_SaveAndGetTaskInfo(t *testing.T) {
 	retrieved, err := store.GetTaskInfo(ctx, "task-1")
 	require.NoError(t, err)
 	require.NotNil(t, retrieved)
-	assert.Equal(t, "task-1", retrieved.Task.TaskID)
-	assert.Equal(t, controlplanev1.TaskStatusPending, retrieved.Status)
+	assert.Equal(t, "task-1", retrieved.Task.ID)
+	assert.Equal(t, model.TaskStatusPending, retrieved.Status)
 }
 
 func TestMemoryTaskStore_SaveTaskInfo_Duplicate(t *testing.T) {
@@ -55,11 +55,11 @@ func TestMemoryTaskStore_SaveTaskInfo_Duplicate(t *testing.T) {
 	ctx := context.Background()
 
 	info := &TaskInfo{
-		Task: &controlplanev1.Task{
-			TaskID:   "task-1",
-			TaskType: "test",
+		Task: &model.Task{
+			ID:       "task-1",
+			TypeName: "test",
 		},
-		Status: controlplanev1.TaskStatusPending,
+		Status: model.TaskStatusPending,
 	}
 
 	// First save
@@ -72,7 +72,7 @@ func TestMemoryTaskStore_SaveTaskInfo_Duplicate(t *testing.T) {
 	assert.Contains(t, err.Error(), "already exists")
 
 	// Update (isNew=false) should succeed
-	info.Status = controlplanev1.TaskStatusRunning
+	info.Status = model.TaskStatusRunning
 	err = store.SaveTaskInfo(ctx, info, false)
 	require.NoError(t, err)
 }
@@ -82,17 +82,17 @@ func TestMemoryTaskStore_UpdateTaskInfo(t *testing.T) {
 	ctx := context.Background()
 
 	info := &TaskInfo{
-		Task: &controlplanev1.Task{
-			TaskID:   "task-1",
-			TaskType: "test",
+		Task: &model.Task{
+			ID:       "task-1",
+			TypeName: "test",
 		},
-		Status: controlplanev1.TaskStatusPending,
+		Status: model.TaskStatusPending,
 	}
 	_ = store.SaveTaskInfo(ctx, info, true)
 
 	// Update task
 	err := store.UpdateTaskInfo(ctx, "task-1", func(i *TaskInfo) error {
-		i.Status = controlplanev1.TaskStatusRunning
+		i.Status = model.TaskStatusRunning
 		i.AgentID = "agent-1"
 		return nil
 	})
@@ -100,7 +100,7 @@ func TestMemoryTaskStore_UpdateTaskInfo(t *testing.T) {
 
 	// Verify update
 	retrieved, _ := store.GetTaskInfo(ctx, "task-1")
-	assert.Equal(t, controlplanev1.TaskStatusRunning, retrieved.Status)
+	assert.Equal(t, model.TaskStatusRunning, retrieved.Status)
 	assert.Equal(t, "agent-1", retrieved.AgentID)
 }
 
@@ -120,11 +120,11 @@ func TestMemoryTaskStore_DeleteTaskInfo(t *testing.T) {
 	ctx := context.Background()
 
 	info := &TaskInfo{
-		Task: &controlplanev1.Task{
-			TaskID:   "task-1",
-			TaskType: "test",
+		Task: &model.Task{
+			ID:       "task-1",
+			TypeName: "test",
 		},
-		Status: controlplanev1.TaskStatusPending,
+		Status: model.TaskStatusPending,
 	}
 	_ = store.SaveTaskInfo(ctx, info, true)
 
@@ -145,11 +145,11 @@ func TestMemoryTaskStore_ListTaskInfos(t *testing.T) {
 	// Add multiple tasks
 	for i := 0; i < 3; i++ {
 		info := &TaskInfo{
-			Task: &controlplanev1.Task{
-				TaskID:   "task-" + string(rune('a'+i)),
-				TaskType: "test",
+			Task: &model.Task{
+				ID:       "task-" + string(rune('a'+i)),
+				TypeName: "test",
 			},
-			Status: controlplanev1.TaskStatusPending,
+			Status: model.TaskStatusPending,
 		}
 		_ = store.SaveTaskInfo(ctx, info, true)
 	}
@@ -269,9 +269,9 @@ func TestMemoryTaskStore_SaveAndGetResult(t *testing.T) {
 	store := newTestMemoryStore(t)
 	ctx := context.Background()
 
-	result := &controlplanev1.TaskResult{
+	result := &model.TaskResult{
 		TaskID:            "task-1",
-		Status:            controlplanev1.TaskStatusSuccess,
+		Status:            model.TaskStatusSuccess,
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}
 
@@ -283,7 +283,7 @@ func TestMemoryTaskStore_SaveAndGetResult(t *testing.T) {
 	retrieved, found, err := store.GetResult(ctx, "task-1")
 	require.NoError(t, err)
 	assert.True(t, found)
-	assert.Equal(t, controlplanev1.TaskStatusSuccess, retrieved.Status)
+	assert.Equal(t, model.TaskStatusSuccess, retrieved.Status)
 }
 
 func TestMemoryTaskStore_GetResult_NotFound(t *testing.T) {
@@ -385,11 +385,11 @@ func TestMemoryTaskStore_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			taskID := "task-" + string(rune('0'+id))
 			info := &TaskInfo{
-				Task: &controlplanev1.Task{
-					TaskID:   taskID,
-					TaskType: "test",
+				Task: &model.Task{
+					ID:       taskID,
+					TypeName: "test",
 				},
-				Status: controlplanev1.TaskStatusPending,
+				Status: model.TaskStatusPending,
 			}
 			_ = store.SaveTaskInfo(ctx, info, true)
 			_, _ = store.GetTaskInfo(ctx, taskID)

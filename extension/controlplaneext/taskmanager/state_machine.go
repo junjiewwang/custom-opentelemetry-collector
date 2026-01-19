@@ -6,7 +6,7 @@ package taskmanager
 import (
 	"fmt"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // StateTransitionResult describes the outcome of a state transition validation.
@@ -19,6 +19,17 @@ type StateTransitionResult struct {
 	Conflict bool
 	// Reason provides a human-readable explanation.
 	Reason string
+}
+
+// isTerminal returns true if the status is a terminal state.
+func isTerminal(status model.TaskStatus) bool {
+	switch status {
+	case model.TaskStatusSuccess, model.TaskStatusFailed,
+		model.TaskStatusTimeout, model.TaskStatusCancelled, model.TaskStatusResultTooLarge:
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidateStateTransition checks if transitioning from currentStatus to newStatus is valid.
@@ -53,7 +64,7 @@ type StateTransitionResult struct {
 //	                  ╔══════╧══════╗
 //	                  ║  TERMINAL   ║ (final state, no rollback)
 //	                  ╚═════════════╝
-func ValidateStateTransition(currentStatus, newStatus controlplanev1.TaskStatus) StateTransitionResult {
+func ValidateStateTransition(currentStatus, newStatus model.TaskStatus) StateTransitionResult {
 	// Rule 1: Same state = idempotent
 	if currentStatus == newStatus {
 		return StateTransitionResult{
@@ -64,24 +75,24 @@ func ValidateStateTransition(currentStatus, newStatus controlplanev1.TaskStatus)
 	}
 
 	// Rule 2: Terminal state cannot transition
-	if currentStatus.IsTerminal() {
-		if newStatus.IsTerminal() {
+	if isTerminal(currentStatus) {
+		if isTerminal(newStatus) {
 			// Terminal → different Terminal = conflict
 			return StateTransitionResult{
 				Allowed:  false,
 				Conflict: true,
-				Reason:   fmt.Sprintf("terminal conflict: %s → %s", currentStatus, newStatus),
+				Reason:   fmt.Sprintf("terminal conflict: %d → %d", currentStatus, newStatus),
 			}
 		}
 		// Terminal → non-Terminal (e.g., SUCCESS → RUNNING) = reject
 		return StateTransitionResult{
 			Allowed: false,
-			Reason:  fmt.Sprintf("cannot transition from terminal state %s to %s", currentStatus, newStatus),
+			Reason:  fmt.Sprintf("cannot transition from terminal state %d to %d", currentStatus, newStatus),
 		}
 	}
 
 	// Rule 3: RUNNING cannot go back to PENDING
-	if currentStatus == controlplanev1.TaskStatusRunning && newStatus == controlplanev1.TaskStatusPending {
+	if currentStatus == model.TaskStatusRunning && newStatus == model.TaskStatusPending {
 		return StateTransitionResult{
 			Allowed: false,
 			Reason:  "cannot transition from RUNNING back to PENDING",
@@ -98,23 +109,23 @@ func ValidateStateTransition(currentStatus, newStatus controlplanev1.TaskStatus)
 // StateTransitionError represents a rejected state transition.
 type StateTransitionError struct {
 	TaskID        string
-	CurrentStatus controlplanev1.TaskStatus
-	NewStatus     controlplanev1.TaskStatus
+	CurrentStatus model.TaskStatus
+	NewStatus     model.TaskStatus
 	Reason        string
 	IsConflict    bool
 }
 
 func (e *StateTransitionError) Error() string {
 	if e.IsConflict {
-		return fmt.Sprintf("state conflict for task %s: %s → %s (%s)",
+		return fmt.Sprintf("state conflict for task %s: %d → %d (%s)",
 			e.TaskID, e.CurrentStatus, e.NewStatus, e.Reason)
 	}
-	return fmt.Sprintf("invalid state transition for task %s: %s → %s (%s)",
+	return fmt.Sprintf("invalid state transition for task %s: %d → %d (%s)",
 		e.TaskID, e.CurrentStatus, e.NewStatus, e.Reason)
 }
 
 // NewStateTransitionError creates a StateTransitionError from a validation result.
-func NewStateTransitionError(taskID string, currentStatus, newStatus controlplanev1.TaskStatus, result StateTransitionResult) *StateTransitionError {
+func NewStateTransitionError(taskID string, currentStatus, newStatus model.TaskStatus, result StateTransitionResult) *StateTransitionError {
 	return &StateTransitionError{
 		TaskID:        taskID,
 		CurrentStatus: currentStatus,

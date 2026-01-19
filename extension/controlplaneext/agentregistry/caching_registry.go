@@ -8,8 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // CachingRegistry wraps an AgentRegistry and provides caching for GetAgentStats.
@@ -168,7 +166,7 @@ func (c *CachingRegistry) RegisterOrHeartbeat(ctx context.Context, agent *AgentI
 }
 
 // UpdateHealth updates health status which may affect unhealthy count, so invalidate cache.
-func (c *CachingRegistry) UpdateHealth(ctx context.Context, agentID string, health *controlplanev1.HealthStatus) error {
+func (c *CachingRegistry) UpdateHealth(ctx context.Context, agentID string, health *HealthStatus) error {
 	err := c.AgentRegistry.UpdateHealth(ctx, agentID, health)
 	if err == nil {
 		c.InvalidateStatsCache()

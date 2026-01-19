@@ -11,8 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 func newTestMemoryRegistry(t *testing.T) *MemoryAgentRegistry {
@@ -467,19 +465,19 @@ func TestMemoryAgentRegistry_UpdateHealth(t *testing.T) {
 	_ = registry.Register(ctx, agent)
 
 	// Update health
-	health := &controlplanev1.HealthStatus{
-		State: controlplanev1.HealthStateHealthy,
+	health := &HealthStatus{
+		State: HealthStateHealthy,
 	}
 	err = registry.UpdateHealth(ctx, "agent-1", health)
 	require.NoError(t, err)
 
 	// Verify
 	retrieved, _ := registry.GetAgent(ctx, "agent-1")
-	assert.Equal(t, controlplanev1.HealthStateHealthy, retrieved.Status.Health.State)
+	assert.Equal(t, HealthStateHealthy, retrieved.Status.Health.State)
 	assert.Equal(t, AgentStateOnline, retrieved.Status.State)
 
 	// Update to unhealthy
-	health.State = controlplanev1.HealthStateUnhealthy
+	health.State = HealthStateUnhealthy
 	err = registry.UpdateHealth(ctx, "agent-1", health)
 	require.NoError(t, err)
 

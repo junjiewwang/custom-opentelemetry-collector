@@ -8,13 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // Redis key patterns (must match taskmanager/store/redis.go)
@@ -31,7 +32,8 @@ const (
 type TaskPollHandler struct {
 	logger      *zap.Logger
 	redisClient redis.UniversalClient
-	keyPrefix   string
+
+	keyPrefix string
 
 	// Waiters management (per agent)
 	waiters sync.Map // agentID -> *TaskWaiter
@@ -224,103 +226,146 @@ func (h *TaskPollHandler) Poll(ctx context.Context, req *PollRequest) (*HandlerR
 }
 
 // getPendingTasks gets pending tasks for an agent from Redis.
-func (h *TaskPollHandler) getPendingTasks(ctx context.Context, agentID string) ([]*controlplanev1.Task, error) {
+func (h *TaskPollHandler) getPendingTasks(ctx context.Context, agentID string) ([]*model.Task, error) {
 	agentQueueKey := fmt.Sprintf(keyPendingAgent, h.keyPrefix, agentID)
 	globalQueueKey := fmt.Sprintf(keyPendingGlobal, h.keyPrefix)
-	cancelledKey := fmt.Sprintf(keyCancelled, h.keyPrefix)
 
-	var tasks []*controlplanev1.Task
+	seen := make(map[string]struct{}, 64)
+	var tasks []*model.Task
 
-	// Get from agent queue
+	// Agent queue
 	agentTasks, err := h.redisClient.LRange(ctx, agentQueueKey, 0, -1).Result()
 	if err != nil && err != redis.Nil {
 		return nil, err
 	}
-
 	for _, data := range agentTasks {
-		task, err := h.parseAndValidateTask(ctx, data, cancelledKey, agentQueueKey)
-		if err == nil && task != nil {
-			tasks = append(tasks, task)
+		task, err := h.parseAndValidateTask(ctx, data, agentQueueKey)
+		if err != nil || task == nil {
+			continue
 		}
+		if _, ok := seen[task.ID]; ok {
+			continue
+		}
+		seen[task.ID] = struct{}{}
+		tasks = append(tasks, task)
 	}
 
-	// Get from global queue
+	// Global queue
 	globalTasks, err := h.redisClient.LRange(ctx, globalQueueKey, 0, -1).Result()
 	if err != nil && err != redis.Nil {
 		return nil, err
 	}
-
 	for _, data := range globalTasks {
-		task, err := h.parseAndValidateTask(ctx, data, cancelledKey, globalQueueKey)
-		if err == nil && task != nil {
-			tasks = append(tasks, task)
+		task, err := h.parseAndValidateTask(ctx, data, globalQueueKey)
+		if err != nil || task == nil {
+			continue
 		}
+		if _, ok := seen[task.ID]; ok {
+			continue
+		}
+		seen[task.ID] = struct{}{}
+		tasks = append(tasks, task)
 	}
 
 	return tasks, nil
 }
 
+type taskDetailEnvelope struct {
+	Task   *model.Task      `json:"task"`
+	Status model.TaskStatus `json:"status"`
+}
+
+func (h *TaskPollHandler) parseTaskDetail(data []byte) (*model.Task, model.TaskStatus, error) {
+	var env taskDetailEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, model.TaskStatusUnspecified, err
+	}
+
+	return env.Task, env.Status, nil
+}
+
+func isDispatchableStatus(status model.TaskStatus) bool {
+	return status == model.TaskStatusPending || status == model.TaskStatusRunning
+}
+
 // parseAndValidateTask parses and validates a task from Redis.
 // Returns nil if the task should be skipped (cancelled, already completed, detail not found, etc.)
 // The queueKey parameter is used to remove orphan tasks from the pending queue.
-func (h *TaskPollHandler) parseAndValidateTask(ctx context.Context, data string, cancelledKey string, queueKey string) (*controlplanev1.Task, error) {
-	var task controlplanev1.Task
-	if err := json.Unmarshal([]byte(data), &task); err != nil {
-		return nil, err
+func (h *TaskPollHandler) parseAndValidateTask(ctx context.Context, data string, queueKey string) (*model.Task, error) {
+	data = strings.TrimSpace(data)
+	if data == "" {
+		return nil, nil
 	}
 
-	// Check if cancelled (fast path using cancelled set)
-	cancelled, err := h.redisClient.SIsMember(ctx, cancelledKey, task.TaskID).Result()
+	// Queue item can be either:
+	// - JSON (legacy format, contains full task)
+	// - task_id string (new format)
+	taskID := ""
+	var taskFromQueue *model.Task
+	if strings.HasPrefix(data, "{") {
+		var t model.Task
+		if err := json.Unmarshal([]byte(data), &t); err == nil && t.ID != "" {
+			taskID = t.ID
+			taskFromQueue = &t
+		}
+	}
+	if taskID == "" {
+		taskID = data
+	}
+	if taskID == "" {
+		return nil, nil
+	}
+
+	// Cancelled check
+	cancelledKey := fmt.Sprintf(keyCancelled, h.keyPrefix)
+	cancelled, err := h.redisClient.SIsMember(ctx, cancelledKey, taskID).Result()
 	if err == nil && cancelled {
-		return nil, nil // Skip cancelled task
+		return nil, nil
+	}
+	if err != nil && err != redis.Nil {
+		h.logger.Debug("Cancelled check failed", zap.String("task_id", taskID), zap.String("key", cancelledKey), zap.Error(err))
 	}
 
-	// Check task status from detail storage
-	// Only dispatch tasks that are in dispatchable states (PENDING/RUNNING)
-	detailKey := fmt.Sprintf(keyTaskDetail, h.keyPrefix, task.TaskID)
+	// Detail check
+	detailKey := fmt.Sprintf(keyTaskDetail, h.keyPrefix, taskID)
 	detailData, err := h.redisClient.Get(ctx, detailKey).Result()
-
-	// If detail not found, this is an orphan task (detail expired but pending entry remains)
-	// Remove it from pending queue and skip
 	if err == redis.Nil {
 		h.logger.Warn("Orphan task detected: detail not found, removing from pending queue",
-			zap.String("task_id", task.TaskID),
+			zap.String("task_id", taskID),
 			zap.String("queue_key", queueKey),
 		)
-		// Remove from pending queue (best effort)
 		if queueKey != "" {
 			_ = h.redisClient.LRem(ctx, queueKey, 0, data).Err()
 		}
-		return nil, nil // Skip orphan task
+		return nil, nil
 	}
 	if err != nil {
 		h.logger.Warn("Failed to get task detail",
-			zap.String("task_id", task.TaskID),
+			zap.String("task_id", taskID),
+			zap.String("detail_key", detailKey),
 			zap.Error(err),
 		)
-		return nil, nil // Skip on error
+		return nil, nil
 	}
 
-	var taskInfo struct {
-		Status controlplanev1.TaskStatus `json:"status"`
-	}
-	if err := json.Unmarshal([]byte(detailData), &taskInfo); err == nil {
-		if !taskInfo.Status.IsDispatchable() {
-			h.logger.Debug("Skipping non-dispatchable task",
-				zap.String("task_id", task.TaskID),
-				zap.String("status", taskInfo.Status.String()),
-			)
-			return nil, nil // Skip task with terminal status
+	taskFromDetail, status, err := h.parseTaskDetail([]byte(detailData))
+	if err == nil {
+		if !isDispatchableStatus(status) {
+			return nil, nil
 		}
 	}
 
-	return &task, nil
+	if taskFromDetail != nil {
+		return taskFromDetail, nil
+	}
+	return taskFromQueue, nil
 }
 
 // startPubSub starts the Redis Pub/Sub subscriber.
 func (h *TaskPollHandler) startPubSub() {
 	h.pubsubOnce.Do(func() {
 		channel := fmt.Sprintf(keyEventSubmitted, h.keyPrefix)
+
 		h.logger.Info("Starting Redis Pub/Sub subscriber",
 			zap.String("channel", channel),
 			zap.String("key_prefix", h.keyPrefix),
@@ -328,8 +373,7 @@ func (h *TaskPollHandler) startPubSub() {
 
 		h.pubsub = h.redisClient.Subscribe(context.Background(), channel)
 
-		// Wait for subscription confirmation BEFORE starting message handler
-		// This ensures we don't miss any messages
+		// Wait for subscription confirmation BEFORE starting message handler.
 		msg, err := h.pubsub.Receive(context.Background())
 		if err != nil {
 			h.logger.Error("Failed to confirm Pub/Sub subscription",
@@ -339,24 +383,14 @@ func (h *TaskPollHandler) startPubSub() {
 			return
 		}
 
-		// Verify it's a subscription confirmation
-		switch v := msg.(type) {
-		case *redis.Subscription:
-			h.logger.Info("Pub/Sub subscription confirmed",
-				zap.String("channel", v.Channel),
-				zap.String("kind", v.Kind),
-				zap.Int("count", v.Count),
-			)
-		default:
+		sub, ok := msg.(*redis.Subscription)
+		if !ok || sub.Kind != "subscribe" {
 			h.logger.Warn("Unexpected message type during subscription",
-				zap.String("channel", channel),
 				zap.Any("message", msg),
 			)
 		}
 
-		// Now start the message handler goroutine
 		go h.handlePubSubMessages()
-
 		h.logger.Info("Started Redis Pub/Sub subscriber goroutine", zap.String("channel", channel))
 	})
 }
@@ -443,7 +477,7 @@ func (h *TaskPollHandler) handlePubSubMessages() {
 }
 
 // getTaskDetails gets task details from Redis.
-func (h *TaskPollHandler) getTaskDetails(ctx context.Context, taskID string) (*controlplanev1.Task, string, error) {
+func (h *TaskPollHandler) getTaskDetails(ctx context.Context, taskID string) (*model.Task, string, error) {
 	detailKey := fmt.Sprintf(keyTaskDetail, h.keyPrefix, taskID)
 
 	data, err := h.redisClient.Get(ctx, detailKey).Result()
@@ -454,20 +488,19 @@ func (h *TaskPollHandler) getTaskDetails(ctx context.Context, taskID string) (*c
 		return nil, "", err
 	}
 
-	// Parse task info (which contains the task and agent_id)
-	var taskInfo struct {
-		Task    *controlplanev1.Task `json:"task"`
-		AgentID string               `json:"agent_id"`
+	var env struct {
+		Task    *model.Task `json:"task"`
+		AgentID string      `json:"agent_id"`
 	}
-	if err := json.Unmarshal([]byte(data), &taskInfo); err != nil {
+	if err := json.Unmarshal([]byte(data), &env); err != nil {
 		return nil, "", err
 	}
 
-	return taskInfo.Task, taskInfo.AgentID, nil
+	return env.Task, env.AgentID, nil
 }
 
 // notifyWaiter notifies a specific waiter.
-func (h *TaskPollHandler) notifyWaiter(agentID string, task *controlplanev1.Task) {
+func (h *TaskPollHandler) notifyWaiter(agentID string, task *model.Task) {
 	// Log all registered waiters for debugging
 	var registeredAgents []string
 	h.waiters.Range(func(key, _ interface{}) bool {
@@ -484,45 +517,45 @@ func (h *TaskPollHandler) notifyWaiter(agentID string, task *controlplanev1.Task
 
 		result := &HandlerResult{
 			HasChanges: true,
-			Response:   NewTaskResponse(true, []*controlplanev1.Task{task}, "new task available"),
+			Response:   NewTaskResponse(true, []*model.Task{task}, "new task available"),
 		}
 
 		select {
 		case waiter.resultChan <- result:
 			h.logger.Debug("Successfully notified waiter of new task",
 				zap.String("agent_id", agentID),
-				zap.String("task_id", task.TaskID),
+				zap.String("task_id", task.ID),
 			)
 		default:
 			h.logger.Warn("Failed to notify waiter (channel full or closed)",
 				zap.String("agent_id", agentID),
-				zap.String("task_id", task.TaskID),
+				zap.String("task_id", task.ID),
 			)
 		}
 	} else {
 		h.logger.Warn("No waiter found for agent",
 			zap.String("target_agent_id", agentID),
 			zap.Strings("registered_waiters", registeredAgents),
-			zap.String("task_id", task.TaskID),
+			zap.String("task_id", task.ID),
 		)
 	}
 }
 
 // notifyAllWaiters notifies all waiters (for global tasks).
-func (h *TaskPollHandler) notifyAllWaiters(task *controlplanev1.Task) {
+func (h *TaskPollHandler) notifyAllWaiters(task *model.Task) {
 	h.waiters.Range(func(key, value interface{}) bool {
 		waiter := value.(*TaskWaiter)
 
 		result := &HandlerResult{
 			HasChanges: true,
-			Response:   NewTaskResponse(true, []*controlplanev1.Task{task}, "new global task available"),
+			Response:   NewTaskResponse(true, []*model.Task{task}, "new global task available"),
 		}
 
 		select {
 		case waiter.resultChan <- result:
 			h.logger.Debug("Notified waiter of new global task",
 				zap.String("agent_id", waiter.agentID),
-				zap.String("task_id", task.TaskID),
+				zap.String("task_id", task.ID),
 			)
 		default:
 		}

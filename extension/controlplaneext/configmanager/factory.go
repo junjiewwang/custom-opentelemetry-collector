@@ -24,14 +24,9 @@ func NewConfigManager(logger *zap.Logger, config Config, nacosClient config_clie
 		return NewNacosConfigManager(logger, config, nacosClient)
 
 	case "multi_agent_nacos":
-		if nacosClient == nil {
-			return nil, fmt.Errorf("nacos client is required for multi-agent nacos config manager")
-		}
-		multiConfig, err := parseMultiAgentConfig(config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse multi-agent config: %w", err)
-		}
-		return NewMultiAgentNacosConfigManager(logger, multiConfig, nacosClient)
+		// Deprecated: multi_agent_nacos is deprecated, redirect to on_demand
+		logger.Warn("multi_agent_nacos config type is deprecated, using on_demand instead")
+		fallthrough
 
 	case "on_demand":
 		if nacosClient == nil {
@@ -41,85 +36,22 @@ func NewConfigManager(logger *zap.Logger, config Config, nacosClient config_clie
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse on-demand config: %w", err)
 		}
-		return NewNacosOnDemandConfigManager(logger, onDemandConfig, nacosClient)
+		return NewNacosOnDemandConfigManager(logger, onDemandConfig, nil, nacosClient)
 
 	default:
 		return nil, fmt.Errorf("unknown config manager type: %s", config.Type)
 	}
 }
 
-// NewMultiAgentConfigManager creates a MultiAgentConfigManager.
-// Returns error if the config type doesn't support multi-agent mode.
-func NewMultiAgentConfigManager(logger *zap.Logger, config Config, nacosClient config_client.IConfigClient) (MultiAgentConfigManager, error) {
-	if config.Type != "multi_agent_nacos" {
-		return nil, fmt.Errorf("config type %s does not support multi-agent mode", config.Type)
-	}
-
-	if nacosClient == nil {
-		return nil, fmt.Errorf("nacos client is required for multi-agent nacos config manager")
-	}
-
-	multiConfig, err := parseMultiAgentConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse multi-agent config: %w", err)
-	}
-
-	return NewMultiAgentNacosConfigManager(logger, multiConfig, nacosClient)
-}
-
-// parseMultiAgentConfig parses MultiAgentConfig from Config.
-func parseMultiAgentConfig(config Config) (MultiAgentConfig, error) {
-	multiConfig := DefaultMultiAgentConfig()
-
-	if config.MultiAgent.Namespace != "" {
-		multiConfig.Namespace = config.MultiAgent.Namespace
-	}
-
-	if len(config.MultiAgent.Groups) > 0 {
-		multiConfig.Groups = config.MultiAgent.Groups
-	}
-
-	if config.MultiAgent.ScanInterval != "" {
-		d, err := time.ParseDuration(config.MultiAgent.ScanInterval)
-		if err != nil {
-			return multiConfig, fmt.Errorf("invalid scan_interval: %w", err)
-		}
-		multiConfig.ScanInterval = d
-	}
-
-	if config.MultiAgent.LoadTimeout != "" {
-		d, err := time.ParseDuration(config.MultiAgent.LoadTimeout)
-		if err != nil {
-			return multiConfig, fmt.Errorf("invalid load_timeout: %w", err)
-		}
-		multiConfig.LoadTimeout = d
-	}
-
-	if config.MultiAgent.MaxRetries > 0 {
-		multiConfig.MaxRetries = config.MultiAgent.MaxRetries
-	}
-
-	if config.MultiAgent.RetryInterval != "" {
-		d, err := time.ParseDuration(config.MultiAgent.RetryInterval)
-		if err != nil {
-			return multiConfig, fmt.Errorf("invalid retry_interval: %w", err)
-		}
-		multiConfig.RetryInterval = d
-	}
-
-	multiConfig.EnableWatch = config.MultiAgent.EnableWatch
-
-	return multiConfig, nil
-}
-
 // IsMultiAgentMode checks if the config is for multi-agent mode.
+// Deprecated: Use IsOnDemandMode instead.
 func IsMultiAgentMode(config Config) bool {
-	return config.Type == "multi_agent_nacos" || config.MultiAgent.Enabled
+	return config.Type == "multi_agent_nacos" || config.Type == "on_demand" || config.MultiAgent.Enabled
 }
 
 // NewOnDemandConfigManager creates an OnDemandConfigManager.
 func NewOnDemandConfigManager(logger *zap.Logger, config Config, nacosClient config_client.IConfigClient) (OnDemandConfigManager, error) {
-	if config.Type != "on_demand" {
+	if config.Type != "on_demand" && config.Type != "multi_agent_nacos" {
 		return nil, fmt.Errorf("config type %s does not support on-demand mode", config.Type)
 	}
 
@@ -132,7 +64,7 @@ func NewOnDemandConfigManager(logger *zap.Logger, config Config, nacosClient con
 		return nil, fmt.Errorf("failed to parse on-demand config: %w", err)
 	}
 
-	return NewNacosOnDemandConfigManager(logger, onDemandConfig, nacosClient)
+	return NewNacosOnDemandConfigManager(logger, onDemandConfig, nil, nacosClient)
 }
 
 // parseOnDemandConfig parses OnDemandConfig from Config.
@@ -184,5 +116,5 @@ func parseOnDemandConfig(config Config) (OnDemandConfig, error) {
 
 // IsOnDemandMode checks if the config is for on-demand mode.
 func IsOnDemandMode(config Config) bool {
-	return config.Type == "on_demand"
+	return config.Type == "on_demand" || config.Type == "multi_agent_nacos"
 }

@@ -4,16 +4,17 @@
 package adminext
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // ============================================================================
@@ -163,7 +164,7 @@ func (e *Extension) setAppToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
-// App Config Management
+// App Config Management (v2-only, model JSON)
 // ============================================================================
 
 func (e *Extension) getAppWithOnDemandCheck(r *http.Request) (*tokenmanager.AppInfo, error) {
@@ -179,48 +180,46 @@ func (e *Extension) getAppWithOnDemandCheck(r *http.Request) (*tokenmanager.AppI
 	return app, nil
 }
 
-func (e *Extension) getAppDefaultConfig(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) getAppDefaultConfigV2(w http.ResponseWriter, r *http.Request) {
 	app, err := e.getAppWithOnDemandCheck(r)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
-	config, err := e.onDemandConfigMgr.GetDefaultConfig(r.Context(), app.Token)
+	cfg, err := e.onDemandConfigMgr.GetDefaultConfig(r.Context(), app.Token)
 	if err != nil {
 		e.handleError(w, errNotFound(err.Error()))
 		return
 	}
-	if config == nil {
+	if cfg == nil {
 		e.handleError(w, errNotFound("config not found"))
 		return
 	}
-
-	e.writeJSON(w, http.StatusOK, config)
+	e.writeJSON(w, http.StatusOK, cfg)
 }
 
-func (e *Extension) setAppDefaultConfig(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) setAppDefaultConfigV2(w http.ResponseWriter, r *http.Request) {
 	app, err := e.getAppWithOnDemandCheck(r)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
-	config, err := decodeJSON[controlplanev1.AgentConfig](r)
+	cfg, err := decodeJSON[model.AgentConfig](r)
 	if err != nil {
 		e.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
-	if err := e.onDemandConfigMgr.SetDefaultConfig(r.Context(), app.Token, config); err != nil {
+	if err := e.onDemandConfigMgr.SetDefaultConfig(r.Context(), app.Token, cfg); err != nil {
 		e.handleError(w, err)
 		return
 	}
-
 	e.writeJSON(w, http.StatusOK, successResponse("config updated", map[string]any{"instance_id": "_default_"}))
 }
 
-func (e *Extension) getAppInstanceConfig(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) getAppInstanceConfigV2(w http.ResponseWriter, r *http.Request) {
 	app, err := e.getAppWithOnDemandCheck(r)
 	if err != nil {
 		e.handleError(w, err)
@@ -228,20 +227,20 @@ func (e *Extension) getAppInstanceConfig(w http.ResponseWriter, r *http.Request)
 	}
 
 	instanceID := chi.URLParam(r, "instanceID")
-	config, err := e.onDemandConfigMgr.GetConfigForAgent(r.Context(), app.Token, instanceID)
+
+	cfg, err := e.onDemandConfigMgr.GetConfigForAgent(r.Context(), app.Token, instanceID)
 	if err != nil {
 		e.handleError(w, errNotFound(err.Error()))
 		return
 	}
-	if config == nil {
+	if cfg == nil {
 		e.handleError(w, errNotFound("config not found"))
 		return
 	}
-
-	e.writeJSON(w, http.StatusOK, config)
+	e.writeJSON(w, http.StatusOK, cfg)
 }
 
-func (e *Extension) setAppInstanceConfig(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) setAppInstanceConfigV2(w http.ResponseWriter, r *http.Request) {
 	app, err := e.getAppWithOnDemandCheck(r)
 	if err != nil {
 		e.handleError(w, err)
@@ -249,21 +248,20 @@ func (e *Extension) setAppInstanceConfig(w http.ResponseWriter, r *http.Request)
 	}
 
 	instanceID := chi.URLParam(r, "instanceID")
-	config, err := decodeJSON[controlplanev1.AgentConfig](r)
+	cfg, err := decodeJSON[model.AgentConfig](r)
 	if err != nil {
 		e.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
-	if err := e.onDemandConfigMgr.SetConfigForAgent(r.Context(), app.Token, instanceID, config); err != nil {
+	if err := e.onDemandConfigMgr.SetConfigForAgent(r.Context(), app.Token, instanceID, cfg); err != nil {
 		e.handleError(w, err)
 		return
 	}
-
 	e.writeJSON(w, http.StatusOK, successResponse("config updated", map[string]any{"instance_id": instanceID}))
 }
 
-func (e *Extension) deleteAppInstanceConfig(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) deleteAppInstanceConfigV2(w http.ResponseWriter, r *http.Request) {
 	app, err := e.getAppWithOnDemandCheck(r)
 	if err != nil {
 		e.handleError(w, err)
@@ -271,11 +269,11 @@ func (e *Extension) deleteAppInstanceConfig(w http.ResponseWriter, r *http.Reque
 	}
 
 	instanceID := chi.URLParam(r, "instanceID")
+
 	if err := e.onDemandConfigMgr.DeleteConfigForAgent(r.Context(), app.Token, instanceID); err != nil {
 		e.handleError(w, err)
 		return
 	}
-
 	e.writeJSON(w, http.StatusOK, map[string]string{"message": "config deleted"})
 }
 
@@ -489,35 +487,78 @@ func (e *Extension) kickInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
-// Task Management
+// Task Management (v2-only, model JSON)
 // ============================================================================
 
-func (e *Extension) listTasks(w http.ResponseWriter, r *http.Request) {
-	// Get all tasks from detail storage (includes all statuses and agent-specific tasks)
+type taskInfoV2 struct {
+	Task            *model.Task       `json:"task"`
+	Status          model.TaskStatus  `json:"status"`
+	AgentID         string            `json:"agent_id,omitempty"`
+	AppID           string            `json:"app_id,omitempty"`
+	ServiceName     string            `json:"service_name,omitempty"`
+	CreatedAtMillis int64             `json:"created_at_millis"`
+	StartedAtMillis int64             `json:"started_at_millis,omitempty"`
+	Result          *model.TaskResult `json:"result,omitempty"`
+}
+
+func toTaskInfoV2(info *taskmanager.TaskInfo) *taskInfoV2 {
+	if info == nil {
+		return nil
+	}
+	return &taskInfoV2{
+		Task:            info.Task,
+		Status:          info.Status,
+		AgentID:         info.AgentID,
+		AppID:           info.AppID,
+		ServiceName:     info.ServiceName,
+		CreatedAtMillis: info.CreatedAtMillis,
+		StartedAtMillis: info.StartedAtMillis,
+		Result:          info.Result,
+	}
+}
+
+func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
 	tasks, err := e.taskMgr.GetAllTasks(r.Context())
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, listResponse("tasks", tasks, len(tasks)))
+	out := make([]*taskInfoV2, 0, len(tasks))
+	for _, t := range tasks {
+		out = append(out, toTaskInfoV2(t))
+	}
+
+	e.writeJSON(w, http.StatusOK, listResponse("tasks", out, len(out)))
 }
 
-func (e *Extension) createTask(w http.ResponseWriter, r *http.Request) {
-	task, err := decodeJSON[controlplanev1.Task](r)
+func (e *Extension) createTaskV2(w http.ResponseWriter, r *http.Request) {
+	task, err := decodeJSON[model.Task](r)
 	if err != nil {
 		e.handleError(w, errBadRequest(err.Error()))
 		return
 	}
-
-	// 如果客户端未提供 task_id，则由服务端生成
-	if task.TaskID == "" {
-		task.TaskID = uuid.New().String()
+	if task.TypeName == "" {
+		e.handleError(w, errBadRequest("task_type_name is required"))
+		return
+	}
+	if task.ID == "" {
+		task.ID = uuid.New().String()
 	}
 
-	// 根据是否指定 target_agent_id 决定提交到哪个队列
+	if len(task.ParametersJSON) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(task.ParametersJSON, &m); err != nil {
+			e.handleError(w, errBadRequest("parameters_json must be a JSON object"))
+			return
+		}
+		if m == nil {
+			e.handleError(w, errBadRequest("parameters_json must be a JSON object"))
+			return
+		}
+	}
+
 	if task.TargetAgentID != "" {
-		// 查询 Agent 信息以获取 AppID 和 ServiceName
 		var agentMeta *taskmanager.AgentMeta
 		if agent, err := e.agentReg.GetAgent(r.Context(), task.TargetAgentID); err == nil && agent != nil {
 			agentMeta = &taskmanager.AgentMeta{
@@ -526,56 +567,46 @@ func (e *Extension) createTask(w http.ResponseWriter, r *http.Request) {
 				ServiceName: agent.ServiceName,
 			}
 		} else {
-			// Agent 不存在或查询失败，仅使用 AgentID
-			agentMeta = &taskmanager.AgentMeta{
-				AgentID: task.TargetAgentID,
-			}
+			agentMeta = &taskmanager.AgentMeta{AgentID: task.TargetAgentID}
 		}
 
-		// 提交到 agent 专属队列
 		if err := e.taskMgr.SubmitTaskForAgent(r.Context(), agentMeta, task); err != nil {
 			e.handleError(w, err)
 			return
 		}
 	} else {
-		// 提交到全局队列
 		if err := e.taskMgr.SubmitTask(r.Context(), task); err != nil {
 			e.handleError(w, err)
 			return
 		}
 	}
 
-	e.writeJSON(w, http.StatusOK, successResponse("task submitted", map[string]any{"task_id": task.TaskID}))
+	e.writeJSON(w, http.StatusOK, successResponse("task submitted", map[string]any{"task_id": task.ID}))
 }
 
-func (e *Extension) getTask(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) getTaskV2(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 
-	// Priority 1: Get task info from detail storage (authoritative source)
-	// TaskInfo contains the full state machine status and is always up-to-date
 	info, err := e.taskMgr.GetTaskStatus(r.Context(), taskID)
 	if err == nil && info != nil {
-		e.writeJSON(w, http.StatusOK, info)
+		e.writeJSON(w, http.StatusOK, toTaskInfoV2(info))
 		return
 	}
 
-	// Priority 2: Fallback to result storage (for orphan results without detail)
 	result, found, err := e.taskMgr.GetTaskResult(r.Context(), taskID)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
-
 	if found {
 		e.writeJSON(w, http.StatusOK, result)
 		return
 	}
 
-	// Task not found in either storage
 	e.handleError(w, errNotFound("task not found"))
 }
 
-func (e *Extension) cancelTask(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) cancelTaskV2(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 
 	if err := e.taskMgr.CancelTask(r.Context(), taskID); err != nil {
@@ -586,7 +617,7 @@ func (e *Extension) cancelTask(w http.ResponseWriter, r *http.Request) {
 	e.writeJSON(w, http.StatusOK, successResponse("task cancelled", map[string]any{"task_id": taskID}))
 }
 
-func (e *Extension) batchTaskAction(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) batchTaskActionV2(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[struct {
 		Action  string   `json:"action"`
 		TaskIDs []string `json:"task_ids"`
@@ -611,7 +642,6 @@ func (e *Extension) batchTaskAction(w http.ResponseWriter, r *http.Request) {
 			"cancelled": cancelled,
 			"failed":    failed,
 		})
-
 	default:
 		e.handleError(w, errBadRequest("invalid action: "+req.Action))
 	}

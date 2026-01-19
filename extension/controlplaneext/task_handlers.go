@@ -4,16 +4,16 @@
 package controlplaneext
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"runtime"
 	"runtime/pprof"
-	"bytes"
 	"time"
 
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // heapDumpHandler handles heap dump tasks.
@@ -25,22 +25,22 @@ func (h *heapDumpHandler) Type() string {
 	return "heap_dump"
 }
 
-func (h *heapDumpHandler) Execute(ctx context.Context, task *controlplanev1.Task) (*controlplanev1.TaskResult, error) {
-	h.logger.Debug("Executing heap dump", zap.String("task_id", task.TaskID))
+func (h *heapDumpHandler) Execute(ctx context.Context, task *model.Task) (*model.TaskResult, error) {
+	h.logger.Debug("Executing heap dump", zap.String("task_id", task.ID))
 
 	var buf bytes.Buffer
 	if err := pprof.WriteHeapProfile(&buf); err != nil {
-		return &controlplanev1.TaskResult{
-			TaskID:            task.TaskID,
-			Status:            controlplanev1.TaskStatusFailed,
+		return &model.TaskResult{
+			TaskID:            task.ID,
+			Status:            model.TaskStatusFailed,
 			ErrorMessage:      "failed to write heap profile: " + err.Error(),
 			CompletedAtMillis: time.Now().UnixMilli(),
 		}, nil
 	}
 
-	return &controlplanev1.TaskResult{
-		TaskID:            task.TaskID,
-		Status:            controlplanev1.TaskStatusSuccess,
+	return &model.TaskResult{
+		TaskID:            task.ID,
+		Status:            model.TaskStatusSuccess,
 		ResultData:        buf.Bytes(),
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}, nil
@@ -55,16 +55,16 @@ func (h *threadDumpHandler) Type() string {
 	return "thread_dump"
 }
 
-func (h *threadDumpHandler) Execute(ctx context.Context, task *controlplanev1.Task) (*controlplanev1.TaskResult, error) {
-	h.logger.Debug("Executing thread dump", zap.String("task_id", task.TaskID))
+func (h *threadDumpHandler) Execute(ctx context.Context, task *model.Task) (*model.TaskResult, error) {
+	h.logger.Debug("Executing thread dump", zap.String("task_id", task.ID))
 
 	// Get all goroutine stacks
 	buf := make([]byte, 1024*1024) // 1MB buffer
 	n := runtime.Stack(buf, true)  // true = all goroutines
-	
-	return &controlplanev1.TaskResult{
-		TaskID:            task.TaskID,
-		Status:            controlplanev1.TaskStatusSuccess,
+
+	return &model.TaskResult{
+		TaskID:            task.ID,
+		Status:            model.TaskStatusSuccess,
 		ResultData:        buf[:n],
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}, nil
@@ -79,8 +79,8 @@ func (h *configExportHandler) Type() string {
 	return "config_export"
 }
 
-func (h *configExportHandler) Execute(ctx context.Context, task *controlplanev1.Task) (*controlplanev1.TaskResult, error) {
-	h.logger.Debug("Executing config export", zap.String("task_id", task.TaskID))
+func (h *configExportHandler) Execute(ctx context.Context, task *model.Task) (*model.TaskResult, error) {
+	h.logger.Debug("Executing config export", zap.String("task_id", task.ID))
 
 	// Export runtime information
 	info := map[string]any{
@@ -102,17 +102,17 @@ func (h *configExportHandler) Execute(ctx context.Context, task *controlplanev1.
 
 	data, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
-		return &controlplanev1.TaskResult{
-			TaskID:            task.TaskID,
-			Status:            controlplanev1.TaskStatusFailed,
+		return &model.TaskResult{
+			TaskID:            task.ID,
+			Status:            model.TaskStatusFailed,
 			ErrorMessage:      "failed to marshal config: " + err.Error(),
 			CompletedAtMillis: time.Now().UnixMilli(),
 		}, nil
 	}
 
-	return &controlplanev1.TaskResult{
-		TaskID:            task.TaskID,
-		Status:            controlplanev1.TaskStatusSuccess,
+	return &model.TaskResult{
+		TaskID:            task.ID,
+		Status:            model.TaskStatusSuccess,
 		ResultData:        data,
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}, nil

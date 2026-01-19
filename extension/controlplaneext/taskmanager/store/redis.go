@@ -16,7 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // Redis key patterns
@@ -33,9 +33,11 @@ const (
 )
 
 // RedisTaskStore implements TaskStore using Redis as backend.
+// Uses model-only storage format (no v1/v2 migration).
 type RedisTaskStore struct {
-	logger    *zap.Logger
-	client    redis.UniversalClient
+	logger *zap.Logger
+	client redis.UniversalClient
+
 	keyPrefix string
 	ttl       time.Duration
 
@@ -48,6 +50,7 @@ func NewRedisTaskStore(logger *zap.Logger, client redis.UniversalClient, keyPref
 	if keyPrefix == "" {
 		keyPrefix = "otel:tasks"
 	}
+
 	return &RedisTaskStore{
 		logger:    logger,
 		client:    client,
@@ -116,13 +119,16 @@ func (s *RedisTaskStore) SaveTaskInfo(ctx context.Context, info *TaskInfo, isNew
 	if err != nil {
 		return err
 	}
+	if info == nil || info.Task == nil {
+		return errors.New("task info/task is nil")
+	}
 
 	data, err := json.Marshal(info)
 	if err != nil {
 		return fmt.Errorf("marshal task info: %w", err)
 	}
 
-	key := s.detailKey(info.Task.TaskID)
+	key := s.detailKey(info.Task.ID)
 
 	if isNew {
 		ok, err := client.SetNX(ctx, key, data, s.ttl).Result()
@@ -130,7 +136,7 @@ func (s *RedisTaskStore) SaveTaskInfo(ctx context.Context, info *TaskInfo, isNew
 			return fmt.Errorf("save task info: %w", err)
 		}
 		if !ok {
-			return errors.New("task already exists: " + info.Task.TaskID)
+			return errors.New("task already exists: " + info.Task.ID)
 		}
 		return nil
 	}
@@ -145,7 +151,8 @@ func (s *RedisTaskStore) GetTaskInfo(ctx context.Context, taskID string) (*TaskI
 		return nil, err
 	}
 
-	data, err := client.Get(ctx, s.detailKey(taskID)).Result()
+	key := s.detailKey(taskID)
+	data, err := client.Get(ctx, key).Result()
 	if err == redis.Nil {
 		return nil, nil
 	}
@@ -223,7 +230,7 @@ func (s *RedisTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upda
 		// Step 1: Read current state (fresh on each retry)
 		data, err := client.Get(ctx, key).Result()
 		if err == redis.Nil {
-			return errors.New("task not found: " + taskID)
+			return TaskNotFound(taskID)
 		}
 		if err != nil {
 			return fmt.Errorf("get task info: %w", err)
@@ -238,9 +245,7 @@ func (s *RedisTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upda
 		currentStatus := info.Status
 
 		// Step 2: Apply updater (in-memory modification)
-		// The updater receives fresh data on each retry
 		if err := updater(&info); err != nil {
-			// If updater says no update needed, return success
 			if errors.Is(err, ErrNoUpdateNeeded) {
 				return nil
 			}
@@ -270,14 +275,13 @@ func (s *RedisTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upda
 				zap.Int("attempt", attempt+1),
 				zap.Int("max_retries", maxRetries),
 				zap.Int64("expected_version", expectedVersion),
-				zap.String("current_status", currentStatus.String()),
+				zap.Int32("current_status", int32(currentStatus)),
 			)
 			// Exponential backoff with jitter
 			backoff := time.Duration(1<<uint(attempt)) * baseBackoff
 			if backoff > maxBackoff {
 				backoff = maxBackoff
 			}
-			// Add jitter (0-50% of backoff)
 			jitter := time.Duration(rand.Int63n(int64(backoff / 2)))
 			select {
 			case <-ctx.Done():
@@ -286,7 +290,7 @@ func (s *RedisTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upda
 			}
 			continue
 		case -1: // Not found (deleted between read and write)
-			return errors.New("task not found: " + taskID)
+			return TaskNotFound(taskID)
 		default:
 			return fmt.Errorf("unexpected script result: %d", result)
 		}
@@ -301,6 +305,9 @@ func (s *RedisTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upda
 // Return: {code, agent_id, status}
 // code:  1=updated, 2=noop, -1=not found, -2=rejected
 // status: task's current status snapshot (after update for code=1, otherwise current)
+//
+// model.TaskStatus numeric values:
+// pending=1 running=2 success=3 failed=4 timeout=5 cancelled=6 result_too_large=7
 var applyTaskResultScript = redis.NewScript(`
 local current = redis.call('GET', KEYS[1])
 if not current then
@@ -316,7 +323,7 @@ local result_json = ARGV[4]
 local ttl = tonumber(ARGV[5])
 
 local function is_terminal(s)
-    return s == 1 or s == 2 or s == 3 or s == 4
+    return s == 3 or s == 4 or s == 5 or s == 6 or s == 7
 end
 
 local existing_agent = info.agent_id
@@ -333,7 +340,7 @@ if cur == new then
 end
 
 -- Reject rollback RUNNING -> PENDING.
-if cur == 6 and new == 5 then
+if cur == 2 and new == 1 then
     return {-2, existing_agent, cur}
 end
 
@@ -349,7 +356,7 @@ if agent and agent ~= '' then
     end
 end
 
-if new == 6 then
+if new == 2 then
     local started = tonumber(info.started_at_millis) or 0
     if started == 0 then
         info.started_at_millis = now
@@ -386,14 +393,14 @@ local now = tonumber(ARGV[1])
 local ttl = tonumber(ARGV[2])
 
 local function is_terminal(s)
-    return s == 1 or s == 2 or s == 3 or s == 4
+    return s == 3 or s == 4 or s == 5 or s == 6 or s == 7
 end
 
 local existing_agent = info.agent_id
 if not existing_agent then existing_agent = '' end
 
 -- Idempotent: already cancelled.
-if cur == 4 then
+if cur == 6 then
     return {2, existing_agent, cur}
 end
 
@@ -402,7 +409,7 @@ if is_terminal(cur) then
     return {-2, existing_agent, cur}
 end
 
-info.status = 4
+info.status = 6
 info.last_updated_at_millis = now
 info.version = (tonumber(info.version) or 0) + 1
 
@@ -415,7 +422,7 @@ end
 
 local after_agent = info.agent_id
 if not after_agent then after_agent = '' end
-return {1, after_agent, 4}
+return {1, after_agent, 6}
 `)
 
 // applySetRunningScript atomically sets a task to RUNNING in the task detail record.
@@ -433,14 +440,14 @@ local agent = ARGV[2]
 local ttl = tonumber(ARGV[3])
 
 local function is_terminal(s)
-    return s == 1 or s == 2 or s == 3 or s == 4
+    return s == 3 or s == 4 or s == 5 or s == 6 or s == 7
 end
 
 local existing_agent = info.agent_id
 if not existing_agent then existing_agent = '' end
 
 -- Idempotent.
-if cur == 6 then
+if cur == 2 then
     return {2, existing_agent, cur}
 end
 
@@ -449,7 +456,7 @@ if is_terminal(cur) then
     return {-2, existing_agent, cur}
 end
 
-info.status = 6
+info.status = 2
 info.last_updated_at_millis = now
 info.version = (tonumber(info.version) or 0) + 1
 
@@ -471,7 +478,7 @@ end
 
 local after_agent = info.agent_id
 if not after_agent then after_agent = '' end
-return {1, after_agent, 6}
+return {1, after_agent, 2}
 `)
 
 func parseApplyReply(reply []any) (ApplyTaskUpdateResult, error) {
@@ -507,12 +514,12 @@ func parseApplyReply(reply []any) (ApplyTaskUpdateResult, error) {
 
 	return ApplyTaskUpdateResult{
 		Code:    ApplyTaskUpdateCode(codeNum),
-		Status:  controlplanev1.TaskStatus(statusNum),
+		Status:  model.TaskStatus(statusNum),
 		AgentID: agentID,
 	}, nil
 }
 
-func (s *RedisTaskStore) ApplyTaskResult(ctx context.Context, taskID string, result *controlplanev1.TaskResult, nowMillis int64) (ApplyTaskUpdateResult, error) {
+func (s *RedisTaskStore) ApplyTaskResult(ctx context.Context, taskID string, result *model.TaskResult, nowMillis int64) (ApplyTaskUpdateResult, error) {
 	client, err := s.getClient()
 	if err != nil {
 		return ApplyTaskUpdateResult{}, err
@@ -522,6 +529,7 @@ func (s *RedisTaskStore) ApplyTaskResult(ctx context.Context, taskID string, res
 	}
 
 	key := s.detailKey(taskID)
+
 	resultBytes, err := json.Marshal(result)
 	if err != nil {
 		return ApplyTaskUpdateResult{}, fmt.Errorf("marshal task result: %w", err)
@@ -541,6 +549,7 @@ func (s *RedisTaskStore) ApplyTaskResult(ctx context.Context, taskID string, res
 	if res.Code == -1 {
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
 	}
+
 	return res, nil
 }
 
@@ -552,6 +561,7 @@ func (s *RedisTaskStore) ApplyCancel(ctx context.Context, taskID string, nowMill
 
 	key := s.detailKey(taskID)
 	ttlSeconds := int64(s.ttl.Seconds())
+
 	reply, err := applyCancelScript.Run(ctx, client, []string{key}, nowMillis, ttlSeconds).Slice()
 	if err != nil {
 		return ApplyTaskUpdateResult{}, fmt.Errorf("execute applyCancel script: %w", err)
@@ -564,6 +574,7 @@ func (s *RedisTaskStore) ApplyCancel(ctx context.Context, taskID string, nowMill
 	if res.Code == -1 {
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
 	}
+
 	return res, nil
 }
 
@@ -575,6 +586,7 @@ func (s *RedisTaskStore) ApplySetRunning(ctx context.Context, taskID string, age
 
 	key := s.detailKey(taskID)
 	ttlSeconds := int64(s.ttl.Seconds())
+
 	reply, err := applySetRunningScript.Run(ctx, client, []string{key}, nowMillis, agentID, ttlSeconds).Slice()
 	if err != nil {
 		return ApplyTaskUpdateResult{}, fmt.Errorf("execute applySetRunning script: %w", err)
@@ -587,6 +599,7 @@ func (s *RedisTaskStore) ApplySetRunning(ctx context.Context, taskID string, age
 	if res.Code == -1 {
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
 	}
+
 	return res, nil
 }
 
@@ -598,34 +611,40 @@ func (s *RedisTaskStore) ListTaskInfos(ctx context.Context) ([]*TaskInfo, error)
 		return nil, err
 	}
 
-	pattern := fmt.Sprintf("%s:detail:*", s.keyPrefix)
 	const batchSize = 200
 
-	var tasks []*TaskInfo
-	var keyBatch []string
+	pattern := fmt.Sprintf("%s:detail:*", s.keyPrefix)
+	result := make([]*TaskInfo, 0, 256)
 
+	var keyBatch []string
 	iter := client.Scan(ctx, 0, pattern, 100).Iterator()
 	for iter.Next(ctx) {
 		keyBatch = append(keyBatch, iter.Val())
-
 		if len(keyBatch) >= batchSize {
-			batchTasks := s.fetchTaskBatch(ctx, client, keyBatch)
-			tasks = append(tasks, batchTasks...)
+			result = s.appendTaskBatch(ctx, client, keyBatch, result)
 			keyBatch = keyBatch[:0]
 		}
 	}
-
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("scan task keys: %w", err)
 	}
 
-	// Process remaining keys
 	if len(keyBatch) > 0 {
-		batchTasks := s.fetchTaskBatch(ctx, client, keyBatch)
-		tasks = append(tasks, batchTasks...)
+		result = s.appendTaskBatch(ctx, client, keyBatch, result)
 	}
 
-	return tasks, nil
+	return result, nil
+}
+
+func (s *RedisTaskStore) appendTaskBatch(ctx context.Context, client redis.UniversalClient, keys []string, result []*TaskInfo) []*TaskInfo {
+	batch := s.fetchTaskBatch(ctx, client, keys)
+	for _, info := range batch {
+		if info == nil || info.Task == nil {
+			continue
+		}
+		result = append(result, info)
+	}
+	return result
 }
 
 func (s *RedisTaskStore) fetchTaskBatch(ctx context.Context, client redis.UniversalClient, keys []string) []*TaskInfo {
@@ -708,10 +727,11 @@ func (s *RedisTaskStore) DequeueTask(ctx context.Context, queueID string, timeou
 		return "", fmt.Errorf("dequeue task: %w", err)
 	}
 
-	if len(results) >= 2 {
-		return s.resolveQueueItem(results[1]), nil
+	if len(results) < 2 {
+		return "", nil
 	}
-	return "", nil
+
+	return s.resolveQueueItem(results[1]), nil
 }
 
 // DequeueTaskMulti implements TaskStore.
@@ -721,49 +741,34 @@ func (s *RedisTaskStore) DequeueTaskMulti(ctx context.Context, queueIDs []string
 		return "", err
 	}
 
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		// Try each queue in order (non-blocking)
-		for _, queueID := range queueIDs {
-			result, err := client.RPop(ctx, s.queueKey(queueID)).Result()
-			if err == nil {
-				return s.resolveQueueItem(result), nil
-			}
-			if err != redis.Nil {
-				return "", fmt.Errorf("dequeue task: %w", err)
-			}
-		}
-
-		// Wait with blocking on the last queue
-		remainingTimeout := time.Until(deadline)
-		if remainingTimeout <= 0 {
-			break
-		}
-		if remainingTimeout > time.Second {
-			remainingTimeout = time.Second
-		}
-
-		// Block on all queues
-		keys := make([]string, len(queueIDs))
-		for i, queueID := range queueIDs {
-			keys[i] = s.queueKey(queueID)
-		}
-
-		results, err := client.BRPop(ctx, remainingTimeout, keys...).Result()
-		if err == redis.Nil {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("dequeue task: %w", err)
-		}
-
-		if len(results) >= 2 {
-			return s.resolveQueueItem(results[1]), nil
-		}
+	keys := make([]string, 0, len(queueIDs))
+	for _, queueID := range queueIDs {
+		keys = append(keys, s.queueKey(queueID))
 	}
 
-	return "", nil
+	results, err := client.BRPop(ctx, timeout, keys...).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("dequeue task: %w", err)
+	}
+
+	if len(results) < 2 {
+		return "", nil
+	}
+
+	taskID := s.resolveQueueItem(results[1])
+	if taskID == "" {
+		return "", nil
+	}
+
+	// Best-effort cross-queue de-dup.
+	if len(queueIDs) > 0 {
+		_ = s.RemoveFromAllQueues(ctx, taskID, queueIDs[0])
+	}
+
+	return taskID, nil
 }
 
 // resolveQueueItem handles both new format (task_id) and legacy format (JSON).
@@ -775,12 +780,12 @@ func (s *RedisTaskStore) resolveQueueItem(value string) string {
 
 	// Check if it's legacy JSON format
 	if strings.HasPrefix(value, "{") {
-		var task controlplanev1.Task
+		var task model.Task
 		if err := json.Unmarshal([]byte(value), &task); err != nil {
 			s.logger.Warn("Failed to unmarshal legacy queue item", zap.Error(err))
 			return ""
 		}
-		return task.TaskID
+		return task.ID
 	}
 
 	return value
@@ -795,16 +800,20 @@ func (s *RedisTaskStore) PeekQueue(ctx context.Context, queueID string) ([]strin
 
 	results, err := client.LRange(ctx, s.queueKey(queueID), 0, -1).Result()
 	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("peek queue: %w", err)
 	}
 
-	taskIDs := make([]string, 0, len(results))
+	out := make([]string, 0, len(results))
 	for _, item := range results {
 		if taskID := s.resolveQueueItem(item); taskID != "" {
-			taskIDs = append(taskIDs, taskID)
+			out = append(out, taskID)
 		}
 	}
-	return taskIDs, nil
+
+	return out, nil
 }
 
 // RemoveFromQueue implements TaskStore.
@@ -825,15 +834,11 @@ func (s *RedisTaskStore) RemoveFromAllQueues(ctx context.Context, taskID string,
 	}
 
 	pipe := client.TxPipeline()
-
 	// Remove from global queue
-	globalKey := s.queueKey(QueueGlobal)
-	pipe.LRem(ctx, globalKey, 0, taskID)
-
+	pipe.LRem(ctx, s.queueKey(QueueGlobal), 0, taskID)
 	// Remove from agent queue
 	if agentID != "" {
-		agentKey := s.queueKey(agentID)
-		pipe.LRem(ctx, agentKey, 0, taskID)
+		pipe.LRem(ctx, s.queueKey(agentID), 0, taskID)
 	}
 
 	_, err = pipe.Exec(ctx)
@@ -843,10 +848,13 @@ func (s *RedisTaskStore) RemoveFromAllQueues(ctx context.Context, taskID string,
 // ===== Result Operations =====
 
 // SaveResult implements TaskStore.
-func (s *RedisTaskStore) SaveResult(ctx context.Context, result *controlplanev1.TaskResult) error {
+func (s *RedisTaskStore) SaveResult(ctx context.Context, result *model.TaskResult) error {
 	client, err := s.getClient()
 	if err != nil {
 		return err
+	}
+	if result == nil {
+		return errors.New("result is nil")
 	}
 
 	data, err := json.Marshal(result)
@@ -858,7 +866,7 @@ func (s *RedisTaskStore) SaveResult(ctx context.Context, result *controlplanev1.
 }
 
 // GetResult implements TaskStore.
-func (s *RedisTaskStore) GetResult(ctx context.Context, taskID string) (*controlplanev1.TaskResult, bool, error) {
+func (s *RedisTaskStore) GetResult(ctx context.Context, taskID string) (*model.TaskResult, bool, error) {
 	client, err := s.getClient()
 	if err != nil {
 		return nil, false, err
@@ -872,11 +880,10 @@ func (s *RedisTaskStore) GetResult(ctx context.Context, taskID string) (*control
 		return nil, false, fmt.Errorf("get result: %w", err)
 	}
 
-	var result controlplanev1.TaskResult
+	var result model.TaskResult
 	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		return nil, false, fmt.Errorf("unmarshal result: %w", err)
 	}
-
 	return &result, true, nil
 }
 

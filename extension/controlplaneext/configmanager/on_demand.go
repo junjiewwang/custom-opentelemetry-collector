@@ -16,7 +16,12 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
+)
+
+const (
+	// DefaultConfigDataId is the fallback config data ID within a group.
+	DefaultConfigDataId = "_default_"
 )
 
 // OnDemandConfig holds configuration for OnDemandConfigManager.
@@ -54,70 +59,15 @@ func DefaultOnDemandConfig() OnDemandConfig {
 
 // AgentConfigEntry represents a cached config entry for an agent.
 type AgentConfigEntry struct {
-	Config      *controlplanev1.AgentConfig
-	Token       string
-	AgentID     string
-	LoadedAt    time.Time
-	LastAccess  time.Time
-	Version     string
-	LoadError   error
-	IsWatching  bool
-	IsDefault   bool // True if this is the default config for the token
-}
-
-// AgentConfigChangeEvent represents a config change event for an agent.
-type AgentConfigChangeEvent struct {
-	Type      string // "created", "updated", "deleted"
-	Token     string
-	AgentID   string
-	OldConfig *controlplanev1.AgentConfig
-	NewConfig *controlplanev1.AgentConfig
-	Timestamp time.Time
-}
-
-// AgentConfigChangeCallback is called when an agent's config changes.
-type AgentConfigChangeCallback func(event *AgentConfigChangeEvent)
-
-// OnDemandConfigManager implements on-demand config loading.
-// Configs are loaded when agents connect and released when they disconnect.
-type OnDemandConfigManager interface {
-	ConfigManager
-
-	// RegisterAgent registers an agent and starts watching its config.
-	// Returns the agent's config (or nil if not found, agent should use default).
-	RegisterAgent(ctx context.Context, token, agentID string) (*controlplanev1.AgentConfig, error)
-
-	// UnregisterAgent unregisters an agent and releases its resources.
-	UnregisterAgent(ctx context.Context, token, agentID string) error
-
-	// GetConfigForAgent returns config for a specific agent.
-	// If no specific config exists, returns the default config for the token.
-	// If no default config exists, returns nil (agent should use local default).
-	GetConfigForAgent(ctx context.Context, token, agentID string) (*controlplanev1.AgentConfig, error)
-
-	// SetConfigForAgent sets/updates config for a specific agent.
-	SetConfigForAgent(ctx context.Context, token, agentID string, config *controlplanev1.AgentConfig) error
-
-	// SetDefaultConfig sets the default config for a token (all agents under this token).
-	SetDefaultConfig(ctx context.Context, token string, config *controlplanev1.AgentConfig) error
-
-	// GetDefaultConfig returns the default config for a token.
-	GetDefaultConfig(ctx context.Context, token string) (*controlplanev1.AgentConfig, error)
-
-	// DeleteConfigForAgent deletes config for a specific agent.
-	DeleteConfigForAgent(ctx context.Context, token, agentID string) error
-
-	// SubscribeAgentConfig subscribes to config changes for a specific agent.
-	SubscribeAgentConfig(token, agentID string, callback AgentConfigChangeCallback)
-
-	// UnsubscribeAgentConfig unsubscribes from config changes.
-	UnsubscribeAgentConfig(token, agentID string)
-
-	// GetRegisteredAgents returns all registered agents.
-	GetRegisteredAgents() map[string][]string // token -> []agentID
-
-	// GetCacheStats returns cache statistics.
-	GetCacheStats() *OnDemandCacheStats
+	Config     *model.AgentConfig
+	Token      string
+	AgentID    string
+	LoadedAt   time.Time
+	LastAccess time.Time
+	Version    string
+	LoadError  error
+	IsWatching bool
+	IsDefault  bool // True if this is the default config for the token
 }
 
 // OnDemandCacheStats holds cache statistics.
@@ -131,6 +81,7 @@ type OnDemandCacheStats struct {
 }
 
 // NacosOnDemandConfigManager implements OnDemandConfigManager using Nacos.
+// Uses model.AgentConfig as the canonical type.
 type NacosOnDemandConfigManager struct {
 	logger *zap.Logger
 	config OnDemandConfig
@@ -147,9 +98,9 @@ type NacosOnDemandConfigManager struct {
 	// Key: "token:agentId", Value: []AgentConfigChangeCallback
 	agentSubscribers sync.Map
 
-	// Legacy subscribers for ConfigManager interface.
-	legacySubscribers []ConfigChangeCallback
-	legacyMu          sync.RWMutex
+	// Subscribers for ConfigManager interface.
+	subscribers []ConfigChangeCallback
+	subMu       sync.RWMutex
 
 	// Stats
 	cacheHits       atomic.Int64
@@ -167,6 +118,7 @@ type NacosOnDemandConfigManager struct {
 func NewNacosOnDemandConfigManager(
 	logger *zap.Logger,
 	config OnDemandConfig,
+	_ interface{}, // Unused migration config (kept for compatibility during transition)
 	client config_client.IConfigClient,
 ) (*NacosOnDemandConfigManager, error) {
 	if client == nil {
@@ -191,11 +143,11 @@ func NewNacosOnDemandConfigManager(
 	}
 
 	return &NacosOnDemandConfigManager{
-		logger:            logger,
-		config:            config,
-		client:            client,
-		legacySubscribers: make([]ConfigChangeCallback, 0),
-		stopCh:            make(chan struct{}),
+		logger:      logger,
+		config:      config,
+		client:      client,
+		subscribers: make([]ConfigChangeCallback, 0),
+		stopCh:      make(chan struct{}),
 	}, nil
 }
 
@@ -293,7 +245,7 @@ func (m *NacosOnDemandConfigManager) cacheKey(token, agentID string) string {
 }
 
 // RegisterAgent registers an agent and starts watching its config.
-func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, token, agentID string) (*controlplanev1.AgentConfig, error) {
+func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, token, agentID string) (*model.AgentConfig, error) {
 	if token == "" || agentID == "" {
 		return nil, errors.New("token and agentID are required")
 	}
@@ -381,7 +333,7 @@ func (m *NacosOnDemandConfigManager) UnregisterAgent(ctx context.Context, token,
 }
 
 // GetConfigForAgent returns config for a specific agent.
-func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, token, agentID string) (*controlplanev1.AgentConfig, error) {
+func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, token, agentID string) (*model.AgentConfig, error) {
 	if token == "" || agentID == "" {
 		return nil, errors.New("token and agentID are required")
 	}
@@ -424,13 +376,11 @@ func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, toke
 }
 
 // loadConfig loads config from Nacos with caching.
-func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, dataID string) (*controlplanev1.AgentConfig, error) {
+func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, dataID string) (*model.AgentConfig, error) {
 	key := m.cacheKey(token, dataID)
 
-	// Load with timeout and retry
-	var content string
-	var err error
-
+	// Load with retry
+	var lastErr error
 	for retry := 0; retry <= m.config.MaxRetries; retry++ {
 		if retry > 0 {
 			select {
@@ -440,45 +390,45 @@ func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, data
 			}
 		}
 
-		content, err = m.loadConfigContent(ctx, token, dataID)
-		if err == nil {
-			break
+		content, err := m.loadConfigContent(ctx, token, dataID)
+		if err != nil {
+			lastErr = err
+			continue
 		}
+		if content == "" {
+			return nil, errors.New("config not found")
+		}
+
+		var cfg model.AgentConfig
+		if err := json.Unmarshal([]byte(content), &cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse config: %w", err)
+		}
+		m.cacheConfig(token, dataID, &cfg)
+		return &cfg, nil
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config %s: %w", key, err)
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to load config %s: %w", key, lastErr)
 	}
+	return nil, errors.New("config not found")
+}
 
-	if content == "" {
-		return nil, errors.New("config not found")
+func (m *NacosOnDemandConfigManager) cacheConfig(token, dataID string, cfg *model.AgentConfig) {
+	if cfg == nil {
+		return
 	}
-
-	// Parse config
-	var config controlplanev1.AgentConfig
-	if err := json.Unmarshal([]byte(content), &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config: %w", err)
-	}
-
-	// Cache it
-	entry := &AgentConfigEntry{
-		Config:     &config,
+	key := m.cacheKey(token, dataID)
+	m.configCache.Store(key, &AgentConfigEntry{
+		Config:     cfg,
 		Token:      token,
 		AgentID:    dataID,
 		LoadedAt:   time.Now(),
 		LastAccess: time.Now(),
-		Version:    config.ConfigVersion,
+		Version:    cfg.Version.Version,
 		IsDefault:  dataID == DefaultConfigDataId,
-	}
-	m.configCache.Store(key, entry)
+	})
 
-	m.logger.Debug("Config loaded and cached",
-		zap.String("token", token),
-		zap.String("data_id", dataID),
-		zap.String("version", config.ConfigVersion),
-	)
-
-	return &config, nil
+	m.logger.Debug("Config loaded and cached", zap.String("token", token), zap.String("data_id", dataID), zap.String("version", cfg.Version.Version))
 }
 
 // loadConfigContent loads config content from Nacos with timeout.
@@ -508,33 +458,42 @@ func (m *NacosOnDemandConfigManager) loadConfigContent(ctx context.Context, grou
 }
 
 // SetConfigForAgent sets/updates config for a specific agent.
-func (m *NacosOnDemandConfigManager) SetConfigForAgent(ctx context.Context, token, agentID string, config *controlplanev1.AgentConfig) error {
+func (m *NacosOnDemandConfigManager) SetConfigForAgent(ctx context.Context, token, agentID string, config *model.AgentConfig) error {
+	if token == "" || agentID == "" {
+		return errors.New("token and agentID are required")
+	}
 	if config == nil {
 		return errors.New("config cannot be nil")
 	}
-
 	if err := m.validateConfig(config); err != nil {
 		return err
 	}
 
-	// Serialize config
 	data, err := json.Marshal(config)
 	if err != nil {
 		return err
 	}
 
-	// Publish to Nacos
+	if err := m.publishConfig(ctx, token, agentID, string(data)); err != nil {
+		return err
+	}
+
+	m.cacheConfig(token, agentID, config)
+	m.logger.Info("Config set for agent", zap.String("token", token), zap.String("agent_id", agentID), zap.String("version", config.Version.Version))
+	return nil
+}
+
+func (m *NacosOnDemandConfigManager) publishConfig(ctx context.Context, group, dataID, content string) error {
 	type result struct {
 		success bool
 		err     error
 	}
 	resultCh := make(chan result, 1)
-
 	go func() {
 		success, err := m.client.PublishConfig(vo.ConfigParam{
-			Group:   token,
-			DataId:  agentID,
-			Content: string(data),
+			Group:   group,
+			DataId:  dataID,
+			Content: content,
 			Type:    "json",
 		})
 		resultCh <- result{success: success, err: err}
@@ -550,54 +509,33 @@ func (m *NacosOnDemandConfigManager) SetConfigForAgent(ctx context.Context, toke
 		if !res.success {
 			return errors.New("failed to publish config to Nacos")
 		}
+		return nil
 	}
-
-	// Update cache
-	key := m.cacheKey(token, agentID)
-	entry := &AgentConfigEntry{
-		Config:     config,
-		Token:      token,
-		AgentID:    agentID,
-		LoadedAt:   time.Now(),
-		LastAccess: time.Now(),
-		Version:    config.ConfigVersion,
-		IsDefault:  agentID == DefaultConfigDataId,
-	}
-	m.configCache.Store(key, entry)
-
-	m.logger.Info("Config set for agent",
-		zap.String("token", token),
-		zap.String("agent_id", agentID),
-		zap.String("version", config.ConfigVersion),
-	)
-
-	return nil
 }
 
 // SetDefaultConfig sets the default config for a token.
-func (m *NacosOnDemandConfigManager) SetDefaultConfig(ctx context.Context, token string, config *controlplanev1.AgentConfig) error {
+func (m *NacosOnDemandConfigManager) SetDefaultConfig(ctx context.Context, token string, config *model.AgentConfig) error {
 	return m.SetConfigForAgent(ctx, token, DefaultConfigDataId, config)
 }
 
 // GetDefaultConfig returns the default config for a token.
-func (m *NacosOnDemandConfigManager) GetDefaultConfig(ctx context.Context, token string) (*controlplanev1.AgentConfig, error) {
+func (m *NacosOnDemandConfigManager) GetDefaultConfig(ctx context.Context, token string) (*model.AgentConfig, error) {
 	return m.GetConfigForAgent(ctx, token, DefaultConfigDataId)
 }
 
 // DeleteConfigForAgent deletes config for a specific agent.
 func (m *NacosOnDemandConfigManager) DeleteConfigForAgent(ctx context.Context, token, agentID string) error {
-	// Delete from Nacos
+	if token == "" || agentID == "" {
+		return errors.New("token and agentID are required")
+	}
+
 	type result struct {
 		success bool
 		err     error
 	}
 	resultCh := make(chan result, 1)
-
 	go func() {
-		success, err := m.client.DeleteConfig(vo.ConfigParam{
-			Group:  token,
-			DataId: agentID,
-		})
+		success, err := m.client.DeleteConfig(vo.ConfigParam{Group: token, DataId: agentID})
 		resultCh <- result{success: success, err: err}
 	}()
 
@@ -613,15 +551,8 @@ func (m *NacosOnDemandConfigManager) DeleteConfigForAgent(ctx context.Context, t
 		}
 	}
 
-	// Remove from cache
-	key := m.cacheKey(token, agentID)
-	m.configCache.Delete(key)
-
-	m.logger.Info("Config deleted for agent",
-		zap.String("token", token),
-		zap.String("agent_id", agentID),
-	)
-
+	m.configCache.Delete(m.cacheKey(token, agentID))
+	m.logger.Info("Config deleted for agent", zap.String("token", token), zap.String("agent_id", agentID))
 	return nil
 }
 
@@ -718,14 +649,14 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 	)
 
 	// Get old config
-	var oldConfig *controlplanev1.AgentConfig
+	var oldConfig *model.AgentConfig
 	if entry, ok := m.configCache.Load(key); ok {
 		e := entry.(*AgentConfigEntry)
 		oldConfig = e.Config
 	}
 
 	// Parse new config
-	var newConfig *controlplanev1.AgentConfig
+	var newConfig *model.AgentConfig
 	var eventType string
 
 	if data == "" {
@@ -737,7 +668,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 			e.LastAccess = time.Now()
 		}
 	} else {
-		var config controlplanev1.AgentConfig
+		var config model.AgentConfig
 		if err := json.Unmarshal([]byte(data), &config); err != nil {
 			m.logger.Error("Failed to parse changed config",
 				zap.String("token", token),
@@ -758,7 +689,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 		if entry, ok := m.configCache.Load(key); ok {
 			e := entry.(*AgentConfigEntry)
 			e.Config = newConfig
-			e.Version = config.ConfigVersion
+			e.Version = config.Version.Version
 			e.LastAccess = time.Now()
 			e.LoadedAt = time.Now()
 		} else {
@@ -768,7 +699,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 				AgentID:    dataID,
 				LoadedAt:   time.Now(),
 				LastAccess: time.Now(),
-				Version:    config.ConfigVersion,
+				Version:    config.Version.Version,
 				IsDefault:  dataID == DefaultConfigDataId,
 			})
 		}
@@ -781,7 +712,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 		AgentID:   dataID,
 		OldConfig: oldConfig,
 		NewConfig: newConfig,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UnixMilli(),
 	}
 
 	// Notify agent-specific subscribers
@@ -792,9 +723,9 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 		m.notifyAllAgentsForToken(token, event)
 	}
 
-	// Notify legacy subscribers
+	// Notify ConfigManager subscribers
 	if newConfig != nil {
-		m.notifyLegacySubscribers(oldConfig, newConfig)
+		m.notifySubscribers(oldConfig, newConfig)
 	}
 }
 
@@ -829,12 +760,12 @@ func (m *NacosOnDemandConfigManager) notifyAllAgentsForToken(token string, event
 	}
 }
 
-// notifyLegacySubscribers notifies legacy ConfigManager subscribers.
-func (m *NacosOnDemandConfigManager) notifyLegacySubscribers(oldConfig, newConfig *controlplanev1.AgentConfig) {
-	m.legacyMu.RLock()
-	subscribers := make([]ConfigChangeCallback, len(m.legacySubscribers))
-	copy(subscribers, m.legacySubscribers)
-	m.legacyMu.RUnlock()
+// notifySubscribers notifies ConfigManager subscribers.
+func (m *NacosOnDemandConfigManager) notifySubscribers(oldConfig, newConfig *model.AgentConfig) {
+	m.subMu.RLock()
+	subscribers := make([]ConfigChangeCallback, len(m.subscribers))
+	copy(subscribers, m.subscribers)
+	m.subMu.RUnlock()
 
 	for _, sub := range subscribers {
 		sub(oldConfig, newConfig)
@@ -913,9 +844,9 @@ func (m *NacosOnDemandConfigManager) GetCacheStats() *OnDemandCacheStats {
 // ConfigManager interface implementation
 // ============================================================================
 
-// GetConfig returns any available config (for legacy compatibility).
-func (m *NacosOnDemandConfigManager) GetConfig(ctx context.Context) (*controlplanev1.AgentConfig, error) {
-	var firstConfig *controlplanev1.AgentConfig
+// GetConfig returns any available config (for compatibility).
+func (m *NacosOnDemandConfigManager) GetConfig(ctx context.Context) (*model.AgentConfig, error) {
+	var firstConfig *model.AgentConfig
 
 	m.configCache.Range(func(_, value interface{}) bool {
 		entry := value.(*AgentConfigEntry)
@@ -933,8 +864,8 @@ func (m *NacosOnDemandConfigManager) GetConfig(ctx context.Context) (*controlpla
 	return nil, errors.New("no config available")
 }
 
-// UpdateConfig updates config (for legacy compatibility).
-func (m *NacosOnDemandConfigManager) UpdateConfig(ctx context.Context, config *controlplanev1.AgentConfig) error {
+// UpdateConfig updates config (for compatibility).
+func (m *NacosOnDemandConfigManager) UpdateConfig(ctx context.Context, config *model.AgentConfig) error {
 	// Find first token and update default config
 	var firstToken string
 
@@ -950,15 +881,15 @@ func (m *NacosOnDemandConfigManager) UpdateConfig(ctx context.Context, config *c
 	return m.SetDefaultConfig(ctx, firstToken, config)
 }
 
-// Watch starts watching for config changes (legacy interface).
+// Watch starts watching for config changes (ConfigManager interface).
 func (m *NacosOnDemandConfigManager) Watch(ctx context.Context, callback ConfigChangeCallback) error {
-	m.legacyMu.Lock()
-	m.legacySubscribers = append(m.legacySubscribers, callback)
-	m.legacyMu.Unlock()
+	m.subMu.Lock()
+	m.subscribers = append(m.subscribers, callback)
+	m.subMu.Unlock()
 	return nil
 }
 
-// StopWatch stops watching (legacy interface).
+// StopWatch stops watching (ConfigManager interface).
 func (m *NacosOnDemandConfigManager) StopWatch() error {
 	// Cancel all watches
 	m.configCache.Range(func(key, value interface{}) bool {
@@ -972,11 +903,11 @@ func (m *NacosOnDemandConfigManager) StopWatch() error {
 	return nil
 }
 
-// Subscribe registers a callback (legacy interface).
+// Subscribe registers a callback (ConfigManager interface).
 func (m *NacosOnDemandConfigManager) Subscribe(callback ConfigChangeCallback) {
-	m.legacyMu.Lock()
-	defer m.legacyMu.Unlock()
-	m.legacySubscribers = append(m.legacySubscribers, callback)
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	m.subscribers = append(m.subscribers, callback)
 }
 
 // Close releases resources.
@@ -999,13 +930,13 @@ func (m *NacosOnDemandConfigManager) Close() error {
 }
 
 // validateConfig validates config.
-func (m *NacosOnDemandConfigManager) validateConfig(config *controlplanev1.AgentConfig) error {
-	if config.ConfigVersion == "" {
-		return errors.New("config_version is required")
+func (m *NacosOnDemandConfigManager) validateConfig(config *model.AgentConfig) error {
+	if config.Version.Version == "" {
+		return errors.New("version.version is required")
 	}
 
 	if config.Sampler != nil {
-		if config.Sampler.Type == controlplanev1.SamplerTypeTraceIDRatio {
+		if config.Sampler.Type == model.SamplerTypeTraceIDRatio {
 			if config.Sampler.Ratio < 0 || config.Sampler.Ratio > 1 {
 				return errors.New("sampler ratio must be between 0 and 1")
 			}

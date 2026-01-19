@@ -7,25 +7,25 @@ import (
 	"context"
 	"time"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // TaskManager defines the interface for task management.
 type TaskManager interface {
 	// SubmitTask submits a task to the queue.
-	SubmitTask(ctx context.Context, task *controlplanev1.Task) error
+	SubmitTask(ctx context.Context, task *model.Task) error
 
 	// SubmitTaskForAgent submits a task for a specific agent.
-	SubmitTaskForAgent(ctx context.Context, agentMeta *AgentMeta, task *controlplanev1.Task) error
+	SubmitTaskForAgent(ctx context.Context, agentMeta *AgentMeta, task *model.Task) error
 
 	// FetchTask fetches the next task for an agent (blocking with timeout).
-	FetchTask(ctx context.Context, agentID string, timeout time.Duration) (*controlplanev1.Task, error)
+	FetchTask(ctx context.Context, agentID string, timeout time.Duration) (*model.Task, error)
 
 	// GetPendingTasks returns all pending tasks for an agent.
-	GetPendingTasks(ctx context.Context, agentID string) ([]*controlplanev1.Task, error)
+	GetPendingTasks(ctx context.Context, agentID string) ([]*model.Task, error)
 
 	// GetGlobalPendingTasks returns all pending tasks in the global queue.
-	GetGlobalPendingTasks(ctx context.Context) ([]*controlplanev1.Task, error)
+	GetGlobalPendingTasks(ctx context.Context) ([]*model.Task, error)
 
 	// GetAllTasks returns all tasks (from detail storage, including all statuses).
 	GetAllTasks(ctx context.Context) ([]*TaskInfo, error)
@@ -37,10 +37,10 @@ type TaskManager interface {
 	IsTaskCancelled(ctx context.Context, taskID string) (bool, error)
 
 	// ReportTaskResult reports the result of a task execution.
-	ReportTaskResult(ctx context.Context, result *controlplanev1.TaskResult) error
+	ReportTaskResult(ctx context.Context, result *model.TaskResult) error
 
 	// GetTaskResult retrieves the result of a task.
-	GetTaskResult(ctx context.Context, taskID string) (*controlplanev1.TaskResult, bool, error)
+	GetTaskResult(ctx context.Context, taskID string) (*model.TaskResult, bool, error)
 
 	// GetTaskStatus retrieves the status of a task.
 	GetTaskStatus(ctx context.Context, taskID string) (*TaskInfo, error)
@@ -57,14 +57,14 @@ type TaskManager interface {
 
 // TaskInfo contains detailed task information.
 type TaskInfo struct {
-	Task            *controlplanev1.Task       `json:"task"`
-	Status          controlplanev1.TaskStatus  `json:"status"`
-	AgentID         string                     `json:"agent_id,omitempty"`
-	AppID           string                     `json:"app_id,omitempty"`
-	ServiceName     string                     `json:"service_name,omitempty"`
-	CreatedAtMillis int64                      `json:"created_at_millis"`
-	StartedAtMillis int64                      `json:"started_at_millis,omitempty"`
-	Result          *controlplanev1.TaskResult `json:"result,omitempty"`
+	Task            *model.Task       `json:"task"`
+	Status          model.TaskStatus  `json:"status"`
+	AgentID         string            `json:"agent_id,omitempty"`
+	AppID           string            `json:"app_id,omitempty"`
+	ServiceName     string            `json:"service_name,omitempty"`
+	CreatedAtMillis int64             `json:"created_at_millis"`
+	StartedAtMillis int64             `json:"started_at_millis,omitempty"`
+	Result          *model.TaskResult `json:"result,omitempty"`
 }
 
 // Config holds the configuration for TaskManager.

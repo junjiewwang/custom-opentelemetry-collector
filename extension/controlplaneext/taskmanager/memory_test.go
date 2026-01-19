@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // newTestTaskManager creates a TaskManager using the new architecture for testing.
@@ -36,10 +36,10 @@ func TestTaskManager_SubmitTask(t *testing.T) {
 	require.NoError(t, err)
 	defer tm.Close()
 
-	task := &controlplanev1.Task{
-		TaskID:   "task-1",
-		TaskType: "test",
-		Priority: 1,
+	task := &model.Task{
+		ID:          "task-1",
+		TypeName:    "test",
+		PriorityNum: 1,
 	}
 
 	err = tm.SubmitTask(ctx, task)
@@ -48,7 +48,7 @@ func TestTaskManager_SubmitTask(t *testing.T) {
 	// Verify task status
 	info, err := tm.GetTaskStatus(ctx, "task-1")
 	require.NoError(t, err)
-	assert.Equal(t, controlplanev1.TaskStatusPending, info.Status)
+	assert.Equal(t, model.TaskStatusPending, info.Status)
 }
 
 func TestTaskManager_SubmitTask_Validation(t *testing.T) {
@@ -65,17 +65,17 @@ func TestTaskManager_SubmitTask_Validation(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot be nil")
 
 	// Empty task ID
-	err = tm.SubmitTask(ctx, &controlplanev1.Task{TaskType: "test"})
+	err = tm.SubmitTask(ctx, &model.Task{TypeName: "test"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "task_id is required")
 
 	// Empty task type
-	err = tm.SubmitTask(ctx, &controlplanev1.Task{TaskID: "task-1"})
+	err = tm.SubmitTask(ctx, &model.Task{ID: "task-1"})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "task_type is required")
+	assert.Contains(t, err.Error(), "task_type")
 
 	// Duplicate task
-	task := &controlplanev1.Task{TaskID: "task-1", TaskType: "test"}
+	task := &model.Task{ID: "task-1", TypeName: "test"}
 	_ = tm.SubmitTask(ctx, task)
 	err = tm.SubmitTask(ctx, task)
 	assert.Error(t, err)
@@ -90,9 +90,9 @@ func TestTaskManager_SubmitTask_Expired(t *testing.T) {
 	require.NoError(t, err)
 	defer tm.Close()
 
-	task := &controlplanev1.Task{
-		TaskID:          "task-1",
-		TaskType:        "test",
+	task := &model.Task{
+		ID:              "task-1",
+		TypeName:        "test",
 		ExpiresAtMillis: time.Now().Add(-1 * time.Hour).UnixMilli(), // Already expired
 	}
 
@@ -109,9 +109,9 @@ func TestTaskManager_SubmitTaskForAgent(t *testing.T) {
 	require.NoError(t, err)
 	defer tm.Close()
 
-	task := &controlplanev1.Task{
-		TaskID:   "task-1",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "task-1",
+		TypeName: "test",
 	}
 
 	agentMeta := &AgentMeta{AgentID: "agent-1", AppID: "app-1", ServiceName: "svc-1"}
@@ -135,9 +135,9 @@ func TestTaskManager_FetchTask(t *testing.T) {
 	defer tm.Close()
 
 	// Submit task
-	task := &controlplanev1.Task{
-		TaskID:   "task-1",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "task-1",
+		TypeName: "test",
 	}
 	_ = tm.SubmitTask(ctx, task)
 
@@ -145,7 +145,7 @@ func TestTaskManager_FetchTask(t *testing.T) {
 	fetched, err := tm.FetchTask(ctx, "agent-1", 1*time.Second)
 	require.NoError(t, err)
 	require.NotNil(t, fetched)
-	assert.Equal(t, "task-1", fetched.TaskID)
+	assert.Equal(t, "task-1", fetched.ID)
 }
 
 func TestTaskManager_FetchTask_Priority(t *testing.T) {
@@ -157,15 +157,15 @@ func TestTaskManager_FetchTask_Priority(t *testing.T) {
 	defer tm.Close()
 
 	// Submit tasks with different priorities
-	lowPriority := &controlplanev1.Task{
-		TaskID:   "low",
-		TaskType: "test",
-		Priority: 1,
+	lowPriority := &model.Task{
+		ID:          "low",
+		TypeName:    "test",
+		PriorityNum: 1,
 	}
-	highPriority := &controlplanev1.Task{
-		TaskID:   "high",
-		TaskType: "test",
-		Priority: 10,
+	highPriority := &model.Task{
+		ID:          "high",
+		TypeName:    "test",
+		PriorityNum: 10,
 	}
 
 	_ = tm.SubmitTask(ctx, lowPriority)
@@ -173,10 +173,10 @@ func TestTaskManager_FetchTask_Priority(t *testing.T) {
 
 	// High priority should be fetched first
 	fetched, _ := tm.FetchTask(ctx, "agent-1", 1*time.Second)
-	assert.Equal(t, "high", fetched.TaskID)
+	assert.Equal(t, "high", fetched.ID)
 
 	fetched, _ = tm.FetchTask(ctx, "agent-1", 1*time.Second)
-	assert.Equal(t, "low", fetched.TaskID)
+	assert.Equal(t, "low", fetched.ID)
 }
 
 func TestTaskManager_FetchTask_AgentSpecific(t *testing.T) {
@@ -188,22 +188,22 @@ func TestTaskManager_FetchTask_AgentSpecific(t *testing.T) {
 	defer tm.Close()
 
 	// Submit agent-specific task
-	agentTask := &controlplanev1.Task{
-		TaskID:   "agent-task",
-		TaskType: "test",
+	agentTask := &model.Task{
+		ID:       "agent-task",
+		TypeName: "test",
 	}
 	_ = tm.SubmitTaskForAgent(ctx, &AgentMeta{AgentID: "agent-1"}, agentTask)
 
 	// Submit global task
-	globalTask := &controlplanev1.Task{
-		TaskID:   "global-task",
-		TaskType: "test",
+	globalTask := &model.Task{
+		ID:       "global-task",
+		TypeName: "test",
 	}
 	_ = tm.SubmitTask(ctx, globalTask)
 
 	// Agent-specific task should be fetched first
 	fetched, _ := tm.FetchTask(ctx, "agent-1", 1*time.Second)
-	assert.Equal(t, "agent-task", fetched.TaskID)
+	assert.Equal(t, "agent-task", fetched.ID)
 }
 
 func TestTaskManager_FetchTask_Timeout(t *testing.T) {
@@ -233,9 +233,9 @@ func TestTaskManager_CancelTask(t *testing.T) {
 	defer tm.Close()
 
 	// Submit and cancel
-	task := &controlplanev1.Task{
-		TaskID:   "task-1",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "task-1",
+		TypeName: "test",
 	}
 	_ = tm.SubmitTask(ctx, task)
 
@@ -249,7 +249,7 @@ func TestTaskManager_CancelTask(t *testing.T) {
 
 	// Status should be cancelled
 	info, _ := tm.GetTaskStatus(ctx, "task-1")
-	assert.Equal(t, controlplanev1.TaskStatusCancelled, info.Status)
+	assert.Equal(t, model.TaskStatusCancelled, info.Status)
 }
 
 func TestTaskManager_ReportTaskResult(t *testing.T) {
@@ -261,16 +261,16 @@ func TestTaskManager_ReportTaskResult(t *testing.T) {
 	defer tm.Close()
 
 	// Submit task
-	task := &controlplanev1.Task{
-		TaskID:   "task-1",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "task-1",
+		TypeName: "test",
 	}
 	_ = tm.SubmitTask(ctx, task)
 
 	// Report result
-	result := &controlplanev1.TaskResult{
+	result := &model.TaskResult{
 		TaskID:       "task-1",
-		Status:       controlplanev1.TaskStatusSuccess,
+		Status:       model.TaskStatusSuccess,
 		ErrorMessage: "",
 	}
 	err = tm.ReportTaskResult(ctx, result)
@@ -280,7 +280,7 @@ func TestTaskManager_ReportTaskResult(t *testing.T) {
 	retrieved, found, err := tm.GetTaskResult(ctx, "task-1")
 	require.NoError(t, err)
 	assert.True(t, found)
-	assert.Equal(t, controlplanev1.TaskStatusSuccess, retrieved.Status)
+	assert.Equal(t, model.TaskStatusSuccess, retrieved.Status)
 }
 
 func TestTaskManager_ReportTaskResult_Running_RemovesFromQueue(t *testing.T) {
@@ -292,7 +292,7 @@ func TestTaskManager_ReportTaskResult_Running_RemovesFromQueue(t *testing.T) {
 	defer tm.Close()
 
 	// Submit task for specific agent
-	task := &controlplanev1.Task{TaskID: "task-1", TaskType: "test"}
+	task := &model.Task{ID: "task-1", TypeName: "test"}
 	err = tm.SubmitTaskForAgent(ctx, &AgentMeta{AgentID: "agent-1"}, task)
 	require.NoError(t, err)
 
@@ -300,10 +300,10 @@ func TestTaskManager_ReportTaskResult_Running_RemovesFromQueue(t *testing.T) {
 	pending, err := tm.GetPendingTasks(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
-	assert.Equal(t, "task-1", pending[0].TaskID)
+	assert.Equal(t, "task-1", pending[0].ID)
 
 	// Report RUNNING (agent accepted and started)
-	running := &controlplanev1.TaskResult{TaskID: "task-1", Status: controlplanev1.TaskStatusRunning, AgentID: "agent-1"}
+	running := &model.TaskResult{TaskID: "task-1", Status: model.TaskStatusRunning, AgentID: "agent-1"}
 	err = tm.ReportTaskResult(ctx, running)
 	require.NoError(t, err)
 
@@ -315,7 +315,7 @@ func TestTaskManager_ReportTaskResult_Running_RemovesFromQueue(t *testing.T) {
 	// Status should be RUNNING with started_at set
 	info, err := tm.GetTaskStatus(ctx, "task-1")
 	require.NoError(t, err)
-	assert.Equal(t, controlplanev1.TaskStatusRunning, info.Status)
+	assert.Equal(t, model.TaskStatusRunning, info.Status)
 	assert.Equal(t, "agent-1", info.AgentID)
 	assert.NotZero(t, info.StartedAtMillis)
 }
@@ -355,9 +355,9 @@ func TestTaskManager_SetTaskRunning(t *testing.T) {
 	defer tm.Close()
 
 	// Submit task
-	task := &controlplanev1.Task{
-		TaskID:   "task-1",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "task-1",
+		TypeName: "test",
 	}
 	_ = tm.SubmitTask(ctx, task)
 
@@ -367,7 +367,7 @@ func TestTaskManager_SetTaskRunning(t *testing.T) {
 
 	// Verify
 	info, _ := tm.GetTaskStatus(ctx, "task-1")
-	assert.Equal(t, controlplanev1.TaskStatusRunning, info.Status)
+	assert.Equal(t, model.TaskStatusRunning, info.Status)
 	assert.Equal(t, "agent-1", info.AgentID)
 	assert.NotZero(t, info.StartedAtMillis)
 }
@@ -382,9 +382,9 @@ func TestTaskManager_GetPendingTasks(t *testing.T) {
 
 	// Submit tasks
 	for i := 1; i <= 3; i++ {
-		task := &controlplanev1.Task{
-			TaskID:   "task-" + string(rune('0'+i)),
-			TaskType: "test",
+		task := &model.Task{
+			ID:       "task-" + string(rune('0'+i)),
+			TypeName: "test",
 		}
 		_ = tm.SubmitTask(ctx, task)
 	}
@@ -405,17 +405,17 @@ func TestTaskManager_GetGlobalPendingTasks(t *testing.T) {
 
 	// Submit global tasks
 	for i := 1; i <= 2; i++ {
-		task := &controlplanev1.Task{
-			TaskID:   "global-" + string(rune('0'+i)),
-			TaskType: "test",
+		task := &model.Task{
+			ID:       "global-" + string(rune('0'+i)),
+			TypeName: "test",
 		}
 		_ = tm.SubmitTask(ctx, task)
 	}
 
 	// Submit agent-specific task
-	agentTask := &controlplanev1.Task{
-		TaskID:   "agent-task",
-		TaskType: "test",
+	agentTask := &model.Task{
+		ID:       "agent-task",
+		TypeName: "test",
 	}
 	_ = tm.SubmitTaskForAgent(ctx, &AgentMeta{AgentID: "agent-1"}, agentTask)
 
@@ -457,13 +457,13 @@ func TestTaskManager_ConcurrentAccess(t *testing.T) {
 	done := make(chan bool)
 	for i := 0; i < 10; i++ {
 		go func(id int) {
-			task := &controlplanev1.Task{
-				TaskID:   "task-" + string(rune('0'+id)),
-				TaskType: "test",
+			task := &model.Task{
+				ID:       "task-" + string(rune('0'+id)),
+				TypeName: "test",
 			}
 			_ = tm.SubmitTask(ctx, task)
-			_, _, _ = tm.GetTaskResult(ctx, task.TaskID)
-			_, _ = tm.GetTaskStatus(ctx, task.TaskID)
+			_, _, _ = tm.GetTaskResult(ctx, task.ID)
+			_, _ = tm.GetTaskStatus(ctx, task.ID)
 			_, _ = tm.GetPendingTasks(ctx, "agent")
 			done <- true
 		}(i)

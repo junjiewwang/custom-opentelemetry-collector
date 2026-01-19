@@ -7,9 +7,40 @@ import (
 	"context"
 	"errors"
 	"time"
-
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
+
+// HealthState represents the health state of an agent.
+type HealthState int32
+
+const (
+	HealthStateUnspecified HealthState = 0
+	HealthStateHealthy     HealthState = 1
+	HealthStateDegraded    HealthState = 2
+	HealthStateUnhealthy   HealthState = 3
+)
+
+// String returns the string representation of the health state.
+func (s HealthState) String() string {
+	switch s {
+	case HealthStateHealthy:
+		return "healthy"
+	case HealthStateDegraded:
+		return "degraded"
+	case HealthStateUnhealthy:
+		return "unhealthy"
+	default:
+		return "unspecified"
+	}
+}
+
+// HealthStatus represents the health status of an agent.
+type HealthStatus struct {
+	State                HealthState `json:"state"`
+	SuccessRate          float64     `json:"success_rate,omitempty"`
+	SuccessCount         int64       `json:"success_count,omitempty"`
+	FailureCount         int64       `json:"failure_count,omitempty"`
+	CurrentConfigVersion string      `json:"current_config_version,omitempty"`
+}
 
 // AgentRegistry defines the interface for agent registration and status management.
 type AgentRegistry interface {
@@ -58,7 +89,7 @@ type AgentRegistry interface {
 	IsOnline(ctx context.Context, agentID string) (bool, error)
 
 	// UpdateHealth updates an agent's health status.
-	UpdateHealth(ctx context.Context, agentID string, health *controlplanev1.HealthStatus) error
+	UpdateHealth(ctx context.Context, agentID string, health *HealthStatus) error
 
 	// SetCurrentTask sets the current task for an agent.
 	SetCurrentTask(ctx context.Context, agentID string, taskID string) error
@@ -148,12 +179,12 @@ func (a *AgentInfo) MergeFrom(other *AgentInfo) {
 
 // AgentStatus represents the current status of an agent.
 type AgentStatus struct {
-	State          AgentState                   `json:"state"`
-	StateChangedAt int64                        `json:"state_changed_at,omitempty"` // Timestamp when state last changed
-	Health         *controlplanev1.HealthStatus `json:"health,omitempty"`
-	CurrentTask    string                       `json:"current_task,omitempty"`
-	ConfigVersion  string                       `json:"config_version,omitempty"`
-	Metrics        *AgentMetrics                `json:"metrics,omitempty"`
+	State          AgentState    `json:"state"`
+	StateChangedAt int64         `json:"state_changed_at,omitempty"` // Timestamp when state last changed
+	Health         *HealthStatus `json:"health,omitempty"`
+	CurrentTask    string        `json:"current_task,omitempty"`
+	ConfigVersion  string        `json:"config_version,omitempty"`
+	Metrics        *AgentMetrics `json:"metrics,omitempty"`
 }
 
 // AgentState represents the state of an agent.

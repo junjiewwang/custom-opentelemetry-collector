@@ -391,7 +391,7 @@ export function adminApp() {
                     
                     // 字段取值优先级：task对象 > 顶层字段 > 默认值
                     const taskId = task.task_id || info.task_id || '';
-                    const taskType = task.task_type || info.task_type || '';
+                    const taskType = task.task_type_name || task.task_type || info.task_type_name || info.task_type || '';
                     const targetAgentId = info.agent_id || task.target_agent_id || info.target_agent_id || '';
                     const createdAt = info.created_at_millis || task.created_at_millis || 0;
                     
@@ -900,9 +900,9 @@ export function adminApp() {
             try {
                 // 构建任务数据
                 const taskData = {
-                    task_type: this.newTask.task_type,
+                    task_type_name: this.newTask.task_type,
                     timeout_millis: this.newTask.timeout_millis || 60000,
-                    priority: this.newTask.priority || 0,
+                    priority_num: this.newTask.priority || 0,
                 };
 
                 // 可选字段
@@ -913,7 +913,7 @@ export function adminApp() {
                 // 解析 parameters JSON
                 if (this.newTask.parameters_json && this.newTask.parameters_json.trim()) {
                     try {
-                        taskData.parameters = JSON.parse(this.newTask.parameters_json);
+                        taskData.parameters_json = JSON.parse(this.newTask.parameters_json);
                     } catch (parseErr) {
                         this.showToast('Invalid JSON in parameters field', 'error');
                         return;
@@ -1074,7 +1074,7 @@ export function adminApp() {
             try {
                 // 1. 创建 attach 任务
                 const taskRes = await ApiService.createTask({
-                    task_type: 'arthas_attach',
+                    task_type_name: 'arthas_attach',
                     target_agent_id: instance.agent_id,
                     parameters: { action: 'attach' },
                     timeout_millis: 60000,
@@ -1126,7 +1126,7 @@ export function adminApp() {
             try {
                 // 1. 创建 detach 任务
                 const taskRes = await ApiService.createTask({
-                    task_type: 'arthas_detach',
+                    task_type_name: 'arthas_detach',
                     target_agent_id: instance.agent_id,
                     parameters: { action: 'detach' },
                     timeout_millis: 30000,
@@ -1333,7 +1333,7 @@ export function adminApp() {
                 token: tokenResponse.token,
                 agent_id: agentId,
             });
-            const wsUrl = `${protocol}//${window.location.host}/api/v1/arthas/ws?${qs.toString()}`;
+            const wsUrl = `${protocol}//${window.location.host}/api/v2/arthas/ws?${qs.toString()}`;
 
             return new Promise((resolve, reject) => {
                 const ws = new WebSocket(wsUrl);

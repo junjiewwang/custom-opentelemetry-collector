@@ -13,8 +13,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
-
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // RedisAgentRegistry implements AgentRegistry using Redis as backend.
@@ -460,7 +458,7 @@ func (r *RedisAgentRegistry) IsOnline(ctx context.Context, agentID string) (bool
 }
 
 // UpdateHealth updates an agent's health status.
-func (r *RedisAgentRegistry) UpdateHealth(ctx context.Context, agentID string, health *controlplanev1.HealthStatus) error {
+func (r *RedisAgentRegistry) UpdateHealth(ctx context.Context, agentID string, health *HealthStatus) error {
 	client := r.getClient()
 	if client == nil {
 		return errors.New("redis client not initialized")

@@ -14,17 +14,18 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // NacosConfigManager implements ConfigManager using Nacos as backend.
+// Uses model.AgentConfig as the canonical type, stored as JSON in Nacos.
 type NacosConfigManager struct {
 	logger *zap.Logger
 	config Config
 
 	mu            sync.RWMutex
 	client        config_client.IConfigClient
-	currentConfig *controlplanev1.AgentConfig
+	currentConfig *model.AgentConfig
 	subscribers   []ConfigChangeCallback
 	watching      bool
 	started       bool
@@ -67,6 +68,7 @@ func (m *NacosConfigManager) Start(ctx context.Context) error {
 	go func() {
 		loadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
 		if err := m.loadConfig(loadCtx); err != nil {
 			m.logger.Warn("Failed to load initial config from Nacos", zap.Error(err))
 		}
@@ -76,7 +78,7 @@ func (m *NacosConfigManager) Start(ctx context.Context) error {
 }
 
 // GetConfig returns the current configuration.
-func (m *NacosConfigManager) GetConfig(ctx context.Context) (*controlplanev1.AgentConfig, error) {
+func (m *NacosConfigManager) GetConfig(ctx context.Context) (*model.AgentConfig, error) {
 	m.mu.RLock()
 	config := m.currentConfig
 	m.mu.RUnlock()
@@ -96,7 +98,7 @@ func (m *NacosConfigManager) GetConfig(ctx context.Context) (*controlplanev1.Age
 }
 
 // UpdateConfig updates the configuration in Nacos.
-func (m *NacosConfigManager) UpdateConfig(ctx context.Context, config *controlplanev1.AgentConfig) error {
+func (m *NacosConfigManager) UpdateConfig(ctx context.Context, config *model.AgentConfig) error {
 	if config == nil {
 		return errors.New("config cannot be nil")
 	}
@@ -105,51 +107,31 @@ func (m *NacosConfigManager) UpdateConfig(ctx context.Context, config *controlpl
 		return err
 	}
 
-	m.mu.RLock()
-	client := m.client
-	m.mu.RUnlock()
-
-	if client == nil {
-		return errors.New("nacos client not initialized")
-	}
-
 	// Serialize config to JSON
 	data, err := json.Marshal(config)
 	if err != nil {
 		return err
 	}
 
-	// Publish to Nacos
-	success, err := client.PublishConfig(vo.ConfigParam{
-		DataId:  m.config.DataId,
-		Group:   m.config.Group,
-		Content: string(data),
-		Type:    "json",
-	})
-	if err != nil {
+	// Write to Nacos
+	if err := m.publishConfig(ctx, m.config.DataId, string(data)); err != nil {
 		return err
-	}
-	if !success {
-		return errors.New("failed to publish config to Nacos")
 	}
 
 	// Update local cache
 	m.mu.Lock()
 	oldConfig := m.currentConfig
 	m.currentConfig = config
-	subscribers := make([]ConfigChangeCallback, len(m.subscribers))
-	copy(subscribers, m.subscribers)
+	subs := make([]ConfigChangeCallback, len(m.subscribers))
+	copy(subs, m.subscribers)
 	m.mu.Unlock()
 
 	// Notify subscribers
-	for _, sub := range subscribers {
+	for _, sub := range subs {
 		sub(oldConfig, config)
 	}
 
-	m.logger.Info("Configuration published to Nacos",
-		zap.String("version", config.ConfigVersion),
-	)
-
+	m.logger.Info("Configuration published to Nacos", zap.String("version", config.Version.Version))
 	return nil
 }
 
@@ -226,17 +208,15 @@ func (m *NacosConfigManager) Close() error {
 		return nil
 	}
 
-	if m.watching && m.client != nil {
-		_ = m.client.CancelListenConfig(vo.ConfigParam{
-			DataId: m.config.DataId,
-			Group:  m.config.Group,
-		})
+	if m.client != nil && m.watching {
+		_ = m.client.CancelListenConfig(vo.ConfigParam{DataId: m.config.DataId, Group: m.config.Group})
 	}
 
 	// Note: We don't close the Nacos client here because it's managed by the storage extension
 	m.started = false
 	m.watching = false
 	m.subscribers = nil
+	m.currentConfig = nil
 
 	return nil
 }
@@ -277,7 +257,7 @@ func (m *NacosConfigManager) loadConfig(ctx context.Context) error {
 			return nil // No config yet
 		}
 
-		var config controlplanev1.AgentConfig
+		var config model.AgentConfig
 		if err := json.Unmarshal([]byte(res.content), &config); err != nil {
 			return err
 		}
@@ -287,7 +267,7 @@ func (m *NacosConfigManager) loadConfig(ctx context.Context) error {
 		m.mu.Unlock()
 
 		m.logger.Info("Loaded config from Nacos",
-			zap.String("version", config.ConfigVersion),
+			zap.String("version", config.Version.Version),
 		)
 	}
 
@@ -300,7 +280,7 @@ func (m *NacosConfigManager) handleConfigChange(data string) {
 		return
 	}
 
-	var newConfig controlplanev1.AgentConfig
+	var newConfig model.AgentConfig
 	if err := json.Unmarshal([]byte(data), &newConfig); err != nil {
 		m.logger.Error("Failed to parse config from Nacos", zap.Error(err))
 		return
@@ -315,7 +295,7 @@ func (m *NacosConfigManager) handleConfigChange(data string) {
 
 	m.logger.Info("Config changed in Nacos",
 		zap.String("old_version", getConfigVersion(oldConfig)),
-		zap.String("new_version", newConfig.ConfigVersion),
+		zap.String("new_version", newConfig.Version.Version),
 	)
 
 	// Notify subscribers
@@ -325,13 +305,13 @@ func (m *NacosConfigManager) handleConfigChange(data string) {
 }
 
 // validate validates the configuration.
-func (m *NacosConfigManager) validate(config *controlplanev1.AgentConfig) error {
-	if config.ConfigVersion == "" {
-		return errors.New("config_version is required")
+func (m *NacosConfigManager) validate(config *model.AgentConfig) error {
+	if config.Version.Version == "" {
+		return errors.New("version.version is required")
 	}
 
 	if config.Sampler != nil {
-		if config.Sampler.Type == controlplanev1.SamplerTypeTraceIDRatio {
+		if config.Sampler.Type == model.SamplerTypeTraceIDRatio {
 			if config.Sampler.Ratio < 0 || config.Sampler.Ratio > 1 {
 				return errors.New("sampler ratio must be between 0 and 1")
 			}
@@ -342,9 +322,34 @@ func (m *NacosConfigManager) validate(config *controlplanev1.AgentConfig) error 
 }
 
 // getConfigVersion safely gets the config version.
-func getConfigVersion(config *controlplanev1.AgentConfig) string {
+func getConfigVersion(config *model.AgentConfig) string {
 	if config == nil {
 		return ""
 	}
-	return config.ConfigVersion
+	return config.Version.Version
+}
+
+func (m *NacosConfigManager) publishConfig(ctx context.Context, dataID string, content string) error {
+	m.mu.RLock()
+	client := m.client
+	group := m.config.Group
+	m.mu.RUnlock()
+
+	if client == nil {
+		return errors.New("nacos client not initialized")
+	}
+
+	success, err := client.PublishConfig(vo.ConfigParam{
+		DataId:  dataID,
+		Group:   group,
+		Content: content,
+		Type:    "json",
+	})
+	if err != nil {
+		return err
+	}
+	if !success {
+		return errors.New("failed to publish config to Nacos")
+	}
+	return nil
 }

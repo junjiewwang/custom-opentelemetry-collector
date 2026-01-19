@@ -5,8 +5,6 @@ package agentregistry
 
 import (
 	"time"
-
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // StatusHelper provides common status management logic for AgentRegistry implementations.
@@ -98,7 +96,7 @@ func (h *StatusHelper) MarkOffline(agent *AgentInfo, now int64) (stateChanged bo
 
 // UpdateHealthStatus updates the agent's health status and derives the appropriate state.
 // Returns the new state and whether the state changed.
-func (h *StatusHelper) UpdateHealthStatus(agent *AgentInfo, health *controlplanev1.HealthStatus, now int64) (newState AgentState, stateChanged bool) {
+func (h *StatusHelper) UpdateHealthStatus(agent *AgentInfo, health *HealthStatus, now int64) (newState AgentState, stateChanged bool) {
 	if agent.Status == nil {
 		agent.Status = &AgentStatus{}
 	}
@@ -109,9 +107,9 @@ func (h *StatusHelper) UpdateHealthStatus(agent *AgentInfo, health *controlplane
 	// Derive state from health
 	if health != nil {
 		switch health.State {
-		case controlplanev1.HealthStateHealthy:
+		case HealthStateHealthy:
 			newState = AgentStateOnline
-		case controlplanev1.HealthStateUnhealthy:
+		case HealthStateUnhealthy:
 			newState = AgentStateUnhealthy
 		default:
 			newState = oldState

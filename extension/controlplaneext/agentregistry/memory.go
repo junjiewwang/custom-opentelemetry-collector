@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // MemoryAgentRegistry implements AgentRegistry using in-memory storage.
@@ -338,7 +336,7 @@ func (m *MemoryAgentRegistry) IsOnline(ctx context.Context, agentID string) (boo
 }
 
 // UpdateHealth updates an agent's health status.
-func (m *MemoryAgentRegistry) UpdateHealth(ctx context.Context, agentID string, health *controlplanev1.HealthStatus) error {
+func (m *MemoryAgentRegistry) UpdateHealth(ctx context.Context, agentID string, health *HealthStatus) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

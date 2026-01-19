@@ -11,8 +11,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager/store"
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // TaskService provides high-level task management operations.
@@ -40,16 +40,16 @@ var _ TaskManager = (*TaskService)(nil)
 // ===== Task Submission =====
 
 // SubmitTask submits a task to the global queue.
-func (s *TaskService) SubmitTask(ctx context.Context, task *controlplanev1.Task) error {
+func (s *TaskService) SubmitTask(ctx context.Context, task *model.Task) error {
 	return s.submitTaskInternal(ctx, nil, task)
 }
 
 // SubmitTaskForAgent submits a task for a specific agent.
-func (s *TaskService) SubmitTaskForAgent(ctx context.Context, agentMeta *AgentMeta, task *controlplanev1.Task) error {
+func (s *TaskService) SubmitTaskForAgent(ctx context.Context, agentMeta *AgentMeta, task *model.Task) error {
 	return s.submitTaskInternal(ctx, agentMeta, task)
 }
 
-func (s *TaskService) submitTaskInternal(ctx context.Context, agentMeta *AgentMeta, task *controlplanev1.Task) error {
+func (s *TaskService) submitTaskInternal(ctx context.Context, agentMeta *AgentMeta, task *model.Task) error {
 	// Step 1: Validate task
 	nowMillis, err := s.helper.ValidateTask(task)
 	if err != nil {
@@ -72,18 +72,18 @@ func (s *TaskService) submitTaskInternal(ctx context.Context, agentMeta *AgentMe
 		queueID = store.QueueGlobal
 	}
 
-	if err := s.store.EnqueueTask(ctx, queueID, task.TaskID, task.Priority, task.CreatedAtMillis); err != nil {
+	if err := s.store.EnqueueTask(ctx, queueID, task.ID, task.PriorityNum, task.CreatedAtMillis); err != nil {
 		// Rollback: delete the saved TaskInfo
-		_ = s.store.DeleteTaskInfo(ctx, task.TaskID)
+		_ = s.store.DeleteTaskInfo(ctx, task.ID)
 		return err
 	}
 
 	// Step 5: Publish event (best effort)
-	_ = s.store.PublishEvent(ctx, "submitted", task.TaskID)
+	_ = s.store.PublishEvent(ctx, "submitted", task.ID)
 
 	s.logger.Debug("Task submitted",
-		zap.String("task_id", task.TaskID),
-		zap.String("task_type", task.TaskType),
+		zap.String("task_id", task.ID),
+		zap.String("task_type", task.TypeName),
 		zap.String("agent_id", agentID),
 	)
 	return nil
@@ -92,7 +92,7 @@ func (s *TaskService) submitTaskInternal(ctx context.Context, agentMeta *AgentMe
 // ===== Task Fetching =====
 
 // FetchTask fetches the next task for an agent.
-func (s *TaskService) FetchTask(ctx context.Context, agentID string, timeout time.Duration) (*controlplanev1.Task, error) {
+func (s *TaskService) FetchTask(ctx context.Context, agentID string, timeout time.Duration) (*model.Task, error) {
 	deadline := time.Now().Add(timeout)
 
 	// Queue order: agent-specific first, then global
@@ -155,8 +155,8 @@ func (s *TaskService) FetchTask(ctx context.Context, agentID string, timeout tim
 // ===== Task Queries =====
 
 // GetPendingTasks returns all pending tasks for an agent.
-func (s *TaskService) GetPendingTasks(ctx context.Context, agentID string) ([]*controlplanev1.Task, error) {
-	var tasks []*controlplanev1.Task
+func (s *TaskService) GetPendingTasks(ctx context.Context, agentID string) ([]*model.Task, error) {
+	var tasks []*model.Task
 
 	// Get from agent queue
 	agentTaskIDs, err := s.store.PeekQueue(ctx, agentID)
@@ -194,13 +194,13 @@ func (s *TaskService) GetPendingTasks(ctx context.Context, agentID string) ([]*c
 }
 
 // GetGlobalPendingTasks returns all pending tasks in the global queue.
-func (s *TaskService) GetGlobalPendingTasks(ctx context.Context) ([]*controlplanev1.Task, error) {
+func (s *TaskService) GetGlobalPendingTasks(ctx context.Context) ([]*model.Task, error) {
 	taskIDs, err := s.store.PeekQueue(ctx, store.QueueGlobal)
 	if err != nil {
 		return nil, err
 	}
 
-	var tasks []*controlplanev1.Task
+	var tasks []*model.Task
 	for _, taskID := range taskIDs {
 		task, err := s.getDispatchableTask(ctx, taskID)
 		if err != nil {
@@ -213,7 +213,7 @@ func (s *TaskService) GetGlobalPendingTasks(ctx context.Context) ([]*controlplan
 	return tasks, nil
 }
 
-func (s *TaskService) getDispatchableTask(ctx context.Context, taskID string) (*controlplanev1.Task, error) {
+func (s *TaskService) getDispatchableTask(ctx context.Context, taskID string) (*model.Task, error) {
 	cancelled, err := s.store.IsCancelled(ctx, taskID)
 	if err != nil {
 		return nil, err
@@ -266,12 +266,12 @@ func (s *TaskService) CancelTask(ctx context.Context, taskID string) error {
 	}
 
 	if res.Code == store.ApplyTaskRejected {
-		transition := ValidateStateTransition(res.Status, controlplanev1.TaskStatusCancelled)
-		return NewStateTransitionError(taskID, res.Status, controlplanev1.TaskStatusCancelled, transition)
+		transition := ValidateStateTransition(res.Status, model.TaskStatusCancelled)
+		return NewStateTransitionError(taskID, res.Status, model.TaskStatusCancelled, transition)
 	}
 
 	// Ensure cancelled marker is set when the final status is CANCELLED.
-	if res.Status == controlplanev1.TaskStatusCancelled {
+	if res.Status == model.TaskStatusCancelled {
 		_ = s.store.SetCancelled(ctx, taskID)
 	}
 
@@ -293,7 +293,7 @@ func (s *TaskService) IsTaskCancelled(ctx context.Context, taskID string) (bool,
 
 // ReportTaskResult reports the result of a task execution.
 // Includes state machine protection with proper idempotency handling.
-func (s *TaskService) ReportTaskResult(ctx context.Context, result *controlplanev1.TaskResult) error {
+func (s *TaskService) ReportTaskResult(ctx context.Context, result *model.TaskResult) error {
 	// Step 1: Validate
 	if err := s.helper.ValidateResult(result); err != nil {
 		return err
@@ -311,7 +311,7 @@ func (s *TaskService) ReportTaskResult(ctx context.Context, result *controlplane
 		if errors.Is(err, store.ErrTaskNotFound) {
 			s.logger.Warn("Task result reported but task detail not found; result saved only",
 				zap.String("task_id", result.TaskID),
-				zap.String("status", result.Status.String()),
+				zap.Int32("status", int32(result.Status)),
 				zap.String("agent_id", result.AgentID),
 				zap.String("store", fmt.Sprintf("%T", s.store)),
 			)
@@ -356,7 +356,7 @@ func (s *TaskService) ReportTaskResult(ctx context.Context, result *controlplane
 		_ = s.store.PublishEvent(ctx, "completed", result.TaskID)
 	}
 
-	if result.Status == controlplanev1.TaskStatusRunning {
+	if result.Status == model.TaskStatusRunning {
 		s.logger.Debug("Task status updated to RUNNING",
 			zap.String("task_id", result.TaskID),
 			zap.String("agent_id", agentID),
@@ -366,14 +366,14 @@ func (s *TaskService) ReportTaskResult(ctx context.Context, result *controlplane
 
 	s.logger.Debug("Task result reported",
 		zap.String("task_id", result.TaskID),
-		zap.String("status", result.Status.String()),
+		zap.Int32("status", int32(result.Status)),
 	)
 
 	return nil
 }
 
 // GetTaskResult retrieves the result of a task.
-func (s *TaskService) GetTaskResult(ctx context.Context, taskID string) (*controlplanev1.TaskResult, bool, error) {
+func (s *TaskService) GetTaskResult(ctx context.Context, taskID string) (*model.TaskResult, bool, error) {
 	return s.store.GetResult(ctx, taskID)
 }
 
@@ -401,8 +401,8 @@ func (s *TaskService) SetTaskRunning(ctx context.Context, taskID string, agentID
 	}
 
 	if res.Code == store.ApplyTaskRejected {
-		transition := ValidateStateTransition(res.Status, controlplanev1.TaskStatusRunning)
-		return NewStateTransitionError(taskID, res.Status, controlplanev1.TaskStatusRunning, transition)
+		transition := ValidateStateTransition(res.Status, model.TaskStatusRunning)
+		return NewStateTransitionError(taskID, res.Status, model.TaskStatusRunning, transition)
 	}
 
 	if res.Code == store.ApplyTaskNoop {

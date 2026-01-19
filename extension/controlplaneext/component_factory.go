@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"go.opentelemetry.io/collector/component"
 	"go.uber.org/zap"
 
@@ -54,10 +55,16 @@ func GetStorageExtension(host component.Host, storageExtName string, logger *zap
 
 // CreateConfigManager creates the appropriate ConfigManager based on config.
 func (f *ComponentFactory) CreateConfigManager(cfg configmanager.Config) (configmanager.ConfigManager, error) {
-	switch cfg.Type {
-	case "nacos":
+	typeName := cfg.Type
+	if typeName == "" {
+		typeName = "memory"
+	}
+	cfg.Type = typeName
+
+	var nacosClient config_client.IConfigClient
+	if typeName != "memory" {
 		if f.storage == nil {
-			return nil, fmt.Errorf("storage extension required for nacos config manager")
+			return nil, fmt.Errorf("storage extension required for %s config manager", typeName)
 		}
 		nacosName := cfg.NacosName
 		if nacosName == "" {
@@ -67,53 +74,21 @@ func (f *ComponentFactory) CreateConfigManager(cfg configmanager.Config) (config
 		if err != nil {
 			return nil, fmt.Errorf("failed to get nacos client %q: %w", nacosName, err)
 		}
-		return configmanager.NewNacosConfigManager(f.logger, cfg, client)
-
-	default:
-		return configmanager.NewMemoryConfigManager(f.logger), nil
+		nacosClient = client
 	}
+
+	return configmanager.NewConfigManager(f.logger, cfg, nacosClient)
 }
 
 // CreateConfigManagerWithOnDemand creates ConfigManager with on_demand support.
 // This is used by adminext which supports the on_demand type.
 func (f *ComponentFactory) CreateConfigManagerWithOnDemand(cfg configmanager.Config) (configmanager.ConfigManager, configmanager.OnDemandConfigManager, error) {
-	switch cfg.Type {
-	case "nacos":
-		if f.storage == nil {
-			return nil, nil, fmt.Errorf("storage extension required for nacos config manager")
-		}
-		nacosName := cfg.NacosName
-		if nacosName == "" {
-			nacosName = "default"
-		}
-		client, err := f.storage.GetNacosConfigClient(nacosName)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to get nacos client %q: %w", nacosName, err)
-		}
-		mgr, err := configmanager.NewNacosConfigManager(f.logger, cfg, client)
-		return mgr, nil, err
-
-	case "on_demand":
-		if f.storage == nil {
-			return nil, nil, fmt.Errorf("storage extension required for on-demand config manager")
-		}
-		nacosName := cfg.NacosName
-		if nacosName == "" {
-			nacosName = "default"
-		}
-		client, err := f.storage.GetNacosConfigClient(nacosName)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to get nacos client %q: %w", nacosName, err)
-		}
-		onDemandMgr, err := configmanager.NewOnDemandConfigManager(f.logger, cfg, client)
-		if err != nil {
-			return nil, nil, err
-		}
-		return onDemandMgr, onDemandMgr, nil
-
-	default:
-		return configmanager.NewMemoryConfigManager(f.logger), nil, nil
+	mgr, err := f.CreateConfigManager(cfg)
+	if err != nil {
+		return nil, nil, err
 	}
+	od, _ := mgr.(configmanager.OnDemandConfigManager)
+	return mgr, od, nil
 }
 
 // CreateTaskManager creates the appropriate TaskManager based on config.

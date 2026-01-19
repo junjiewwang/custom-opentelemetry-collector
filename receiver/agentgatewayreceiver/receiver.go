@@ -42,7 +42,7 @@ type agentGatewayReceiver struct {
 	serverHTTP *http.Server
 
 	// Extension references
-	controlPlane    controlplaneext.ControlPlane
+	controlPlane    controlplaneext.ControlPlaneV2
 	controlPlaneExt *controlplaneext.Extension // For accessing internal components
 	arthasTunnel    arthastunnelext.ArthasTunnel
 
@@ -173,7 +173,7 @@ func (r *agentGatewayReceiver) findExtensions(host component.Host) {
 
 		// Find ControlPlane extension
 		if id.Type() == controlplaneext.Type {
-			if cp, ok := ext.(controlplaneext.ControlPlane); ok {
+			if cp, ok := ext.(controlplaneext.ControlPlaneV2); ok {
 				r.controlPlane = cp
 				r.logger.Info("Found control plane extension", zap.String("id", id.String()))
 

@@ -10,16 +10,19 @@ import (
 	"fmt"
 	"time"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
-// ComputeEtag computes an ETag for the given config.
-func ComputeEtag(config *controlplanev1.AgentConfig) string {
-	if config == nil {
+// ComputeEtag computes an ETag for the given value by hashing its canonical JSON representation.
+//
+// Callers should pass a stable struct matching the stored JSON shape (e.g. legacy DTO),
+// so that ETag semantics remain backward-compatible.
+func ComputeEtag(v any) string {
+	if v == nil {
 		return ""
 	}
 
-	data, err := json.Marshal(config)
+	data, err := json.Marshal(v)
 	if err != nil {
 		return ""
 	}
@@ -37,11 +40,12 @@ func AgentKey(token, agentID string) string {
 }
 
 // GenerateDefaultConfig generates a default config for a new agent.
-func GenerateDefaultConfig(agentID string) *controlplanev1.AgentConfig {
-	return &controlplanev1.AgentConfig{
-		ConfigVersion: fmt.Sprintf("v1.0.0-%d", time.Now().UnixMilli()),
-		Sampler: &controlplanev1.SamplerConfig{
-			Type:  controlplanev1.SamplerTypeTraceIDRatio,
+func GenerateDefaultConfig(agentID string) *model.AgentConfig {
+	_ = agentID
+	return &model.AgentConfig{
+		Version: model.ConfigVersion{Version: fmt.Sprintf("v1.0.0-%d", time.Now().UnixMilli())},
+		Sampler: &model.SamplerConfig{
+			Type:  model.SamplerTypeTraceIDRatio,
 			Ratio: 1.0, // Default to full sampling
 		},
 	}

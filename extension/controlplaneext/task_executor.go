@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // TaskHandler defines the interface for task handlers.
@@ -20,7 +20,7 @@ type TaskHandler interface {
 	// Type returns the task type this handler supports.
 	Type() string
 	// Execute executes the task and returns the result.
-	Execute(ctx context.Context, task *controlplanev1.Task) (*controlplanev1.TaskResult, error)
+	Execute(ctx context.Context, task *model.Task) (*model.TaskResult, error)
 }
 
 // TaskExecutor manages task execution.
@@ -31,12 +31,12 @@ type TaskExecutor struct {
 	mu           sync.RWMutex
 	handlers     map[string]TaskHandler
 	taskQueue    *taskPriorityQueue
-	results      map[string]*controlplanev1.TaskResult
-	pendingTasks map[string]*controlplanev1.Task
+	results      map[string]*model.TaskResult
+	pendingTasks map[string]*model.Task
 
 	// Completed results buffer for status reporting
 	completedMu      sync.Mutex
-	completedResults []*controlplanev1.TaskResult
+	completedResults []*model.TaskResult
 
 	// Lifecycle
 	workers  int
@@ -57,9 +57,9 @@ func newTaskExecutor(logger *zap.Logger, config TaskExecutorConfig) *TaskExecuto
 		config:           config,
 		handlers:         make(map[string]TaskHandler),
 		taskQueue:        &taskPriorityQueue{},
-		results:          make(map[string]*controlplanev1.TaskResult),
-		pendingTasks:     make(map[string]*controlplanev1.Task),
-		completedResults: make([]*controlplanev1.TaskResult, 0),
+		results:          make(map[string]*model.TaskResult),
+		pendingTasks:     make(map[string]*model.Task),
+		completedResults: make([]*model.TaskResult, 0),
 		workers:          workers,
 		stopChan:         make(chan struct{}),
 	}
@@ -137,16 +137,16 @@ func (e *TaskExecutor) Shutdown(ctx context.Context) error {
 }
 
 // Submit submits a task for execution.
-func (e *TaskExecutor) Submit(ctx context.Context, task *controlplanev1.Task) error {
+func (e *TaskExecutor) Submit(ctx context.Context, task *model.Task) error {
 	if task == nil {
 		return errors.New("task cannot be nil")
 	}
 
-	if task.TaskID == "" {
+	if task.ID == "" {
 		return errors.New("task_id is required")
 	}
 
-	if task.TaskType == "" {
+	if task.TypeName == "" {
 		return errors.New("task_type is required")
 	}
 
@@ -159,30 +159,30 @@ func (e *TaskExecutor) Submit(ctx context.Context, task *controlplanev1.Task) er
 	defer e.mu.Unlock()
 
 	// Check if handler exists
-	if _, ok := e.handlers[task.TaskType]; !ok {
-		return errors.New("no handler registered for task type: " + task.TaskType)
+	if _, ok := e.handlers[task.TypeName]; !ok {
+		return errors.New("no handler registered for task type: " + task.TypeName)
 	}
 
 	// Check for duplicate
-	if _, exists := e.pendingTasks[task.TaskID]; exists {
-		return errors.New("task already exists: " + task.TaskID)
+	if _, exists := e.pendingTasks[task.ID]; exists {
+		return errors.New("task already exists: " + task.ID)
 	}
 
 	// Add to queue
-	e.pendingTasks[task.TaskID] = task
+	e.pendingTasks[task.ID] = task
 	heap.Push(e.taskQueue, &taskItem{task: task})
 
 	e.logger.Debug("Task submitted",
-		zap.String("task_id", task.TaskID),
-		zap.String("task_type", task.TaskType),
-		zap.Int32("priority", task.Priority),
+		zap.String("task_id", task.ID),
+		zap.String("task_type", task.TypeName),
+		zap.Int32("priority", task.PriorityNum),
 	)
 
 	return nil
 }
 
 // GetResult returns the result of a task.
-func (e *TaskExecutor) GetResult(taskID string) (*controlplanev1.TaskResult, bool) {
+func (e *TaskExecutor) GetResult(taskID string) (*model.TaskResult, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	result, ok := e.results[taskID]
@@ -190,11 +190,11 @@ func (e *TaskExecutor) GetResult(taskID string) (*controlplanev1.TaskResult, boo
 }
 
 // GetPendingTasks returns all pending tasks.
-func (e *TaskExecutor) GetPendingTasks() []*controlplanev1.Task {
+func (e *TaskExecutor) GetPendingTasks() []*model.Task {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	tasks := make([]*controlplanev1.Task, 0, len(e.pendingTasks))
+	tasks := make([]*model.Task, 0, len(e.pendingTasks))
 	for _, task := range e.pendingTasks {
 		tasks = append(tasks, task)
 	}
@@ -202,12 +202,12 @@ func (e *TaskExecutor) GetPendingTasks() []*controlplanev1.Task {
 }
 
 // DrainCompletedResults returns and clears the completed results buffer.
-func (e *TaskExecutor) DrainCompletedResults() []*controlplanev1.TaskResult {
+func (e *TaskExecutor) DrainCompletedResults() []*model.TaskResult {
 	e.completedMu.Lock()
 	defer e.completedMu.Unlock()
 
 	results := e.completedResults
-	e.completedResults = make([]*controlplanev1.TaskResult, 0)
+	e.completedResults = make([]*model.TaskResult, 0)
 	return results
 }
 
@@ -241,16 +241,16 @@ func (e *TaskExecutor) processNextTask(workerID int) {
 
 	item := heap.Pop(e.taskQueue).(*taskItem)
 	task := item.task
-	delete(e.pendingTasks, task.TaskID)
+	delete(e.pendingTasks, task.ID)
 
-	handler, ok := e.handlers[task.TaskType]
+	handler, ok := e.handlers[task.TypeName]
 	e.mu.Unlock()
 
 	if !ok {
-		e.storeResult(&controlplanev1.TaskResult{
-			TaskID:            task.TaskID,
-			Status:            controlplanev1.TaskStatusFailed,
-			ErrorMessage:      "no handler for task type: " + task.TaskType,
+		e.storeResult(&model.TaskResult{
+			TaskID:            task.ID,
+			Status:            model.TaskStatusFailed,
+			ErrorMessage:      "no handler for task type: " + task.TypeName,
 			CompletedAtMillis: time.Now().UnixMilli(),
 		})
 		return
@@ -258,9 +258,9 @@ func (e *TaskExecutor) processNextTask(workerID int) {
 
 	// Check expiration
 	if task.ExpiresAtMillis > 0 && time.Now().UnixMilli() > task.ExpiresAtMillis {
-		e.storeResult(&controlplanev1.TaskResult{
-			TaskID:            task.TaskID,
-			Status:            controlplanev1.TaskStatusTimeout,
+		e.storeResult(&model.TaskResult{
+			TaskID:            task.ID,
+			Status:            model.TaskStatusTimeout,
 			ErrorMessage:      "task expired before execution",
 			CompletedAtMillis: time.Now().UnixMilli(),
 		})
@@ -278,23 +278,23 @@ func (e *TaskExecutor) processNextTask(workerID int) {
 
 	e.logger.Debug("Executing task",
 		zap.Int("worker_id", workerID),
-		zap.String("task_id", task.TaskID),
-		zap.String("task_type", task.TaskType),
+		zap.String("task_id", task.ID),
+		zap.String("task_type", task.TypeName),
 	)
 
 	result, err := handler.Execute(ctx, task)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			result = &controlplanev1.TaskResult{
-				TaskID:            task.TaskID,
-				Status:            controlplanev1.TaskStatusTimeout,
+			result = &model.TaskResult{
+				TaskID:            task.ID,
+				Status:            model.TaskStatusTimeout,
 				ErrorMessage:      "task execution timed out",
 				CompletedAtMillis: time.Now().UnixMilli(),
 			}
 		} else {
-			result = &controlplanev1.TaskResult{
-				TaskID:            task.TaskID,
-				Status:            controlplanev1.TaskStatusFailed,
+			result = &model.TaskResult{
+				TaskID:            task.ID,
+				Status:            model.TaskStatusFailed,
 				ErrorMessage:      err.Error(),
 				CompletedAtMillis: time.Now().UnixMilli(),
 			}
@@ -304,13 +304,13 @@ func (e *TaskExecutor) processNextTask(workerID int) {
 	e.storeResult(result)
 
 	e.logger.Debug("Task completed",
-		zap.String("task_id", task.TaskID),
-		zap.String("status", result.Status.String()),
+		zap.String("task_id", task.ID),
+		zap.String("status", string(result.Status)),
 	)
 }
 
 // storeResult stores a task result.
-func (e *TaskExecutor) storeResult(result *controlplanev1.TaskResult) {
+func (e *TaskExecutor) storeResult(result *model.TaskResult) {
 	e.mu.Lock()
 	e.results[result.TaskID] = result
 	e.mu.Unlock()
@@ -322,7 +322,7 @@ func (e *TaskExecutor) storeResult(result *controlplanev1.TaskResult) {
 
 // taskItem wraps a task for the priority queue.
 type taskItem struct {
-	task  *controlplanev1.Task
+	task  *model.Task
 	index int
 }
 
@@ -333,8 +333,8 @@ func (pq taskPriorityQueue) Len() int { return len(pq) }
 
 func (pq taskPriorityQueue) Less(i, j int) bool {
 	// Higher priority first
-	if pq[i].task.Priority != pq[j].task.Priority {
-		return pq[i].task.Priority > pq[j].task.Priority
+	if pq[i].task.PriorityNum != pq[j].task.PriorityNum {
+		return pq[i].task.PriorityNum > pq[j].task.PriorityNum
 	}
 	// Earlier creation time first (FIFO for same priority)
 	return pq[i].task.CreatedAtMillis < pq[j].task.CreatedAtMillis

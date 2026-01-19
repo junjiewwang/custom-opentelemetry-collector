@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // StatusReporter manages agent status reporting.
@@ -21,7 +19,7 @@ type StatusReporter struct {
 	config  StatusReporterConfig
 
 	mu            sync.RWMutex
-	health        *controlplanev1.HealthStatus
+	healthState   string // "healthy", "degraded", "unhealthy"
 	configVersion string
 
 	// Metrics
@@ -37,11 +35,11 @@ type StatusReporter struct {
 // newStatusReporter creates a new status reporter.
 func newStatusReporter(logger *zap.Logger, agentID string, config StatusReporterConfig) *StatusReporter {
 	return &StatusReporter{
-		logger:   logger,
-		agentID:  agentID,
-		config:   config,
-		health:   &controlplanev1.HealthStatus{State: controlplanev1.HealthStateHealthy},
-		stopChan: make(chan struct{}),
+		logger:      logger,
+		agentID:     agentID,
+		config:      config,
+		healthState: "healthy",
+		stopChan:    make(chan struct{}),
 	}
 }
 
@@ -92,48 +90,25 @@ func (r *StatusReporter) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// GetStatus returns the current agent status.
-func (r *StatusReporter) GetStatus() *controlplanev1.AgentStatus {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	successCount := r.successCount.Load()
-	failureCount := r.failureCount.Load()
-	total := successCount + failureCount
-
-	var successRate float64
-	if total > 0 {
-		successRate = float64(successCount) / float64(total)
-	}
-
-	health := &controlplanev1.HealthStatus{
-		State:                r.health.State,
-		SuccessRate:          successRate,
-		SuccessCount:         successCount,
-		FailureCount:         failureCount,
-		CurrentConfigVersion: r.configVersion,
-	}
-
-	return &controlplanev1.AgentStatus{
-		AgentID:           r.agentID,
-		TimestampUnixNano: time.Now().UnixNano(),
-		Health:            health,
-		Metrics:           r.collectMetrics(),
-	}
-}
-
-// UpdateHealth updates the health status.
-func (r *StatusReporter) UpdateHealth(health *controlplanev1.HealthStatus) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.health = health
-}
-
 // SetConfigVersion sets the current config version.
 func (r *StatusReporter) SetConfigVersion(version string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.configVersion = version
+}
+
+// GetConfigVersion returns the current config version.
+func (r *StatusReporter) GetConfigVersion() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.configVersion
+}
+
+// GetHealthState returns the current health state.
+func (r *StatusReporter) GetHealthState() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.healthState
 }
 
 // RecordSuccess records a successful operation.
@@ -144,6 +119,17 @@ func (r *StatusReporter) RecordSuccess() {
 // RecordFailure records a failed operation.
 func (r *StatusReporter) RecordFailure() {
 	r.failureCount.Add(1)
+}
+
+// GetMetrics returns the current metrics.
+func (r *StatusReporter) GetMetrics() (successCount, failureCount int64, successRate float64) {
+	successCount = r.successCount.Load()
+	failureCount = r.failureCount.Load()
+	total := successCount + failureCount
+	if total > 0 {
+		successRate = float64(successCount) / float64(total)
+	}
+	return
 }
 
 // healthCheckLoop periodically updates health status.
@@ -185,17 +171,10 @@ func (r *StatusReporter) updateHealthState() {
 
 	switch {
 	case successRate >= 0.99:
-		r.health.State = controlplanev1.HealthStateHealthy
+		r.healthState = "healthy"
 	case successRate >= 0.90:
-		r.health.State = controlplanev1.HealthStateDegraded
+		r.healthState = "degraded"
 	default:
-		r.health.State = controlplanev1.HealthStateUnhealthy
-	}
-}
-
-// collectMetrics collects current metrics.
-func (r *StatusReporter) collectMetrics() map[string]string {
-	return map[string]string{
-		"uptime_seconds": "0", // TODO: implement actual uptime tracking
+		r.healthState = "unhealthy"
 	}
 }

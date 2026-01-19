@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // MemoryTaskStore implements TaskStore using in-memory storage.
@@ -25,7 +25,7 @@ type MemoryTaskStore struct {
 	globalQueue    *taskPriorityQueue
 	agentQueues    map[string]*taskPriorityQueue
 	cancelledTasks map[string]bool
-	results        map[string]*controlplanev1.TaskResult
+	results        map[string]*model.TaskResult
 	runningTasks   map[string]string // taskID -> agentID
 
 	// Lifecycle
@@ -43,7 +43,7 @@ func NewMemoryTaskStore(logger *zap.Logger, ttl time.Duration) *MemoryTaskStore 
 		globalQueue:    &taskPriorityQueue{},
 		agentQueues:    make(map[string]*taskPriorityQueue),
 		cancelledTasks: make(map[string]bool),
-		results:        make(map[string]*controlplanev1.TaskResult),
+		results:        make(map[string]*model.TaskResult),
 		runningTasks:   make(map[string]string),
 		stopChan:       make(chan struct{}),
 	}
@@ -61,7 +61,7 @@ func (s *MemoryTaskStore) SaveTaskInfo(ctx context.Context, info *TaskInfo, isNe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	taskID := info.Task.TaskID
+	taskID := info.Task.ID
 	if isNew {
 		if _, exists := s.taskInfos[taskID]; exists {
 			return errors.New("task already exists: " + taskID)
@@ -113,7 +113,7 @@ func (s *MemoryTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upd
 
 // ===== Atomic State Machine Operations (Authoritative) =====
 
-func (s *MemoryTaskStore) ApplyTaskResult(ctx context.Context, taskID string, result *controlplanev1.TaskResult, nowMillis int64) (ApplyTaskUpdateResult, error) {
+func (s *MemoryTaskStore) ApplyTaskResult(ctx context.Context, taskID string, result *model.TaskResult, nowMillis int64) (ApplyTaskUpdateResult, error) {
 	if result == nil {
 		return ApplyTaskUpdateResult{}, errors.New("result cannot be nil")
 	}
@@ -130,7 +130,7 @@ func (s *MemoryTaskStore) ApplyTaskResult(ctx context.Context, taskID string, re
 	newStatus := result.Status
 
 	// Once terminal, everything is a no-op (first terminal wins).
-	if cur.IsTerminal() {
+	if IsTerminalStatus(cur) {
 		return ApplyTaskUpdateResult{Code: ApplyTaskNoop, Status: cur, AgentID: info.AgentID}, nil
 	}
 
@@ -140,7 +140,7 @@ func (s *MemoryTaskStore) ApplyTaskResult(ctx context.Context, taskID string, re
 	}
 
 	// Reject rollback RUNNING -> PENDING.
-	if cur == controlplanev1.TaskStatusRunning && newStatus == controlplanev1.TaskStatusPending {
+	if cur == model.TaskStatusRunning && newStatus == model.TaskStatusPending {
 		return ApplyTaskUpdateResult{Code: ApplyTaskRejected, Status: cur, AgentID: info.AgentID}, nil
 	}
 
@@ -154,7 +154,7 @@ func (s *MemoryTaskStore) ApplyTaskResult(ctx context.Context, taskID string, re
 		info.AgentID = result.AgentID
 	}
 
-	if newStatus == controlplanev1.TaskStatusRunning && info.StartedAtMillis == 0 {
+	if newStatus == model.TaskStatusRunning && info.StartedAtMillis == 0 {
 		info.StartedAtMillis = nowMillis
 	}
 
@@ -171,16 +171,16 @@ func (s *MemoryTaskStore) ApplyCancel(ctx context.Context, taskID string, nowMil
 	}
 
 	cur := info.Status
-	if cur == controlplanev1.TaskStatusCancelled {
+	if cur == model.TaskStatusCancelled {
 		return ApplyTaskUpdateResult{Code: ApplyTaskNoop, Status: cur, AgentID: info.AgentID}, nil
 	}
 
 	// Reject cancelling a non-cancelled terminal task.
-	if cur.IsTerminal() {
+	if IsTerminalStatus(cur) {
 		return ApplyTaskUpdateResult{Code: ApplyTaskRejected, Status: cur, AgentID: info.AgentID}, nil
 	}
 
-	info.Status = controlplanev1.TaskStatusCancelled
+	info.Status = model.TaskStatusCancelled
 	info.LastUpdatedAtMillis = nowMillis
 	info.Version++
 
@@ -197,15 +197,15 @@ func (s *MemoryTaskStore) ApplySetRunning(ctx context.Context, taskID string, ag
 	}
 
 	cur := info.Status
-	if cur == controlplanev1.TaskStatusRunning {
+	if cur == model.TaskStatusRunning {
 		return ApplyTaskUpdateResult{Code: ApplyTaskNoop, Status: cur, AgentID: info.AgentID}, nil
 	}
 
-	if cur.IsTerminal() {
+	if IsTerminalStatus(cur) {
 		return ApplyTaskUpdateResult{Code: ApplyTaskRejected, Status: cur, AgentID: info.AgentID}, nil
 	}
 
-	info.Status = controlplanev1.TaskStatusRunning
+	info.Status = model.TaskStatusRunning
 	info.AgentID = agentID
 	if info.StartedAtMillis == 0 {
 		info.StartedAtMillis = nowMillis
@@ -408,7 +408,7 @@ func (s *MemoryTaskStore) removeFromQueueLocked(queue *taskPriorityQueue, taskID
 // ===== Result Operations =====
 
 // SaveResult implements TaskStore.
-func (s *MemoryTaskStore) SaveResult(ctx context.Context, result *controlplanev1.TaskResult) error {
+func (s *MemoryTaskStore) SaveResult(ctx context.Context, result *model.TaskResult) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -417,7 +417,7 @@ func (s *MemoryTaskStore) SaveResult(ctx context.Context, result *controlplanev1
 }
 
 // GetResult implements TaskStore.
-func (s *MemoryTaskStore) GetResult(ctx context.Context, taskID string) (*controlplanev1.TaskResult, bool, error) {
+func (s *MemoryTaskStore) GetResult(ctx context.Context, taskID string) (*model.TaskResult, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

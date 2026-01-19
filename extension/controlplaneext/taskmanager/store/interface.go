@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // QueueGlobal is the queue ID for the global pending queue.
@@ -17,14 +17,14 @@ const QueueGlobal = ""
 
 // TaskInfo contains detailed task information.
 type TaskInfo struct {
-	Task            *controlplanev1.Task       `json:"task"`
-	Status          controlplanev1.TaskStatus  `json:"status"`
-	AgentID         string                     `json:"agent_id,omitempty"`
-	AppID           string                     `json:"app_id,omitempty"`
-	ServiceName     string                     `json:"service_name,omitempty"`
-	CreatedAtMillis int64                      `json:"created_at_millis"`
-	StartedAtMillis int64                      `json:"started_at_millis,omitempty"`
-	Result          *controlplanev1.TaskResult `json:"result,omitempty"`
+	Task            *model.Task       `json:"task"`
+	Status          model.TaskStatus  `json:"status"`
+	AgentID         string            `json:"agent_id,omitempty"`
+	AppID           string            `json:"app_id,omitempty"`
+	ServiceName     string            `json:"service_name,omitempty"`
+	CreatedAtMillis int64             `json:"created_at_millis"`
+	StartedAtMillis int64             `json:"started_at_millis,omitempty"`
+	Result          *model.TaskResult `json:"result,omitempty"`
 
 	// Version is incremented on each status update for optimistic concurrency.
 	Version int64 `json:"version,omitempty"`
@@ -63,8 +63,19 @@ const (
 // ApplyTaskUpdateResult carries the outcome and the task's current status snapshot.
 type ApplyTaskUpdateResult struct {
 	Code    ApplyTaskUpdateCode
-	Status  controlplanev1.TaskStatus
+	Status  model.TaskStatus
 	AgentID string
+}
+
+// IsTerminalStatus returns true if the status is a terminal state.
+func IsTerminalStatus(status model.TaskStatus) bool {
+	switch status {
+	case model.TaskStatusSuccess, model.TaskStatusFailed,
+		model.TaskStatusTimeout, model.TaskStatusCancelled, model.TaskStatusResultTooLarge:
+		return true
+	default:
+		return false
+	}
 }
 
 // TaskStore defines low-level storage operations for task management.
@@ -91,7 +102,7 @@ type TaskStore interface {
 
 	// ApplyTaskResult applies a task result update to the task detail record.
 	// Semantics: once the task reaches a terminal state, further updates become a no-op.
-	ApplyTaskResult(ctx context.Context, taskID string, result *controlplanev1.TaskResult, nowMillis int64) (ApplyTaskUpdateResult, error)
+	ApplyTaskResult(ctx context.Context, taskID string, result *model.TaskResult, nowMillis int64) (ApplyTaskUpdateResult, error)
 
 	// ApplyCancel marks a task as cancelled in the task detail record.
 	// Semantics: cancelling a non-cancelled terminal task is rejected.
@@ -133,11 +144,11 @@ type TaskStore interface {
 	// ===== Result Operations =====
 
 	// SaveResult persists a TaskResult.
-	SaveResult(ctx context.Context, result *controlplanev1.TaskResult) error
+	SaveResult(ctx context.Context, result *model.TaskResult) error
 
 	// GetResult retrieves a TaskResult by taskID.
 	// Returns (nil, false, nil) if not found.
-	GetResult(ctx context.Context, taskID string) (*controlplanev1.TaskResult, bool, error)
+	GetResult(ctx context.Context, taskID string) (*model.TaskResult, bool, error)
 
 	// ===== Cancellation Operations =====
 

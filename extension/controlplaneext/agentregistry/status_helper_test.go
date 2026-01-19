@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 func TestStatusHelper_InitializeStatus(t *testing.T) {
@@ -170,7 +168,7 @@ func TestStatusHelper_UpdateHealthStatus(t *testing.T) {
 				StateChangedAt: now - 1000,
 			},
 		}
-		health := &controlplanev1.HealthStatus{State: controlplanev1.HealthStateUnhealthy}
+		health := &HealthStatus{State: HealthStateUnhealthy}
 
 		newState, changed := h.UpdateHealthStatus(agent, health, now)
 
@@ -189,7 +187,7 @@ func TestStatusHelper_UpdateHealthStatus(t *testing.T) {
 				StateChangedAt: now - 1000,
 			},
 		}
-		health := &controlplanev1.HealthStatus{State: controlplanev1.HealthStateHealthy}
+		health := &HealthStatus{State: HealthStateHealthy}
 
 		newState, changed := h.UpdateHealthStatus(agent, health, now)
 
@@ -208,7 +206,7 @@ func TestStatusHelper_UpdateHealthStatus(t *testing.T) {
 				StateChangedAt: originalTime,
 			},
 		}
-		health := &controlplanev1.HealthStatus{State: controlplanev1.HealthStateHealthy}
+		health := &HealthStatus{State: HealthStateHealthy}
 
 		newState, changed := h.UpdateHealthStatus(agent, health, now)
 

@@ -26,7 +26,7 @@ class ApiServiceClass {
         };
         if (data) options.body = JSON.stringify(data);
 
-        const res = await fetch(`/api/v1${path}`, options);
+        const res = await fetch(`/api/v2${path}`, options);
         if (res.status === 401) {
             throw { status: 401, message: 'Unauthorized' };
         }

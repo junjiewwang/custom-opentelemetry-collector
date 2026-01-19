@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 func newTestTaskService(t *testing.T) *TaskService {
@@ -40,10 +40,10 @@ func TestTaskService_SubmitAndFetch(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit a task
-	task := &controlplanev1.Task{
-		TaskID:   "test-task-1",
-		TaskType: "test",
-		Priority: 1,
+	task := &model.Task{
+		ID:          "test-task-1",
+		TypeName:    "test",
+		PriorityNum: 1,
 	}
 	err := service.SubmitTask(ctx, task)
 	require.NoError(t, err)
@@ -52,7 +52,7 @@ func TestTaskService_SubmitAndFetch(t *testing.T) {
 	fetched, err := service.FetchTask(ctx, "agent-1", 100*time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, fetched)
-	assert.Equal(t, "test-task-1", fetched.TaskID)
+	assert.Equal(t, "test-task-1", fetched.ID)
 }
 
 func TestTaskService_SubmitForAgent(t *testing.T) {
@@ -60,9 +60,9 @@ func TestTaskService_SubmitForAgent(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit a task for specific agent
-	task := &controlplanev1.Task{
-		TaskID:   "agent-task-1",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "agent-task-1",
+		TypeName: "test",
 	}
 	agentMeta := &AgentMeta{
 		AgentID:     "agent-1",
@@ -81,16 +81,16 @@ func TestTaskService_SubmitForAgent(t *testing.T) {
 	fetched, err = service.FetchTask(ctx, "agent-1", 100*time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, fetched)
-	assert.Equal(t, "agent-task-1", fetched.TaskID)
+	assert.Equal(t, "agent-task-1", fetched.ID)
 }
 
 func TestTaskService_DuplicateTask(t *testing.T) {
 	service := newTestTaskService(t)
 	ctx := context.Background()
 
-	task := &controlplanev1.Task{
-		TaskID:   "dup-task",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "dup-task",
+		TypeName: "test",
 	}
 
 	// First submission should succeed
@@ -108,9 +108,9 @@ func TestTaskService_CancelTask(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit a task
-	task := &controlplanev1.Task{
-		TaskID:   "cancel-task",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "cancel-task",
+		TypeName: "test",
 	}
 	err := service.SubmitTask(ctx, task)
 	require.NoError(t, err)
@@ -135,17 +135,17 @@ func TestTaskService_ReportResult(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit a task
-	task := &controlplanev1.Task{
-		TaskID:   "result-task",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "result-task",
+		TypeName: "test",
 	}
 	err := service.SubmitTask(ctx, task)
 	require.NoError(t, err)
 
 	// Report running status
-	result := &controlplanev1.TaskResult{
+	result := &model.TaskResult{
 		TaskID:  "result-task",
-		Status:  controlplanev1.TaskStatusRunning,
+		Status:  model.TaskStatusRunning,
 		AgentID: "agent-1",
 	}
 	err = service.ReportTaskResult(ctx, result)
@@ -154,13 +154,13 @@ func TestTaskService_ReportResult(t *testing.T) {
 	// Check status
 	info, err := service.GetTaskStatus(ctx, "result-task")
 	require.NoError(t, err)
-	assert.Equal(t, controlplanev1.TaskStatusRunning, info.Status)
+	assert.Equal(t, model.TaskStatusRunning, info.Status)
 	assert.Equal(t, "agent-1", info.AgentID)
 
 	// Report success
-	result = &controlplanev1.TaskResult{
+	result = &model.TaskResult{
 		TaskID:            "result-task",
-		Status:            controlplanev1.TaskStatusSuccess,
+		Status:            model.TaskStatusSuccess,
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}
 	err = service.ReportTaskResult(ctx, result)
@@ -169,7 +169,7 @@ func TestTaskService_ReportResult(t *testing.T) {
 	// Check final status
 	info, err = service.GetTaskStatus(ctx, "result-task")
 	require.NoError(t, err)
-	assert.Equal(t, controlplanev1.TaskStatusSuccess, info.Status)
+	assert.Equal(t, model.TaskStatusSuccess, info.Status)
 }
 
 func TestTaskService_StateMachine_RejectRollback(t *testing.T) {
@@ -177,17 +177,17 @@ func TestTaskService_StateMachine_RejectRollback(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit a task
-	task := &controlplanev1.Task{
-		TaskID:   "sm-task",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "sm-task",
+		TypeName: "test",
 	}
 	err := service.SubmitTask(ctx, task)
 	require.NoError(t, err)
 
 	// Report success
-	result := &controlplanev1.TaskResult{
+	result := &model.TaskResult{
 		TaskID:            "sm-task",
-		Status:            controlplanev1.TaskStatusSuccess,
+		Status:            model.TaskStatusSuccess,
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}
 	err = service.ReportTaskResult(ctx, result)
@@ -195,9 +195,9 @@ func TestTaskService_StateMachine_RejectRollback(t *testing.T) {
 
 	// Try to report running after success
 	// Now treated as idempotent/no-op (once terminal, further updates are ignored)
-	result = &controlplanev1.TaskResult{
+	result = &model.TaskResult{
 		TaskID: "sm-task",
-		Status: controlplanev1.TaskStatusRunning,
+		Status: model.TaskStatusRunning,
 	}
 	err = service.ReportTaskResult(ctx, result)
 	require.NoError(t, err)
@@ -205,7 +205,7 @@ func TestTaskService_StateMachine_RejectRollback(t *testing.T) {
 	// Verify the original status is preserved
 	info, err := service.GetTaskStatus(ctx, "sm-task")
 	require.NoError(t, err)
-	assert.Equal(t, controlplanev1.TaskStatusSuccess, info.Status)
+	assert.Equal(t, model.TaskStatusSuccess, info.Status)
 }
 
 func TestTaskService_StateMachine_TerminalConflict(t *testing.T) {
@@ -213,17 +213,17 @@ func TestTaskService_StateMachine_TerminalConflict(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit a task
-	task := &controlplanev1.Task{
-		TaskID:   "conflict-task",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "conflict-task",
+		TypeName: "test",
 	}
 	err := service.SubmitTask(ctx, task)
 	require.NoError(t, err)
 
 	// Report success
-	result := &controlplanev1.TaskResult{
+	result := &model.TaskResult{
 		TaskID:            "conflict-task",
-		Status:            controlplanev1.TaskStatusSuccess,
+		Status:            model.TaskStatusSuccess,
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}
 	err = service.ReportTaskResult(ctx, result)
@@ -231,9 +231,9 @@ func TestTaskService_StateMachine_TerminalConflict(t *testing.T) {
 
 	// Try to report failed after success (terminal conflict)
 	// Now treated as idempotent - first terminal state wins, no error returned
-	result = &controlplanev1.TaskResult{
+	result = &model.TaskResult{
 		TaskID:            "conflict-task",
-		Status:            controlplanev1.TaskStatusFailed,
+		Status:            model.TaskStatusFailed,
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}
 	err = service.ReportTaskResult(ctx, result)
@@ -242,7 +242,7 @@ func TestTaskService_StateMachine_TerminalConflict(t *testing.T) {
 	// Verify the original status is preserved
 	info, err := service.GetTaskStatus(ctx, "conflict-task")
 	require.NoError(t, err)
-	assert.Equal(t, controlplanev1.TaskStatusSuccess, info.Status)
+	assert.Equal(t, model.TaskStatusSuccess, info.Status)
 }
 
 func TestTaskService_StateMachine_Idempotent(t *testing.T) {
@@ -250,17 +250,17 @@ func TestTaskService_StateMachine_Idempotent(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit a task
-	task := &controlplanev1.Task{
-		TaskID:   "idempotent-task",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "idempotent-task",
+		TypeName: "test",
 	}
 	err := service.SubmitTask(ctx, task)
 	require.NoError(t, err)
 
 	// Report success
-	result := &controlplanev1.TaskResult{
+	result := &model.TaskResult{
 		TaskID:            "idempotent-task",
-		Status:            controlplanev1.TaskStatusSuccess,
+		Status:            model.TaskStatusSuccess,
 		CompletedAtMillis: time.Now().UnixMilli(),
 	}
 	err = service.ReportTaskResult(ctx, result)
@@ -277,9 +277,9 @@ func TestTaskService_GetAllTasks(t *testing.T) {
 
 	// Submit multiple tasks
 	for i := 0; i < 3; i++ {
-		task := &controlplanev1.Task{
-			TaskID:   "all-task-" + string(rune('a'+i)),
-			TaskType: "test",
+		task := &model.Task{
+			ID:       "all-task-" + string(rune('a'+i)),
+			TypeName: "test",
 		}
 		err := service.SubmitTask(ctx, task)
 		require.NoError(t, err)
@@ -296,9 +296,9 @@ func TestTaskService_SetTaskRunning(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit a task
-	task := &controlplanev1.Task{
-		TaskID:   "running-task",
-		TaskType: "test",
+	task := &model.Task{
+		ID:       "running-task",
+		TypeName: "test",
 	}
 	err := service.SubmitTask(ctx, task)
 	require.NoError(t, err)
@@ -310,7 +310,7 @@ func TestTaskService_SetTaskRunning(t *testing.T) {
 	// Check status
 	info, err := service.GetTaskStatus(ctx, "running-task")
 	require.NoError(t, err)
-	assert.Equal(t, controlplanev1.TaskStatusRunning, info.Status)
+	assert.Equal(t, model.TaskStatusRunning, info.Status)
 	assert.Equal(t, "agent-1", info.AgentID)
 	assert.Greater(t, info.StartedAtMillis, int64(0))
 }
@@ -320,10 +320,10 @@ func TestTaskService_PriorityQueue(t *testing.T) {
 	ctx := context.Background()
 
 	// Submit tasks with different priorities
-	tasks := []*controlplanev1.Task{
-		{TaskID: "low-priority", TaskType: "test", Priority: 1},
-		{TaskID: "high-priority", TaskType: "test", Priority: 10},
-		{TaskID: "medium-priority", TaskType: "test", Priority: 5},
+	tasks := []*model.Task{
+		{ID: "low-priority", TypeName: "test", PriorityNum: 1},
+		{ID: "high-priority", TypeName: "test", PriorityNum: 10},
+		{ID: "medium-priority", TypeName: "test", PriorityNum: 5},
 	}
 
 	for _, task := range tasks {
@@ -334,13 +334,13 @@ func TestTaskService_PriorityQueue(t *testing.T) {
 	// Fetch tasks - should come in priority order
 	fetched, err := service.FetchTask(ctx, "agent-1", 100*time.Millisecond)
 	require.NoError(t, err)
-	assert.Equal(t, "high-priority", fetched.TaskID)
+	assert.Equal(t, "high-priority", fetched.ID)
 
 	fetched, err = service.FetchTask(ctx, "agent-1", 100*time.Millisecond)
 	require.NoError(t, err)
-	assert.Equal(t, "medium-priority", fetched.TaskID)
+	assert.Equal(t, "medium-priority", fetched.ID)
 
 	fetched, err = service.FetchTask(ctx, "agent-1", 100*time.Millisecond)
 	require.NoError(t, err)
-	assert.Equal(t, "low-priority", fetched.TaskID)
+	assert.Equal(t, "low-priority", fetched.ID)
 }

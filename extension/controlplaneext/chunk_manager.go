@@ -13,7 +13,7 @@ import (
 
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // ChunkManager manages chunked uploads.
@@ -26,7 +26,9 @@ type ChunkManager struct {
 
 // chunkUpload tracks an ongoing chunked upload.
 type chunkUpload struct {
+	key         string
 	taskID      string
+	uploadID    string
 	totalChunks int32
 	chunks      map[int32][]byte
 	createdAt   time.Time
@@ -45,83 +47,117 @@ func newChunkManager(logger *zap.Logger) *ChunkManager {
 	return cm
 }
 
-// HandleChunk handles a chunk upload request.
-func (m *ChunkManager) HandleChunk(ctx context.Context, req *controlplanev1.UploadChunkRequest) (*controlplanev1.UploadChunkResponse, error) {
+func chunkKey(req *model.ChunkUpload) string {
+	if req == nil {
+		return ""
+	}
+	if req.UploadID != "" {
+		return req.UploadID
+	}
+	return req.TaskID
+}
+
+// HandleChunkV2 handles a chunk upload request in model format.
+//
+// It returns:
+// - model response (for v2/probe)
+// - chunksReceived count (for legacy response compatibility)
+func (m *ChunkManager) HandleChunkV2(ctx context.Context, req *model.ChunkUpload) (*model.ChunkUploadResponse, int32, error) {
+	_ = ctx
+	if req == nil {
+		return nil, 0, errors.New("request is nil")
+	}
 	if req.TaskID == "" {
-		return nil, errors.New("task_id is required")
+		return nil, 0, errors.New("task_id is required")
 	}
-
 	if req.TotalChunks <= 0 {
-		return nil, errors.New("total_chunks must be positive")
+		return nil, 0, errors.New("total_chunks must be positive")
 	}
-
 	if req.ChunkIndex < 0 || req.ChunkIndex >= req.TotalChunks {
-		return nil, errors.New("chunk_index out of range")
+		return nil, 0, errors.New("chunk_index out of range")
 	}
 
-		// Verify checksum if provided (MD5, aligned with probe contract)
-		if req.Checksum != "" {
-			hash := md5.Sum(req.Data)
-			actualChecksum := hex.EncodeToString(hash[:])
-			if actualChecksum != req.Checksum {
-				return &controlplanev1.UploadChunkResponse{
-					Success: false,
-					Message: "checksum mismatch",
-				}, nil
-			}
-		}
+	key := chunkKey(req)
+	if key == "" {
+		return nil, 0, errors.New("upload_id/task_id is required")
+	}
 
+	// Verify checksum if provided (MD5, aligned with probe contract)
+	if req.ChunkChecksum != "" {
+		hash := md5.Sum(req.ChunkData)
+		actualChecksum := hex.EncodeToString(hash[:])
+		if actualChecksum != req.ChunkChecksum {
+			return &model.ChunkUploadResponse{
+				UploadID:           key,
+				ReceivedChunkIndex: req.ChunkIndex,
+				Status:             model.ChunkUploadStatusChecksumMismatch,
+				ErrorMessage:       "checksum mismatch",
+			}, 0, nil
+		}
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Get or create upload
-	upload, exists := m.uploads[req.TaskID]
+	upload, exists := m.uploads[key]
 	if !exists {
 		upload = &chunkUpload{
+			key:         key,
 			taskID:      req.TaskID,
+			uploadID:    req.UploadID,
 			totalChunks: req.TotalChunks,
 			chunks:      make(map[int32][]byte),
 			createdAt:   time.Now(),
 		}
-		m.uploads[req.TaskID] = upload
+		m.uploads[key] = upload
 	}
 
 	// Validate total chunks matches
 	if upload.totalChunks != req.TotalChunks {
-		return &controlplanev1.UploadChunkResponse{
-			Success: false,
-			Message: "total_chunks mismatch with existing upload",
-		}, nil
+		return &model.ChunkUploadResponse{
+			UploadID:           key,
+			ReceivedChunkIndex: req.ChunkIndex,
+			Status:             model.ChunkUploadStatusUploadFailed,
+			ErrorMessage:       "total_chunks mismatch with existing upload",
+		}, int32(len(upload.chunks)), nil
 	}
 
 	// Store chunk
-	upload.chunks[req.ChunkIndex] = req.Data
+	upload.chunks[req.ChunkIndex] = req.ChunkData
 
 	chunksReceived := int32(len(upload.chunks))
 	complete := chunksReceived == upload.totalChunks
 
 	m.logger.Debug("Chunk received",
 		zap.String("task_id", req.TaskID),
+		zap.String("upload_id", req.UploadID),
+		zap.String("key", key),
 		zap.Int32("chunk_index", req.ChunkIndex),
 		zap.Int32("chunks_received", chunksReceived),
 		zap.Int32("total_chunks", upload.totalChunks),
 		zap.Bool("complete", complete),
 	)
 
-	return &controlplanev1.UploadChunkResponse{
-		Success:        true,
-		ChunksReceived: chunksReceived,
-		Complete:       complete,
-	}, nil
+	status := model.ChunkUploadStatusChunkReceived
+	if complete {
+		status = model.ChunkUploadStatusUploadComplete
+	}
+
+	return &model.ChunkUploadResponse{
+		UploadID:           key,
+		ReceivedChunkIndex: req.ChunkIndex,
+		Status:             status,
+		ErrorMessage:       "",
+	}, chunksReceived, nil
 }
 
 // GetCompleteUpload returns the complete data for a finished upload.
-func (m *ChunkManager) GetCompleteUpload(taskID string) ([]byte, bool) {
+func (m *ChunkManager) GetCompleteUpload(key string) ([]byte, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	upload, exists := m.uploads[taskID]
+	upload, exists := m.uploads[key]
 	if !exists {
 		return nil, false
 	}
@@ -141,7 +177,7 @@ func (m *ChunkManager) GetCompleteUpload(taskID string) ([]byte, bool) {
 	}
 
 	// Remove completed upload
-	delete(m.uploads, taskID)
+	delete(m.uploads, key)
 
 	return data, true
 }

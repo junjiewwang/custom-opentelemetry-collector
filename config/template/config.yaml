@@ -175,6 +175,7 @@ extensions:
     config_manager:
       type: on_demand  # "memory", "nacos", or "on_demand"
       nacos_name: default
+      
       # on_demand mode settings (configs are loaded when agents connect)
       on_demand:
         namespace: ""

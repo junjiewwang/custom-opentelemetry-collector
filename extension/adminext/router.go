@@ -64,12 +64,13 @@ func (e *Extension) newRouter() http.Handler {
 		})
 	}
 
-	// API v1 routes (with optional auth middleware)
-	r.Route("/api/v1", func(r chi.Router) {
+	// API v2 routes (admin API is v2-only)
+	r.Route("/api/v2", func(r chi.Router) {
 		// Apply auth middleware only to API routes
 		if e.config.Auth.Enabled {
 			r.Use(e.authMiddleware)
 		}
+
 		// ============================================================================
 		// Auth - WebSocket Token (for secure WS connections)
 		// ============================================================================
@@ -89,13 +90,13 @@ func (e *Extension) newRouter() http.Handler {
 				r.Post("/token", e.regenerateAppToken)
 				r.Put("/token", e.setAppToken)
 
-				// Config management
+				// Config management (model JSON)
 				r.Route("/config", func(r chi.Router) {
-					r.Get("/", e.getAppDefaultConfig)
-					r.Put("/", e.setAppDefaultConfig)
-					r.Get("/{instanceID}", e.getAppInstanceConfig)
-					r.Put("/{instanceID}", e.setAppInstanceConfig)
-					r.Delete("/{instanceID}", e.deleteAppInstanceConfig)
+					r.Get("/", e.getAppDefaultConfigV2)
+					r.Put("/", e.setAppDefaultConfigV2)
+					r.Get("/{instanceID}", e.getAppInstanceConfigV2)
+					r.Put("/{instanceID}", e.setAppInstanceConfigV2)
+					r.Delete("/{instanceID}", e.deleteAppInstanceConfigV2)
 				})
 
 				// Services under app
@@ -123,14 +124,14 @@ func (e *Extension) newRouter() http.Handler {
 		r.Post("/instances/{instanceID}/kick", e.kickInstance)
 
 		// ============================================================================
-		// Task Management (global, cross-app)
+		// Task Management (global, cross-app) - model JSON
 		// ============================================================================
 		r.Route("/tasks", func(r chi.Router) {
-			r.Get("/", e.listTasks)
-			r.Post("/", e.createTask)
-			r.Post("/batch", e.batchTaskAction)
-			r.Get("/{taskID}", e.getTask)
-			r.Delete("/{taskID}", e.cancelTask)
+			r.Get("/", e.listTasksV2)
+			r.Post("/", e.createTaskV2)
+			r.Post("/batch", e.batchTaskActionV2)
+			r.Get("/{taskID}", e.getTaskV2)
+			r.Delete("/{taskID}", e.cancelTaskV2)
 		})
 
 		// ============================================================================

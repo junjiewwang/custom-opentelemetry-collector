@@ -11,11 +11,11 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
+	"go.opentelemetry.io/collector/custom/controlplane/conv/probeconv"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver/longpoll"
 
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
-	legacyv1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
 )
 
 // controlPlaneService implements the probe control plane contract on the server side.
@@ -25,11 +25,11 @@ import (
 
 type controlPlaneService struct {
 	logger          *zap.Logger
-	controlPlane    controlplaneext.ControlPlane
+	controlPlane    controlplaneext.ControlPlaneV2
 	longPollManager *longpoll.Manager
 }
 
-func newControlPlaneService(logger *zap.Logger, cp controlplaneext.ControlPlane, lpm *longpoll.Manager) *controlPlaneService {
+func newControlPlaneService(logger *zap.Logger, cp controlplaneext.ControlPlaneV2, lpm *longpoll.Manager) *controlPlaneService {
 	return &controlPlaneService{logger: logger, controlPlane: cp, longPollManager: lpm}
 }
 
@@ -56,7 +56,7 @@ func (s *controlPlaneService) UnifiedPoll(ctx context.Context, req *controlplane
 	}
 
 	resp := &controlplanev1.UnifiedPollResponse{
-		Status: &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
+		Status:        &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
 		Success:       true,
 		HasAnyChanges: combined.HasAnyChanges,
 		Results:       make(map[string]*controlplanev1.PollResult, len(combined.Results)),
@@ -75,16 +75,15 @@ func (s *controlPlaneService) UnifiedPoll(ctx context.Context, req *controlplane
 
 		switch pollType {
 		case longpoll.LongPollTypeConfig:
-			// Config is stored internally as legacy JSON model; convert to probe proto.
 			if r.Config != nil {
-				cfgProto := legacyConfigToProto(r.Config, r.ConfigEtag)
+				cfgProto := probeconv.AgentConfigToProto(r.Config)
 				cfgBytes, _ := proto.Marshal(cfgProto)
 				pr.ConfigData = cfgBytes
 			}
 			pr.ConfigVersion = r.ConfigVersion
 			pr.ConfigEtag = r.ConfigEtag
 		case longpoll.LongPollTypeTask:
-			pr.Tasks = legacyTasksToProto(r.Tasks)
+			pr.Tasks = probeconv.TasksToProto(r.Tasks)
 		}
 
 		resp.Results[key] = pr
@@ -116,7 +115,7 @@ func (s *controlPlaneService) GetConfig(ctx context.Context, req *controlplanev1
 	}
 
 	cfgResp := &controlplanev1.ConfigResponse{
-		Status: &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
+		Status:                      &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
 		Success:                     true,
 		HasChanges:                  pollResp.HasChanges,
 		SuggestedPollIntervalMillis: 0,
@@ -125,7 +124,7 @@ func (s *controlPlaneService) GetConfig(ctx context.Context, req *controlplanev1
 	}
 
 	if pollResp.Config != nil {
-		cfgResp.Config = legacyConfigToProto(pollResp.Config, pollResp.ConfigEtag)
+		cfgResp.Config = probeconv.AgentConfigToProto(pollResp.Config)
 	}
 
 	return cfgResp
@@ -152,9 +151,9 @@ func (s *controlPlaneService) GetTasks(ctx context.Context, req *controlplanev1.
 	}
 
 	return &controlplanev1.TaskResponse{
-		Status:                     &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
-		Success:                    true,
-		Tasks:                      legacyTasksToProto(pollResp.Tasks),
+		Status:                      &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
+		Success:                     true,
+		Tasks:                       probeconv.TasksToProto(pollResp.Tasks),
 		SuggestedPollIntervalMillis: 0,
 	}
 }
@@ -168,21 +167,23 @@ func (s *controlPlaneService) ReportTaskResult(ctx context.Context, req *control
 	}
 
 	agentID := agentIDFromTaskResultRequest(req)
-	legacy := taskResultRequestToLegacy(req, agentID)
-
-	if legacy.CompletedAtMillis == 0 {
-		legacy.CompletedAtMillis = time.Now().UnixMilli()
+	tr := probeconv.TaskResultFromPollProto(req, agentID)
+	if tr == nil {
+		return taskResultError(controlplanev1.ResponseStatus_CODE_INVALID_ARGUMENT, "invalid task result")
+	}
+	if tr.CompletedAtMillis == 0 {
+		tr.CompletedAtMillis = time.Now().UnixMilli()
 	}
 
-	err := s.controlPlane.ReportTaskResult(ctx, legacy)
+	err := s.controlPlane.ReportTaskResult(ctx, tr)
 	if err != nil {
 		code := classifyBusinessError(err)
 		return &controlplanev1.TaskResultResponse{
-			Status:        &controlplanev1.ResponseStatus{Code: code, Message: err.Error()},
-			Acknowledged:  false,
-			Success:       false,
-			ErrorMessage:  err.Error(),
-			Message:       "failed",
+			Status:       &controlplanev1.ResponseStatus{Code: code, Message: err.Error()},
+			Acknowledged: false,
+			Success:      false,
+			ErrorMessage: err.Error(),
+			Message:      "failed",
 		}
 	}
 
@@ -216,16 +217,19 @@ func (s *controlPlaneService) ReportStatus(ctx context.Context, req *controlplan
 		if tr == nil || tr.GetTaskId() == "" {
 			continue
 		}
-		legacyTr := taskResultToLegacy(tr, agentID)
-		_ = s.controlPlane.ReportTaskResult(ctx, legacyTr)
+		mtr := probeconv.TaskResultFromTaskProto(tr, agentID)
+		if mtr == nil {
+			continue
+		}
+		_ = s.controlPlane.ReportTaskResult(ctx, mtr)
 	}
 
 	return &controlplanev1.StatusResponse{
-		Status:                    &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
-		ServerTimeMillis:          time.Now().UnixMilli(),
+		Status:                        &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
+		ServerTimeMillis:              time.Now().UnixMilli(),
 		SuggestedReportIntervalMillis: 0,
-		AcknowledgedTaskIds:       nil,
-		Success:                   true,
+		AcknowledgedTaskIds:           nil,
+		Success:                       true,
 	}
 }
 
@@ -234,40 +238,29 @@ func (s *controlPlaneService) UploadChunkedResult(ctx context.Context, req *cont
 		return chunkError(controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED, "control plane not available")
 	}
 
-	// Current controlplane extension uses a legacy chunk upload API.
-	// We bridge probe's ChunkedTaskResult into the legacy UploadChunkRequest.
-	legacyReq := &legacyv1.UploadChunkRequest{
-		TaskID:      req.GetTaskId(),
-		ChunkIndex:  req.GetChunkIndex(),
-		TotalChunks: req.GetTotalChunks(),
-		Data:        req.GetChunkData(),
-		Checksum:    req.GetChunkChecksum(),
+	modelReq := probeconv.ChunkUploadFromProto(req)
+	if modelReq == nil {
+		return chunkError(controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED, "invalid chunk request")
 	}
 
-	legacyResp, err := s.controlPlane.UploadChunk(ctx, legacyReq)
+	modelResp, err := s.controlPlane.UploadChunk(ctx, modelReq)
 	if err != nil {
 		return chunkError(controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED, err.Error())
 	}
-
-	status := controlplanev1.ChunkedUploadResponse_STATUS_CHUNK_RECEIVED
-	if legacyResp.Complete {
-		status = controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_COMPLETE
-	}
-	if strings.Contains(strings.ToLower(legacyResp.Message), "checksum") {
-		status = controlplanev1.ChunkedUploadResponse_STATUS_CHECKSUM_MISMATCH
+	if modelResp == nil {
+		return chunkError(controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED, "empty response")
 	}
 
-	uploadID := req.GetUploadId()
-	if uploadID == "" {
-		uploadID = req.GetTaskId()
+	// Keep response aligned with probe contract.
+	if modelResp.UploadID == "" {
+		modelResp.UploadID = pickFirstNonEmpty(req.GetUploadId(), req.GetTaskId())
+	}
+	if modelResp.ReceivedChunkIndex == 0 {
+		// Preserve old semantics: receiver always echoes the current chunk index.
+		modelResp.ReceivedChunkIndex = req.GetChunkIndex()
 	}
 
-	return &controlplanev1.ChunkedUploadResponse{
-		UploadId:          uploadID,
-		ReceivedChunkIndex: req.GetChunkIndex(),
-		Status:            status,
-		ErrorMessage:      pickFirstNonEmpty(legacyResp.Message, ""),
-	}
+	return probeconv.ChunkUploadResponseToProto(modelResp)
 }
 
 func pickFirstNonEmpty(values ...string) string {
@@ -319,9 +312,9 @@ func taskError(code controlplanev1.ResponseStatus_Code, message string) *control
 
 func statusError(code controlplanev1.ResponseStatus_Code, message string) *controlplanev1.StatusResponse {
 	return &controlplanev1.StatusResponse{
-		Status:       &controlplanev1.ResponseStatus{Code: code, Message: message},
-		Success:      false,
-		ErrorMessage: message,
+		Status:           &controlplanev1.ResponseStatus{Code: code, Message: message},
+		Success:          false,
+		ErrorMessage:     message,
 		ServerTimeMillis: time.Now().UnixMilli(),
 	}
 }

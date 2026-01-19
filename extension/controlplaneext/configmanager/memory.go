@@ -10,7 +10,7 @@ import (
 
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // MemoryConfigManager implements ConfigManager using in-memory storage.
@@ -18,7 +18,7 @@ type MemoryConfigManager struct {
 	logger *zap.Logger
 
 	mu            sync.RWMutex
-	currentConfig *controlplanev1.AgentConfig
+	currentConfig *model.AgentConfig
 	subscribers   []ConfigChangeCallback
 	started       bool
 }
@@ -35,14 +35,14 @@ func NewMemoryConfigManager(logger *zap.Logger) *MemoryConfigManager {
 var _ ConfigManager = (*MemoryConfigManager)(nil)
 
 // GetConfig returns the current configuration.
-func (m *MemoryConfigManager) GetConfig(ctx context.Context) (*controlplanev1.AgentConfig, error) {
+func (m *MemoryConfigManager) GetConfig(ctx context.Context) (*model.AgentConfig, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.currentConfig, nil
 }
 
 // UpdateConfig updates the configuration.
-func (m *MemoryConfigManager) UpdateConfig(ctx context.Context, config *controlplanev1.AgentConfig) error {
+func (m *MemoryConfigManager) UpdateConfig(ctx context.Context, config *model.AgentConfig) error {
 	if config == nil {
 		return errors.New("config cannot be nil")
 	}
@@ -64,7 +64,7 @@ func (m *MemoryConfigManager) UpdateConfig(ctx context.Context, config *controlp
 	}
 
 	m.logger.Info("Configuration updated",
-		zap.String("version", config.ConfigVersion),
+		zap.String("version", config.Version.Version),
 	)
 
 	return nil
@@ -115,13 +115,13 @@ func (m *MemoryConfigManager) Close() error {
 }
 
 // validate validates the configuration.
-func (m *MemoryConfigManager) validate(config *controlplanev1.AgentConfig) error {
-	if config.ConfigVersion == "" {
-		return errors.New("config_version is required")
+func (m *MemoryConfigManager) validate(config *model.AgentConfig) error {
+	if config.Version.Version == "" {
+		return errors.New("version.version is required")
 	}
 
 	if config.Sampler != nil {
-		if config.Sampler.Type == controlplanev1.SamplerTypeTraceIDRatio {
+		if config.Sampler.Type == model.SamplerTypeTraceIDRatio {
 			if config.Sampler.Ratio < 0 || config.Sampler.Ratio > 1 {
 				return errors.New("sampler ratio must be between 0 and 1")
 			}

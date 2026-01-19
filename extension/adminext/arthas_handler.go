@@ -95,7 +95,7 @@ func (e *Extension) listArthasAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleArthasWebSocket handles WebSocket connections from browsers for Arthas terminal.
-// Authentication is done via short-lived WS token (obtained from POST /api/v1/auth/ws-token).
+// Authentication is done via short-lived WS token (obtained from POST /api/v2/auth/ws-token).
 func (e *Extension) handleArthasWebSocket(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agent_id")
 	token := r.URL.Query().Get("token")

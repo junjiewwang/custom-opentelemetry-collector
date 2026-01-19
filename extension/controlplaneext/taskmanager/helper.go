@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
 // TaskHelper provides common task operations shared across implementations.
@@ -25,15 +25,15 @@ func (h *TaskHelper) NowMillis() int64 {
 
 // ValidateTask validates task fields and auto-fills defaults.
 // Returns the current timestamp (millis) for reuse.
-func (h *TaskHelper) ValidateTask(task *controlplanev1.Task) (nowMillis int64, err error) {
+func (h *TaskHelper) ValidateTask(task *model.Task) (nowMillis int64, err error) {
 	if task == nil {
 		return 0, errors.New("task cannot be nil")
 	}
-	if task.TaskID == "" {
+	if task.ID == "" {
 		return 0, errors.New("task_id is required")
 	}
-	if task.TaskType == "" {
-		return 0, errors.New("task_type is required")
+	if task.TypeName == "" {
+		return 0, errors.New("task_type_name is required")
 	}
 
 	nowMillis = h.NowMillis()
@@ -59,10 +59,10 @@ type AgentMeta struct {
 }
 
 // NewTaskInfo creates a TaskInfo with standard initialization.
-func (h *TaskHelper) NewTaskInfo(task *controlplanev1.Task, agentMeta *AgentMeta, nowMillis int64) *TaskInfo {
+func (h *TaskHelper) NewTaskInfo(task *model.Task, agentMeta *AgentMeta, nowMillis int64) *TaskInfo {
 	info := &TaskInfo{
 		Task:            task,
-		Status:          controlplanev1.TaskStatusPending,
+		Status:          model.TaskStatusPending,
 		CreatedAtMillis: nowMillis,
 	}
 	if agentMeta != nil {
@@ -92,15 +92,15 @@ type TaskResultEffects struct {
 }
 
 // ResultEffects returns how a reported TaskResult should affect task bookkeeping.
-func (h *TaskHelper) ResultEffects(status controlplanev1.TaskStatus) TaskResultEffects {
+func (h *TaskHelper) ResultEffects(status model.TaskStatus) TaskResultEffects {
 	_ = h // keep method receiver for future extensions
-	if status == controlplanev1.TaskStatusRunning {
+	if status == model.TaskStatusRunning {
 		return TaskResultEffects{
 			MarkRunning:       true,
 			RemoveFromPending: true,
 		}
 	}
-	if status.IsTerminal() {
+	if isTerminal(status) {
 		return TaskResultEffects{
 			ClearRunning:      true,
 			RemoveFromPending: true,
@@ -113,7 +113,7 @@ func (h *TaskHelper) ResultEffects(status controlplanev1.TaskStatus) TaskResultE
 
 // UpdateTaskInfoWithResult updates TaskInfo fields based on the reported result.
 // This centralizes the update logic to ensure consistency across implementations.
-func (h *TaskHelper) UpdateTaskInfoWithResult(info *TaskInfo, result *controlplanev1.TaskResult) {
+func (h *TaskHelper) UpdateTaskInfoWithResult(info *TaskInfo, result *model.TaskResult) {
 	if info == nil || result == nil {
 		return
 	}
@@ -148,11 +148,12 @@ func (h *TaskHelper) IsTaskInfoDispatchable(info *TaskInfo, isCancelled bool) bo
 		// If no info found, assume dispatchable (shouldn't happen normally)
 		return true
 	}
-	return info.Status.IsDispatchable()
+	// Dispatchable if not in terminal state
+	return !isTerminal(info.Status)
 }
 
 // ValidateResult validates a TaskResult before processing.
-func (h *TaskHelper) ValidateResult(result *controlplanev1.TaskResult) error {
+func (h *TaskHelper) ValidateResult(result *model.TaskResult) error {
 	if result == nil {
 		return errors.New("result cannot be nil")
 	}
@@ -181,7 +182,7 @@ func (h *TaskHelper) MarkTaskInfoRunning(info *TaskInfo, agentID string, nowMill
 	if info == nil {
 		return
 	}
-	info.Status = controlplanev1.TaskStatusRunning
+	info.Status = model.TaskStatusRunning
 	info.AgentID = agentID
 	info.StartedAtMillis = nowMillis
 }
@@ -191,7 +192,7 @@ func (h *TaskHelper) MarkTaskInfoCancelled(info *TaskInfo) {
 	if info == nil {
 		return
 	}
-	info.Status = controlplanev1.TaskStatusCancelled
+	info.Status = model.TaskStatusCancelled
 }
 
 // ErrTaskNotFound returns a standardized "task not found" error.

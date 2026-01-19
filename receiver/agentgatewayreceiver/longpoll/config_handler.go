@@ -15,8 +15,87 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"go.uber.org/zap"
 
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane_legacy/v1"
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
+
+type legacySamplerConfig struct {
+	Type      int32   `json:"type"`
+	Ratio     float64 `json:"ratio"`
+	RulesJSON string  `json:"rules_json,omitempty"`
+}
+
+type legacyBatchConfig struct {
+	MaxExportBatchSize  int32 `json:"max_export_batch_size"`
+	MaxQueueSize        int32 `json:"max_queue_size"`
+	ScheduleDelayMillis int64 `json:"schedule_delay_millis"`
+	ExportTimeoutMillis int64 `json:"export_timeout_millis"`
+}
+
+type legacyAgentConfig struct {
+	ConfigVersion             string               `json:"config_version"`
+	Sampler                   *legacySamplerConfig `json:"sampler,omitempty"`
+	Batch                     *legacyBatchConfig   `json:"batch,omitempty"`
+	DynamicResourceAttributes map[string]string    `json:"dynamic_resource_attributes,omitempty"`
+	ExtensionConfigJSON       string               `json:"extension_config_json,omitempty"`
+}
+
+func legacyAgentConfigToModel(cfg *legacyAgentConfig, etag string) *model.AgentConfig {
+	if cfg == nil {
+		return nil
+	}
+	out := &model.AgentConfig{
+		Version: model.ConfigVersion{
+			Version: cfg.ConfigVersion,
+			Etag:    etag,
+		},
+		DynamicResourceAttributes: cfg.DynamicResourceAttributes,
+		ExtensionConfigJSON:       cfg.ExtensionConfigJSON,
+	}
+
+	if cfg.Sampler != nil {
+		out.Sampler = &model.SamplerConfig{
+			Type:      model.SamplerType(cfg.Sampler.Type),
+			Ratio:     cfg.Sampler.Ratio,
+			RulesJSON: cfg.Sampler.RulesJSON,
+		}
+	}
+	if cfg.Batch != nil {
+		out.Batch = &model.BatchConfig{
+			MaxExportBatchSize:  cfg.Batch.MaxExportBatchSize,
+			MaxQueueSize:        cfg.Batch.MaxQueueSize,
+			ScheduleDelayMillis: cfg.Batch.ScheduleDelayMillis,
+			ExportTimeoutMillis: cfg.Batch.ExportTimeoutMillis,
+		}
+	}
+	return out
+}
+
+func legacyAgentConfigFromModel(cfg *model.AgentConfig) *legacyAgentConfig {
+	if cfg == nil {
+		return nil
+	}
+	out := &legacyAgentConfig{
+		ConfigVersion:             cfg.Version.Version,
+		DynamicResourceAttributes: cfg.DynamicResourceAttributes,
+		ExtensionConfigJSON:       cfg.ExtensionConfigJSON,
+	}
+	if cfg.Sampler != nil {
+		out.Sampler = &legacySamplerConfig{
+			Type:      int32(cfg.Sampler.Type),
+			Ratio:     cfg.Sampler.Ratio,
+			RulesJSON: cfg.Sampler.RulesJSON,
+		}
+	}
+	if cfg.Batch != nil {
+		out.Batch = &legacyBatchConfig{
+			MaxExportBatchSize:  cfg.Batch.MaxExportBatchSize,
+			MaxQueueSize:        cfg.Batch.MaxQueueSize,
+			ScheduleDelayMillis: cfg.Batch.ScheduleDelayMillis,
+			ExportTimeoutMillis: cfg.Batch.ExportTimeoutMillis,
+		}
+	}
+	return out
+}
 
 // ConfigPollHandler implements LongPollHandler for configuration polling.
 // It integrates with Nacos for config storage and change notification.
@@ -112,14 +191,18 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 		return false, nil, err
 	}
 
-	// Compute ETag
-	currentEtag := ComputeEtag(config)
+	currentVersion := ""
+	currentEtag := ""
+	if config != nil {
+		currentVersion = config.Version.Version
+		currentEtag = config.Version.Etag
+	}
 
 	// Check version change
-	if req.CurrentConfigVersion != "" && req.CurrentConfigVersion != config.ConfigVersion {
+	if req.CurrentConfigVersion != "" && req.CurrentConfigVersion != currentVersion {
 		result := &HandlerResult{
 			HasChanges: true,
-			Response:   NewConfigResponse(true, config, config.ConfigVersion, currentEtag, "config version changed"),
+			Response:   NewConfigResponse(true, config, currentVersion, currentEtag, "config version changed"),
 		}
 		return true, result, nil
 	}
@@ -128,7 +211,7 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 	if req.CurrentConfigEtag != "" && req.CurrentConfigEtag != currentEtag {
 		result := &HandlerResult{
 			HasChanges: true,
-			Response:   NewConfigResponse(true, config, config.ConfigVersion, currentEtag, "config content changed"),
+			Response:   NewConfigResponse(true, config, currentVersion, currentEtag, "config content changed"),
 		}
 		return true, result, nil
 	}
@@ -188,17 +271,19 @@ func (h *ConfigPollHandler) Poll(ctx context.Context, req *PollRequest) (*Handle
 }
 
 // loadOrCreateConfig loads config from Nacos, creating default if not exists.
-func (h *ConfigPollHandler) loadOrCreateConfig(ctx context.Context, token, agentID string) (*controlplanev1.AgentConfig, error) {
+func (h *ConfigPollHandler) loadOrCreateConfig(ctx context.Context, token, agentID string) (*model.AgentConfig, error) {
 	// Try to load agent-specific config
-	config, err := h.loadConfig(ctx, token, agentID)
-	if err == nil && config != nil {
-		return config, nil
+	legacyCfg, err := h.loadConfig(ctx, token, agentID)
+	if err == nil && legacyCfg != nil {
+		etag := ComputeEtag(legacyCfg)
+		return legacyAgentConfigToModel(legacyCfg, etag), nil
 	}
 
 	// Try default config for the token
-	config, err = h.loadConfig(ctx, token, "_default_")
-	if err == nil && config != nil {
-		return config, nil
+	legacyCfg, err = h.loadConfig(ctx, token, "_default_")
+	if err == nil && legacyCfg != nil {
+		etag := ComputeEtag(legacyCfg)
+		return legacyAgentConfigToModel(legacyCfg, etag), nil
 	}
 
 	// No config exists, create default and write to Nacos
@@ -208,9 +293,11 @@ func (h *ConfigPollHandler) loadOrCreateConfig(ctx context.Context, token, agent
 	)
 
 	defaultConfig := GenerateDefaultConfig(agentID)
+	legacyDefault := legacyAgentConfigFromModel(defaultConfig)
+	defaultConfig.Version.Etag = ComputeEtag(legacyDefault)
 
 	// Write default config to Nacos (as default for the token)
-	if err := h.saveConfig(ctx, token, "_default_", defaultConfig); err != nil {
+	if err := h.saveConfig(ctx, token, "_default_", legacyDefault); err != nil {
 		h.logger.Warn("Failed to save default config to Nacos",
 			zap.String("token", token),
 			zap.Error(err),
@@ -221,14 +308,14 @@ func (h *ConfigPollHandler) loadOrCreateConfig(ctx context.Context, token, agent
 
 	h.logger.Info("Created default config in Nacos",
 		zap.String("token", token),
-		zap.String("version", defaultConfig.ConfigVersion),
+		zap.String("version", defaultConfig.Version.Version),
 	)
 
 	return defaultConfig, nil
 }
 
 // loadConfig loads config from Nacos.
-func (h *ConfigPollHandler) loadConfig(ctx context.Context, group, dataID string) (*controlplanev1.AgentConfig, error) {
+func (h *ConfigPollHandler) loadConfig(ctx context.Context, group, dataID string) (*legacyAgentConfig, error) {
 	type result struct {
 		content string
 		err     error
@@ -254,7 +341,7 @@ func (h *ConfigPollHandler) loadConfig(ctx context.Context, group, dataID string
 			return nil, errors.New("config not found")
 		}
 
-		var config controlplanev1.AgentConfig
+		var config legacyAgentConfig
 		if err := json.Unmarshal([]byte(res.content), &config); err != nil {
 			return nil, fmt.Errorf("failed to parse config: %w", err)
 		}
@@ -264,7 +351,7 @@ func (h *ConfigPollHandler) loadConfig(ctx context.Context, group, dataID string
 }
 
 // saveConfig saves config to Nacos.
-func (h *ConfigPollHandler) saveConfig(ctx context.Context, group, dataID string, config *controlplanev1.AgentConfig) error {
+func (h *ConfigPollHandler) saveConfig(ctx context.Context, group, dataID string, config *legacyAgentConfig) error {
 	data, err := json.Marshal(config)
 	if err != nil {
 		return err
@@ -373,11 +460,11 @@ func (h *ConfigPollHandler) handleConfigChange(token, dataID, data string) {
 		zap.String("data_id", dataID),
 	)
 
-	// Parse new config
-	var newConfig *controlplanev1.AgentConfig
+	// Parse new config (stored as legacy JSON shape) and convert to model.
+	var newConfig *model.AgentConfig
 	if data != "" {
-		var config controlplanev1.AgentConfig
-		if err := json.Unmarshal([]byte(data), &config); err != nil {
+		var legacyCfg legacyAgentConfig
+		if err := json.Unmarshal([]byte(data), &legacyCfg); err != nil {
 			h.logger.Error("Failed to parse changed config",
 				zap.String("token", token),
 				zap.String("data_id", dataID),
@@ -385,7 +472,8 @@ func (h *ConfigPollHandler) handleConfigChange(token, dataID, data string) {
 			)
 			return
 		}
-		newConfig = &config
+		etag := ComputeEtag(&legacyCfg)
+		newConfig = legacyAgentConfigToModel(&legacyCfg, etag)
 	}
 
 	// Notify waiting agents
@@ -399,7 +487,7 @@ func (h *ConfigPollHandler) handleConfigChange(token, dataID, data string) {
 }
 
 // notifyWaiter notifies a specific waiter.
-func (h *ConfigPollHandler) notifyWaiter(token, agentID string, config *controlplanev1.AgentConfig) {
+func (h *ConfigPollHandler) notifyWaiter(token, agentID string, config *model.AgentConfig) {
 	agentKey := AgentKey(token, agentID)
 
 	if waiterVal, ok := h.waiters.Load(agentKey); ok {
@@ -407,10 +495,9 @@ func (h *ConfigPollHandler) notifyWaiter(token, agentID string, config *controlp
 
 		var result *HandlerResult
 		if config != nil {
-			etag := ComputeEtag(config)
 			result = &HandlerResult{
 				HasChanges: true,
-				Response:   NewConfigResponse(true, config, config.ConfigVersion, etag, "config updated"),
+				Response:   NewConfigResponse(true, config, config.Version.Version, config.Version.Etag, "config updated"),
 			}
 		} else {
 			result = &HandlerResult{
@@ -432,16 +519,15 @@ func (h *ConfigPollHandler) notifyWaiter(token, agentID string, config *controlp
 }
 
 // notifyWaitersForToken notifies all waiters for a token (default config change).
-func (h *ConfigPollHandler) notifyWaitersForToken(token string, config *controlplanev1.AgentConfig) {
+func (h *ConfigPollHandler) notifyWaitersForToken(token string, config *model.AgentConfig) {
 	h.waiters.Range(func(key, value interface{}) bool {
 		waiter := value.(*ConfigWaiter)
 		if waiter.token == token {
 			var result *HandlerResult
 			if config != nil {
-				etag := ComputeEtag(config)
 				result = &HandlerResult{
 					HasChanges: true,
-					Response:   NewConfigResponse(true, config, config.ConfigVersion, etag, "default config updated"),
+					Response:   NewConfigResponse(true, config, config.Version.Version, config.Version.Etag, "default config updated"),
 				}
 			} else {
 				result = &HandlerResult{

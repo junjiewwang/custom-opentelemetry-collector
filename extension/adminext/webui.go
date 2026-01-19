@@ -39,10 +39,10 @@ func (h *webUIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if urlPath == "" || urlPath == "/" {
 		urlPath = "/index.html"
 	}
-	
+
 	// Remove leading slash for fs.FS
 	filePath := strings.TrimPrefix(urlPath, "/")
-	
+
 	// Try to open the file
 	file, err := h.fsys.Open(filePath)
 	if err != nil {
@@ -55,7 +55,7 @@ func (h *webUIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer file.Close()
-	
+
 	// Check if it's a directory
 	stat, err := file.Stat()
 	if err != nil {
@@ -74,7 +74,7 @@ func (h *webUIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer file.Close()
 		stat, _ = file.Stat()
 	}
-	
+
 	// Set content type based on extension
 	ext := path.Ext(filePath)
 	switch ext {
@@ -105,7 +105,7 @@ func (h *webUIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "font/ttf")
 		w.Header().Set("Cache-Control", "public, max-age=31536000")
 	}
-	
+
 	// Serve the file
 	http.ServeContent(w, r, filePath, stat.ModTime(), file.(readSeeker))
 }
