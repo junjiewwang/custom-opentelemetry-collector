@@ -768,17 +768,18 @@ export function adminApp() {
             return stats;
         },
 
-        // Convert task status number to string (align with controlplanev1.TaskStatus)
-        // 0=UNSPECIFIED, 1=SUCCESS, 2=FAILED, 3=TIMEOUT, 4=CANCELLED, 5=PENDING, 6=RUNNING
+        // Convert task status number to string (align with model.TaskStatus)
+        // 0=UNSPECIFIED, 1=PENDING, 2=RUNNING, 3=SUCCESS, 4=FAILED, 5=TIMEOUT, 6=CANCELLED, 7=RESULT_TOO_LARGE
         taskStatusToString(status) {
             const statusMap = {
                 0: 'unknown',
-                1: 'success',
-                2: 'failed',
-                3: 'timeout',
-                4: 'cancelled',
-                5: 'pending',
-                6: 'running',
+                1: 'pending',
+                2: 'running',
+                3: 'success',
+                4: 'failed',
+                5: 'timeout',
+                6: 'cancelled',
+                7: 'failed', // RESULT_TOO_LARGE treated as failed for display
             };
             return statusMap[status] || 'unknown';
         },
