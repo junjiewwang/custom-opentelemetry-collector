@@ -44,8 +44,8 @@ func (s *controlPlaneService) UnifiedPoll(ctx context.Context, req *controlplane
 	lpReq := &longpoll.PollRequest{
 		AgentID:              agentID,
 		Token:                appID,
-		CurrentConfigVersion: pickFirstNonEmpty(configVersionFromUnifiedPoll(req), req.GetCurrentConfigVersionStr()),
-		CurrentConfigEtag:    pickFirstNonEmpty(configEtagFromUnifiedPoll(req), req.GetCurrentConfigEtag()),
+		CurrentConfigVersion: configVersionFromUnifiedPoll(req),
+		CurrentConfigEtag:    configEtagFromUnifiedPoll(req),
 		TimeoutMillis:        req.GetTimeoutMillis(),
 	}
 
@@ -57,36 +57,34 @@ func (s *controlPlaneService) UnifiedPoll(ctx context.Context, req *controlplane
 
 	resp := &controlplanev1.UnifiedPollResponse{
 		Status:        &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
-		Success:       true,
 		HasAnyChanges: combined.HasAnyChanges,
-		Results:       make(map[string]*controlplanev1.PollResult, len(combined.Results)),
 	}
 
+	// Set both config and task results (independent optional fields)
 	for pollType, r := range combined.Results {
 		if r == nil {
 			continue
 		}
-		key := string(pollType)
-		pr := &controlplanev1.PollResult{
-			Type:       key,
-			HasChanges: r.HasChanges,
-			Message:    r.Message,
-		}
 
 		switch pollType {
 		case longpoll.LongPollTypeConfig:
+			configResult := &controlplanev1.ConfigPollResult{
+				HasChanges:    r.HasChanges,
+				ConfigVersion: r.ConfigVersion,
+				ConfigEtag:    r.ConfigEtag,
+			}
 			if r.Config != nil {
 				cfgProto := probeconv.AgentConfigToProto(r.Config)
 				cfgBytes, _ := proto.Marshal(cfgProto)
-				pr.ConfigData = cfgBytes
+				configResult.ConfigData = cfgBytes
 			}
-			pr.ConfigVersion = r.ConfigVersion
-			pr.ConfigEtag = r.ConfigEtag
+			resp.ConfigResult = configResult
 		case longpoll.LongPollTypeTask:
-			pr.Tasks = probeconv.TasksToProto(r.Tasks)
+			resp.TaskResult = &controlplanev1.TaskPollResult{
+				HasTasks: r.HasChanges,
+				Tasks:    probeconv.TasksToProto(r.Tasks),
+			}
 		}
-
-		resp.Results[key] = pr
 	}
 
 	return resp
@@ -152,7 +150,6 @@ func (s *controlPlaneService) GetTasks(ctx context.Context, req *controlplanev1.
 
 	return &controlplanev1.TaskResponse{
 		Status:                      &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
-		Success:                     true,
 		Tasks:                       probeconv.TasksToProto(pollResp.Tasks),
 		SuggestedPollIntervalMillis: 0,
 	}
@@ -181,8 +178,6 @@ func (s *controlPlaneService) ReportTaskResult(ctx context.Context, req *control
 		return &controlplanev1.TaskResultResponse{
 			Status:       &controlplanev1.ResponseStatus{Code: code, Message: err.Error()},
 			Acknowledged: false,
-			Success:      false,
-			ErrorMessage: err.Error(),
 			Message:      "failed",
 		}
 	}
@@ -190,7 +185,6 @@ func (s *controlPlaneService) ReportTaskResult(ctx context.Context, req *control
 	return &controlplanev1.TaskResultResponse{
 		Status:       &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
 		Acknowledged: true,
-		Success:      true,
 		Message:      "acknowledged",
 	}
 }
@@ -203,7 +197,7 @@ func (s *controlPlaneService) ReportStatus(ctx context.Context, req *controlplan
 	appID := GetAppIDFromContext(ctx)
 	agentID := agentIDFromStatusRequest(req)
 
-	// Best-effort: update agent registry based on AgentIdentity.
+	// Update agent registry based on AgentIdentity (heartbeat).
 	if agentID != "" {
 		if ai := statusRequestToAgentInfo(req, appID); ai != nil {
 			if err := s.controlPlane.RegisterOrHeartbeatAgent(ctx, ai); err != nil {
@@ -212,43 +206,28 @@ func (s *controlPlaneService) ReportStatus(ctx context.Context, req *controlplan
 		}
 	}
 
-	// Best-effort: apply embedded task results (if present).
-	for _, tr := range req.GetTaskResults() {
-		if tr == nil || tr.GetTaskId() == "" {
-			continue
-		}
-		mtr := probeconv.TaskResultFromTaskProto(tr, agentID)
-		if mtr == nil {
-			continue
-		}
-		_ = s.controlPlane.ReportTaskResult(ctx, mtr)
-	}
-
 	return &controlplanev1.StatusResponse{
-		Status:                        &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
-		ServerTimeMillis:              time.Now().UnixMilli(),
-		SuggestedReportIntervalMillis: 0,
-		AcknowledgedTaskIds:           nil,
-		Success:                       true,
+		Status:           &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
+		ServerTimeMillis: time.Now().UnixMilli(),
 	}
 }
 
 func (s *controlPlaneService) UploadChunkedResult(ctx context.Context, req *controlplanev1.ChunkedTaskResult) *controlplanev1.ChunkedUploadResponse {
 	if s.controlPlane == nil {
-		return chunkError(controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED, "control plane not available")
+		return chunkError(controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED, "control plane not available")
 	}
 
 	modelReq := probeconv.ChunkUploadFromProto(req)
 	if modelReq == nil {
-		return chunkError(controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED, "invalid chunk request")
+		return chunkError(controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED, "invalid chunk request")
 	}
 
 	modelResp, err := s.controlPlane.UploadChunk(ctx, modelReq)
 	if err != nil {
-		return chunkError(controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED, err.Error())
+		return chunkError(controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED, err.Error())
 	}
 	if modelResp == nil {
-		return chunkError(controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED, "empty response")
+		return chunkError(controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED, "empty response")
 	}
 
 	// Keep response aligned with probe contract.
@@ -288,33 +267,25 @@ func classifyBusinessError(err error) controlplanev1.ResponseStatus_Code {
 
 func unifiedPollError(code controlplanev1.ResponseStatus_Code, message string) *controlplanev1.UnifiedPollResponse {
 	return &controlplanev1.UnifiedPollResponse{
-		Status:       &controlplanev1.ResponseStatus{Code: code, Message: message},
-		Success:      false,
-		ErrorMessage: message,
+		Status: &controlplanev1.ResponseStatus{Code: code, Message: message},
 	}
 }
 
 func configError(code controlplanev1.ResponseStatus_Code, message string) *controlplanev1.ConfigResponse {
 	return &controlplanev1.ConfigResponse{
-		Status:       &controlplanev1.ResponseStatus{Code: code, Message: message},
-		Success:      false,
-		ErrorMessage: message,
+		Status: &controlplanev1.ResponseStatus{Code: code, Message: message},
 	}
 }
 
 func taskError(code controlplanev1.ResponseStatus_Code, message string) *controlplanev1.TaskResponse {
 	return &controlplanev1.TaskResponse{
-		Status:       &controlplanev1.ResponseStatus{Code: code, Message: message},
-		Success:      false,
-		ErrorMessage: message,
+		Status: &controlplanev1.ResponseStatus{Code: code, Message: message},
 	}
 }
 
 func statusError(code controlplanev1.ResponseStatus_Code, message string) *controlplanev1.StatusResponse {
 	return &controlplanev1.StatusResponse{
 		Status:           &controlplanev1.ResponseStatus{Code: code, Message: message},
-		Success:          false,
-		ErrorMessage:     message,
 		ServerTimeMillis: time.Now().UnixMilli(),
 	}
 }
@@ -323,13 +294,11 @@ func taskResultError(code controlplanev1.ResponseStatus_Code, message string) *c
 	return &controlplanev1.TaskResultResponse{
 		Status:       &controlplanev1.ResponseStatus{Code: code, Message: message},
 		Acknowledged: false,
-		Success:      false,
-		ErrorMessage: message,
 		Message:      message,
 	}
 }
 
-func chunkError(status controlplanev1.ChunkedUploadResponse_Status, message string) *controlplanev1.ChunkedUploadResponse {
+func chunkError(status controlplanev1.ChunkUploadStatus, message string) *controlplanev1.ChunkedUploadResponse {
 	return &controlplanev1.ChunkedUploadResponse{
 		Status:       status,
 		ErrorMessage: message,

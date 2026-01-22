@@ -113,6 +113,8 @@ func priorityEnumFromNum(priority int32) controlplanev1.Task_Priority {
 	}
 }
 
+// TaskResultFromPollProto converts TaskResultRequest (poll.proto) to model.TaskResult.
+// Uses the global TaskStatus enum.
 func TaskResultFromPollProto(req *controlplanev1.TaskResultRequest, agentID string) *model.TaskResult {
 	if req == nil {
 		return nil
@@ -120,7 +122,7 @@ func TaskResultFromPollProto(req *controlplanev1.TaskResultRequest, agentID stri
 	out := &model.TaskResult{
 		TaskID:              req.GetTaskId(),
 		AgentID:             agentID,
-		Status:              taskStatusFromPoll(req.GetStatus()),
+		Status:              TaskStatusFromProto(req.GetStatus()),
 		ErrorCode:           req.GetErrorCode(),
 		ErrorMessage:        req.GetErrorMessage(),
 		ResultData:          req.GetResultData(),
@@ -134,6 +136,8 @@ func TaskResultFromPollProto(req *controlplanev1.TaskResultRequest, agentID stri
 	return out
 }
 
+// TaskResultFromTaskProto converts TaskResult (task.proto) to model.TaskResult.
+// Uses the global TaskStatus enum.
 func TaskResultFromTaskProto(tr *controlplanev1.TaskResult, agentID string) *model.TaskResult {
 	if tr == nil {
 		return nil
@@ -141,7 +145,7 @@ func TaskResultFromTaskProto(tr *controlplanev1.TaskResult, agentID string) *mod
 	out := &model.TaskResult{
 		TaskID:              tr.GetTaskId(),
 		AgentID:             agentID,
-		Status:              taskStatusFromTask(tr.GetStatus()),
+		Status:              TaskStatusFromProto(tr.GetStatus()),
 		ErrorCode:           tr.GetErrorCode(),
 		ErrorMessage:        tr.GetErrorMessage(),
 		ResultData:          tr.GetResultData(),
@@ -150,7 +154,7 @@ func TaskResultFromTaskProto(tr *controlplanev1.TaskResult, agentID string) *mod
 		ExecutionTimeMillis: tr.GetExecutionTimeMillis(),
 		ResultDataType:      tr.GetResultDataType(),
 		RetryCount:          tr.GetRetryCount(),
-		Compression:         compressionFromProto(tr.GetCompression()),
+		Compression:         CompressionFromProto(tr.GetCompression()),
 		OriginalSize:        tr.GetOriginalSize(),
 		CompressedSize:      tr.GetCompressedSize(),
 	}
@@ -160,16 +164,18 @@ func TaskResultFromTaskProto(tr *controlplanev1.TaskResult, agentID string) *mod
 	return out
 }
 
+// TaskResultToPollProto converts model.TaskResult to TaskResultRequest (poll.proto).
+// Uses the global TaskStatus enum.
 func TaskResultToPollProto(tr *model.TaskResult) *controlplanev1.TaskResultRequest {
 	if tr == nil {
 		return nil
 	}
 
 	errCode := tr.ErrorCode
-	status := taskStatusToPoll(tr.Status)
+	status := TaskStatusToProto(tr.Status)
 	if tr.Status == model.TaskStatusResultTooLarge {
-		// poll.proto doesn't have RESULT_TOO_LARGE; normalize to FAILED with error_code.
-		status = controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_FAILED
+		// For RESULT_TOO_LARGE, we keep the status as-is since global enum supports it.
+		// But if error_code is empty, set it for clarity.
 		if errCode == "" {
 			errCode = "RESULT_TOO_LARGE"
 		}
@@ -189,6 +195,8 @@ func TaskResultToPollProto(tr *model.TaskResult) *controlplanev1.TaskResultReque
 	}
 }
 
+// TaskResultToTaskProto converts model.TaskResult to TaskResult (task.proto).
+// Uses the global TaskStatus enum.
 func TaskResultToTaskProto(tr *model.TaskResult) *controlplanev1.TaskResult {
 	if tr == nil {
 		return nil
@@ -196,7 +204,7 @@ func TaskResultToTaskProto(tr *model.TaskResult) *controlplanev1.TaskResult {
 
 	return &controlplanev1.TaskResult{
 		TaskId:              tr.TaskID,
-		Status:              taskStatusToTask(tr.Status),
+		Status:              TaskStatusToProto(tr.Status),
 		StartedAtMillis:     tr.StartedAtMillis,
 		CompletedAtMillis:   tr.CompletedAtMillis,
 		ExecutionTimeMillis: tr.ExecutionTimeMillis,
@@ -206,99 +214,72 @@ func TaskResultToTaskProto(tr *model.TaskResult) *controlplanev1.TaskResult {
 		ErrorCode:           tr.ErrorCode,
 		ErrorMessage:        tr.ErrorMessage,
 		RetryCount:          tr.RetryCount,
-		Compression:         compressionToProto(tr.Compression),
+		Compression:         CompressionToProto(tr.Compression),
 		OriginalSize:        tr.OriginalSize,
 		CompressedSize:      tr.CompressedSize,
 	}
 }
 
-func taskStatusFromPoll(st controlplanev1.TaskResultStatus) model.TaskStatus {
+// TaskStatusFromProto converts global TaskStatus enum to model.TaskStatus.
+func TaskStatusFromProto(st controlplanev1.TaskStatus) model.TaskStatus {
 	switch st {
-	case controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_PENDING:
+	case controlplanev1.TaskStatus_TASK_STATUS_PENDING:
 		return model.TaskStatusPending
-	case controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_RUNNING:
+	case controlplanev1.TaskStatus_TASK_STATUS_RUNNING:
 		return model.TaskStatusRunning
-	case controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_SUCCESS:
+	case controlplanev1.TaskStatus_TASK_STATUS_SUCCESS:
 		return model.TaskStatusSuccess
-	case controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_FAILED:
+	case controlplanev1.TaskStatus_TASK_STATUS_FAILED:
 		return model.TaskStatusFailed
-	case controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_TIMEOUT:
+	case controlplanev1.TaskStatus_TASK_STATUS_TIMEOUT:
 		return model.TaskStatusTimeout
-	case controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_CANCELLED:
+	case controlplanev1.TaskStatus_TASK_STATUS_CANCELLED:
 		return model.TaskStatusCancelled
-	default:
-		return model.TaskStatusUnspecified
-	}
-}
-
-func taskStatusToPoll(st model.TaskStatus) controlplanev1.TaskResultStatus {
-	switch st {
-	case model.TaskStatusPending:
-		return controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_PENDING
-	case model.TaskStatusRunning:
-		return controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_RUNNING
-	case model.TaskStatusSuccess:
-		return controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_SUCCESS
-	case model.TaskStatusFailed:
-		return controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_FAILED
-	case model.TaskStatusTimeout:
-		return controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_TIMEOUT
-	case model.TaskStatusCancelled:
-		return controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_CANCELLED
-	default:
-		return controlplanev1.TaskResultStatus_TASK_RESULT_STATUS_UNSPECIFIED
-	}
-}
-
-func taskStatusFromTask(st controlplanev1.TaskResult_Status) model.TaskStatus {
-	switch st {
-	case controlplanev1.TaskResult_STATUS_SUCCESS:
-		return model.TaskStatusSuccess
-	case controlplanev1.TaskResult_STATUS_FAILED:
-		return model.TaskStatusFailed
-	case controlplanev1.TaskResult_STATUS_TIMEOUT:
-		return model.TaskStatusTimeout
-	case controlplanev1.TaskResult_STATUS_CANCELLED:
-		return model.TaskStatusCancelled
-	case controlplanev1.TaskResult_STATUS_RESULT_TOO_LARGE:
+	case controlplanev1.TaskStatus_TASK_STATUS_RESULT_TOO_LARGE:
 		return model.TaskStatusResultTooLarge
 	default:
 		return model.TaskStatusUnspecified
 	}
 }
 
-func taskStatusToTask(st model.TaskStatus) controlplanev1.TaskResult_Status {
+// TaskStatusToProto converts model.TaskStatus to global TaskStatus enum.
+func TaskStatusToProto(st model.TaskStatus) controlplanev1.TaskStatus {
 	switch st {
+	case model.TaskStatusPending:
+		return controlplanev1.TaskStatus_TASK_STATUS_PENDING
+	case model.TaskStatusRunning:
+		return controlplanev1.TaskStatus_TASK_STATUS_RUNNING
 	case model.TaskStatusSuccess:
-		return controlplanev1.TaskResult_STATUS_SUCCESS
+		return controlplanev1.TaskStatus_TASK_STATUS_SUCCESS
 	case model.TaskStatusFailed:
-		return controlplanev1.TaskResult_STATUS_FAILED
+		return controlplanev1.TaskStatus_TASK_STATUS_FAILED
 	case model.TaskStatusTimeout:
-		return controlplanev1.TaskResult_STATUS_TIMEOUT
+		return controlplanev1.TaskStatus_TASK_STATUS_TIMEOUT
 	case model.TaskStatusCancelled:
-		return controlplanev1.TaskResult_STATUS_CANCELLED
+		return controlplanev1.TaskStatus_TASK_STATUS_CANCELLED
 	case model.TaskStatusResultTooLarge:
-		return controlplanev1.TaskResult_STATUS_RESULT_TOO_LARGE
+		return controlplanev1.TaskStatus_TASK_STATUS_RESULT_TOO_LARGE
 	default:
-		// task.proto doesn't model RUNNING/PENDING; keep unspecified.
-		return controlplanev1.TaskResult_STATUS_UNSPECIFIED
+		return controlplanev1.TaskStatus_TASK_STATUS_UNSPECIFIED
 	}
 }
 
-func compressionFromProto(c controlplanev1.TaskResult_CompressionType) model.CompressionType {
+// CompressionFromProto converts global CompressionType enum to model.CompressionType.
+func CompressionFromProto(c controlplanev1.CompressionType) model.CompressionType {
 	switch c {
-	case controlplanev1.TaskResult_COMPRESSION_TYPE_GZIP:
+	case controlplanev1.CompressionType_COMPRESSION_TYPE_GZIP:
 		return model.CompressionTypeGzip
 	default:
 		return model.CompressionTypeNone
 	}
 }
 
-func compressionToProto(c model.CompressionType) controlplanev1.TaskResult_CompressionType {
+// CompressionToProto converts model.CompressionType to global CompressionType enum.
+func CompressionToProto(c model.CompressionType) controlplanev1.CompressionType {
 	switch c {
 	case model.CompressionTypeGzip:
-		return controlplanev1.TaskResult_COMPRESSION_TYPE_GZIP
+		return controlplanev1.CompressionType_COMPRESSION_TYPE_GZIP
 	default:
-		return controlplanev1.TaskResult_COMPRESSION_TYPE_NONE
+		return controlplanev1.CompressionType_COMPRESSION_TYPE_NONE
 	}
 }

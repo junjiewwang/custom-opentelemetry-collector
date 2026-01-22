@@ -13,13 +13,7 @@ func agentIDFromUnifiedPoll(req *controlplanev1.UnifiedPollRequest) string {
 	if req == nil {
 		return ""
 	}
-	if req.GetAgentId() != "" {
-		return req.GetAgentId()
-	}
-	if req.GetAgentIdentity() != nil {
-		return req.GetAgentIdentity().GetAgentId()
-	}
-	return ""
+	return req.GetAgentId()
 }
 
 func configVersionFromUnifiedPoll(req *controlplanev1.UnifiedPollRequest) string {
@@ -40,39 +34,21 @@ func agentIDFromConfigRequest(req *controlplanev1.ConfigRequest) string {
 	if req == nil {
 		return ""
 	}
-	if req.GetAgentId() != "" {
-		return req.GetAgentId()
-	}
-	if req.GetAgentIdentity() != nil {
-		return req.GetAgentIdentity().GetAgentId()
-	}
-	return ""
+	return req.GetAgentId()
 }
 
 func agentIDFromTaskRequest(req *controlplanev1.TaskRequest) string {
 	if req == nil {
 		return ""
 	}
-	if req.GetAgentId() != "" {
-		return req.GetAgentId()
-	}
-	if req.GetAgentIdentity() != nil {
-		return req.GetAgentIdentity().GetAgentId()
-	}
-	return ""
+	return req.GetAgentId()
 }
 
 func agentIDFromTaskResultRequest(req *controlplanev1.TaskResultRequest) string {
 	if req == nil {
 		return ""
 	}
-	if req.GetAgentId() != "" {
-		return req.GetAgentId()
-	}
-	if req.GetAgentIdentity() != nil {
-		return req.GetAgentIdentity().GetAgentId()
-	}
-	return ""
+	return req.GetAgentId()
 }
 
 func agentIDFromStatusRequest(req *controlplanev1.StatusRequest) string {
@@ -118,6 +94,7 @@ func statusRequestToAgentInfo(req *controlplanev1.StatusRequest, appID string) *
 		AgentID:     agentID,
 		AppID:       appID,
 		Hostname:    id.GetHostName(),
+		IP:          id.GetIp(),
 		Version:     id.GetSdkVersion(),
 		ServiceName: id.GetServiceName(),
 		StartTime:   id.GetStartTimeMillis(),

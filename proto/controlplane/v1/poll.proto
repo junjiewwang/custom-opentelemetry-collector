@@ -12,7 +12,6 @@ option java_package = "io.opentelemetry.sdk.extension.controlplane.proto.v1";
 option java_outer_classname = "PollProtos";
 
 import "controlplane/v1/common.proto";
-import "controlplane/v1/config.proto";
 import "controlplane/v1/task.proto";
 
 // ===== 统一轮询 (Unified Poll) =====
@@ -20,29 +19,25 @@ import "controlplane/v1/task.proto";
 // 统一轮询请求
 // 同时获取配置更新和待执行任务，减少 HTTP 往返
 message UnifiedPollRequest {
-  // Agent 身份标识
-  AgentIdentity agent_identity = 1;
-
-  // Agent ID 字符串（与 DTO 兼容，优先使用此字段）
+  // Agent ID 字符串（用于鉴权和路由）
   string agent_id = 6;
 
   // 当前配置版本信息
   ConfigVersion current_config_version = 2;
-
-  // 当前配置版本字符串（与 DTO 兼容）
-  string current_config_version_str = 7;
-
-  // 当前配置 ETag（与 DTO 兼容）
-  string current_config_etag = 8;
 
   // 长轮询超时时间 (毫秒)
   int64 timeout_millis = 3;
 
   // Agent 当前能力（用于任务下发筛选）
   AgentCapabilities capabilities = 4;
+
+  // ===== 以下字段已废弃 =====
+  reserved 1, 7, 8;
+  reserved "agent_identity", "current_config_version_str", "current_config_etag";
 }
 
 // 统一轮询响应
+// 可同时返回配置更新和任务列表
 message UnifiedPollResponse {
   // 响应状态
   ResponseStatus status = 1;
@@ -50,45 +45,42 @@ message UnifiedPollResponse {
   // 是否有任何变更（配置或任务）
   bool has_any_changes = 2;
 
-  // 各类型轮询结果，key 为 "CONFIG" 或 "TASK"
-  map<string, PollResult> results = 3;
+  // 配置轮询结果（可选，有配置更新时填充）
+  ConfigPollResult config_result = 7;
+
+  // 任务轮询结果（可选，有任务时填充）
+  TaskPollResult task_result = 8;
 
   // 下次轮询建议间隔 (毫秒)
   int64 suggested_poll_interval_millis = 4;
 
-  // 是否成功（与 DTO 兼容）
-  bool success = 5;
-
-  // 错误信息（与 DTO 兼容）
-  string error_message = 6;
+  // ===== 以下字段已废弃 =====
+  reserved 3, 5, 6;
+  reserved "results", "success", "error_message";
 }
 
-// 单类型轮询结果
-message PollResult {
-  // 结果类型: "CONFIG" 或 "TASK"
-  string type = 1;
-
+// 配置轮询结果
+message ConfigPollResult {
   // 是否有变更
-  bool has_changes = 2;
-
-  // ===== CONFIG 相关字段 (type="CONFIG" 时有效) =====
+  bool has_changes = 1;
 
   // 配置数据
-  bytes config_data = 3;
+  bytes config_data = 2;
 
   // 配置版本
-  string config_version = 4;
+  string config_version = 3;
 
   // 配置 ETag
-  string config_etag = 5;
+  string config_etag = 4;
+}
 
-  // ===== TASK 相关字段 (type="TASK" 时有效) =====
+// 任务轮询结果
+message TaskPollResult {
+  // 是否有新任务
+  bool has_tasks = 1;
 
   // 下发的任务列表
-  repeated Task tasks = 6;
-
-  // 额外信息
-  string message = 7;
+  repeated Task tasks = 2;
 }
 
 // ===== 任务结果上报 =====
@@ -98,14 +90,15 @@ message TaskResultRequest {
   // 任务 ID
   string task_id = 1;
 
-  // Agent 身份标识
-  AgentIdentity agent_identity = 2;
-
-  // Agent ID 字符串（与 DTO 兼容，优先使用此字段）
+  // Agent ID 字符串（用于鉴权和路由）
   string agent_id = 10;
 
-  // 任务执行状态
-  TaskResultStatus status = 3;
+  // ===== 以下字段已废弃 =====
+  reserved 2;
+  reserved "agent_identity";
+
+  // 任务执行状态（使用全局统一枚举）
+  TaskStatus status = 3;
 
   // 错误码（失败时），如 TASK_STALE、TASK_EXPIRED、TASK_REJECTED
   string error_code = 4;
@@ -113,10 +106,10 @@ message TaskResultRequest {
   // 错误信息（失败时）
   string error_message = 5;
 
-  // 任务输出结果（成功时，JSON 格式）
+  // 任务输出结果（二进制）
   bytes result_data = 6;
 
-  // 任务输出结果 JSON 格式（与 DTO 兼容）
+  // 任务输出结果 JSON 格式
   string result_json = 11;
 
   // 任务开始执行时间 (毫秒时间戳)
@@ -129,30 +122,6 @@ message TaskResultRequest {
   int64 execution_time_millis = 9;
 }
 
-// 任务结果状态（稳定集合）
-enum TaskResultStatus {
-  // 未指定
-  TASK_RESULT_STATUS_UNSPECIFIED = 0;
-
-  // 任务待执行
-  TASK_RESULT_STATUS_PENDING = 1;
-
-  // 任务执行中
-  TASK_RESULT_STATUS_RUNNING = 2;
-
-  // 任务执行成功
-  TASK_RESULT_STATUS_SUCCESS = 3;
-
-  // 任务执行失败（包括过期、过旧、被拒绝等，具体原因见 error_code）
-  TASK_RESULT_STATUS_FAILED = 4;
-
-  // 任务执行超时
-  TASK_RESULT_STATUS_TIMEOUT = 5;
-
-  // 任务被取消
-  TASK_RESULT_STATUS_CANCELLED = 6;
-}
-
 // 任务结果上报响应
 message TaskResultResponse {
   // 响应状态
@@ -161,12 +130,10 @@ message TaskResultResponse {
   // 是否成功接收
   bool acknowledged = 2;
 
-  // 是否成功（与 DTO 兼容）
-  bool success = 4;
-
-  // 错误信息（与 DTO 兼容）
-  string error_message = 5;
-
   // 额外信息
   string message = 3;
+
+  // ===== 以下字段已废弃 =====
+  reserved 4, 5;
+  reserved "success", "error_message";
 }

@@ -36,6 +36,9 @@ message AgentIdentity {
 
   // 扩展属性
   map<string, string> attributes = 8;
+
+  // Agent IP 地址
+  string ip = 9;
 }
 
 // 配置版本信息
@@ -63,4 +66,34 @@ message ResponseStatus {
 
   Code code = 1;
   string message = 2;
+}
+
+// ===== 全局统一枚举 =====
+
+// 任务状态（全局统一，与 model.TaskStatus 对齐）
+// 所有任务相关的状态都使用此枚举，避免多处定义导致的语义冲突
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING = 1;       // 待执行
+  TASK_STATUS_RUNNING = 2;       // 执行中
+  TASK_STATUS_SUCCESS = 3;       // 执行成功
+  TASK_STATUS_FAILED = 4;        // 执行失败
+  TASK_STATUS_TIMEOUT = 5;       // 执行超时
+  TASK_STATUS_CANCELLED = 6;     // 已取消
+  TASK_STATUS_RESULT_TOO_LARGE = 7;  // 结果超过最大阈值
+}
+
+// 压缩类型（全局统一）
+enum CompressionType {
+  COMPRESSION_TYPE_NONE = 0;
+  COMPRESSION_TYPE_GZIP = 1;
+}
+
+// 健康状态（全局统一）
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTH_STATE_UNKNOWN = 1;
+  HEALTH_STATE_HEALTHY = 2;
+  HEALTH_STATE_DEGRADED = 3;
+  HEALTH_STATE_UNHEALTHY = 4;
 }

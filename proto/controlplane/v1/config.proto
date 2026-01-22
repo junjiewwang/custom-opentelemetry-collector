@@ -15,10 +15,7 @@ import "controlplane/v1/common.proto";
 
 // 配置拉取请求
 message ConfigRequest {
-  // Agent 身份标识
-  AgentIdentity agent_identity = 1;
-
-  // Agent ID 字符串（与 DTO 兼容，优先使用此字段）
+  // Agent ID 字符串（用于鉴权和路由）
   string agent_id = 5;
 
   // 当前配置版本 (首次请求为空)
@@ -32,6 +29,10 @@ message ConfigRequest {
 
   // 长轮询超时时间 (毫秒)
   int64 long_poll_timeout_millis = 3;
+
+  // ===== 以下字段已废弃 =====
+  reserved 1;
+  reserved "agent_identity";
 }
 
 // 配置拉取响应

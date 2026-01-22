@@ -62,32 +62,32 @@ func ChunkUploadResponseToProto(resp *model.ChunkUploadResponse) *controlplanev1
 	}
 }
 
-func chunkUploadStatusFromProto(st controlplanev1.ChunkedUploadResponse_Status) model.ChunkUploadStatus {
+func chunkUploadStatusFromProto(st controlplanev1.ChunkUploadStatus) model.ChunkUploadStatus {
 	switch st {
-	case controlplanev1.ChunkedUploadResponse_STATUS_CHUNK_RECEIVED:
+	case controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_CHUNK_RECEIVED:
 		return model.ChunkUploadStatusChunkReceived
-	case controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_COMPLETE:
+	case controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_COMPLETE:
 		return model.ChunkUploadStatusUploadComplete
-	case controlplanev1.ChunkedUploadResponse_STATUS_CHECKSUM_MISMATCH:
+	case controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_CHECKSUM_MISMATCH:
 		return model.ChunkUploadStatusChecksumMismatch
-	case controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED:
+	case controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED:
 		return model.ChunkUploadStatusUploadFailed
 	default:
 		return model.ChunkUploadStatusUnspecified
 	}
 }
 
-func chunkUploadStatusToProto(st model.ChunkUploadStatus) controlplanev1.ChunkedUploadResponse_Status {
+func chunkUploadStatusToProto(st model.ChunkUploadStatus) controlplanev1.ChunkUploadStatus {
 	switch st {
 	case model.ChunkUploadStatusChunkReceived:
-		return controlplanev1.ChunkedUploadResponse_STATUS_CHUNK_RECEIVED
+		return controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_CHUNK_RECEIVED
 	case model.ChunkUploadStatusUploadComplete:
-		return controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_COMPLETE
+		return controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_COMPLETE
 	case model.ChunkUploadStatusChecksumMismatch:
-		return controlplanev1.ChunkedUploadResponse_STATUS_CHECKSUM_MISMATCH
+		return controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_CHECKSUM_MISMATCH
 	case model.ChunkUploadStatusUploadFailed:
-		return controlplanev1.ChunkedUploadResponse_STATUS_UPLOAD_FAILED
+		return controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED
 	default:
-		return controlplanev1.ChunkedUploadResponse_STATUS_UNSPECIFIED
+		return controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UNSPECIFIED
 	}
 }

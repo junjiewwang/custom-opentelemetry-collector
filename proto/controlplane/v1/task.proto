@@ -13,12 +13,11 @@ option java_outer_classname = "TaskProtos";
 
 import "controlplane/v1/common.proto";
 
+// ===== 任务拉取 =====
+
 // 任务拉取请求
 message TaskRequest {
-  // Agent 身份标识
-  AgentIdentity agent_identity = 1;
-
-  // Agent ID 字符串（与 DTO 兼容，优先使用此字段）
+  // Agent ID 字符串（用于鉴权和路由）
   string agent_id = 4;
 
   // 长轮询超时时间 (毫秒)
@@ -26,6 +25,10 @@ message TaskRequest {
 
   // Agent 当前能力
   AgentCapabilities capabilities = 3;
+
+  // ===== 以下字段已废弃 =====
+  reserved 1;
+  reserved "agent_identity";
 }
 
 // Agent 能力
@@ -51,12 +54,12 @@ message TaskResponse {
   // 下次轮询建议间隔 (毫秒)
   int64 suggested_poll_interval_millis = 3;
 
-  // 是否成功（与 DTO 兼容）
-  bool success = 4;
-
-  // 错误信息（与 DTO 兼容）
-  string error_message = 5;
+  // ===== 以下字段已废弃 =====
+  reserved 4, 5;
+  reserved "success", "error_message";
 }
+
+// ===== 任务定义 =====
 
 // 任务定义
 message Task {
@@ -108,22 +111,15 @@ message Task {
   int64 max_acceptable_delay_millis = 14;
 }
 
-// 任务结果
+// ===== 任务结果 =====
+
+// 任务结果（用于 status.proto 上报，使用全局 TaskStatus）
 message TaskResult {
   // 任务 ID
   string task_id = 1;
 
-  // 执行状态
-  enum Status {
-    STATUS_UNSPECIFIED = 0;
-    STATUS_SUCCESS = 1;
-    STATUS_FAILED = 2;
-    STATUS_TIMEOUT = 3;
-    STATUS_CANCELLED = 4;
-    STATUS_RESULT_TOO_LARGE = 5;  // 结果超过最大阈值
-  }
-
-  Status status = 2;
+  // 执行状态（使用全局统一枚举）
+  TaskStatus status = 2;
 
   // 任务开始时间 (毫秒时间戳)
   int64 started_at_millis = 3;
@@ -134,16 +130,16 @@ message TaskResult {
   // 任务执行耗时 (毫秒)
   int64 execution_time_millis = 12;
 
-  // 结果数据 (当 status 为 STATUS_RESULT_TOO_LARGE 时为空)
+  // 结果数据（二进制）
   bytes result_data = 5;
 
-  // 结果数据 JSON 格式（与 DTO 兼容）
+  // 结果数据 JSON 格式
   string result_json = 13;
 
   // 结果数据类型 (MIME type)
   string result_data_type = 6;
 
-  // 错误码（与 DTO 兼容）
+  // 错误码
   string error_code = 14;
 
   // 错误信息
@@ -152,12 +148,7 @@ message TaskResult {
   // 重试次数
   int32 retry_count = 8;
 
-  // 压缩类型
-  enum CompressionType {
-    COMPRESSION_TYPE_NONE = 0;
-    COMPRESSION_TYPE_GZIP = 1;
-  }
-
+  // 压缩类型（使用全局统一枚举）
   CompressionType compression = 9;
 
   // 原始大小 (字节)
@@ -166,6 +157,8 @@ message TaskResult {
   // 压缩后大小 (字节)
   int64 compressed_size = 11;
 }
+
+// ===== 分片上传 =====
 
 // 分片任务结果 (用于大结果上传)
 message ChunkedTaskResult {
@@ -191,6 +184,15 @@ message ChunkedTaskResult {
   bool is_last_chunk = 7;
 }
 
+// 分片上传状态
+enum ChunkUploadStatus {
+  CHUNK_UPLOAD_STATUS_UNSPECIFIED = 0;
+  CHUNK_UPLOAD_STATUS_CHUNK_RECEIVED = 1;   // 分片已接收
+  CHUNK_UPLOAD_STATUS_UPLOAD_COMPLETE = 2;  // 上传完成
+  CHUNK_UPLOAD_STATUS_CHECKSUM_MISMATCH = 3; // 校验失败
+  CHUNK_UPLOAD_STATUS_UPLOAD_FAILED = 4;    // 上传失败
+}
+
 // 分片上传响应
 message ChunkedUploadResponse {
   // 上传会话 ID
@@ -199,16 +201,8 @@ message ChunkedUploadResponse {
   // 已接收的分片索引
   int32 received_chunk_index = 2;
 
-  // 状态
-  enum Status {
-    STATUS_UNSPECIFIED = 0;
-    STATUS_CHUNK_RECEIVED = 1;   // 分片已接收
-    STATUS_UPLOAD_COMPLETE = 2;  // 上传完成
-    STATUS_CHECKSUM_MISMATCH = 3; // 校验失败
-    STATUS_UPLOAD_FAILED = 4;    // 上传失败
-  }
-
-  Status status = 3;
+  // 状态（使用全局枚举）
+  ChunkUploadStatus status = 3;
 
   // 错误信息
   string error_message = 4;
