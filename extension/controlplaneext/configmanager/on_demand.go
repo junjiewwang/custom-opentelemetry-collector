@@ -5,6 +5,8 @@ package configmanager
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +22,9 @@ import (
 )
 
 const (
-	// DefaultConfigDataId is the fallback config data ID within a group.
-	DefaultConfigDataId = "_default_"
+	// DefaultConfigDataId is no longer used but kept for interface compatibility if needed.
+	// In the simplified design, we only use ServiceName as DataId.
+	DefaultConfigDataId = "_unused_default_"
 )
 
 // OnDemandConfig holds configuration for OnDemandConfigManager.
@@ -244,8 +247,14 @@ func (m *NacosOnDemandConfigManager) cacheKey(token, agentID string) string {
 	return token + ":" + agentID
 }
 
+// serviceDataID returns the Nacos DataID for a service-level config.
+// In the simplified design, ServiceName is directly used as DataID.
+func (m *NacosOnDemandConfigManager) serviceDataID(serviceName string) string {
+	return serviceName
+}
+
 // RegisterAgent registers an agent and starts watching its config.
-func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, token, agentID string) (*model.AgentConfig, error) {
+func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, token, agentID, serviceName string) (*model.AgentConfig, error) {
 	if token == "" || agentID == "" {
 		return nil, errors.New("token and agentID are required")
 	}
@@ -253,6 +262,7 @@ func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, token, a
 	m.logger.Debug("Registering agent",
 		zap.String("token", token),
 		zap.String("agent_id", agentID),
+		zap.String("service_name", serviceName),
 	)
 
 	// Add to registered agents
@@ -260,32 +270,20 @@ func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, token, a
 	agentMap := agents.(*sync.Map)
 	agentMap.Store(agentID, true)
 
-	// Try to load agent-specific config
-	config, err := m.loadConfig(ctx, token, agentID)
+	// Try to load config with hierarchy: Instance -> Service -> App Default
+	config, err := m.GetConfigForAgent(ctx, token, agentID, serviceName)
 	if err != nil {
-		m.logger.Debug("No agent-specific config, trying default",
+		m.logger.Debug("Failed to load initial config for agent",
 			zap.String("token", token),
 			zap.String("agent_id", agentID),
 			zap.Error(err),
 		)
-
-		// Try default config
-		config, err = m.loadConfig(ctx, token, DefaultConfigDataId)
-		if err != nil {
-			m.logger.Debug("No default config available",
-				zap.String("token", token),
-				zap.Error(err),
-			)
-			// No config available, agent should use local default
-			return nil, nil
-		}
 	}
 
-	// Setup watch for agent-specific config
-	m.setupWatch(token, agentID)
-
-	// Also watch default config
-	m.setupWatch(token, DefaultConfigDataId)
+	// Setup watch for service-level config only
+	if svcID := m.serviceDataID(serviceName); svcID != "" {
+		m.setupWatch(token, svcID)
+	}
 
 	return config, nil
 }
@@ -315,43 +313,34 @@ func (m *NacosOnDemandConfigManager) UnregisterAgent(ctx context.Context, token,
 
 		if !hasAgents {
 			m.registeredAgents.Delete(token)
-			// Cancel default config watch if no agents left
-			m.cancelWatch(token, DefaultConfigDataId)
 		}
 	}
-
-	// Cancel agent-specific watch
-	m.cancelWatch(token, agentID)
 
 	// Remove subscribers
 	m.agentSubscribers.Delete(m.cacheKey(token, agentID))
 
-	// Note: We don't immediately delete from cache, let cleanup handle it
-	// This allows for brief reconnections without reloading
+	// Note: We don't watch individual agents anymore, and we don't watch default config.
+	// Service-level watches are shared and kept active as long as any agent for that service is online.
+	// Cleanup of service watches is handled by cache expiration if no one accesses them.
 
 	return nil
 }
 
 // GetConfigForAgent returns config for a specific agent.
-func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, token, agentID string) (*model.AgentConfig, error) {
-	if token == "" || agentID == "" {
-		return nil, errors.New("token and agentID are required")
+// In the simplified design, it only looks for service-level configuration.
+func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, token, agentID, serviceName string) (*model.AgentConfig, error) {
+	if token == "" {
+		return nil, errors.New("token is required")
 	}
 
-	// Try agent-specific config from cache
-	key := m.cacheKey(token, agentID)
-	if entry, ok := m.configCache.Load(key); ok {
-		e := entry.(*AgentConfigEntry)
-		e.LastAccess = time.Now()
-		m.cacheHits.Add(1)
-		if e.Config != nil {
-			return e.Config, nil
-		}
+	if serviceName == "" {
+		return nil, nil // No service name, no config
 	}
 
-	// Try default config from cache
-	defaultKey := m.cacheKey(token, DefaultConfigDataId)
-	if entry, ok := m.configCache.Load(defaultKey); ok {
+	// 1. Try service-specific config from cache
+	svcID := m.serviceDataID(serviceName)
+	svcKey := m.cacheKey(token, svcID)
+	if entry, ok := m.configCache.Load(svcKey); ok {
 		e := entry.(*AgentConfigEntry)
 		e.LastAccess = time.Now()
 		m.cacheHits.Add(1)
@@ -362,17 +351,13 @@ func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, toke
 
 	m.cacheMisses.Add(1)
 
-	// Load from Nacos
-	config, err := m.loadConfig(ctx, token, agentID)
-	if err != nil {
-		// Try default
-		config, err = m.loadConfig(ctx, token, DefaultConfigDataId)
-		if err != nil {
-			return nil, nil // No config, use local default
-		}
+	// 2. Try service-specific config from Nacos
+	config, err := m.loadConfig(ctx, token, svcID)
+	if err == nil && config != nil {
+		return config, nil
 	}
 
-	return config, nil
+	return nil, nil // No config found for this service
 }
 
 // loadConfig loads config from Nacos with caching.
@@ -424,11 +409,11 @@ func (m *NacosOnDemandConfigManager) cacheConfig(token, dataID string, cfg *mode
 		AgentID:    dataID,
 		LoadedAt:   time.Now(),
 		LastAccess: time.Now(),
-		Version:    cfg.Version.Version,
+		Version:    cfg.Version,
 		IsDefault:  dataID == DefaultConfigDataId,
 	})
 
-	m.logger.Debug("Config loaded and cached", zap.String("token", token), zap.String("data_id", dataID), zap.String("version", cfg.Version.Version))
+	m.logger.Debug("Config loaded and cached", zap.String("token", token), zap.String("data_id", dataID), zap.String("version", cfg.Version))
 }
 
 // loadConfigContent loads config content from Nacos with timeout.
@@ -457,38 +442,14 @@ func (m *NacosOnDemandConfigManager) loadConfigContent(ctx context.Context, grou
 	}
 }
 
-// SetConfigForAgent sets/updates config for a specific agent.
-func (m *NacosOnDemandConfigManager) SetConfigForAgent(ctx context.Context, token, agentID string, config *model.AgentConfig) error {
-	if token == "" || agentID == "" {
-		return errors.New("token and agentID are required")
-	}
-	if config == nil {
-		return errors.New("config cannot be nil")
-	}
-	if err := m.validateConfig(config); err != nil {
-		return err
-	}
-
-	data, err := json.Marshal(config)
-	if err != nil {
-		return err
-	}
-
-	if err := m.publishConfig(ctx, token, agentID, string(data)); err != nil {
-		return err
-	}
-
-	m.cacheConfig(token, agentID, config)
-	m.logger.Info("Config set for agent", zap.String("token", token), zap.String("agent_id", agentID), zap.String("version", config.Version.Version))
-	return nil
-}
-
+// publishConfig publishes config to Nacos.
 func (m *NacosOnDemandConfigManager) publishConfig(ctx context.Context, group, dataID, content string) error {
 	type result struct {
 		success bool
 		err     error
 	}
 	resultCh := make(chan result, 1)
+
 	go func() {
 		success, err := m.client.PublishConfig(vo.ConfigParam{
 			Group:   group,
@@ -502,6 +463,8 @@ func (m *NacosOnDemandConfigManager) publishConfig(ctx context.Context, group, d
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-time.After(m.config.LoadTimeout):
+		return errors.New("publish config timeout")
 	case res := <-resultCh:
 		if res.err != nil {
 			return res.err
@@ -513,20 +476,67 @@ func (m *NacosOnDemandConfigManager) publishConfig(ctx context.Context, group, d
 	}
 }
 
-// SetDefaultConfig sets the default config for a token.
-func (m *NacosOnDemandConfigManager) SetDefaultConfig(ctx context.Context, token string, config *model.AgentConfig) error {
-	return m.SetConfigForAgent(ctx, token, DefaultConfigDataId, config)
+// SetServiceConfig sets/updates config for a specific service.
+// It automatically manages versioning (Version, UpdatedAt, Etag).
+func (m *NacosOnDemandConfigManager) SetServiceConfig(ctx context.Context, token, serviceName string, config *model.AgentConfig) error {
+	svcID := m.serviceDataID(serviceName)
+	if svcID == "" {
+		return errors.New("serviceName is required")
+	}
+
+	if config == nil {
+		return errors.New("config cannot be nil")
+	}
+
+	// 1. Auto-generate Metadata
+	now := time.Now().UnixMilli()
+	config.UpdatedAt = now
+	config.Version = fmt.Sprintf("v%d", now)
+
+	// 2. Compute ETag (excluding metadata fields to get a stable hash of business config)
+	// We'll use a temporary copy to clear metadata before hashing
+	tempCfg := *config
+	tempCfg.Version = ""
+	tempCfg.UpdatedAt = 0
+	tempCfg.Etag = ""
+	
+	businessData, _ := json.Marshal(tempCfg)
+	hash := md5.Sum(businessData)
+	config.Etag = hex.EncodeToString(hash[:])
+
+	// 3. Validate and Publish
+	if err := m.validateConfig(config); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+
+	if err := m.publishConfig(ctx, token, svcID, string(data)); err != nil {
+		return err
+	}
+
+	m.cacheConfig(token, svcID, config)
+	m.logger.Info("Config set for service", zap.String("token", token), zap.String("service_name", serviceName), zap.String("version", config.Version))
+	return nil
 }
 
-// GetDefaultConfig returns the default config for a token.
-func (m *NacosOnDemandConfigManager) GetDefaultConfig(ctx context.Context, token string) (*model.AgentConfig, error) {
-	return m.GetConfigForAgent(ctx, token, DefaultConfigDataId)
+// GetServiceConfig returns the config for a specific service.
+func (m *NacosOnDemandConfigManager) GetServiceConfig(ctx context.Context, token, serviceName string) (*model.AgentConfig, error) {
+	svcID := m.serviceDataID(serviceName)
+	if svcID == "" {
+		return nil, errors.New("serviceName is required")
+	}
+	return m.loadConfig(ctx, token, svcID)
 }
 
-// DeleteConfigForAgent deletes config for a specific agent.
-func (m *NacosOnDemandConfigManager) DeleteConfigForAgent(ctx context.Context, token, agentID string) error {
-	if token == "" || agentID == "" {
-		return errors.New("token and agentID are required")
+// DeleteServiceConfig deletes config for a specific service.
+func (m *NacosOnDemandConfigManager) DeleteServiceConfig(ctx context.Context, token, serviceName string) error {
+	svcID := m.serviceDataID(serviceName)
+	if svcID == "" {
+		return errors.New("serviceName is required")
 	}
 
 	type result struct {
@@ -535,7 +545,7 @@ func (m *NacosOnDemandConfigManager) DeleteConfigForAgent(ctx context.Context, t
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		success, err := m.client.DeleteConfig(vo.ConfigParam{Group: token, DataId: agentID})
+		success, err := m.client.DeleteConfig(vo.ConfigParam{Group: token, DataId: svcID})
 		resultCh <- result{success: success, err: err}
 	}()
 
@@ -551,9 +561,29 @@ func (m *NacosOnDemandConfigManager) DeleteConfigForAgent(ctx context.Context, t
 		}
 	}
 
-	m.configCache.Delete(m.cacheKey(token, agentID))
-	m.logger.Info("Config deleted for agent", zap.String("token", token), zap.String("agent_id", agentID))
+	m.configCache.Delete(m.cacheKey(token, svcID))
+	m.logger.Info("Config deleted for service", zap.String("token", token), zap.String("service_name", serviceName))
 	return nil
+}
+
+// SetDefaultConfig is deprecated and returns an error.
+func (m *NacosOnDemandConfigManager) SetDefaultConfig(ctx context.Context, token string, config *model.AgentConfig) error {
+	return errors.New("default config is no longer supported")
+}
+
+// GetDefaultConfig is deprecated and returns nil.
+func (m *NacosOnDemandConfigManager) GetDefaultConfig(ctx context.Context, token string) (*model.AgentConfig, error) {
+	return nil, nil
+}
+
+// SetConfigForAgent is deprecated and returns an error.
+func (m *NacosOnDemandConfigManager) SetConfigForAgent(ctx context.Context, token, agentID string, config *model.AgentConfig) error {
+	return errors.New("instance-level config is no longer supported")
+}
+
+// DeleteConfigForAgent is deprecated and returns an error.
+func (m *NacosOnDemandConfigManager) DeleteConfigForAgent(ctx context.Context, token, agentID string) error {
+	return errors.New("instance-level config is no longer supported")
 }
 
 // setupWatch sets up config change watching.
@@ -689,7 +719,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 		if entry, ok := m.configCache.Load(key); ok {
 			e := entry.(*AgentConfigEntry)
 			e.Config = newConfig
-			e.Version = config.Version.Version
+			e.Version = config.Version
 			e.LastAccess = time.Now()
 			e.LoadedAt = time.Now()
 		} else {
@@ -699,7 +729,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 				AgentID:    dataID,
 				LoadedAt:   time.Now(),
 				LastAccess: time.Now(),
-				Version:    config.Version.Version,
+				Version:    config.Version,
 				IsDefault:  dataID == DefaultConfigDataId,
 			})
 		}
@@ -717,11 +747,6 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 
 	// Notify agent-specific subscribers
 	m.notifyAgentSubscribers(token, dataID, event)
-
-	// If this is a default config change, notify all agents under this token
-	if dataID == DefaultConfigDataId {
-		m.notifyAllAgentsForToken(token, event)
-	}
 
 	// Notify ConfigManager subscribers
 	if newConfig != nil {
@@ -878,7 +903,7 @@ func (m *NacosOnDemandConfigManager) UpdateConfig(ctx context.Context, config *m
 		return errors.New("no token available for update")
 	}
 
-	return m.SetDefaultConfig(ctx, firstToken, config)
+	return errors.New("update config is no longer supported via this interface")
 }
 
 // Watch starts watching for config changes (ConfigManager interface).
@@ -931,10 +956,6 @@ func (m *NacosOnDemandConfigManager) Close() error {
 
 // validateConfig validates config.
 func (m *NacosOnDemandConfigManager) validateConfig(config *model.AgentConfig) error {
-	if config.Version.Version == "" {
-		return errors.New("version.version is required")
-	}
-
 	if config.Sampler != nil {
 		if config.Sampler.Type == model.SamplerTypeTraceIDRatio {
 			if config.Sampler.Ratio < 0 || config.Sampler.Ratio > 1 {

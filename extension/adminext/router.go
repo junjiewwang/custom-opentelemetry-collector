@@ -90,13 +90,12 @@ func (e *Extension) newRouter() http.Handler {
 				r.Post("/token", e.regenerateAppToken)
 				r.Put("/token", e.setAppToken)
 
-				// Config management (model JSON)
+				// Config management (Simplified: Service-level only)
 				r.Route("/config", func(r chi.Router) {
-					r.Get("/", e.getAppDefaultConfigV2)
-					r.Put("/", e.setAppDefaultConfigV2)
-					r.Get("/{instanceID}", e.getAppInstanceConfigV2)
-					r.Put("/{instanceID}", e.setAppInstanceConfigV2)
-					r.Delete("/{instanceID}", e.deleteAppInstanceConfigV2)
+					// Service level
+					r.Get("/services/{serviceName}", e.getAppServiceConfigV2)
+					r.Put("/services/{serviceName}", e.setAppServiceConfigV2)
+					r.Delete("/services/{serviceName}", e.deleteAppServiceConfigV2)
 				})
 
 				// Services under app

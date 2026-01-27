@@ -131,7 +131,7 @@ func (m *NacosConfigManager) UpdateConfig(ctx context.Context, config *model.Age
 		sub(oldConfig, config)
 	}
 
-	m.logger.Info("Configuration published to Nacos", zap.String("version", config.Version.Version))
+	m.logger.Info("Configuration published to Nacos", zap.String("version", config.Version))
 	return nil
 }
 
@@ -267,7 +267,7 @@ func (m *NacosConfigManager) loadConfig(ctx context.Context) error {
 		m.mu.Unlock()
 
 		m.logger.Info("Loaded config from Nacos",
-			zap.String("version", config.Version.Version),
+			zap.String("version", config.Version),
 		)
 	}
 
@@ -295,7 +295,7 @@ func (m *NacosConfigManager) handleConfigChange(data string) {
 
 	m.logger.Info("Config changed in Nacos",
 		zap.String("old_version", getConfigVersion(oldConfig)),
-		zap.String("new_version", newConfig.Version.Version),
+		zap.String("new_version", newConfig.Version),
 	)
 
 	// Notify subscribers
@@ -306,10 +306,6 @@ func (m *NacosConfigManager) handleConfigChange(data string) {
 
 // validate validates the configuration.
 func (m *NacosConfigManager) validate(config *model.AgentConfig) error {
-	if config.Version.Version == "" {
-		return errors.New("version.version is required")
-	}
-
 	if config.Sampler != nil {
 		if config.Sampler.Type == model.SamplerTypeTraceIDRatio {
 			if config.Sampler.Ratio < 0 || config.Sampler.Ratio > 1 {
@@ -326,7 +322,7 @@ func getConfigVersion(config *model.AgentConfig) string {
 	if config == nil {
 		return ""
 	}
-	return config.Version.Version
+	return config.Version
 }
 
 func (m *NacosConfigManager) publishConfig(ctx context.Context, dataID string, content string) error {

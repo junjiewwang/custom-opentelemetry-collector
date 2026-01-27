@@ -698,6 +698,159 @@
             </div>
 
             <!-- ================================================================== -->
+            <!-- Configs View (Simplified: Service-level only) -->
+            <!-- ================================================================== -->
+            <div x-show="currentView === 'configs'" x-cloak class="fade-in h-[calc(100vh-160px)]">
+                <div class="flex h-full gap-6">
+                    <!-- Left: Service Tree -->
+                    <div class="w-1/3 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden">
+                        <div class="p-4 border-b border-gray-100 flex items-center justify-between">
+                            <h3 class="font-bold text-gray-800">Service Tree</h3>
+                            <button @click="loadConfigData()" class="text-gray-400 hover:text-primary-600 transition">
+                                <i class="fas fa-sync" :class="loading.configs ? 'fa-spin' : ''"></i>
+                            </button>
+                        </div>
+                        <div class="p-4 border-b border-gray-100">
+                            <div class="relative">
+                                <input type="text" x-model="configSearchQuery" placeholder="Search services/instances..."
+                                    class="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500">
+                                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                            </div>
+                        </div>
+                        <div class="flex-1 overflow-y-auto p-2">
+                            <div class="space-y-1">
+                                <template x-for="app in configTree" :key="app.id">
+                                    <div x-show="!configSearchQuery || app.name.toLowerCase().includes(configSearchQuery.toLowerCase()) || 
+                                        app.services.some(s => s.name.toLowerCase().includes(configSearchQuery.toLowerCase()) || 
+                                        s.instances.some(i => i.name.toLowerCase().includes(configSearchQuery.toLowerCase())))">
+                                        
+                                        <!-- App Node (Header Only) -->
+                                        <div class="flex items-center gap-2 px-3 py-2 text-gray-500 text-xs uppercase tracking-wider font-semibold">
+                                            <i class="fas fa-cube"></i>
+                                            <span class="truncate" x-text="app.name"></span>
+                                        </div>
+                                        
+                                        <!-- Service Level -->
+                                        <div class="ml-2 mt-1 space-y-1 border-l-2 border-gray-100 pl-2">
+                                            <template x-for="svc in app.services" :key="svc.id">
+                                                <div x-show="!configSearchQuery || svc.name.toLowerCase().includes(configSearchQuery.toLowerCase()) || 
+                                                    svc.instances.some(i => i.name.toLowerCase().includes(configSearchQuery.toLowerCase()))">
+                                                    
+                                                    <!-- Service Node -->
+                                                    <div @click="selectConfigNode(svc)"
+                                                        :class="selectedConfigNode?.id === svc.id ? 'bg-primary-50 text-primary-700 border-primary-200' : 'text-gray-700 border-transparent hover:bg-gray-50'"
+                                                        class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors group">
+                                                        <i class="fas fa-chevron-right text-[10px] text-gray-300 transition-transform"
+                                                            :class="svc.expanded ? 'rotate-90' : ''"
+                                                            @click.stop="svc.expanded = !svc.expanded"></i>
+                                                        <i class="fas fa-sitemap text-purple-500"></i>
+                                                        <span class="font-medium flex-1 truncate" x-text="svc.name"></span>
+                                                        <span class="text-xs text-gray-400" x-text="svc.instances.length"></span>
+                                                    </div>
+
+                                                    <!-- Instance Level (Status Only) -->
+                                                    <div x-show="svc.expanded" x-collapse class="ml-6 mt-1 space-y-1">
+                                                        <template x-for="inst in svc.instances" :key="inst.id">
+                                                            <div x-show="!configSearchQuery || inst.name.toLowerCase().includes(configSearchQuery.toLowerCase())"
+                                                                class="flex items-center gap-2 px-3 py-1 text-gray-500 text-xs">
+                                                                <span class="w-1.5 h-1.5 rounded-full" :class="inst.status === 'online' ? 'bg-green-500' : 'bg-gray-300'"></span>
+                                                                <span class="flex-1 truncate" x-text="inst.name"></span>
+                                                            </div>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Config Editor -->
+                    <div class="flex-1 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden relative">
+                        <!-- Loading Overlay -->
+                        <div x-show="editingConfig.loading" class="absolute inset-0 bg-white/80 z-10 flex items-center justify-center">
+                            <div class="text-center">
+                                <i class="fas fa-spinner fa-spin text-3xl text-primary-600 mb-2"></i>
+                                <p class="text-gray-500">Loading configuration...</p>
+                            </div>
+                        </div>
+
+                        <!-- Editor Header -->
+                        <div class="p-4 border-b border-gray-100 flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-sitemap text-gray-500"></i>
+                                </div>
+                                <div>
+                                    <h3 class="font-bold text-gray-800" x-text="selectedConfigNode ? selectedConfigNode.name : 'Select a service'"></h3>
+                                    <p class="text-xs text-gray-400">Service Configuration</p>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2" x-show="selectedConfigNode">
+                                <button @click="deleteOverrideConfig()"
+                                    class="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg transition text-sm flex items-center gap-2">
+                                    <i class="fas fa-trash-alt"></i> Delete Config
+                                </button>
+                                <button @click="resetConfigEditor()" :disabled="!editingConfig.isDirty"
+                                    class="px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition text-sm flex items-center gap-2 disabled:opacity-50">
+                                    <i class="fas fa-undo"></i> Reset
+                                </button>
+                                <button @click="saveConfig()" :disabled="!editingConfig.isDirty || editingConfig.saving"
+                                    class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-sm flex items-center gap-2 disabled:opacity-50 shadow-sm">
+                                    <i class="fas" :class="editingConfig.saving ? 'fa-spinner fa-spin' : 'fa-save'"></i>
+                                    <span x-text="editingConfig.saving ? 'Saving...' : 'Save Changes'"></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Editor Body -->
+                        <div class="flex-1 p-0 flex flex-col bg-gray-50 overflow-hidden">
+                            <template x-if="!selectedConfigNode">
+                                <div class="flex-1 flex flex-col items-center justify-center text-gray-400 p-8 text-center">
+                                    <i class="fas fa-cog text-6xl mb-4 opacity-20"></i>
+                                    <p class="text-lg font-medium">Please select a service from the tree</p>
+                                    <p class="text-sm mt-1">Configurations are applied to all instances belonging to the selected service.</p>
+                                </div>
+                            </template>
+                            
+                            <template x-if="selectedConfigNode">
+                                <div class="flex-1 flex flex-col overflow-hidden">
+                                    <!-- Tip -->
+                                    <div class="px-4 py-2 bg-blue-50 text-blue-700 text-xs border-b border-blue-100 flex items-center gap-2">
+                                        <i class="fas fa-info-circle"></i>
+                                        <span>Configuration is stored in JSON format. Use service name as DataId in Nacos.</span>
+                                        <div x-show="editingConfig.isDirty" class="ml-auto flex items-center gap-1 font-bold animate-pulse">
+                                            <i class="fas fa-circle text-[6px]"></i> Unsaved Changes
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- JSON Editor Area -->
+                                    <div class="flex-1 relative overflow-hidden">
+                                        <textarea x-model="editingConfig.content" @input="checkConfigDirty()"
+                                            class="absolute inset-0 w-full h-full p-4 font-mono text-sm bg-white border-none focus:ring-0 resize-none outline-none leading-relaxed"
+                                            placeholder='{ "sampling": { "rate": 0.5 } }'></textarea>
+                                    </div>
+                                    
+                                    <!-- Status Bar -->
+                                    <div class="px-4 py-2 bg-white border-t border-gray-100 text-[10px] text-gray-400 flex justify-between items-center">
+                                        <div class="flex items-center gap-4">
+                                            <div x-text="'Target: ' + editingConfig.serviceName"></div>
+                                        </div>
+                                        <div class="flex items-center gap-4">
+                                            <div x-text="'Version: ' + (editingConfig.version || 'none')"></div>
+                                            <div x-text="'Chars: ' + editingConfig.content.length"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================================================================== -->
             <!-- Arthas View -->
             <!-- ================================================================== -->
             <div x-show="currentView === 'arthas'" x-cloak class="fade-in">

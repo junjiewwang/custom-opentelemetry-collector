@@ -21,11 +21,9 @@ func AgentConfigFromProto(cfg *controlplanev1.AgentConfig) *model.AgentConfig {
 	}
 
 	if v := cfg.GetVersion(); v != nil {
-		out.Version = model.ConfigVersion{
-			Version:         v.GetVersion(),
-			TimestampMillis: v.GetTimestampMillis(),
-			Etag:            v.GetEtag(),
-		}
+		out.Version = v.GetVersion()
+		out.UpdatedAt = v.GetTimestampMillis()
+		out.Etag = v.GetEtag()
 	}
 
 	if s := cfg.GetSampler(); s != nil {
@@ -69,9 +67,9 @@ func AgentConfigToProto(cfg *model.AgentConfig) *controlplanev1.AgentConfig {
 
 	out := &controlplanev1.AgentConfig{
 		Version: &controlplanev1.ConfigVersion{
-			Version:         cfg.Version.Version,
-			TimestampMillis: cfg.Version.TimestampMillis,
-			Etag:            cfg.Version.Etag,
+			Version:         cfg.Version,
+			TimestampMillis: cfg.UpdatedAt,
+			Etag:            cfg.Etag,
 		},
 		DynamicResourceAttributes: cloneStringMap(cfg.DynamicResourceAttributes),
 		ExtensionConfigJson:       cfg.ExtensionConfigJSON,

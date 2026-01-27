@@ -77,12 +77,11 @@ type ConfigVersion struct {
 
 // AgentConfig is the internal representation of agent configuration.
 //
-// Note on sampler rules:
-// - Rules: structured (probe format)
-// - RulesJSON: raw JSON string (legacy format)
-// The migration period may keep both; converters decide what to populate.
+// Metadata fields (Version, UpdatedAt, Etag) are managed by the server.
 type AgentConfig struct {
-	Version                   ConfigVersion     `json:"version"`
+	Version                   string            `json:"version"`
+	UpdatedAt                 int64             `json:"updated_at,omitempty"`
+	Etag                      string            `json:"etag,omitempty"`
 	Sampler                   *SamplerConfig    `json:"sampler,omitempty"`
 	Batch                     *BatchConfig      `json:"batch,omitempty"`
 	DynamicResourceAttributes map[string]string `json:"dynamic_resource_attributes,omitempty"`

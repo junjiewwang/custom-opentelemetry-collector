@@ -64,7 +64,7 @@ func (m *MemoryConfigManager) UpdateConfig(ctx context.Context, config *model.Ag
 	}
 
 	m.logger.Info("Configuration updated",
-		zap.String("version", config.Version.Version),
+		zap.String("version", config.Version),
 	)
 
 	return nil
@@ -116,10 +116,6 @@ func (m *MemoryConfigManager) Close() error {
 
 // validate validates the configuration.
 func (m *MemoryConfigManager) validate(config *model.AgentConfig) error {
-	if config.Version.Version == "" {
-		return errors.New("version.version is required")
-	}
-
 	if config.Sampler != nil {
 		if config.Sampler.Type == model.SamplerTypeTraceIDRatio {
 			if config.Sampler.Ratio < 0 || config.Sampler.Ratio > 1 {

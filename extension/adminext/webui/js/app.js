@@ -16,6 +16,7 @@ const MENU_ITEMS = [
     { id: 'instances', label: 'Instances', icon: 'fas fa-server' },
     { id: 'services', label: 'Services', icon: 'fas fa-sitemap' },
     { id: 'tasks', label: 'Tasks', icon: 'fas fa-tasks' },
+    { id: 'configs', label: 'Configs', icon: 'fas fa-cog' },
     { id: 'arthas', label: 'Arthas', icon: 'fas fa-terminal' },
 ];
 
@@ -83,6 +84,24 @@ export function adminApp() {
         // State - Arthas Management (新设计：实例列表 + Arthas 状态 + 任务)
         // ============================================================================
         arthasInstances: [],  // 所有在线实例，带 arthasStatus 字段
+        
+        // ============================================================================
+        // State - Config Management
+        // ============================================================================
+        configTree: [],
+        selectedConfigNode: null,
+        editingConfig: {
+            appId: '',
+            serviceName: '',
+            loading: false,
+            saving: false,
+            content: '', // JSON string
+            originalContent: '',
+            isDirty: false,
+            error: '',
+            version: ''
+        },
+        configSearchQuery: '',
         arthasTask: {
             active: false,       // 是否有任务正在执行
             taskId: '',
@@ -256,6 +275,7 @@ export function adminApp() {
                 instances: () => this.loadInstances(),
                 services: () => this.loadServices(),
                 tasks: () => this.loadTasks(),
+                configs: () => this.loadConfigData(),
                 arthas: () => this.loadArthasAgents(),
             };
 
@@ -937,6 +957,206 @@ export function adminApp() {
                 await this.loadTasks();
             } catch (e) {
                 this.handleError(e, 'Failed to create task');
+            }
+        },
+
+        // ============================================================================
+        // Actions - Config Management
+        // ============================================================================
+        
+        /**
+         * 加载配置管理页面的基础数据（App 列表和实例列表）
+         */
+        async loadConfigData() {
+            if (this.loading.configs) return;
+            this.loading.configs = true;
+            try {
+                // 同时加载 Apps 和 Instances 来构建树
+                const [appsRes, instancesRes] = await Promise.all([
+                    ApiService.getApps(),
+                    ApiService.getInstances('all')
+                ]);
+                
+                const apps = appsRes.apps || [];
+                const instances = instancesRes.instances || [];
+                
+                // 构建配置树结构: App -> Service -> Instances
+                this.configTree = apps.map(app => {
+                    const appInstances = instances.filter(inst => inst.app_id === app.id);
+                    
+                    // 按服务分组
+                    const serviceMap = new Map();
+                    appInstances.forEach(inst => {
+                        const svcName = inst.service_name || '_unknown_';
+                        if (!serviceMap.has(svcName)) {
+                            serviceMap.set(svcName, []);
+                        }
+                        serviceMap.get(svcName).push(inst);
+                    });
+
+                    const services = Array.from(serviceMap.entries()).map(([name, svcInstances]) => ({
+                        id: `svc-${app.id}-${name}`,
+                        name: name === '_unknown_' ? 'Unknown Service' : name,
+                        serviceName: name,
+                        appId: app.id,
+                        type: 'service',
+                        expanded: false,
+                        instances: svcInstances.map(inst => ({
+                            id: inst.agent_id,
+                            name: inst.hostname || inst.ip || inst.agent_id.substring(0, 8),
+                            type: 'instance',
+                            appId: app.id,
+                            serviceName: name,
+                            agentId: inst.agent_id,
+                            status: inst.status?.state || 'offline'
+                        }))
+                    }));
+
+                    return {
+                        id: app.id,
+                        name: app.name,
+                        type: 'app',
+                        expanded: true,
+                        services: services
+                    };
+                });
+            } catch (e) {
+                this.handleError(e, 'Failed to load config tree');
+            } finally {
+                this.loading.configs = false;
+            }
+        },
+
+        /**
+         * 选择一个配置节点（App, Service 或 Instance）
+         */
+        async selectConfigNode(node) {
+            if (this.editingConfig.isDirty) {
+                if (!confirm('You have unsaved changes. Discard them?')) return;
+            }
+
+            this.selectedConfigNode = node;
+            this.editingConfig.error = '';
+            this.editingConfig.loading = true;
+            this.editingConfig.isDirty = false;
+            this.editingConfig.version = '';
+
+            try {
+                let configRes;
+                if (node.type === 'app') {
+                    this.editingConfig.isAppDefault = true;
+                    this.editingConfig.isServiceLevel = false;
+                    this.editingConfig.appId = node.id;
+                    this.editingConfig.serviceName = '';
+                    this.editingConfig.agentId = '';
+                    configRes = await ApiService.getAppDefaultConfig(node.id);
+                } else if (node.type === 'service') {
+                    this.editingConfig.isAppDefault = false;
+                    this.editingConfig.isServiceLevel = true;
+                    this.editingConfig.appId = node.appId;
+                    this.editingConfig.serviceName = node.serviceName;
+                    this.editingConfig.agentId = '';
+                    configRes = await ApiService.getAppServiceConfig(node.appId, node.serviceName);
+                } else {
+                    this.editingConfig.isAppDefault = false;
+                    this.editingConfig.isServiceLevel = false;
+                    this.editingConfig.appId = node.appId;
+                    this.editingConfig.serviceName = node.serviceName;
+                    this.editingConfig.agentId = node.agentId;
+                    configRes = await ApiService.getAppInstanceConfig(node.appId, node.agentId, node.serviceName);
+                }
+
+                // 后端现在直接返回 AgentConfig 对象，不再包装在 config 字段中
+                const fullConfig = configRes || {};
+                
+                // 提取元数据
+                this.editingConfig.version = fullConfig.version || '';
+                this.editingConfig.updatedAt = fullConfig.updated_at || 0;
+                
+                // 提取业务配置（过滤掉元数据字段，避免干扰用户编辑）
+                const businessConfig = { ...fullConfig };
+                delete businessConfig.version;
+                delete businessConfig.updated_at;
+                delete businessConfig.etag;
+                
+                const jsonStr = JSON.stringify(businessConfig, null, 2);
+                this.editingConfig.content = jsonStr;
+                this.editingConfig.originalContent = jsonStr;
+            } catch (e) {
+                // 如果是 404，说明没有配置，显示空对象
+                if (e.status === 404) {
+                    this.editingConfig.content = '{}';
+                    this.editingConfig.originalContent = '{}';
+                    this.editingConfig.version = 'none';
+                } else {
+                    this.handleError(e, 'Failed to load configuration');
+                    this.editingConfig.error = e.message;
+                }
+            } finally {
+                this.editingConfig.loading = false;
+            }
+        },
+
+        /**
+         * 检查配置是否已修改
+         */
+        checkConfigDirty() {
+            this.editingConfig.isDirty = this.editingConfig.content !== this.editingConfig.originalContent;
+        },
+
+        /**
+         * 保存配置
+         */
+        async saveConfig() {
+            if (this.editingConfig.saving) return;
+            
+            let configData;
+            try {
+                configData = JSON.parse(this.editingConfig.content);
+            } catch (e) {
+                this.showToast('Invalid JSON format', 'error');
+                return;
+            }
+
+            this.editingConfig.saving = true;
+            try {
+                await ApiService.setAppServiceConfig(this.editingConfig.appId, this.editingConfig.serviceName, configData);
+                
+                this.editingConfig.originalContent = this.editingConfig.content;
+                this.editingConfig.isDirty = false;
+                this.showToast('Configuration saved successfully', 'success');
+            } catch (e) {
+                this.handleError(e, 'Failed to save configuration');
+            } finally {
+                this.editingConfig.saving = false;
+            }
+        },
+
+        /**
+         * 重置当前编辑的配置
+         */
+        resetConfigEditor() {
+            if (!confirm('Reset changes to original?')) return;
+            this.editingConfig.content = this.editingConfig.originalContent;
+            this.editingConfig.isDirty = false;
+        },
+
+        /**
+         * 删除服务配置
+         */
+        async deleteOverrideConfig() {
+            if (!confirm(`Delete configuration for service "${this.editingConfig.serviceName}"?`)) return;
+
+            this.editingConfig.saving = true;
+            try {
+                await ApiService.deleteAppServiceConfig(this.editingConfig.appId, this.editingConfig.serviceName);
+                this.showToast(`Configuration for service "${this.editingConfig.serviceName}" deleted`, 'success');
+                // 重新加载以获取空配置
+                await this.selectConfigNode(this.selectedConfigNode);
+            } catch (e) {
+                this.handleError(e, `Failed to delete service configuration`);
+            } finally {
+                this.editingConfig.saving = false;
             }
         },
 

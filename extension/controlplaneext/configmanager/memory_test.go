@@ -42,7 +42,7 @@ func TestMemoryConfigManager_UpdateConfig(t *testing.T) {
 	defer cm.Close()
 
 	config := &model.AgentConfig{
-		Version: model.ConfigVersion{Version: "v1.0"},
+		Version: "v1.0",
 		Sampler: &model.SamplerConfig{
 			Type:  model.SamplerTypeTraceIDRatio,
 			Ratio: 0.5,
@@ -55,7 +55,7 @@ func TestMemoryConfigManager_UpdateConfig(t *testing.T) {
 	// Verify
 	retrieved, err := cm.GetConfig(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, "v1.0", retrieved.Version.Version)
+	assert.Equal(t, "v1.0", retrieved.Version)
 	assert.Equal(t, 0.5, retrieved.Sampler.Ratio)
 }
 
@@ -72,14 +72,9 @@ func TestMemoryConfigManager_UpdateConfig_Validation(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be nil")
 
-	// Empty version
-	err = cm.UpdateConfig(ctx, &model.AgentConfig{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "version")
-
 	// Invalid sampler ratio
 	err = cm.UpdateConfig(ctx, &model.AgentConfig{
-		Version: model.ConfigVersion{Version: "v1.0"},
+		Version: "v1.0",
 		Sampler: &model.SamplerConfig{
 			Type:  model.SamplerTypeTraceIDRatio,
 			Ratio: 1.5, // Invalid
@@ -90,7 +85,7 @@ func TestMemoryConfigManager_UpdateConfig_Validation(t *testing.T) {
 
 	// Invalid batch config
 	err = cm.UpdateConfig(ctx, &model.AgentConfig{
-		Version: model.ConfigVersion{Version: "v1.0"},
+		Version: "v1.0",
 		Batch: &model.BatchConfig{
 			MaxExportBatchSize: -1,
 		},
@@ -120,23 +115,23 @@ func TestMemoryConfigManager_Subscribe(t *testing.T) {
 	})
 
 	// First update
-	config1 := &model.AgentConfig{Version: model.ConfigVersion{Version: "v1.0"}}
+	config1 := &model.AgentConfig{Version: "v1.0"}
 	_ = cm.UpdateConfig(ctx, config1)
 
 	mu.Lock()
 	assert.Equal(t, 1, callCount)
 	assert.Nil(t, lastOld)
-	assert.Equal(t, "v1.0", lastNew.Version.Version)
+	assert.Equal(t, "v1.0", lastNew.Version)
 	mu.Unlock()
 
 	// Second update
-	config2 := &model.AgentConfig{Version: model.ConfigVersion{Version: "v2.0"}}
+	config2 := &model.AgentConfig{Version: "v2.0"}
 	_ = cm.UpdateConfig(ctx, config2)
 
 	mu.Lock()
 	assert.Equal(t, 2, callCount)
-	assert.Equal(t, "v1.0", lastOld.Version.Version)
-	assert.Equal(t, "v2.0", lastNew.Version.Version)
+	assert.Equal(t, "v1.0", lastOld.Version)
+	assert.Equal(t, "v2.0", lastNew.Version)
 	mu.Unlock()
 }
 
@@ -155,7 +150,7 @@ func TestMemoryConfigManager_Watch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update should trigger callback
-	_ = cm.UpdateConfig(ctx, &model.AgentConfig{Version: model.ConfigVersion{Version: "v1.0"}})
+	_ = cm.UpdateConfig(ctx, &model.AgentConfig{Version: "v1.0"})
 	assert.True(t, called)
 }
 
@@ -207,7 +202,7 @@ func TestMemoryConfigManager_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			config := &model.AgentConfig{
-				Version: model.ConfigVersion{Version: "v" + string(rune('0'+id))},
+				Version: "v" + string(rune('0'+id)),
 			}
 			_ = cm.UpdateConfig(ctx, config)
 			_, _ = cm.GetConfig(ctx)
@@ -241,7 +236,7 @@ func TestMemoryConfigManager_MultipleSubscribers(t *testing.T) {
 	}
 
 	// Update config
-	_ = cm.UpdateConfig(ctx, &model.AgentConfig{Version: model.ConfigVersion{Version: "v1.0"}})
+	_ = cm.UpdateConfig(ctx, &model.AgentConfig{Version: "v1.0"})
 
 	mu.Lock()
 	for i := 0; i < 3; i++ {

@@ -58,18 +58,28 @@ type OnDemandConfigManager interface {
 
 	// RegisterAgent registers an agent and starts watching its config.
 	// Returns the agent's config (or nil if not found, agent should use default).
-	RegisterAgent(ctx context.Context, token, agentID string) (*model.AgentConfig, error)
+	RegisterAgent(ctx context.Context, token, agentID, serviceName string) (*model.AgentConfig, error)
 
 	// UnregisterAgent unregisters an agent and releases its resources.
 	UnregisterAgent(ctx context.Context, token, agentID string) error
 
 	// GetConfigForAgent returns config for a specific agent.
-	// If no specific config exists, returns the default config for the token.
+	// If no specific config exists, returns the service config if serviceName is provided.
+	// If no service config exists, returns the default config for the token.
 	// If no default config exists, returns nil (agent should use local default).
-	GetConfigForAgent(ctx context.Context, token, agentID string) (*model.AgentConfig, error)
+	GetConfigForAgent(ctx context.Context, token, agentID, serviceName string) (*model.AgentConfig, error)
 
 	// SetConfigForAgent sets/updates config for a specific agent.
 	SetConfigForAgent(ctx context.Context, token, agentID string, config *model.AgentConfig) error
+
+	// SetServiceConfig sets/updates config for a specific service.
+	SetServiceConfig(ctx context.Context, token, serviceName string, config *model.AgentConfig) error
+
+	// GetServiceConfig returns the config for a specific service.
+	GetServiceConfig(ctx context.Context, token, serviceName string) (*model.AgentConfig, error)
+
+	// DeleteServiceConfig deletes config for a specific service.
+	DeleteServiceConfig(ctx context.Context, token, serviceName string) error
 
 	// SetDefaultConfig sets the default config for a token (all agents under this token).
 	SetDefaultConfig(ctx context.Context, token string, config *model.AgentConfig) error

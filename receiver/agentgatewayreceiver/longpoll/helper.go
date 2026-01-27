@@ -43,7 +43,7 @@ func AgentKey(token, agentID string) string {
 func GenerateDefaultConfig(agentID string) *model.AgentConfig {
 	_ = agentID
 	return &model.AgentConfig{
-		Version: model.ConfigVersion{Version: fmt.Sprintf("v1.0.0-%d", time.Now().UnixMilli())},
+		Version: fmt.Sprintf("v1.0.0-%d", time.Now().UnixMilli()),
 		Sampler: &model.SamplerConfig{
 			Type:  model.SamplerTypeTraceIDRatio,
 			Ratio: 1.0, // Default to full sampling

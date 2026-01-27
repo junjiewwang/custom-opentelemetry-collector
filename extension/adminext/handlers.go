@@ -164,7 +164,7 @@ func (e *Extension) setAppToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
-// App Config Management (v2-only, model JSON)
+// Config Management (Simplified: Service-level only)
 // ============================================================================
 
 func (e *Extension) getAppWithOnDemandCheck(r *http.Request) (*tokenmanager.AppInfo, error) {
@@ -180,97 +180,62 @@ func (e *Extension) getAppWithOnDemandCheck(r *http.Request) (*tokenmanager.AppI
 	return app, nil
 }
 
-func (e *Extension) getAppDefaultConfigV2(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) getAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
 	app, err := e.getAppWithOnDemandCheck(r)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
-	cfg, err := e.onDemandConfigMgr.GetDefaultConfig(r.Context(), app.Token)
+	serviceName := chi.URLParam(r, "serviceName")
+
+	cfg, err := e.onDemandConfigMgr.GetServiceConfig(r.Context(), app.Token, serviceName)
 	if err != nil {
 		e.handleError(w, errNotFound(err.Error()))
 		return
 	}
+
 	if cfg == nil {
-		e.handleError(w, errNotFound("config not found"))
-		return
+		// Return an empty config object instead of 404 to avoid UI errors.
+		// This allows the user to start editing from scratch.
+		cfg = &model.AgentConfig{
+			Version: "none",
+		}
 	}
 	e.writeJSON(w, http.StatusOK, cfg)
 }
 
-func (e *Extension) setAppDefaultConfigV2(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) setAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
 	app, err := e.getAppWithOnDemandCheck(r)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
+	serviceName := chi.URLParam(r, "serviceName")
 	cfg, err := decodeJSON[model.AgentConfig](r)
 	if err != nil {
 		e.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
-	if err := e.onDemandConfigMgr.SetDefaultConfig(r.Context(), app.Token, cfg); err != nil {
+	if err := e.onDemandConfigMgr.SetServiceConfig(r.Context(), app.Token, serviceName, cfg); err != nil {
 		e.handleError(w, err)
 		return
 	}
-	e.writeJSON(w, http.StatusOK, successResponse("config updated", map[string]any{"instance_id": "_default_"}))
+	e.writeJSON(w, http.StatusOK, successResponse("config updated", map[string]any{"service_name": serviceName}))
 }
 
-func (e *Extension) getAppInstanceConfigV2(w http.ResponseWriter, r *http.Request) {
+func (e *Extension) deleteAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
 	app, err := e.getAppWithOnDemandCheck(r)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
-	instanceID := chi.URLParam(r, "instanceID")
+	serviceName := chi.URLParam(r, "serviceName")
 
-	cfg, err := e.onDemandConfigMgr.GetConfigForAgent(r.Context(), app.Token, instanceID)
-	if err != nil {
-		e.handleError(w, errNotFound(err.Error()))
-		return
-	}
-	if cfg == nil {
-		e.handleError(w, errNotFound("config not found"))
-		return
-	}
-	e.writeJSON(w, http.StatusOK, cfg)
-}
-
-func (e *Extension) setAppInstanceConfigV2(w http.ResponseWriter, r *http.Request) {
-	app, err := e.getAppWithOnDemandCheck(r)
-	if err != nil {
-		e.handleError(w, err)
-		return
-	}
-
-	instanceID := chi.URLParam(r, "instanceID")
-	cfg, err := decodeJSON[model.AgentConfig](r)
-	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
-		return
-	}
-
-	if err := e.onDemandConfigMgr.SetConfigForAgent(r.Context(), app.Token, instanceID, cfg); err != nil {
-		e.handleError(w, err)
-		return
-	}
-	e.writeJSON(w, http.StatusOK, successResponse("config updated", map[string]any{"instance_id": instanceID}))
-}
-
-func (e *Extension) deleteAppInstanceConfigV2(w http.ResponseWriter, r *http.Request) {
-	app, err := e.getAppWithOnDemandCheck(r)
-	if err != nil {
-		e.handleError(w, err)
-		return
-	}
-
-	instanceID := chi.URLParam(r, "instanceID")
-
-	if err := e.onDemandConfigMgr.DeleteConfigForAgent(r.Context(), app.Token, instanceID); err != nil {
+	if err := e.onDemandConfigMgr.DeleteServiceConfig(r.Context(), app.Token, serviceName); err != nil {
 		e.handleError(w, err)
 		return
 	}

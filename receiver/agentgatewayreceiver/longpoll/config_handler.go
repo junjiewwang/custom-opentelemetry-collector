@@ -44,10 +44,8 @@ func legacyAgentConfigToModel(cfg *legacyAgentConfig, etag string) *model.AgentC
 		return nil
 	}
 	out := &model.AgentConfig{
-		Version: model.ConfigVersion{
-			Version: cfg.ConfigVersion,
-			Etag:    etag,
-		},
+		Version:                   cfg.ConfigVersion,
+		Etag:                      etag,
 		DynamicResourceAttributes: cfg.DynamicResourceAttributes,
 		ExtensionConfigJSON:       cfg.ExtensionConfigJSON,
 	}
@@ -75,7 +73,7 @@ func legacyAgentConfigFromModel(cfg *model.AgentConfig) *legacyAgentConfig {
 		return nil
 	}
 	out := &legacyAgentConfig{
-		ConfigVersion:             cfg.Version.Version,
+		ConfigVersion:             cfg.Version,
 		DynamicResourceAttributes: cfg.DynamicResourceAttributes,
 		ExtensionConfigJSON:       cfg.ExtensionConfigJSON,
 	}
@@ -99,27 +97,46 @@ func legacyAgentConfigFromModel(cfg *model.AgentConfig) *legacyAgentConfig {
 
 // ConfigPollHandler implements LongPollHandler for configuration polling.
 // It integrates with Nacos for config storage and change notification.
+// It uses ServiceName as the DataID for Nacos configuration.
 type ConfigPollHandler struct {
 	logger      *zap.Logger
 	nacosClient config_client.IConfigClient
 
-	// Waiters management (per agent)
-	waiters sync.Map // agentKey -> *ConfigWaiter
-
-	// Watch management
-	watching sync.Map // agentKey -> bool
+	// services maps serviceKey (token:serviceName) -> *serviceState
+	services sync.Map
 
 	// State
 	running atomic.Bool
 }
 
+// serviceState manages waiters and cached config for a specific service.
+type serviceState struct {
+	sync.RWMutex
+	token       string
+	serviceName string
+	config      *model.AgentConfig
+	waiters     map[string]*ConfigWaiter // agentID -> waiter
+	isWatching  bool
+}
+
+func (s *serviceState) getWaiters() []*ConfigWaiter {
+	s.RLock()
+	defer s.RUnlock()
+	res := make([]*ConfigWaiter, 0, len(s.waiters))
+	for _, w := range s.waiters {
+		res = append(res, w)
+	}
+	return res
+}
+
 // ConfigWaiter represents a waiting config poll request.
 type ConfigWaiter struct {
-	agentID    string
-	token      string
-	resultChan chan *HandlerResult
-	ctx        context.Context
-	cancel     context.CancelFunc
+	agentID     string
+	token       string
+	serviceName string
+	resultChan  chan *HandlerResult
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // NewConfigPollHandler creates a new ConfigPollHandler.
@@ -153,20 +170,24 @@ func (h *ConfigPollHandler) Stop() error {
 		return nil
 	}
 
-	// Cancel all waiters
-	h.waiters.Range(func(key, value interface{}) bool {
-		waiter := value.(*ConfigWaiter)
-		if waiter.cancel != nil {
-			waiter.cancel()
-		}
-		return true
-	})
+	h.services.Range(func(key, value interface{}) bool {
+		state := value.(*serviceState)
+		state.Lock()
+		defer state.Unlock()
 
-	// Cancel all watches
-	h.watching.Range(func(key, value interface{}) bool {
-		agentKey := key.(string)
-		token, agentID := parseAgentKey(agentKey)
-		h.cancelWatch(token, agentID)
+		// Cancel all waiters
+		for _, waiter := range state.waiters {
+			if waiter.cancel != nil {
+				waiter.cancel()
+			}
+		}
+		state.waiters = make(map[string]*ConfigWaiter)
+
+		// Cancel watch
+		if state.isWatching {
+			h.cancelWatch(state.token, state.serviceName)
+			state.isWatching = false
+		}
 		return true
 	})
 
@@ -179,23 +200,49 @@ func (h *ConfigPollHandler) ShouldContinue() bool {
 	return h.running.Load()
 }
 
+// getOrCreateServiceState gets or creates a serviceState for the given token and serviceName.
+func (h *ConfigPollHandler) getOrCreateServiceState(token, serviceName string) *serviceState {
+	serviceKey := AgentKey(token, serviceName)
+	actual, _ := h.services.LoadOrStore(serviceKey, &serviceState{
+		token:       token,
+		serviceName: serviceName,
+		waiters:     make(map[string]*ConfigWaiter),
+	})
+	return actual.(*serviceState)
+}
+
 // CheckImmediate checks if there are config changes immediately.
 func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest) (bool, *HandlerResult, error) {
 	if h.nacosClient == nil {
 		return false, nil, errors.New("nacos client not initialized")
 	}
 
-	// Load current config from Nacos
-	config, err := h.loadOrCreateConfig(ctx, req.Token, req.AgentID)
-	if err != nil {
-		return false, nil, err
+	state := h.getOrCreateServiceState(req.Token, req.ServiceName)
+
+	// Try to use cached config first
+	state.RLock()
+	config := state.config
+	state.RUnlock()
+
+	// If no cache, load from Nacos
+	if config == nil {
+		var err error
+		config, err = h.loadConfigFromNacos(ctx, req.Token, req.ServiceName)
+		if err != nil {
+			// If not found, it's not an error for the agent, just means no config
+			h.logger.Debug("No config found in Nacos", zap.String("service", req.ServiceName))
+		}
+		// Update cache
+		state.Lock()
+		state.config = config
+		state.Unlock()
 	}
 
 	currentVersion := ""
 	currentEtag := ""
 	if config != nil {
-		currentVersion = config.Version.Version
-		currentEtag = config.Version.Etag
+		currentVersion = config.Version
+		currentEtag = config.Etag
 	}
 
 	// Check version change
@@ -226,8 +273,6 @@ func (h *ConfigPollHandler) Poll(ctx context.Context, req *PollRequest) (*Handle
 		return nil, errors.New("nacos client not initialized")
 	}
 
-	agentKey := AgentKey(req.Token, req.AgentID)
-
 	// Step 1: Check for immediate changes
 	hasChanges, result, err := h.CheckImmediate(ctx, req)
 	if err != nil {
@@ -238,24 +283,31 @@ func (h *ConfigPollHandler) Poll(ctx context.Context, req *PollRequest) (*Handle
 	}
 
 	// Step 2: No changes, register waiter and wait for notification
+	state := h.getOrCreateServiceState(req.Token, req.ServiceName)
 	waiterCtx, cancel := context.WithCancel(ctx)
 	waiter := &ConfigWaiter{
-		agentID:    req.AgentID,
-		token:      req.Token,
-		resultChan: make(chan *HandlerResult, 1),
-		ctx:        waiterCtx,
-		cancel:     cancel,
+		agentID:     req.AgentID,
+		token:       req.Token,
+		serviceName: req.ServiceName,
+		resultChan:  make(chan *HandlerResult, 1),
+		ctx:         waiterCtx,
+		cancel:      cancel,
 	}
 
 	// Register waiter
-	h.waiters.Store(agentKey, waiter)
+	state.Lock()
+	state.waiters[req.AgentID] = waiter
+	state.Unlock()
+
 	defer func() {
-		h.waiters.Delete(agentKey)
+		state.Lock()
+		delete(state.waiters, req.AgentID)
+		state.Unlock()
 		cancel()
 	}()
 
 	// Ensure Nacos watch is active
-	h.ensureWatching(req.Token, req.AgentID)
+	h.ensureWatching(state)
 
 	// Step 3: Wait for change notification or timeout
 	select {
@@ -270,48 +322,19 @@ func (h *ConfigPollHandler) Poll(ctx context.Context, req *PollRequest) (*Handle
 	}
 }
 
-// loadOrCreateConfig loads config from Nacos, creating default if not exists.
-func (h *ConfigPollHandler) loadOrCreateConfig(ctx context.Context, token, agentID string) (*model.AgentConfig, error) {
-	// Try to load agent-specific config
-	legacyCfg, err := h.loadConfig(ctx, token, agentID)
-	if err == nil && legacyCfg != nil {
-		etag := ComputeEtag(legacyCfg)
-		return legacyAgentConfigToModel(legacyCfg, etag), nil
+// loadConfigFromNacos loads config from Nacos for the specific service.
+func (h *ConfigPollHandler) loadConfigFromNacos(ctx context.Context, token, serviceName string) (*model.AgentConfig, error) {
+	if serviceName == "" {
+		return nil, nil
 	}
 
-	// Try default config for the token
-	legacyCfg, err = h.loadConfig(ctx, token, "_default_")
-	if err == nil && legacyCfg != nil {
-		etag := ComputeEtag(legacyCfg)
-		return legacyAgentConfigToModel(legacyCfg, etag), nil
+	legacyCfg, err := h.loadConfig(ctx, token, serviceName)
+	if err != nil {
+		return nil, err
 	}
 
-	// No config exists, create default and write to Nacos
-	h.logger.Info("No config found, creating default",
-		zap.String("token", token),
-		zap.String("agent_id", agentID),
-	)
-
-	defaultConfig := GenerateDefaultConfig(agentID)
-	legacyDefault := legacyAgentConfigFromModel(defaultConfig)
-	defaultConfig.Version.Etag = ComputeEtag(legacyDefault)
-
-	// Write default config to Nacos (as default for the token)
-	if err := h.saveConfig(ctx, token, "_default_", legacyDefault); err != nil {
-		h.logger.Warn("Failed to save default config to Nacos",
-			zap.String("token", token),
-			zap.Error(err),
-		)
-		// Return the default config anyway
-		return defaultConfig, nil
-	}
-
-	h.logger.Info("Created default config in Nacos",
-		zap.String("token", token),
-		zap.String("version", defaultConfig.Version.Version),
-	)
-
-	return defaultConfig, nil
+	etag := ComputeEtag(legacyCfg)
+	return legacyAgentConfigToModel(legacyCfg, etag), nil
 }
 
 // loadConfig loads config from Nacos.
@@ -350,64 +373,18 @@ func (h *ConfigPollHandler) loadConfig(ctx context.Context, group, dataID string
 	}
 }
 
-// saveConfig saves config to Nacos.
-func (h *ConfigPollHandler) saveConfig(ctx context.Context, group, dataID string, config *legacyAgentConfig) error {
-	data, err := json.Marshal(config)
-	if err != nil {
-		return err
-	}
+// ensureWatching ensures Nacos watch is active for the service.
+func (h *ConfigPollHandler) ensureWatching(state *serviceState) {
+	state.Lock()
+	defer state.Unlock()
 
-	type result struct {
-		success bool
-		err     error
-	}
-	resultCh := make(chan result, 1)
-
-	go func() {
-		success, err := h.nacosClient.PublishConfig(vo.ConfigParam{
-			Group:   group,
-			DataId:  dataID,
-			Content: string(data),
-			Type:    "json",
-		})
-		resultCh <- result{success: success, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case res := <-resultCh:
-		if res.err != nil {
-			return res.err
-		}
-		if !res.success {
-			return errors.New("failed to publish config to Nacos")
-		}
-		return nil
-	}
-}
-
-// ensureWatching ensures Nacos watch is active for the agent.
-func (h *ConfigPollHandler) ensureWatching(token, agentID string) {
-	// Watch agent-specific config
-	h.setupWatch(token, agentID)
-
-	// Also watch default config
-	h.setupWatch(token, "_default_")
-}
-
-// setupWatch sets up Nacos config watch.
-func (h *ConfigPollHandler) setupWatch(token, dataID string) {
-	agentKey := AgentKey(token, dataID)
-
-	// Check if already watching
-	if _, ok := h.watching.Load(agentKey); ok {
+	if state.isWatching || state.serviceName == "" {
 		return
 	}
 
 	err := h.nacosClient.ListenConfig(vo.ConfigParam{
-		Group:  token,
-		DataId: dataID,
+		Group:  state.token,
+		DataId: state.serviceName,
 		OnChange: func(namespace, group, dataId, data string) {
 			h.handleConfigChange(group, dataId, data)
 		},
@@ -415,59 +392,51 @@ func (h *ConfigPollHandler) setupWatch(token, dataID string) {
 
 	if err != nil {
 		h.logger.Warn("Failed to setup config watch",
-			zap.String("token", token),
-			zap.String("data_id", dataID),
+			zap.String("token", state.token),
+			zap.String("service", state.serviceName),
 			zap.Error(err),
 		)
 		return
 	}
 
-	h.watching.Store(agentKey, true)
+	state.isWatching = true
 	h.logger.Debug("Setup config watch",
-		zap.String("token", token),
-		zap.String("data_id", dataID),
+		zap.String("token", state.token),
+		zap.String("service", state.serviceName),
 	)
 }
 
 // cancelWatch cancels Nacos config watch.
-func (h *ConfigPollHandler) cancelWatch(token, dataID string) {
-	agentKey := AgentKey(token, dataID)
-
-	if _, ok := h.watching.Load(agentKey); !ok {
-		return
-	}
-
+func (h *ConfigPollHandler) cancelWatch(token, serviceName string) {
 	err := h.nacosClient.CancelListenConfig(vo.ConfigParam{
 		Group:  token,
-		DataId: dataID,
+		DataId: serviceName,
 	})
 
 	if err != nil {
 		h.logger.Warn("Failed to cancel config watch",
 			zap.String("token", token),
-			zap.String("data_id", dataID),
+			zap.String("service", serviceName),
 			zap.Error(err),
 		)
 	}
-
-	h.watching.Delete(agentKey)
 }
 
 // handleConfigChange handles config change notification from Nacos.
-func (h *ConfigPollHandler) handleConfigChange(token, dataID, data string) {
+func (h *ConfigPollHandler) handleConfigChange(token, serviceName, data string) {
 	h.logger.Info("Config changed in Nacos",
 		zap.String("token", token),
-		zap.String("data_id", dataID),
+		zap.String("service", serviceName),
 	)
 
-	// Parse new config (stored as legacy JSON shape) and convert to model.
+	// Parse new config
 	var newConfig *model.AgentConfig
 	if data != "" {
 		var legacyCfg legacyAgentConfig
 		if err := json.Unmarshal([]byte(data), &legacyCfg); err != nil {
 			h.logger.Error("Failed to parse changed config",
 				zap.String("token", token),
-				zap.String("data_id", dataID),
+				zap.String("service", serviceName),
 				zap.Error(err),
 			)
 			return
@@ -476,94 +445,59 @@ func (h *ConfigPollHandler) handleConfigChange(token, dataID, data string) {
 		newConfig = legacyAgentConfigToModel(&legacyCfg, etag)
 	}
 
-	// Notify waiting agents
-	if dataID == "_default_" {
-		// Default config changed - notify all waiters for this token
-		h.notifyWaitersForToken(token, newConfig)
-	} else {
-		// Agent-specific config changed
-		h.notifyWaiter(token, dataID, newConfig)
+	// Update state and notify waiters
+	serviceKey := AgentKey(token, serviceName)
+	if val, ok := h.services.Load(serviceKey); ok {
+		state := val.(*serviceState)
+		state.Lock()
+		state.config = newConfig
+		waiters := make([]*ConfigWaiter, 0, len(state.waiters))
+		for _, w := range state.waiters {
+			waiters = append(waiters, w)
+		}
+		state.Unlock()
+
+		for _, waiter := range waiters {
+			h.notifyWaiter(waiter, newConfig)
+		}
 	}
 }
 
 // notifyWaiter notifies a specific waiter.
-func (h *ConfigPollHandler) notifyWaiter(token, agentID string, config *model.AgentConfig) {
-	agentKey := AgentKey(token, agentID)
-
-	if waiterVal, ok := h.waiters.Load(agentKey); ok {
-		waiter := waiterVal.(*ConfigWaiter)
-
-		var result *HandlerResult
+func (h *ConfigPollHandler) notifyWaiter(waiter *ConfigWaiter, config *model.AgentConfig) {
+	var result *HandlerResult
 		if config != nil {
 			result = &HandlerResult{
 				HasChanges: true,
-				Response:   NewConfigResponse(true, config, config.Version.Version, config.Version.Etag, "config updated"),
+				Response:   NewConfigResponse(true, config, config.Version, config.Etag, "config updated"),
 			}
 		} else {
-			result = &HandlerResult{
-				HasChanges: true,
-				Response:   NewConfigResponse(true, nil, "", "", "config deleted"),
-			}
-		}
-
-		select {
-		case waiter.resultChan <- result:
-			h.logger.Debug("Notified waiter of config change",
-				zap.String("token", token),
-				zap.String("agent_id", agentID),
-			)
-		default:
-			// Waiter already processed or timed out
+		result = &HandlerResult{
+			HasChanges: true,
+			Response:   NewConfigResponse(true, nil, "", "", "config deleted"),
 		}
 	}
-}
 
-// notifyWaitersForToken notifies all waiters for a token (default config change).
-func (h *ConfigPollHandler) notifyWaitersForToken(token string, config *model.AgentConfig) {
-	h.waiters.Range(func(key, value interface{}) bool {
-		waiter := value.(*ConfigWaiter)
-		if waiter.token == token {
-			var result *HandlerResult
-			if config != nil {
-				result = &HandlerResult{
-					HasChanges: true,
-					Response:   NewConfigResponse(true, config, config.Version.Version, config.Version.Etag, "default config updated"),
-				}
-			} else {
-				result = &HandlerResult{
-					HasChanges: true,
-					Response:   NewConfigResponse(true, nil, "", "", "default config deleted"),
-				}
-			}
-
-			select {
-			case waiter.resultChan <- result:
-				h.logger.Debug("Notified waiter of default config change",
-					zap.String("token", token),
-					zap.String("agent_id", waiter.agentID),
-				)
-			default:
-			}
-		}
-		return true
-	})
-}
-
-// parseAgentKey parses an agent key into token and agentID.
-func parseAgentKey(key string) (token, agentID string) {
-	for i := len(key) - 1; i >= 0; i-- {
-		if key[i] == ':' {
-			return key[:i], key[i+1:]
-		}
+	select {
+	case waiter.resultChan <- result:
+		h.logger.Debug("Notified waiter of config change",
+			zap.String("token", waiter.token),
+			zap.String("agent_id", waiter.agentID),
+			zap.String("service", waiter.serviceName),
+		)
+	default:
+		// Waiter already processed or timed out
 	}
-	return "", key
 }
 
 // GetWaiterCount returns the number of active waiters.
 func (h *ConfigPollHandler) GetWaiterCount() int {
 	count := 0
-	h.waiters.Range(func(_, _ interface{}) bool {
-		count++
+	h.services.Range(func(_, value interface{}) bool {
+		state := value.(*serviceState)
+		state.RLock()
+		count += len(state.waiters)
+		state.RUnlock()
 		return true
 	})
 	return count
@@ -572,8 +506,13 @@ func (h *ConfigPollHandler) GetWaiterCount() int {
 // GetWatchCount returns the number of active watches.
 func (h *ConfigPollHandler) GetWatchCount() int {
 	count := 0
-	h.watching.Range(func(_, _ interface{}) bool {
-		count++
+	h.services.Range(func(_, value interface{}) bool {
+		state := value.(*serviceState)
+		state.RLock()
+		if state.isWatching {
+			count++
+		}
+		state.RUnlock()
 		return true
 	})
 	return count

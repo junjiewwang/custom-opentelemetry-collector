@@ -159,6 +159,7 @@ func (e *Extension) initFromControlPlane(host component.Host) error {
 
 	// Reuse components from controlplane
 	e.configMgr = cpExt.GetConfigManager()
+	e.onDemandConfigMgr = cpExt.GetOnDemandConfigManager()
 	e.taskMgr = cpExt.GetTaskManager()
 	e.agentReg = cpExt.GetAgentRegistry()
 	e.tokenMgr = cpExt.GetTokenManager()

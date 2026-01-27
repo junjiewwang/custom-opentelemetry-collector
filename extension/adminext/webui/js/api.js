@@ -102,6 +102,19 @@ class ApiServiceClass {
     getArthasAgents() {
         return this.request('GET', '/arthas/agents');
     }
+
+    // Config Management (Simplified: Service-level only)
+    getAppServiceConfig(appId, serviceName) {
+        return this.request('GET', `/apps/${appId}/config/services/${serviceName}`);
+    }
+
+    setAppServiceConfig(appId, serviceName, config) {
+        return this.request('PUT', `/apps/${appId}/config/services/${serviceName}`, config);
+    }
+
+    deleteAppServiceConfig(appId, serviceName) {
+        return this.request('DELETE', `/apps/${appId}/config/services/${serviceName}`);
+    }
 }
 
 // 单例导出

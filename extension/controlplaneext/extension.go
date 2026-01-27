@@ -258,10 +258,10 @@ func (e *Extension) UpdateConfig(ctx context.Context, config *model.AgentConfig)
 	}
 
 	// Update status reporter with new config version
-	e.statusReporter.SetConfigVersion(config.Version.Version)
+	e.statusReporter.SetConfigVersion(config.Version)
 
 	e.logger.Info("Configuration updated",
-		zap.String("version", config.Version.Version),
+		zap.String("version", config.Version),
 	)
 	return nil
 }
@@ -427,6 +427,14 @@ func (e *Extension) GetAgentRegistry() agentregistry.AgentRegistry {
 // GetConfigManager returns the config manager for direct access.
 func (e *Extension) GetConfigManager() configmanager.ConfigManager {
 	return e.configMgr
+}
+
+// GetOnDemandConfigManager returns the on-demand config manager for direct access.
+func (e *Extension) GetOnDemandConfigManager() configmanager.OnDemandConfigManager {
+	if od, ok := e.configMgr.(configmanager.OnDemandConfigManager); ok {
+		return od
+	}
+	return nil
 }
 
 // GetTokenManager returns the token manager for direct access.
