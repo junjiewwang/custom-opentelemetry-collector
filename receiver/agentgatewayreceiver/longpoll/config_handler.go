@@ -257,62 +257,56 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 
 	state := h.getOrCreateServiceState(req.Token, req.ServiceName)
 
-	// Try to use cached config first
+	// 1. Get base config (cached or from Nacos)
 	state.RLock()
 	config := state.config
 	state.RUnlock()
 
-	// If no cache, load from Nacos
 	if config == nil {
 		var err error
 		config, err = h.loadConfigFromNacos(ctx, req.Token, req.ServiceName)
 		if err != nil {
-			// If not found, it's not an error for the agent, just means no config
-			h.logger.Debug("No config found in Nacos", zap.String("service", req.ServiceName))
+			h.logger.Debug("No config found in Nacos, using default skeleton", zap.String("service", req.ServiceName))
 		}
-		// Update cache
 		state.Lock()
 		state.config = config
 		state.Unlock()
 	}
 
-	currentVersion := ""
-	currentEtag := ""
+	// 2. Prepare effective config (Skeleton if no Nacos config exists)
+	var effectiveConfig *model.AgentConfig
 	if config != nil {
-		currentVersion = config.Version
-		currentEtag = config.Etag
+		cloned := *config
+		effectiveConfig = &cloned
+	} else {
+		// Use version "0" as the skeleton config version
+		effectiveConfig = &model.AgentConfig{
+			Version: "0",
+			Etag:    "0",
+		}
 	}
 
-	// Check version change
-	if req.CurrentConfigVersion != "" && req.CurrentConfigVersion != currentVersion {
-		// Clone to avoid modifying shared cache entry
-		var configToReturn *model.AgentConfig
-		if config != nil {
-			cloned := *config
-			configToReturn = &cloned
-			h.injectMetadata(ctx, req, configToReturn)
-		}
+	// 3. Always inject server metadata
+	h.injectMetadata(ctx, req, effectiveConfig)
 
+	// 4. Compare versions and ETags
+	currentVersion := effectiveConfig.Version
+	currentEtag := effectiveConfig.Etag
+
+	// Check version change
+	if req.CurrentConfigVersion != currentVersion {
 		result := &HandlerResult{
 			HasChanges: true,
-			Response:   NewConfigResponse(true, configToReturn, currentVersion, currentEtag, "config version changed"),
+			Response:   NewConfigResponse(true, effectiveConfig, currentVersion, currentEtag, "config version changed (or metadata injected)"),
 		}
 		return true, result, nil
 	}
 
 	// Check ETag change
 	if req.CurrentConfigEtag != "" && req.CurrentConfigEtag != currentEtag {
-		// Clone to avoid modifying shared cache entry
-		var configToReturn *model.AgentConfig
-		if config != nil {
-			cloned := *config
-			configToReturn = &cloned
-			h.injectMetadata(ctx, req, configToReturn)
-		}
-
 		result := &HandlerResult{
 			HasChanges: true,
-			Response:   NewConfigResponse(true, configToReturn, currentVersion, currentEtag, "config content changed"),
+			Response:   NewConfigResponse(true, effectiveConfig, currentVersion, currentEtag, "config content changed"),
 		}
 		return true, result, nil
 	}
@@ -519,29 +513,30 @@ func (h *ConfigPollHandler) handleConfigChange(token, serviceName, data string) 
 
 // notifyWaiter notifies a specific waiter.
 func (h *ConfigPollHandler) notifyWaiter(waiter *ConfigWaiter, config *model.AgentConfig) {
-	var result *HandlerResult
+	// Reconstruct a minimal request for metadata providers
+	req := &PollRequest{
+		AgentID:     waiter.agentID,
+		Token:       waiter.token,
+		ServiceName: waiter.serviceName,
+	}
+
+	var effectiveConfig *model.AgentConfig
 	if config != nil {
-		// Clone and inject metadata for this specific agent
 		cloned := *config
-		configToReturn := &cloned
-
-		// Reconstruct a minimal request for metadata providers
-		req := &PollRequest{
-			AgentID:     waiter.agentID,
-			Token:       waiter.token,
-			ServiceName: waiter.serviceName,
-		}
-		h.injectMetadata(waiter.ctx, req, configToReturn)
-
-		result = &HandlerResult{
-			HasChanges: true,
-			Response:   NewConfigResponse(true, configToReturn, configToReturn.Version, configToReturn.Etag, "config updated"),
-		}
+		effectiveConfig = &cloned
 	} else {
-		result = &HandlerResult{
-			HasChanges: true,
-			Response:   NewConfigResponse(true, nil, "", "", "config deleted"),
+		// Fallback to skeleton config if business config is deleted
+		effectiveConfig = &model.AgentConfig{
+			Version: "0",
+			Etag:    "0",
 		}
+	}
+
+	h.injectMetadata(waiter.ctx, req, effectiveConfig)
+
+	result := &HandlerResult{
+		HasChanges: true,
+		Response:   NewConfigResponse(true, effectiveConfig, effectiveConfig.Version, effectiveConfig.Etag, "config change detected"),
 	}
 
 	select {

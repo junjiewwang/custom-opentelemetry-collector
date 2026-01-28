@@ -6,17 +6,11 @@ package agentgatewayreceiver
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"sync"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/component/componentstatus"
-	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
-	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
-	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 	"go.uber.org/zap"
@@ -24,7 +18,6 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
-	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver/longpoll"
 )
 
@@ -207,107 +200,6 @@ func (r *agentGatewayReceiver) findExtensions(host component.Host) {
 	}
 }
 
-// startGRPCServer starts the gRPC server for OTLP gRPC protocol.
-func (r *agentGatewayReceiver) startGRPCServer(ctx context.Context, host component.Host) error {
-	if r.config.GRPC == nil {
-		return nil
-	}
-
-	var err error
-	r.serverGRPC, err = r.config.GRPC.ToServer(ctx, host, r.settings.TelemetrySettings)
-	if err != nil {
-		return err
-	}
-
-	// Register OTLP gRPC services
-	if r.tracesConsumer != nil {
-		ptraceotlp.RegisterGRPCServer(r.serverGRPC, &traceReceiver{
-			consumer: r.tracesConsumer,
-			obsrep:   r.obsrepGRPC,
-		})
-	}
-
-	if r.metricsConsumer != nil {
-		pmetricotlp.RegisterGRPCServer(r.serverGRPC, &metricsReceiver{
-			consumer: r.metricsConsumer,
-			obsrep:   r.obsrepGRPC,
-		})
-	}
-
-	if r.logsConsumer != nil {
-		plogotlp.RegisterGRPCServer(r.serverGRPC, &logsReceiver{
-			consumer: r.logsConsumer,
-			obsrep:   r.obsrepGRPC,
-		})
-	}
-
-	// Register ControlPlane gRPC service (shares the same gRPC port with OTLP).
-	if r.config.ControlPlane.Enabled && r.controlPlane != nil {
-		svc := newControlPlaneService(r.logger, r.controlPlane, r.longPollManager)
-		controlplanev1.RegisterControlPlaneServiceServer(r.serverGRPC, newControlPlaneGRPCServer(r, svc))
-		r.logger.Info("Registered control plane gRPC service")
-	}
-
-	r.logger.Info("Starting gRPC server", zap.String("endpoint", r.config.GRPC.NetAddr.Endpoint))
-
-	gln, err := r.config.GRPC.NetAddr.Listen(ctx)
-	if err != nil {
-		return err
-	}
-
-	r.shutdownWG.Add(1)
-	go func() {
-		defer r.shutdownWG.Done()
-		if errGrpc := r.serverGRPC.Serve(gln); errGrpc != nil && !errors.Is(errGrpc, grpc.ErrServerStopped) {
-			componentstatus.ReportStatus(host, componentstatus.NewFatalErrorEvent(errGrpc))
-		}
-	}()
-
-	return nil
-}
-
-// startHTTPServer starts the HTTP server.
-func (r *agentGatewayReceiver) startHTTPServer(ctx context.Context, host component.Host) error {
-	if r.config.HTTP == nil {
-		return nil
-	}
-
-	// Create router with all routes
-	httpRouter := r.newHTTPRouter()
-
-	var err error
-	r.serverHTTP, err = r.config.HTTP.ToServer(
-		ctx, host, r.settings.TelemetrySettings, httpRouter,
-		confighttp.WithErrorHandler(defaultErrorHandler),
-	)
-	if err != nil {
-		return err
-	}
-
-	r.logger.Info("Starting HTTP server",
-		zap.String("endpoint", r.config.HTTP.Endpoint),
-		zap.Bool("otlp_enabled", r.config.OTLP.Enabled),
-		zap.Bool("control_plane_enabled", r.config.ControlPlane.Enabled && r.controlPlane != nil),
-		zap.Bool("arthas_tunnel_enabled", r.config.ArthasTunnel.Enabled && r.arthasTunnel != nil),
-	)
-
-	var hln net.Listener
-	hln, err = r.config.HTTP.ToListener(ctx)
-	if err != nil {
-		return err
-	}
-
-	r.shutdownWG.Add(1)
-	go func() {
-		defer r.shutdownWG.Done()
-		if errHTTP := r.serverHTTP.Serve(hln); errHTTP != nil && !errors.Is(errHTTP, http.ErrServerClosed) {
-			componentstatus.ReportStatus(host, componentstatus.NewFatalErrorEvent(errHTTP))
-		}
-	}()
-
-	return nil
-}
-
 // Shutdown implements component.Component.
 func (r *agentGatewayReceiver) Shutdown(ctx context.Context) error {
 	var err error
@@ -345,117 +237,4 @@ func (r *agentGatewayReceiver) shutdown(ctx context.Context) error {
 	sharedReceiversMu.Unlock()
 
 	return err
-}
-
-// defaultErrorHandler handles errors for HTTP endpoints.
-func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, _ string, statusCode int) {
-	http.Error(w, http.StatusText(statusCode), statusCode)
-}
-
-// gatewayMetadataProvider implements longpoll.ServerMetadataProvider to inject
-// runtime information from the gateway into agent configurations.
-type gatewayMetadataProvider struct {
-	config *Config
-}
-
-var _ longpoll.ServerMetadataProvider = (*gatewayMetadataProvider)(nil)
-
-func (p *gatewayMetadataProvider) Name() string {
-	return "gateway"
-}
-
-func (p *gatewayMetadataProvider) ProvideMetadata(_ context.Context, _ *longpoll.PollRequest) map[string]string {
-	metadata := make(map[string]string)
-	if p.config.HTTP != nil {
-		metadata["http_port"] = p.config.HTTP.Endpoint // 也可以拆分出 port，这里暂时传全量
-	}
-	return metadata
-}
-
-// initLongPollManager initializes the long poll manager with handlers.
-func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
-	if r.controlPlaneExt == nil {
-		r.logger.Debug("Control plane extension not available, skipping long poll manager")
-		return nil
-	}
-
-	storage := r.controlPlaneExt.GetStorage()
-	if storage == nil {
-		r.logger.Debug("Storage not available, skipping long poll manager")
-		return nil
-	}
-
-	// Create long poll manager
-	r.longPollManager = longpoll.NewManager(r.logger, longpoll.DefaultManagerConfig())
-
-	// Create and register config handler if Nacos is available
-	if storage.HasNacos("default") {
-		nacosClient, err := storage.GetDefaultNacosConfigClient()
-		if err != nil {
-			r.logger.Warn("Failed to get Nacos client for config handler", zap.Error(err))
-		} else {
-			configHandler := longpoll.NewConfigPollHandler(r.logger, nacosClient)
-
-			// Register gateway metadata provider
-			configHandler.RegisterMetadataProvider(&gatewayMetadataProvider{config: r.config})
-
-			if err := r.longPollManager.RegisterHandler(configHandler); err != nil {
-				r.logger.Warn("Failed to register config poll handler", zap.Error(err))
-			}
-		}
-	}
-
-	// Create and register task handler.
-	// IMPORTANT: must align with controlplane's task_manager Redis config (redis_name/key_prefix)
-	// otherwise agents may poll tasks from one Redis namespace but report results to another.
-	taskCfg := r.controlPlaneExt.GetTaskManagerConfig()
-	if taskCfg.Type == "redis" {
-		redisName := taskCfg.RedisName
-		if redisName == "" {
-			redisName = "default"
-		}
-		keyPrefix := taskCfg.KeyPrefix
-		if keyPrefix == "" {
-			keyPrefix = "otel:tasks"
-		}
-
-		if !storage.HasRedis(redisName) {
-			r.logger.Warn("Redis connection for task long poll not available",
-				zap.String("redis_name", redisName),
-				zap.String("key_prefix", keyPrefix),
-			)
-		} else {
-			redisClient, err := storage.GetRedis(redisName)
-			if err != nil {
-				r.logger.Warn("Failed to get Redis client for task handler",
-					zap.String("redis_name", redisName),
-					zap.Error(err),
-				)
-			} else {
-				taskHandler := longpoll.NewTaskPollHandler(r.logger, redisClient, keyPrefix)
-				if err := r.longPollManager.RegisterHandler(taskHandler); err != nil {
-					r.logger.Warn("Failed to register task poll handler", zap.Error(err))
-				} else {
-					r.logger.Info("Task long poll handler initialized",
-						zap.String("redis_name", redisName),
-						zap.String("key_prefix", keyPrefix),
-					)
-				}
-			}
-		}
-	} else {
-		r.logger.Info("Task manager is not redis; skipping task long poll handler",
-			zap.String("task_manager_type", taskCfg.Type),
-		)
-	}
-
-	// Start the manager
-	if err := r.longPollManager.Start(ctx); err != nil {
-		return err
-	}
-
-	r.logger.Info("Long poll manager initialized",
-		zap.Int("handlers", len(r.longPollManager.GetRegisteredTypes())))
-
-	return nil
 }
