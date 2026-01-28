@@ -4,8 +4,19 @@
 package longpoll
 
 import (
+	"context"
+
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
+
+// ServerMetadataProvider defines the interface for components that provide runtime metadata
+// to be injected into the AgentConfig before sending it to the agent.
+type ServerMetadataProvider interface {
+	// Name returns the provider name.
+	Name() string
+	// ProvideMetadata returns metadata key-value pairs.
+	ProvideMetadata(ctx context.Context, req *PollRequest) map[string]string
+}
 
 // LongPollType defines the type of long polling.
 type LongPollType string

@@ -105,6 +105,10 @@ type ConfigPollHandler struct {
 	// services maps serviceKey (token:serviceName) -> *serviceState
 	services sync.Map
 
+	// metadataProviders is a list of providers for dynamic config injection
+	metadataProviders []ServerMetadataProvider
+	providersMu       sync.RWMutex
+
 	// State
 	running atomic.Bool
 }
@@ -142,8 +146,42 @@ type ConfigWaiter struct {
 // NewConfigPollHandler creates a new ConfigPollHandler.
 func NewConfigPollHandler(logger *zap.Logger, nacosClient config_client.IConfigClient) *ConfigPollHandler {
 	return &ConfigPollHandler{
-		logger:      logger,
-		nacosClient: nacosClient,
+		logger:            logger,
+		nacosClient:       nacosClient,
+		metadataProviders: make([]ServerMetadataProvider, 0),
+	}
+}
+
+// RegisterMetadataProvider registers a new metadata provider.
+func (h *ConfigPollHandler) RegisterMetadataProvider(p ServerMetadataProvider) {
+	h.providersMu.Lock()
+	defer h.providersMu.Unlock()
+	h.metadataProviders = append(h.metadataProviders, p)
+	h.logger.Debug("Registered metadata provider", zap.String("name", p.Name()))
+}
+
+// injectMetadata injects dynamic metadata from all registered providers.
+func (h *ConfigPollHandler) injectMetadata(ctx context.Context, req *PollRequest, config *model.AgentConfig) {
+	if config == nil {
+		return
+	}
+
+	h.providersMu.RLock()
+	defer h.providersMu.RUnlock()
+
+	if len(h.metadataProviders) == 0 {
+		return
+	}
+
+	if config.ServerMetadata == nil {
+		config.ServerMetadata = make(map[string]string)
+	}
+
+	for _, p := range h.metadataProviders {
+		meta := p.ProvideMetadata(ctx, req)
+		for k, v := range meta {
+			config.ServerMetadata[k] = v
+		}
 	}
 }
 
@@ -247,18 +285,34 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 
 	// Check version change
 	if req.CurrentConfigVersion != "" && req.CurrentConfigVersion != currentVersion {
+		// Clone to avoid modifying shared cache entry
+		var configToReturn *model.AgentConfig
+		if config != nil {
+			cloned := *config
+			configToReturn = &cloned
+			h.injectMetadata(ctx, req, configToReturn)
+		}
+
 		result := &HandlerResult{
 			HasChanges: true,
-			Response:   NewConfigResponse(true, config, currentVersion, currentEtag, "config version changed"),
+			Response:   NewConfigResponse(true, configToReturn, currentVersion, currentEtag, "config version changed"),
 		}
 		return true, result, nil
 	}
 
 	// Check ETag change
 	if req.CurrentConfigEtag != "" && req.CurrentConfigEtag != currentEtag {
+		// Clone to avoid modifying shared cache entry
+		var configToReturn *model.AgentConfig
+		if config != nil {
+			cloned := *config
+			configToReturn = &cloned
+			h.injectMetadata(ctx, req, configToReturn)
+		}
+
 		result := &HandlerResult{
 			HasChanges: true,
-			Response:   NewConfigResponse(true, config, currentVersion, currentEtag, "config content changed"),
+			Response:   NewConfigResponse(true, configToReturn, currentVersion, currentEtag, "config content changed"),
 		}
 		return true, result, nil
 	}
@@ -466,12 +520,24 @@ func (h *ConfigPollHandler) handleConfigChange(token, serviceName, data string) 
 // notifyWaiter notifies a specific waiter.
 func (h *ConfigPollHandler) notifyWaiter(waiter *ConfigWaiter, config *model.AgentConfig) {
 	var result *HandlerResult
-		if config != nil {
-			result = &HandlerResult{
-				HasChanges: true,
-				Response:   NewConfigResponse(true, config, config.Version, config.Etag, "config updated"),
-			}
-		} else {
+	if config != nil {
+		// Clone and inject metadata for this specific agent
+		cloned := *config
+		configToReturn := &cloned
+
+		// Reconstruct a minimal request for metadata providers
+		req := &PollRequest{
+			AgentID:     waiter.agentID,
+			Token:       waiter.token,
+			ServiceName: waiter.serviceName,
+		}
+		h.injectMetadata(waiter.ctx, req, configToReturn)
+
+		result = &HandlerResult{
+			HasChanges: true,
+			Response:   NewConfigResponse(true, configToReturn, configToReturn.Version, configToReturn.Etag, "config updated"),
+		}
+	} else {
 		result = &HandlerResult{
 			HasChanges: true,
 			Response:   NewConfigResponse(true, nil, "", "", "config deleted"),

@@ -352,6 +352,26 @@ func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, _ string, statu
 	http.Error(w, http.StatusText(statusCode), statusCode)
 }
 
+// gatewayMetadataProvider implements longpoll.ServerMetadataProvider to inject
+// runtime information from the gateway into agent configurations.
+type gatewayMetadataProvider struct {
+	config *Config
+}
+
+var _ longpoll.ServerMetadataProvider = (*gatewayMetadataProvider)(nil)
+
+func (p *gatewayMetadataProvider) Name() string {
+	return "gateway"
+}
+
+func (p *gatewayMetadataProvider) ProvideMetadata(_ context.Context, _ *longpoll.PollRequest) map[string]string {
+	metadata := make(map[string]string)
+	if p.config.HTTP != nil {
+		metadata["http_port"] = p.config.HTTP.Endpoint // 也可以拆分出 port，这里暂时传全量
+	}
+	return metadata
+}
+
 // initLongPollManager initializes the long poll manager with handlers.
 func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
 	if r.controlPlaneExt == nil {
@@ -375,6 +395,10 @@ func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
 			r.logger.Warn("Failed to get Nacos client for config handler", zap.Error(err))
 		} else {
 			configHandler := longpoll.NewConfigPollHandler(r.logger, nacosClient)
+
+			// Register gateway metadata provider
+			configHandler.RegisterMetadataProvider(&gatewayMetadataProvider{config: r.config})
+
 			if err := r.longPollManager.RegisterHandler(configHandler); err != nil {
 				r.logger.Warn("Failed to register config poll handler", zap.Error(err))
 			}

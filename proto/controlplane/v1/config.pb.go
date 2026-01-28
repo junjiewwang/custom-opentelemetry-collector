@@ -341,8 +341,10 @@ type AgentConfig struct {
 	DynamicResourceAttributes map[string]string `protobuf:"bytes,4,rep,name=dynamic_resource_attributes,json=dynamicResourceAttributes,proto3" json:"dynamic_resource_attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// 扩展配置 (JSON 格式)
 	ExtensionConfigJson string `protobuf:"bytes,5,opt,name=extension_config_json,json=extensionConfigJson,proto3" json:"extension_config_json,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// 服务端注入的元数据 (只读，用于引导探针连接等)
+	ServerMetadata map[string]string `protobuf:"bytes,6,rep,name=server_metadata,json=serverMetadata,proto3" json:"server_metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *AgentConfig) Reset() {
@@ -408,6 +410,13 @@ func (x *AgentConfig) GetExtensionConfigJson() string {
 		return x.ExtensionConfigJson
 	}
 	return ""
+}
+
+func (x *AgentConfig) GetServerMetadata() map[string]string {
+	if x != nil {
+		return x.ServerMetadata
+	}
+	return nil
 }
 
 // 采样配置
@@ -729,14 +738,18 @@ const file_controlplane_v1_config_proto_rawDesc = "" +
 	"\x0econfig_version\x18\x05 \x01(\tR\rconfigVersion\x12\x12\n" +
 	"\x04etag\x18\x06 \x01(\tR\x04etag\x12\x18\n" +
 	"\asuccess\x18\a \x01(\bR\asuccess\x12#\n" +
-	"\rerror_message\x18\b \x01(\tR\ferrorMessage\"\xb9\x04\n" +
+	"\rerror_message\x18\b \x01(\tR\ferrorMessage\"\xf8\x05\n" +
 	"\vAgentConfig\x12Y\n" +
 	"\aversion\x18\x01 \x01(\v2?.io.opentelemetry.extension.controlplane.proto.v1.ConfigVersionR\aversion\x12Y\n" +
 	"\asampler\x18\x02 \x01(\v2?.io.opentelemetry.extension.controlplane.proto.v1.SamplerConfigR\asampler\x12S\n" +
 	"\x05batch\x18\x03 \x01(\v2=.io.opentelemetry.extension.controlplane.proto.v1.BatchConfigR\x05batch\x12\x9c\x01\n" +
 	"\x1bdynamic_resource_attributes\x18\x04 \x03(\v2\\.io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.DynamicResourceAttributesEntryR\x19dynamicResourceAttributes\x122\n" +
-	"\x15extension_config_json\x18\x05 \x01(\tR\x13extensionConfigJson\x1aL\n" +
+	"\x15extension_config_json\x18\x05 \x01(\tR\x13extensionConfigJson\x12z\n" +
+	"\x0fserver_metadata\x18\x06 \x03(\v2Q.io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.ServerMetadataEntryR\x0eserverMetadata\x1aL\n" +
 	"\x1eDynamicResourceAttributesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aA\n" +
+	"\x13ServerMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9f\x03\n" +
 	"\rSamplerConfig\x12_\n" +
@@ -790,7 +803,7 @@ func file_controlplane_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_controlplane_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_controlplane_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_controlplane_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_controlplane_v1_config_proto_goTypes = []any{
 	(SamplerConfig_SamplerType)(0),    // 0: io.opentelemetry.extension.controlplane.proto.v1.SamplerConfig.SamplerType
 	(ConfigAcknowledgement_Status)(0), // 1: io.opentelemetry.extension.controlplane.proto.v1.ConfigAcknowledgement.Status
@@ -802,27 +815,29 @@ var file_controlplane_v1_config_proto_goTypes = []any{
 	(*BatchConfig)(nil),               // 7: io.opentelemetry.extension.controlplane.proto.v1.BatchConfig
 	(*ConfigAcknowledgement)(nil),     // 8: io.opentelemetry.extension.controlplane.proto.v1.ConfigAcknowledgement
 	nil,                               // 9: io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.DynamicResourceAttributesEntry
-	nil,                               // 10: io.opentelemetry.extension.controlplane.proto.v1.SamplerRule.AttributeMatchEntry
-	(*ConfigVersion)(nil),             // 11: io.opentelemetry.extension.controlplane.proto.v1.ConfigVersion
-	(*ResponseStatus)(nil),            // 12: io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
+	nil,                               // 10: io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.ServerMetadataEntry
+	nil,                               // 11: io.opentelemetry.extension.controlplane.proto.v1.SamplerRule.AttributeMatchEntry
+	(*ConfigVersion)(nil),             // 12: io.opentelemetry.extension.controlplane.proto.v1.ConfigVersion
+	(*ResponseStatus)(nil),            // 13: io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
 }
 var file_controlplane_v1_config_proto_depIdxs = []int32{
-	11, // 0: io.opentelemetry.extension.controlplane.proto.v1.ConfigRequest.current_version:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigVersion
-	12, // 1: io.opentelemetry.extension.controlplane.proto.v1.ConfigResponse.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
+	12, // 0: io.opentelemetry.extension.controlplane.proto.v1.ConfigRequest.current_version:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigVersion
+	13, // 1: io.opentelemetry.extension.controlplane.proto.v1.ConfigResponse.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
 	4,  // 2: io.opentelemetry.extension.controlplane.proto.v1.ConfigResponse.config:type_name -> io.opentelemetry.extension.controlplane.proto.v1.AgentConfig
-	11, // 3: io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.version:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigVersion
+	12, // 3: io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.version:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigVersion
 	5,  // 4: io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.sampler:type_name -> io.opentelemetry.extension.controlplane.proto.v1.SamplerConfig
 	7,  // 5: io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.batch:type_name -> io.opentelemetry.extension.controlplane.proto.v1.BatchConfig
 	9,  // 6: io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.dynamic_resource_attributes:type_name -> io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.DynamicResourceAttributesEntry
-	0,  // 7: io.opentelemetry.extension.controlplane.proto.v1.SamplerConfig.type:type_name -> io.opentelemetry.extension.controlplane.proto.v1.SamplerConfig.SamplerType
-	6,  // 8: io.opentelemetry.extension.controlplane.proto.v1.SamplerConfig.rules:type_name -> io.opentelemetry.extension.controlplane.proto.v1.SamplerRule
-	10, // 9: io.opentelemetry.extension.controlplane.proto.v1.SamplerRule.attribute_match:type_name -> io.opentelemetry.extension.controlplane.proto.v1.SamplerRule.AttributeMatchEntry
-	1,  // 10: io.opentelemetry.extension.controlplane.proto.v1.ConfigAcknowledgement.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigAcknowledgement.Status
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	10, // 7: io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.server_metadata:type_name -> io.opentelemetry.extension.controlplane.proto.v1.AgentConfig.ServerMetadataEntry
+	0,  // 8: io.opentelemetry.extension.controlplane.proto.v1.SamplerConfig.type:type_name -> io.opentelemetry.extension.controlplane.proto.v1.SamplerConfig.SamplerType
+	6,  // 9: io.opentelemetry.extension.controlplane.proto.v1.SamplerConfig.rules:type_name -> io.opentelemetry.extension.controlplane.proto.v1.SamplerRule
+	11, // 10: io.opentelemetry.extension.controlplane.proto.v1.SamplerRule.attribute_match:type_name -> io.opentelemetry.extension.controlplane.proto.v1.SamplerRule.AttributeMatchEntry
+	1,  // 11: io.opentelemetry.extension.controlplane.proto.v1.ConfigAcknowledgement.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigAcknowledgement.Status
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_controlplane_v1_config_proto_init() }
@@ -837,7 +852,7 @@ func file_controlplane_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_controlplane_v1_config_proto_rawDesc), len(file_controlplane_v1_config_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

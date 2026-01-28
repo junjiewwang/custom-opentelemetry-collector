@@ -488,6 +488,9 @@ func (m *NacosOnDemandConfigManager) SetServiceConfig(ctx context.Context, token
 		return errors.New("config cannot be nil")
 	}
 
+	// 0. Sanitize virtual fields (ensure runtime metadata is never persisted)
+	config.ServerMetadata = nil
+
 	// 1. Auto-generate Metadata
 	now := time.Now().UnixMilli()
 	config.UpdatedAt = now
@@ -499,7 +502,8 @@ func (m *NacosOnDemandConfigManager) SetServiceConfig(ctx context.Context, token
 	tempCfg.Version = ""
 	tempCfg.UpdatedAt = 0
 	tempCfg.Etag = ""
-	
+	tempCfg.ServerMetadata = nil
+
 	businessData, _ := json.Marshal(tempCfg)
 	hash := md5.Sum(businessData)
 	config.Etag = hex.EncodeToString(hash[:])
@@ -508,6 +512,9 @@ func (m *NacosOnDemandConfigManager) SetServiceConfig(ctx context.Context, token
 	if err := m.validateConfig(config); err != nil {
 		return err
 	}
+
+	// 4. Sanitize (Ensure ServerMetadata is NOT persisted)
+	config.ServerMetadata = nil
 
 	data, err := json.Marshal(config)
 	if err != nil {

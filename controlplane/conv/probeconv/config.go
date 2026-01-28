@@ -18,6 +18,7 @@ func AgentConfigFromProto(cfg *controlplanev1.AgentConfig) *model.AgentConfig {
 	out := &model.AgentConfig{
 		DynamicResourceAttributes: cloneStringMap(cfg.GetDynamicResourceAttributes()),
 		ExtensionConfigJSON:       cfg.GetExtensionConfigJson(),
+		ServerMetadata:            cloneStringMap(cfg.GetServerMetadata()),
 	}
 
 	if v := cfg.GetVersion(); v != nil {
@@ -73,6 +74,7 @@ func AgentConfigToProto(cfg *model.AgentConfig) *controlplanev1.AgentConfig {
 		},
 		DynamicResourceAttributes: cloneStringMap(cfg.DynamicResourceAttributes),
 		ExtensionConfigJson:       cfg.ExtensionConfigJSON,
+		ServerMetadata:            cloneStringMap(cfg.ServerMetadata),
 	}
 
 	if cfg.Sampler != nil {

@@ -78,6 +78,9 @@ message AgentConfig {
 
   // 扩展配置 (JSON 格式)
   string extension_config_json = 5;
+
+  // 服务端注入的元数据 (只读，用于引导探针连接等)
+  map<string, string> server_metadata = 6;
 }
 
 // 采样配置
