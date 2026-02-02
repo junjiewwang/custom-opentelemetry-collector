@@ -262,15 +262,32 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 	config := state.config
 	state.RUnlock()
 
-	if config == nil {
-		var err error
-		config, err = h.loadConfigFromNacos(ctx, req.Token, req.ServiceName)
-		if err != nil {
-			h.logger.Debug("No config found in Nacos, using default skeleton", zap.String("service", req.ServiceName))
+	// If no config in cache, or the client reports a version that matches our skeleton/cache,
+	// do a proactive check against Nacos to ensure we haven't missed a notification.
+	// This is critical for the "empty-to-created" transition.
+	if config == nil || (req.CurrentConfigVersion == config.Version && (req.CurrentConfigEtag == "" || req.CurrentConfigEtag == config.Etag)) {
+		freshConfig, err := h.loadConfigFromNacos(ctx, req.Token, req.ServiceName)
+		if err == nil && freshConfig != nil {
+			// Check if it's actually newer than what we had
+			if config == nil || freshConfig.Version != config.Version || freshConfig.Etag != config.Etag {
+				h.logger.Info("Found updated config in Nacos during immediate check",
+					zap.String("service", req.ServiceName),
+					zap.String("old_version", func() string {
+						if config == nil {
+							return "none"
+						}
+						return config.Version
+					}()),
+					zap.String("new_version", freshConfig.Version))
+
+				state.Lock()
+				state.config = freshConfig
+				state.Unlock()
+				config = freshConfig
+			}
+		} else if err != nil && config == nil {
+			h.logger.Debug("No config found in Nacos during check, using skeleton", zap.String("service", req.ServiceName))
 		}
-		state.Lock()
-		state.config = config
-		state.Unlock()
 	}
 
 	// 2. Prepare effective config (Skeleton if no Nacos config exists)

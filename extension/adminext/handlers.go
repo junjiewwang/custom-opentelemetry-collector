@@ -196,13 +196,35 @@ func (e *Extension) getAppServiceConfigV2(w http.ResponseWriter, r *http.Request
 	}
 
 	if cfg == nil {
-		// Return an empty config object instead of 404 to avoid UI errors.
-		// This allows the user to start editing from scratch.
 		cfg = &model.AgentConfig{
-			Version: "none",
+			Version: "0", // Use "0" to indicate it's a skeleton/template
 		}
 	}
-	e.writeJSON(w, http.StatusOK, cfg)
+
+	// Always provide a reference template for the UI to guide users
+	// and detect missing fields in older configurations.
+	reference := &model.AgentConfig{
+		Sampler: &model.SamplerConfig{
+			Type:  3, // TraceIDRatio
+			Ratio: 0.1,
+		},
+		Batch: &model.BatchConfig{
+			MaxExportBatchSize:  512,
+			MaxQueueSize:        2048,
+			ScheduleDelayMillis: 5000,
+			ExportTimeoutMillis: 30000,
+		},
+		DynamicResourceAttributes: map[string]string{
+			"service.version": "1.0.0",
+			"deployment.env":  "production",
+		},
+		ExtensionConfigJSON: `{"example_key": "example_value"}`,
+	}
+
+	e.writeJSON(w, http.StatusOK, map[string]any{
+		"config":    cfg,
+		"reference": reference,
+	})
 }
 
 func (e *Extension) setAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {

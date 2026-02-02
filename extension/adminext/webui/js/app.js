@@ -99,7 +99,11 @@ export function adminApp() {
             originalContent: '',
             isDirty: false,
             error: '',
-            version: ''
+            version: '',
+            reference: null, // Full template from server
+            missingFields: [], // Fields present in reference but missing in content
+            showHint: false, // Whether to show the hint banner
+            hintType: '' // 'template' (empty config) or 'missing' (missing fields)
         },
         configSearchQuery: '',
         arthasTask: {
@@ -1066,8 +1070,12 @@ export function adminApp() {
                     configRes = await ApiService.getAppInstanceConfig(node.appId, node.agentId, node.serviceName);
                 }
 
-                // 后端现在直接返回 AgentConfig 对象，不再包装在 config 字段中
-                const fullConfig = configRes || {};
+                // V2 API returns { config, reference }
+                const responseData = configRes || {};
+                const fullConfig = responseData.config || responseData || {};
+                const reference = responseData.reference || null;
+                
+                this.editingConfig.reference = reference;
                 
                 // 提取元数据
                 this.editingConfig.version = fullConfig.version || '';
@@ -1082,6 +1090,9 @@ export function adminApp() {
                 const jsonStr = JSON.stringify(businessConfig, null, 2);
                 this.editingConfig.content = jsonStr;
                 this.editingConfig.originalContent = jsonStr;
+
+                // Check for hints
+                this.updateConfigHints(businessConfig, reference);
             } catch (e) {
                 // 如果是 404，说明没有配置，显示空对象
                 if (e.status === 404) {
@@ -1094,6 +1105,83 @@ export function adminApp() {
                 }
             } finally {
                 this.editingConfig.loading = false;
+            }
+        },
+
+        /**
+         * 更新配置提示（模板推荐或缺失字段提醒）
+         */
+        updateConfigHints(current, reference) {
+            if (!reference) {
+                this.editingConfig.showHint = false;
+                return;
+            }
+
+            // Case 1: Empty or skeleton config (version "0" or empty object)
+            const isEmpty = Object.keys(current).length === 0 || this.editingConfig.version === "0";
+            if (isEmpty) {
+                this.editingConfig.showHint = true;
+                this.editingConfig.hintType = 'template';
+                this.editingConfig.missingFields = [];
+                return;
+            }
+
+            // Case 2: Check for missing top-level fields compared to reference
+            const missing = [];
+            for (const key in reference) {
+                if (key === 'version' || key === 'updated_at' || key === 'etag') continue;
+                if (!(key in current)) {
+                    missing.push(key);
+                }
+            }
+
+            if (missing.length > 0) {
+                this.editingConfig.showHint = true;
+                this.editingConfig.hintType = 'missing';
+                this.editingConfig.missingFields = missing;
+            } else {
+                this.editingConfig.showHint = false;
+            }
+        },
+
+        /**
+         * 应用推荐模板
+         */
+        applyConfigTemplate() {
+            if (!this.editingConfig.reference) return;
+            if (this.editingConfig.content !== '{}' && !confirm('Overwriting existing configuration with template. Continue?')) return;
+            
+            const template = { ...this.editingConfig.reference };
+            delete template.version;
+            delete template.updated_at;
+            delete template.etag;
+            
+            this.editingConfig.content = JSON.stringify(template, null, 2);
+            this.checkConfigDirty();
+            this.editingConfig.showHint = false;
+            this.showToast('Template applied. Remember to save changes.', 'info');
+        },
+
+        /**
+         * 补全缺失字段
+         */
+        fillMissingConfigFields() {
+            if (!this.editingConfig.reference || this.editingConfig.missingFields.length === 0) return;
+            
+            try {
+                const current = JSON.parse(this.editingConfig.content);
+                this.editingConfig.missingFields.forEach(field => {
+                    if (this.editingConfig.reference[field] !== undefined) {
+                        current[field] = this.editingConfig.reference[field];
+                    }
+                });
+                
+                this.editingConfig.content = JSON.stringify(current, null, 2);
+                this.checkConfigDirty();
+                this.editingConfig.showHint = false;
+                this.showToast('Missing fields added from template.', 'success');
+            } catch (e) {
+                this.showToast('Error parsing current JSON. Fix it before filling fields.', 'error');
             }
         },
 

@@ -825,6 +825,44 @@
                                             <i class="fas fa-circle text-[6px]"></i> Unsaved Changes
                                         </div>
                                     </div>
+
+                                    <!-- Config Hints Banner -->
+                                    <div x-show="editingConfig.showHint" x-collapse>
+                                        <div class="px-4 py-3 border-b flex items-center justify-between"
+                                            :class="editingConfig.hintType === 'template' ? 'bg-amber-50 border-amber-100 text-amber-800' : 'bg-blue-50 border-blue-100 text-blue-800'">
+                                            <div class="flex items-center gap-3">
+                                                <i class="fas" :class="editingConfig.hintType === 'template' ? 'fa-magic text-amber-500' : 'fa-lightbulb text-blue-500'"></i>
+                                                <div class="text-xs">
+                                                    <template x-if="editingConfig.hintType === 'template'">
+                                                        <div>
+                                                            <span class="font-bold">Recommendation:</span> No configuration found. Would you like to use the recommended template?
+                                                        </div>
+                                                    </template>
+                                                    <template x-if="editingConfig.hintType === 'missing'">
+                                                        <div>
+                                                            <span class="font-bold">Optimization:</span> Found <span x-text="editingConfig.missingFields.length"></span> missing fields compared to latest template: 
+                                                            <code class="bg-blue-100 px-1 rounded" x-text="editingConfig.missingFields.join(', ')"></code>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center gap-2">
+                                                <template x-if="editingConfig.hintType === 'template'">
+                                                    <button @click="applyConfigTemplate()" class="px-3 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 transition">
+                                                        Apply Template
+                                                    </button>
+                                                </template>
+                                                <template x-if="editingConfig.hintType === 'missing'">
+                                                    <button @click="fillMissingConfigFields()" class="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition">
+                                                        Fill Missing Fields
+                                                    </button>
+                                                </template>
+                                                <button @click="editingConfig.showHint = false" class="p-1 hover:bg-black/5 rounded">
+                                                    <i class="fas fa-times opacity-50"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
                                     
                                     <!-- JSON Editor Area -->
                                     <div class="flex-1 relative overflow-hidden">
