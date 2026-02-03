@@ -18,82 +18,6 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
-type legacySamplerConfig struct {
-	Type      int32   `json:"type"`
-	Ratio     float64 `json:"ratio"`
-	RulesJSON string  `json:"rules_json,omitempty"`
-}
-
-type legacyBatchConfig struct {
-	MaxExportBatchSize  int32 `json:"max_export_batch_size"`
-	MaxQueueSize        int32 `json:"max_queue_size"`
-	ScheduleDelayMillis int64 `json:"schedule_delay_millis"`
-	ExportTimeoutMillis int64 `json:"export_timeout_millis"`
-}
-
-type legacyAgentConfig struct {
-	ConfigVersion             string               `json:"config_version"`
-	Sampler                   *legacySamplerConfig `json:"sampler,omitempty"`
-	Batch                     *legacyBatchConfig   `json:"batch,omitempty"`
-	DynamicResourceAttributes map[string]string    `json:"dynamic_resource_attributes,omitempty"`
-	ExtensionConfigJSON       string               `json:"extension_config_json,omitempty"`
-}
-
-func legacyAgentConfigToModel(cfg *legacyAgentConfig, etag string) *model.AgentConfig {
-	if cfg == nil {
-		return nil
-	}
-	out := &model.AgentConfig{
-		Version:                   cfg.ConfigVersion,
-		Etag:                      etag,
-		DynamicResourceAttributes: cfg.DynamicResourceAttributes,
-		ExtensionConfigJSON:       cfg.ExtensionConfigJSON,
-	}
-
-	if cfg.Sampler != nil {
-		out.Sampler = &model.SamplerConfig{
-			Type:      model.SamplerType(cfg.Sampler.Type),
-			Ratio:     cfg.Sampler.Ratio,
-			RulesJSON: cfg.Sampler.RulesJSON,
-		}
-	}
-	if cfg.Batch != nil {
-		out.Batch = &model.BatchConfig{
-			MaxExportBatchSize:  cfg.Batch.MaxExportBatchSize,
-			MaxQueueSize:        cfg.Batch.MaxQueueSize,
-			ScheduleDelayMillis: cfg.Batch.ScheduleDelayMillis,
-			ExportTimeoutMillis: cfg.Batch.ExportTimeoutMillis,
-		}
-	}
-	return out
-}
-
-func legacyAgentConfigFromModel(cfg *model.AgentConfig) *legacyAgentConfig {
-	if cfg == nil {
-		return nil
-	}
-	out := &legacyAgentConfig{
-		ConfigVersion:             cfg.Version,
-		DynamicResourceAttributes: cfg.DynamicResourceAttributes,
-		ExtensionConfigJSON:       cfg.ExtensionConfigJSON,
-	}
-	if cfg.Sampler != nil {
-		out.Sampler = &legacySamplerConfig{
-			Type:      int32(cfg.Sampler.Type),
-			Ratio:     cfg.Sampler.Ratio,
-			RulesJSON: cfg.Sampler.RulesJSON,
-		}
-	}
-	if cfg.Batch != nil {
-		out.Batch = &legacyBatchConfig{
-			MaxExportBatchSize:  cfg.Batch.MaxExportBatchSize,
-			MaxQueueSize:        cfg.Batch.MaxQueueSize,
-			ScheduleDelayMillis: cfg.Batch.ScheduleDelayMillis,
-			ExportTimeoutMillis: cfg.Batch.ExportTimeoutMillis,
-		}
-	}
-	return out
-}
 
 // ConfigPollHandler implements LongPollHandler for configuration polling.
 // It integrates with Nacos for config storage and change notification.
@@ -392,18 +316,44 @@ func (h *ConfigPollHandler) loadConfigFromNacos(ctx context.Context, token, serv
 	if serviceName == "" {
 		return nil, nil
 	}
-
-	legacyCfg, err := h.loadConfig(ctx, token, serviceName)
-	if err != nil {
-		return nil, err
-	}
-
-	etag := ComputeEtag(legacyCfg)
-	return legacyAgentConfigToModel(legacyCfg, etag), nil
+	return h.loadConfigAny(ctx, token, serviceName)
 }
 
-// loadConfig loads config from Nacos.
-func (h *ConfigPollHandler) loadConfig(ctx context.Context, group, dataID string) (*legacyAgentConfig, error) {
+func computeBusinessEtagFromModel(cfg *model.AgentConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	cloned := *cfg
+	// Exclude metadata fields to keep stable semantics (align with configmanager).
+	cloned.Version = ""
+	cloned.UpdatedAt = 0
+	cloned.Etag = ""
+	cloned.ServerMetadata = nil
+	return ComputeEtag(&cloned)
+}
+
+// parseConfigContent parses Nacos content into model.AgentConfig.
+// Nacos storage is unified to the model schema (version/updated_at/etag...).
+func (h *ConfigPollHandler) parseConfigContent(content string) (*model.AgentConfig, error) {
+	if content == "" {
+		return nil, errors.New("config not found")
+	}
+
+	var cfg model.AgentConfig
+	if err := json.Unmarshal([]byte(content), &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Ensure ETag is available for comparison when storage doesn't include it.
+	if cfg.Etag == "" {
+		cfg.Etag = computeBusinessEtagFromModel(&cfg)
+	}
+
+	return &cfg, nil
+}
+
+// loadConfigAny loads config from Nacos and returns it as model.AgentConfig.
+func (h *ConfigPollHandler) loadConfigAny(ctx context.Context, group, dataID string) (*model.AgentConfig, error) {
 	type result struct {
 		content string
 		err     error
@@ -425,16 +375,7 @@ func (h *ConfigPollHandler) loadConfig(ctx context.Context, group, dataID string
 		if res.err != nil {
 			return nil, res.err
 		}
-		if res.content == "" {
-			return nil, errors.New("config not found")
-		}
-
-		var config legacyAgentConfig
-		if err := json.Unmarshal([]byte(res.content), &config); err != nil {
-			return nil, fmt.Errorf("failed to parse config: %w", err)
-		}
-
-		return &config, nil
+		return h.parseConfigContent(res.content)
 	}
 }
 
@@ -497,8 +438,8 @@ func (h *ConfigPollHandler) handleConfigChange(token, serviceName, data string) 
 	// Parse new config
 	var newConfig *model.AgentConfig
 	if data != "" {
-		var legacyCfg legacyAgentConfig
-		if err := json.Unmarshal([]byte(data), &legacyCfg); err != nil {
+		cfg, err := h.parseConfigContent(data)
+		if err != nil {
 			h.logger.Error("Failed to parse changed config",
 				zap.String("token", token),
 				zap.String("service", serviceName),
@@ -506,8 +447,7 @@ func (h *ConfigPollHandler) handleConfigChange(token, serviceName, data string) 
 			)
 			return
 		}
-		etag := ComputeEtag(&legacyCfg)
-		newConfig = legacyAgentConfigToModel(&legacyCfg, etag)
+		newConfig = cfg
 	}
 
 	// Update state and notify waiters

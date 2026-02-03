@@ -5,9 +5,21 @@ package configmanager
 
 import (
 	"context"
+	"errors"
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
+
+// ErrConfigNotFound indicates there is no config stored for the given (token/group + serviceName).
+//
+// This should be treated as a normal condition by callers (e.g. UI can show a template),
+// not as an operational failure.
+var ErrConfigNotFound = errors.New("config not found")
+
+// IsConfigNotFound reports whether err means config does not exist.
+func IsConfigNotFound(err error) bool {
+	return errors.Is(err, ErrConfigNotFound)
+}
 
 // ConfigChangeCallback is called when configuration changes.
 type ConfigChangeCallback func(oldConfig, newConfig *model.AgentConfig)

@@ -381,7 +381,7 @@ func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, data
 			continue
 		}
 		if content == "" {
-			return nil, errors.New("config not found")
+			return nil, ErrConfigNotFound
 		}
 
 		var cfg model.AgentConfig
@@ -395,7 +395,7 @@ func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, data
 	if lastErr != nil {
 		return nil, fmt.Errorf("failed to load config %s: %w", key, lastErr)
 	}
-	return nil, errors.New("config not found")
+	return nil, ErrConfigNotFound
 }
 
 func (m *NacosOnDemandConfigManager) cacheConfig(token, dataID string, cfg *model.AgentConfig) {

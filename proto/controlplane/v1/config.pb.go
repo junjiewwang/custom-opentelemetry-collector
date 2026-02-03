@@ -142,6 +142,8 @@ type ConfigRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Agent ID 字符串（用于鉴权和路由）
 	AgentId string `protobuf:"bytes,5,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// 服务名称（用于配置下发的路由和筛选，必填）
+	ServiceName string `protobuf:"bytes,8,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
 	// 当前配置版本 (首次请求为空)
 	CurrentVersion *ConfigVersion `protobuf:"bytes,2,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"`
 	// 当前配置版本字符串（与 DTO 兼容）
@@ -187,6 +189,13 @@ func (*ConfigRequest) Descriptor() ([]byte, []int) {
 func (x *ConfigRequest) GetAgentId() string {
 	if x != nil {
 		return x.AgentId
+	}
+	return ""
+}
+
+func (x *ConfigRequest) GetServiceName() string {
+	if x != nil {
+		return x.ServiceName
 	}
 	return ""
 }
@@ -722,9 +731,10 @@ var File_controlplane_v1_config_proto protoreflect.FileDescriptor
 
 const file_controlplane_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontrolplane/v1/config.proto\x120io.opentelemetry.extension.controlplane.proto.v1\x1a\x1ccontrolplane/v1/common.proto\"\xbc\x02\n" +
+	"\x1ccontrolplane/v1/config.proto\x120io.opentelemetry.extension.controlplane.proto.v1\x1a\x1ccontrolplane/v1/common.proto\"\xdf\x02\n" +
 	"\rConfigRequest\x12\x19\n" +
-	"\bagent_id\x18\x05 \x01(\tR\aagentId\x12h\n" +
+	"\bagent_id\x18\x05 \x01(\tR\aagentId\x12!\n" +
+	"\fservice_name\x18\b \x01(\tR\vserviceName\x12h\n" +
 	"\x0fcurrent_version\x18\x02 \x01(\v2?.io.opentelemetry.extension.controlplane.proto.v1.ConfigVersionR\x0ecurrentVersion\x124\n" +
 	"\x16current_config_version\x18\x06 \x01(\tR\x14currentConfigVersion\x12!\n" +
 	"\fcurrent_etag\x18\a \x01(\tR\vcurrentEtag\x127\n" +

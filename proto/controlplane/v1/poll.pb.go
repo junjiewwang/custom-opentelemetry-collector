@@ -27,16 +27,17 @@ const (
 
 // 统一轮询请求
 // 同时获取配置更新和待执行任务，减少 HTTP 往返
+// 直接复用 ConfigRequest 和 TaskRequest，避免字段漂移
 type UnifiedPollRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Agent ID 字符串（用于鉴权和路由）
-	AgentId string `protobuf:"bytes,6,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	// 当前配置版本信息
-	CurrentConfigVersion *ConfigVersion `protobuf:"bytes,2,opt,name=current_config_version,json=currentConfigVersion,proto3" json:"current_config_version,omitempty"`
-	// 长轮询超时时间 (毫秒)
-	TimeoutMillis int64 `protobuf:"varint,3,opt,name=timeout_millis,json=timeoutMillis,proto3" json:"timeout_millis,omitempty"`
-	// Agent 当前能力（用于任务下发筛选）
-	Capabilities  *AgentCapabilities `protobuf:"bytes,4,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
+	// Agent ID 字符串（用于鉴权和路由，优先级高于子请求中的 agent_id）
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// 长轮询超时时间 (毫秒，优先级高于子请求中的 timeout)
+	TimeoutMillis int64 `protobuf:"varint,2,opt,name=timeout_millis,json=timeoutMillis,proto3" json:"timeout_millis,omitempty"`
+	// 配置请求（复用 config.proto）
+	ConfigRequest *ConfigRequest `protobuf:"bytes,3,opt,name=config_request,json=configRequest,proto3" json:"config_request,omitempty"`
+	// 任务请求（复用 task.proto）
+	TaskRequest   *TaskRequest `protobuf:"bytes,4,opt,name=task_request,json=taskRequest,proto3" json:"task_request,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -78,13 +79,6 @@ func (x *UnifiedPollRequest) GetAgentId() string {
 	return ""
 }
 
-func (x *UnifiedPollRequest) GetCurrentConfigVersion() *ConfigVersion {
-	if x != nil {
-		return x.CurrentConfigVersion
-	}
-	return nil
-}
-
 func (x *UnifiedPollRequest) GetTimeoutMillis() int64 {
 	if x != nil {
 		return x.TimeoutMillis
@@ -92,27 +86,34 @@ func (x *UnifiedPollRequest) GetTimeoutMillis() int64 {
 	return 0
 }
 
-func (x *UnifiedPollRequest) GetCapabilities() *AgentCapabilities {
+func (x *UnifiedPollRequest) GetConfigRequest() *ConfigRequest {
 	if x != nil {
-		return x.Capabilities
+		return x.ConfigRequest
+	}
+	return nil
+}
+
+func (x *UnifiedPollRequest) GetTaskRequest() *TaskRequest {
+	if x != nil {
+		return x.TaskRequest
 	}
 	return nil
 }
 
 // 统一轮询响应
-// 可同时返回配置更新和任务列表
+// 直接复用 ConfigResponse 和 TaskResponse，避免字段漂移
 type UnifiedPollResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 响应状态
 	Status *ResponseStatus `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	// 是否有任何变更（配置或任务）
 	HasAnyChanges bool `protobuf:"varint,2,opt,name=has_any_changes,json=hasAnyChanges,proto3" json:"has_any_changes,omitempty"`
-	// 配置轮询结果（可选，有配置更新时填充）
-	ConfigResult *ConfigPollResult `protobuf:"bytes,7,opt,name=config_result,json=configResult,proto3" json:"config_result,omitempty"`
-	// 任务轮询结果（可选，有任务时填充）
-	TaskResult *TaskPollResult `protobuf:"bytes,8,opt,name=task_result,json=taskResult,proto3" json:"task_result,omitempty"`
+	// 配置响应（复用 config.proto）
+	ConfigResponse *ConfigResponse `protobuf:"bytes,3,opt,name=config_response,json=configResponse,proto3" json:"config_response,omitempty"`
+	// 任务响应（复用 task.proto）
+	TaskResponse *TaskResponse `protobuf:"bytes,4,opt,name=task_response,json=taskResponse,proto3" json:"task_response,omitempty"`
 	// 下次轮询建议间隔 (毫秒)
-	SuggestedPollIntervalMillis int64 `protobuf:"varint,4,opt,name=suggested_poll_interval_millis,json=suggestedPollIntervalMillis,proto3" json:"suggested_poll_interval_millis,omitempty"`
+	SuggestedPollIntervalMillis int64 `protobuf:"varint,5,opt,name=suggested_poll_interval_millis,json=suggestedPollIntervalMillis,proto3" json:"suggested_poll_interval_millis,omitempty"`
 	unknownFields               protoimpl.UnknownFields
 	sizeCache                   protoimpl.SizeCache
 }
@@ -161,16 +162,16 @@ func (x *UnifiedPollResponse) GetHasAnyChanges() bool {
 	return false
 }
 
-func (x *UnifiedPollResponse) GetConfigResult() *ConfigPollResult {
+func (x *UnifiedPollResponse) GetConfigResponse() *ConfigResponse {
 	if x != nil {
-		return x.ConfigResult
+		return x.ConfigResponse
 	}
 	return nil
 }
 
-func (x *UnifiedPollResponse) GetTaskResult() *TaskPollResult {
+func (x *UnifiedPollResponse) GetTaskResponse() *TaskResponse {
 	if x != nil {
-		return x.TaskResult
+		return x.TaskResponse
 	}
 	return nil
 }
@@ -182,164 +183,21 @@ func (x *UnifiedPollResponse) GetSuggestedPollIntervalMillis() int64 {
 	return 0
 }
 
-// 配置轮询结果
-type ConfigPollResult struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// 是否有变更
-	HasChanges bool `protobuf:"varint,1,opt,name=has_changes,json=hasChanges,proto3" json:"has_changes,omitempty"`
-	// 配置数据
-	ConfigData []byte `protobuf:"bytes,2,opt,name=config_data,json=configData,proto3" json:"config_data,omitempty"`
-	// 配置版本
-	ConfigVersion string `protobuf:"bytes,3,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"`
-	// 配置 ETag
-	ConfigEtag    string `protobuf:"bytes,4,opt,name=config_etag,json=configEtag,proto3" json:"config_etag,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ConfigPollResult) Reset() {
-	*x = ConfigPollResult{}
-	mi := &file_controlplane_v1_poll_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ConfigPollResult) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ConfigPollResult) ProtoMessage() {}
-
-func (x *ConfigPollResult) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_poll_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ConfigPollResult.ProtoReflect.Descriptor instead.
-func (*ConfigPollResult) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_poll_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *ConfigPollResult) GetHasChanges() bool {
-	if x != nil {
-		return x.HasChanges
-	}
-	return false
-}
-
-func (x *ConfigPollResult) GetConfigData() []byte {
-	if x != nil {
-		return x.ConfigData
-	}
-	return nil
-}
-
-func (x *ConfigPollResult) GetConfigVersion() string {
-	if x != nil {
-		return x.ConfigVersion
-	}
-	return ""
-}
-
-func (x *ConfigPollResult) GetConfigEtag() string {
-	if x != nil {
-		return x.ConfigEtag
-	}
-	return ""
-}
-
-// 任务轮询结果
-type TaskPollResult struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// 是否有新任务
-	HasTasks bool `protobuf:"varint,1,opt,name=has_tasks,json=hasTasks,proto3" json:"has_tasks,omitempty"`
-	// 下发的任务列表
-	Tasks         []*Task `protobuf:"bytes,2,rep,name=tasks,proto3" json:"tasks,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TaskPollResult) Reset() {
-	*x = TaskPollResult{}
-	mi := &file_controlplane_v1_poll_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TaskPollResult) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TaskPollResult) ProtoMessage() {}
-
-func (x *TaskPollResult) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_poll_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TaskPollResult.ProtoReflect.Descriptor instead.
-func (*TaskPollResult) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_poll_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *TaskPollResult) GetHasTasks() bool {
-	if x != nil {
-		return x.HasTasks
-	}
-	return false
-}
-
-func (x *TaskPollResult) GetTasks() []*Task {
-	if x != nil {
-		return x.Tasks
-	}
-	return nil
-}
-
 // 任务结果上报请求
+// 直接复用 TaskResult (task.proto)，避免字段漂移
 type TaskResultRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// 任务 ID
-	TaskId string `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
 	// Agent ID 字符串（用于鉴权和路由）
-	AgentId string `protobuf:"bytes,10,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	// 任务执行状态（使用全局统一枚举）
-	Status TaskStatus `protobuf:"varint,3,opt,name=status,proto3,enum=io.opentelemetry.extension.controlplane.proto.v1.TaskStatus" json:"status,omitempty"`
-	// 错误码（失败时），如 TASK_STALE、TASK_EXPIRED、TASK_REJECTED
-	ErrorCode string `protobuf:"bytes,4,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
-	// 错误信息（失败时）
-	ErrorMessage string `protobuf:"bytes,5,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	// 任务输出结果（二进制）
-	ResultData []byte `protobuf:"bytes,6,opt,name=result_data,json=resultData,proto3" json:"result_data,omitempty"`
-	// 任务输出结果 JSON 格式
-	ResultJson string `protobuf:"bytes,11,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`
-	// 任务开始执行时间 (毫秒时间戳)
-	StartedAtMillis int64 `protobuf:"varint,7,opt,name=started_at_millis,json=startedAtMillis,proto3" json:"started_at_millis,omitempty"`
-	// 任务完成时间 (毫秒时间戳)
-	CompletedAtMillis int64 `protobuf:"varint,8,opt,name=completed_at_millis,json=completedAtMillis,proto3" json:"completed_at_millis,omitempty"`
-	// 任务执行耗时 (毫秒)
-	ExecutionTimeMillis int64 `protobuf:"varint,9,opt,name=execution_time_millis,json=executionTimeMillis,proto3" json:"execution_time_millis,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// 任务结果（复用 task.proto 的 TaskResult）
+	Result        *TaskResult `protobuf:"bytes,2,opt,name=result,proto3" json:"result,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TaskResultRequest) Reset() {
 	*x = TaskResultRequest{}
-	mi := &file_controlplane_v1_poll_proto_msgTypes[4]
+	mi := &file_controlplane_v1_poll_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -351,7 +209,7 @@ func (x *TaskResultRequest) String() string {
 func (*TaskResultRequest) ProtoMessage() {}
 
 func (x *TaskResultRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_poll_proto_msgTypes[4]
+	mi := &file_controlplane_v1_poll_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -364,14 +222,7 @@ func (x *TaskResultRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskResultRequest.ProtoReflect.Descriptor instead.
 func (*TaskResultRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_poll_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *TaskResultRequest) GetTaskId() string {
-	if x != nil {
-		return x.TaskId
-	}
-	return ""
+	return file_controlplane_v1_poll_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *TaskResultRequest) GetAgentId() string {
@@ -381,60 +232,11 @@ func (x *TaskResultRequest) GetAgentId() string {
 	return ""
 }
 
-func (x *TaskResultRequest) GetStatus() TaskStatus {
+func (x *TaskResultRequest) GetResult() *TaskResult {
 	if x != nil {
-		return x.Status
-	}
-	return TaskStatus_TASK_STATUS_UNSPECIFIED
-}
-
-func (x *TaskResultRequest) GetErrorCode() string {
-	if x != nil {
-		return x.ErrorCode
-	}
-	return ""
-}
-
-func (x *TaskResultRequest) GetErrorMessage() string {
-	if x != nil {
-		return x.ErrorMessage
-	}
-	return ""
-}
-
-func (x *TaskResultRequest) GetResultData() []byte {
-	if x != nil {
-		return x.ResultData
+		return x.Result
 	}
 	return nil
-}
-
-func (x *TaskResultRequest) GetResultJson() string {
-	if x != nil {
-		return x.ResultJson
-	}
-	return ""
-}
-
-func (x *TaskResultRequest) GetStartedAtMillis() int64 {
-	if x != nil {
-		return x.StartedAtMillis
-	}
-	return 0
-}
-
-func (x *TaskResultRequest) GetCompletedAtMillis() int64 {
-	if x != nil {
-		return x.CompletedAtMillis
-	}
-	return 0
-}
-
-func (x *TaskResultRequest) GetExecutionTimeMillis() int64 {
-	if x != nil {
-		return x.ExecutionTimeMillis
-	}
-	return 0
 }
 
 // 任务结果上报响应
@@ -452,7 +254,7 @@ type TaskResultResponse struct {
 
 func (x *TaskResultResponse) Reset() {
 	*x = TaskResultResponse{}
-	mi := &file_controlplane_v1_poll_proto_msgTypes[5]
+	mi := &file_controlplane_v1_poll_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -464,7 +266,7 @@ func (x *TaskResultResponse) String() string {
 func (*TaskResultResponse) ProtoMessage() {}
 
 func (x *TaskResultResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_poll_proto_msgTypes[5]
+	mi := &file_controlplane_v1_poll_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -477,7 +279,7 @@ func (x *TaskResultResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskResultResponse.ProtoReflect.Descriptor instead.
 func (*TaskResultResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_poll_proto_rawDescGZIP(), []int{5}
+	return file_controlplane_v1_poll_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *TaskResultResponse) GetStatus() *ResponseStatus {
@@ -505,49 +307,25 @@ var File_controlplane_v1_poll_proto protoreflect.FileDescriptor
 
 const file_controlplane_v1_poll_proto_rawDesc = "" +
 	"\n" +
-	"\x1acontrolplane/v1/poll.proto\x120io.opentelemetry.extension.controlplane.proto.v1\x1a\x1ccontrolplane/v1/common.proto\x1a\x1acontrolplane/v1/task.proto\"\x89\x03\n" +
+	"\x1acontrolplane/v1/poll.proto\x120io.opentelemetry.extension.controlplane.proto.v1\x1a\x1ccontrolplane/v1/common.proto\x1a\x1ccontrolplane/v1/config.proto\x1a\x1acontrolplane/v1/task.proto\"\xa0\x02\n" +
 	"\x12UnifiedPollRequest\x12\x19\n" +
-	"\bagent_id\x18\x06 \x01(\tR\aagentId\x12u\n" +
-	"\x16current_config_version\x18\x02 \x01(\v2?.io.opentelemetry.extension.controlplane.proto.v1.ConfigVersionR\x14currentConfigVersion\x12%\n" +
-	"\x0etimeout_millis\x18\x03 \x01(\x03R\rtimeoutMillis\x12g\n" +
-	"\fcapabilities\x18\x04 \x01(\v2C.io.opentelemetry.extension.controlplane.proto.v1.AgentCapabilitiesR\fcapabilitiesJ\x04\b\x01\x10\x02J\x04\b\a\x10\bJ\x04\b\b\x10\tR\x0eagent_identityR\x1acurrent_config_version_strR\x13current_config_etag\"\xdb\x03\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12%\n" +
+	"\x0etimeout_millis\x18\x02 \x01(\x03R\rtimeoutMillis\x12f\n" +
+	"\x0econfig_request\x18\x03 \x01(\v2?.io.opentelemetry.extension.controlplane.proto.v1.ConfigRequestR\rconfigRequest\x12`\n" +
+	"\ftask_request\x18\x04 \x01(\v2=.io.opentelemetry.extension.controlplane.proto.v1.TaskRequestR\vtaskRequest\"\xac\x03\n" +
 	"\x13UnifiedPollResponse\x12X\n" +
 	"\x06status\x18\x01 \x01(\v2@.io.opentelemetry.extension.controlplane.proto.v1.ResponseStatusR\x06status\x12&\n" +
-	"\x0fhas_any_changes\x18\x02 \x01(\bR\rhasAnyChanges\x12g\n" +
-	"\rconfig_result\x18\a \x01(\v2B.io.opentelemetry.extension.controlplane.proto.v1.ConfigPollResultR\fconfigResult\x12a\n" +
-	"\vtask_result\x18\b \x01(\v2@.io.opentelemetry.extension.controlplane.proto.v1.TaskPollResultR\n" +
-	"taskResult\x12C\n" +
-	"\x1esuggested_poll_interval_millis\x18\x04 \x01(\x03R\x1bsuggestedPollIntervalMillisJ\x04\b\x03\x10\x04J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\aresultsR\asuccessR\rerror_message\"\x9c\x01\n" +
-	"\x10ConfigPollResult\x12\x1f\n" +
-	"\vhas_changes\x18\x01 \x01(\bR\n" +
-	"hasChanges\x12\x1f\n" +
-	"\vconfig_data\x18\x02 \x01(\fR\n" +
-	"configData\x12%\n" +
-	"\x0econfig_version\x18\x03 \x01(\tR\rconfigVersion\x12\x1f\n" +
-	"\vconfig_etag\x18\x04 \x01(\tR\n" +
-	"configEtag\"{\n" +
-	"\x0eTaskPollResult\x12\x1b\n" +
-	"\thas_tasks\x18\x01 \x01(\bR\bhasTasks\x12L\n" +
-	"\x05tasks\x18\x02 \x03(\v26.io.opentelemetry.extension.controlplane.proto.v1.TaskR\x05tasks\"\xc9\x03\n" +
-	"\x11TaskResultRequest\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x19\n" +
-	"\bagent_id\x18\n" +
-	" \x01(\tR\aagentId\x12T\n" +
-	"\x06status\x18\x03 \x01(\x0e2<.io.opentelemetry.extension.controlplane.proto.v1.TaskStatusR\x06status\x12\x1d\n" +
-	"\n" +
-	"error_code\x18\x04 \x01(\tR\terrorCode\x12#\n" +
-	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage\x12\x1f\n" +
-	"\vresult_data\x18\x06 \x01(\fR\n" +
-	"resultData\x12\x1f\n" +
-	"\vresult_json\x18\v \x01(\tR\n" +
-	"resultJson\x12*\n" +
-	"\x11started_at_millis\x18\a \x01(\x03R\x0fstartedAtMillis\x12.\n" +
-	"\x13completed_at_millis\x18\b \x01(\x03R\x11completedAtMillis\x122\n" +
-	"\x15execution_time_millis\x18\t \x01(\x03R\x13executionTimeMillisJ\x04\b\x02\x10\x03R\x0eagent_identity\"\xd0\x01\n" +
+	"\x0fhas_any_changes\x18\x02 \x01(\bR\rhasAnyChanges\x12i\n" +
+	"\x0fconfig_response\x18\x03 \x01(\v2@.io.opentelemetry.extension.controlplane.proto.v1.ConfigResponseR\x0econfigResponse\x12c\n" +
+	"\rtask_response\x18\x04 \x01(\v2>.io.opentelemetry.extension.controlplane.proto.v1.TaskResponseR\ftaskResponse\x12C\n" +
+	"\x1esuggested_poll_interval_millis\x18\x05 \x01(\x03R\x1bsuggestedPollIntervalMillis\"\x84\x01\n" +
+	"\x11TaskResultRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12T\n" +
+	"\x06result\x18\x02 \x01(\v2<.io.opentelemetry.extension.controlplane.proto.v1.TaskResultR\x06result\"\xac\x01\n" +
 	"\x12TaskResultResponse\x12X\n" +
 	"\x06status\x18\x01 \x01(\v2@.io.opentelemetry.extension.controlplane.proto.v1.ResponseStatusR\x06status\x12\"\n" +
 	"\facknowledged\x18\x02 \x01(\bR\facknowledged\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessageJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\asuccessR\rerror_messageB\x8d\x01\n" +
+	"\amessage\x18\x03 \x01(\tR\amessageB\x8d\x01\n" +
 	"4io.opentelemetry.sdk.extension.controlplane.proto.v1B\n" +
 	"PollProtosZIgo.opentelemetry.io/collector/custom/proto/controlplane/v1;controlplanev1b\x06proto3"
 
@@ -563,34 +341,32 @@ func file_controlplane_v1_poll_proto_rawDescGZIP() []byte {
 	return file_controlplane_v1_poll_proto_rawDescData
 }
 
-var file_controlplane_v1_poll_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_controlplane_v1_poll_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_controlplane_v1_poll_proto_goTypes = []any{
 	(*UnifiedPollRequest)(nil),  // 0: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollRequest
 	(*UnifiedPollResponse)(nil), // 1: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollResponse
-	(*ConfigPollResult)(nil),    // 2: io.opentelemetry.extension.controlplane.proto.v1.ConfigPollResult
-	(*TaskPollResult)(nil),      // 3: io.opentelemetry.extension.controlplane.proto.v1.TaskPollResult
-	(*TaskResultRequest)(nil),   // 4: io.opentelemetry.extension.controlplane.proto.v1.TaskResultRequest
-	(*TaskResultResponse)(nil),  // 5: io.opentelemetry.extension.controlplane.proto.v1.TaskResultResponse
-	(*ConfigVersion)(nil),       // 6: io.opentelemetry.extension.controlplane.proto.v1.ConfigVersion
-	(*AgentCapabilities)(nil),   // 7: io.opentelemetry.extension.controlplane.proto.v1.AgentCapabilities
-	(*ResponseStatus)(nil),      // 8: io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
-	(*Task)(nil),                // 9: io.opentelemetry.extension.controlplane.proto.v1.Task
-	(TaskStatus)(0),             // 10: io.opentelemetry.extension.controlplane.proto.v1.TaskStatus
+	(*TaskResultRequest)(nil),   // 2: io.opentelemetry.extension.controlplane.proto.v1.TaskResultRequest
+	(*TaskResultResponse)(nil),  // 3: io.opentelemetry.extension.controlplane.proto.v1.TaskResultResponse
+	(*ConfigRequest)(nil),       // 4: io.opentelemetry.extension.controlplane.proto.v1.ConfigRequest
+	(*TaskRequest)(nil),         // 5: io.opentelemetry.extension.controlplane.proto.v1.TaskRequest
+	(*ResponseStatus)(nil),      // 6: io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
+	(*ConfigResponse)(nil),      // 7: io.opentelemetry.extension.controlplane.proto.v1.ConfigResponse
+	(*TaskResponse)(nil),        // 8: io.opentelemetry.extension.controlplane.proto.v1.TaskResponse
+	(*TaskResult)(nil),          // 9: io.opentelemetry.extension.controlplane.proto.v1.TaskResult
 }
 var file_controlplane_v1_poll_proto_depIdxs = []int32{
-	6,  // 0: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollRequest.current_config_version:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigVersion
-	7,  // 1: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollRequest.capabilities:type_name -> io.opentelemetry.extension.controlplane.proto.v1.AgentCapabilities
-	8,  // 2: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollResponse.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
-	2,  // 3: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollResponse.config_result:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigPollResult
-	3,  // 4: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollResponse.task_result:type_name -> io.opentelemetry.extension.controlplane.proto.v1.TaskPollResult
-	9,  // 5: io.opentelemetry.extension.controlplane.proto.v1.TaskPollResult.tasks:type_name -> io.opentelemetry.extension.controlplane.proto.v1.Task
-	10, // 6: io.opentelemetry.extension.controlplane.proto.v1.TaskResultRequest.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.TaskStatus
-	8,  // 7: io.opentelemetry.extension.controlplane.proto.v1.TaskResultResponse.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
-	8,  // [8:8] is the sub-list for method output_type
-	8,  // [8:8] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	4, // 0: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollRequest.config_request:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigRequest
+	5, // 1: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollRequest.task_request:type_name -> io.opentelemetry.extension.controlplane.proto.v1.TaskRequest
+	6, // 2: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollResponse.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
+	7, // 3: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollResponse.config_response:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ConfigResponse
+	8, // 4: io.opentelemetry.extension.controlplane.proto.v1.UnifiedPollResponse.task_response:type_name -> io.opentelemetry.extension.controlplane.proto.v1.TaskResponse
+	9, // 5: io.opentelemetry.extension.controlplane.proto.v1.TaskResultRequest.result:type_name -> io.opentelemetry.extension.controlplane.proto.v1.TaskResult
+	6, // 6: io.opentelemetry.extension.controlplane.proto.v1.TaskResultResponse.status:type_name -> io.opentelemetry.extension.controlplane.proto.v1.ResponseStatus
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_controlplane_v1_poll_proto_init() }
@@ -599,6 +375,7 @@ func file_controlplane_v1_poll_proto_init() {
 		return
 	}
 	file_controlplane_v1_common_proto_init()
+	file_controlplane_v1_config_proto_init()
 	file_controlplane_v1_task_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -606,7 +383,7 @@ func file_controlplane_v1_poll_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_controlplane_v1_poll_proto_rawDesc), len(file_controlplane_v1_poll_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

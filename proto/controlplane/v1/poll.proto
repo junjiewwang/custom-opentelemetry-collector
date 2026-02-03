@@ -12,32 +12,30 @@ option java_package = "io.opentelemetry.sdk.extension.controlplane.proto.v1";
 option java_outer_classname = "PollProtos";
 
 import "controlplane/v1/common.proto";
+import "controlplane/v1/config.proto";
 import "controlplane/v1/task.proto";
 
 // ===== 统一轮询 (Unified Poll) =====
 
 // 统一轮询请求
 // 同时获取配置更新和待执行任务，减少 HTTP 往返
+// 直接复用 ConfigRequest 和 TaskRequest，避免字段漂移
 message UnifiedPollRequest {
-  // Agent ID 字符串（用于鉴权和路由）
-  string agent_id = 6;
+  // Agent ID 字符串（用于鉴权和路由，优先级高于子请求中的 agent_id）
+  string agent_id = 1;
 
-  // 当前配置版本信息
-  ConfigVersion current_config_version = 2;
+  // 长轮询超时时间 (毫秒，优先级高于子请求中的 timeout)
+  int64 timeout_millis = 2;
 
-  // 长轮询超时时间 (毫秒)
-  int64 timeout_millis = 3;
+  // 配置请求（复用 config.proto）
+  ConfigRequest config_request = 3;
 
-  // Agent 当前能力（用于任务下发筛选）
-  AgentCapabilities capabilities = 4;
-
-  // ===== 以下字段已废弃 =====
-  reserved 1, 7, 8;
-  reserved "agent_identity", "current_config_version_str", "current_config_etag";
+  // 任务请求（复用 task.proto）
+  TaskRequest task_request = 4;
 }
 
 // 统一轮询响应
-// 可同时返回配置更新和任务列表
+// 直接复用 ConfigResponse 和 TaskResponse，避免字段漂移
 message UnifiedPollResponse {
   // 响应状态
   ResponseStatus status = 1;
@@ -45,81 +43,26 @@ message UnifiedPollResponse {
   // 是否有任何变更（配置或任务）
   bool has_any_changes = 2;
 
-  // 配置轮询结果（可选，有配置更新时填充）
-  ConfigPollResult config_result = 7;
+  // 配置响应（复用 config.proto）
+  ConfigResponse config_response = 3;
 
-  // 任务轮询结果（可选，有任务时填充）
-  TaskPollResult task_result = 8;
+  // 任务响应（复用 task.proto）
+  TaskResponse task_response = 4;
 
   // 下次轮询建议间隔 (毫秒)
-  int64 suggested_poll_interval_millis = 4;
-
-  // ===== 以下字段已废弃 =====
-  reserved 3, 5, 6;
-  reserved "results", "success", "error_message";
-}
-
-// 配置轮询结果
-message ConfigPollResult {
-  // 是否有变更
-  bool has_changes = 1;
-
-  // 配置数据
-  bytes config_data = 2;
-
-  // 配置版本
-  string config_version = 3;
-
-  // 配置 ETag
-  string config_etag = 4;
-}
-
-// 任务轮询结果
-message TaskPollResult {
-  // 是否有新任务
-  bool has_tasks = 1;
-
-  // 下发的任务列表
-  repeated Task tasks = 2;
+  int64 suggested_poll_interval_millis = 5;
 }
 
 // ===== 任务结果上报 =====
 
 // 任务结果上报请求
+// 直接复用 TaskResult (task.proto)，避免字段漂移
 message TaskResultRequest {
-  // 任务 ID
-  string task_id = 1;
-
   // Agent ID 字符串（用于鉴权和路由）
-  string agent_id = 10;
+  string agent_id = 1;
 
-  // ===== 以下字段已废弃 =====
-  reserved 2;
-  reserved "agent_identity";
-
-  // 任务执行状态（使用全局统一枚举）
-  TaskStatus status = 3;
-
-  // 错误码（失败时），如 TASK_STALE、TASK_EXPIRED、TASK_REJECTED
-  string error_code = 4;
-
-  // 错误信息（失败时）
-  string error_message = 5;
-
-  // 任务输出结果（二进制）
-  bytes result_data = 6;
-
-  // 任务输出结果 JSON 格式
-  string result_json = 11;
-
-  // 任务开始执行时间 (毫秒时间戳)
-  int64 started_at_millis = 7;
-
-  // 任务完成时间 (毫秒时间戳)
-  int64 completed_at_millis = 8;
-
-  // 任务执行耗时 (毫秒)
-  int64 execution_time_millis = 9;
+  // 任务结果（复用 task.proto 的 TaskResult）
+  TaskResult result = 2;
 }
 
 // 任务结果上报响应
@@ -132,8 +75,4 @@ message TaskResultResponse {
 
   // 额外信息
   string message = 3;
-
-  // ===== 以下字段已废弃 =====
-  reserved 4, 5;
-  reserved "success", "error_message";
 }

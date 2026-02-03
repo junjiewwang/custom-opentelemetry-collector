@@ -113,29 +113,6 @@ func priorityEnumFromNum(priority int32) controlplanev1.Task_Priority {
 	}
 }
 
-// TaskResultFromPollProto converts TaskResultRequest (poll.proto) to model.TaskResult.
-// Uses the global TaskStatus enum.
-func TaskResultFromPollProto(req *controlplanev1.TaskResultRequest, agentID string) *model.TaskResult {
-	if req == nil {
-		return nil
-	}
-	out := &model.TaskResult{
-		TaskID:              req.GetTaskId(),
-		AgentID:             agentID,
-		Status:              TaskStatusFromProto(req.GetStatus()),
-		ErrorCode:           req.GetErrorCode(),
-		ErrorMessage:        req.GetErrorMessage(),
-		ResultData:          req.GetResultData(),
-		StartedAtMillis:     req.GetStartedAtMillis(),
-		CompletedAtMillis:   req.GetCompletedAtMillis(),
-		ExecutionTimeMillis: req.GetExecutionTimeMillis(),
-	}
-	if req.GetResultJson() != "" {
-		out.ResultJSON = json.RawMessage(req.GetResultJson())
-	}
-	return out
-}
-
 // TaskResultFromTaskProto converts TaskResult (task.proto) to model.TaskResult.
 // Uses the global TaskStatus enum.
 func TaskResultFromTaskProto(tr *controlplanev1.TaskResult, agentID string) *model.TaskResult {
@@ -164,37 +141,6 @@ func TaskResultFromTaskProto(tr *controlplanev1.TaskResult, agentID string) *mod
 	return out
 }
 
-// TaskResultToPollProto converts model.TaskResult to TaskResultRequest (poll.proto).
-// Uses the global TaskStatus enum.
-func TaskResultToPollProto(tr *model.TaskResult) *controlplanev1.TaskResultRequest {
-	if tr == nil {
-		return nil
-	}
-
-	errCode := tr.ErrorCode
-	status := TaskStatusToProto(tr.Status)
-	if tr.Status == model.TaskStatusResultTooLarge {
-		// For RESULT_TOO_LARGE, we keep the status as-is since global enum supports it.
-		// But if error_code is empty, set it for clarity.
-		if errCode == "" {
-			errCode = "RESULT_TOO_LARGE"
-		}
-	}
-
-	return &controlplanev1.TaskResultRequest{
-		TaskId:              tr.TaskID,
-		AgentId:             tr.AgentID,
-		Status:              status,
-		ErrorCode:           errCode,
-		ErrorMessage:        tr.ErrorMessage,
-		ResultData:          tr.ResultData,
-		ResultJson:          string(tr.ResultJSON),
-		StartedAtMillis:     tr.StartedAtMillis,
-		CompletedAtMillis:   tr.CompletedAtMillis,
-		ExecutionTimeMillis: tr.ExecutionTimeMillis,
-	}
-}
-
 // TaskResultToTaskProto converts model.TaskResult to TaskResult (task.proto).
 // Uses the global TaskStatus enum.
 func TaskResultToTaskProto(tr *model.TaskResult) *controlplanev1.TaskResult {
@@ -217,6 +163,18 @@ func TaskResultToTaskProto(tr *model.TaskResult) *controlplanev1.TaskResult {
 		Compression:         CompressionToProto(tr.Compression),
 		OriginalSize:        tr.OriginalSize,
 		CompressedSize:      tr.CompressedSize,
+	}
+}
+
+// TaskResultRequestToProto converts model.TaskResult to TaskResultRequest (poll.proto).
+// Uses the new simplified structure that embeds TaskResult.
+func TaskResultRequestToProto(tr *model.TaskResult, agentID string) *controlplanev1.TaskResultRequest {
+	if tr == nil {
+		return nil
+	}
+	return &controlplanev1.TaskResultRequest{
+		AgentId: agentID,
+		Result:  TaskResultToTaskProto(tr),
 	}
 }
 

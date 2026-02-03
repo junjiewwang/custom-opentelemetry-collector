@@ -5,6 +5,7 @@ package adminext
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 )
@@ -189,10 +191,16 @@ func (e *Extension) getAppServiceConfigV2(w http.ResponseWriter, r *http.Request
 
 	serviceName := chi.URLParam(r, "serviceName")
 
-	cfg, err := e.onDemandConfigMgr.GetServiceConfig(r.Context(), app.Token, serviceName)
+	cfg, err := e.onDemandConfigMgr.GetServiceConfig(r.Context(), app.ID, serviceName)
 	if err != nil {
-		e.handleError(w, errNotFound(err.Error()))
-		return
+		// "config not found" is a normal condition for first-time setup.
+		// Return a template + reference so the UI can guide users to publish one.
+		if errors.Is(err, configmanager.ErrConfigNotFound) {
+			cfg = nil
+		} else {
+			e.handleError(w, err)
+			return
+		}
 	}
 
 	if cfg == nil {
@@ -241,7 +249,7 @@ func (e *Extension) setAppServiceConfigV2(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := e.onDemandConfigMgr.SetServiceConfig(r.Context(), app.Token, serviceName, cfg); err != nil {
+	if err := e.onDemandConfigMgr.SetServiceConfig(r.Context(), app.ID, serviceName, cfg); err != nil {
 		e.handleError(w, err)
 		return
 	}
@@ -257,7 +265,7 @@ func (e *Extension) deleteAppServiceConfigV2(w http.ResponseWriter, r *http.Requ
 
 	serviceName := chi.URLParam(r, "serviceName")
 
-	if err := e.onDemandConfigMgr.DeleteServiceConfig(r.Context(), app.Token, serviceName); err != nil {
+	if err := e.onDemandConfigMgr.DeleteServiceConfig(r.Context(), app.ID, serviceName); err != nil {
 		e.handleError(w, err)
 		return
 	}

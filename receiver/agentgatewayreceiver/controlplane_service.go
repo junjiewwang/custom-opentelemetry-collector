@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/collector/custom/controlplane/conv/probeconv"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
@@ -40,13 +39,20 @@ func (s *controlPlaneService) UnifiedPoll(ctx context.Context, req *controlplane
 
 	appID := GetAppIDFromContext(ctx)
 	agentID := agentIDFromUnifiedPoll(req)
+	serviceName := serviceNameFromUnifiedPoll(req)
+
+	// Validate required fields for config polling
+	if req.GetConfigRequest() != nil && serviceName == "" {
+		return unifiedPollError(controlplanev1.ResponseStatus_CODE_INVALID_ARGUMENT, "service_name is required for config polling")
+	}
 
 	lpReq := &longpoll.PollRequest{
 		AgentID:              agentID,
 		Token:                appID,
+		ServiceName:          serviceName,
 		CurrentConfigVersion: configVersionFromUnifiedPoll(req),
 		CurrentConfigEtag:    configEtagFromUnifiedPoll(req),
-		TimeoutMillis:        req.GetTimeoutMillis(),
+		TimeoutMillis:        timeoutFromUnifiedPoll(req),
 	}
 
 	combined, err := s.longPollManager.Poll(ctx, lpReq)
@@ -60,7 +66,7 @@ func (s *controlPlaneService) UnifiedPoll(ctx context.Context, req *controlplane
 		HasAnyChanges: combined.HasAnyChanges,
 	}
 
-	// Set both config and task results (independent optional fields)
+	// Build config_response and task_response from poll results
 	for pollType, r := range combined.Results {
 		if r == nil {
 			continue
@@ -68,21 +74,24 @@ func (s *controlPlaneService) UnifiedPoll(ctx context.Context, req *controlplane
 
 		switch pollType {
 		case longpoll.LongPollTypeConfig:
-			configResult := &controlplanev1.ConfigPollResult{
-				HasChanges:    r.HasChanges,
-				ConfigVersion: r.ConfigVersion,
-				ConfigEtag:    r.ConfigEtag,
+			cfgResp := &controlplanev1.ConfigResponse{
+				Status:                      &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
+				Success:                     true,
+				HasChanges:                  r.HasChanges,
+				SuggestedPollIntervalMillis: 0,
+				ConfigVersion:               r.ConfigVersion,
+				Etag:                        r.ConfigEtag,
 			}
 			if r.Config != nil {
-				cfgProto := probeconv.AgentConfigToProto(r.Config)
-				cfgBytes, _ := proto.Marshal(cfgProto)
-				configResult.ConfigData = cfgBytes
+				cfgResp.Config = probeconv.AgentConfigToProto(r.Config)
 			}
-			resp.ConfigResult = configResult
+			resp.ConfigResponse = cfgResp
+
 		case longpoll.LongPollTypeTask:
-			resp.TaskResult = &controlplanev1.TaskPollResult{
-				HasTasks: r.HasChanges,
-				Tasks:    probeconv.TasksToProto(r.Tasks),
+			resp.TaskResponse = &controlplanev1.TaskResponse{
+				Status:                      &controlplanev1.ResponseStatus{Code: controlplanev1.ResponseStatus_CODE_OK, Message: "ok"},
+				Tasks:                       probeconv.TasksToProto(r.Tasks),
+				SuggestedPollIntervalMillis: 0,
 			}
 		}
 	}
@@ -97,10 +106,17 @@ func (s *controlPlaneService) GetConfig(ctx context.Context, req *controlplanev1
 
 	appID := GetAppIDFromContext(ctx)
 	agentID := agentIDFromConfigRequest(req)
+	serviceName := req.GetServiceName()
+
+	// Validate required fields
+	if serviceName == "" {
+		return configError(controlplanev1.ResponseStatus_CODE_INVALID_ARGUMENT, "service_name is required")
+	}
 
 	lpReq := &longpoll.PollRequest{
 		AgentID:              agentID,
 		Token:                appID,
+		ServiceName:          serviceName,
 		CurrentConfigVersion: pickFirstNonEmpty(req.GetCurrentVersion().GetVersion(), req.GetCurrentConfigVersion()),
 		CurrentConfigEtag:    pickFirstNonEmpty(req.GetCurrentVersion().GetEtag(), req.GetCurrentEtag()),
 		TimeoutMillis:        req.GetLongPollTimeoutMillis(),
@@ -156,15 +172,17 @@ func (s *controlPlaneService) GetTasks(ctx context.Context, req *controlplanev1.
 }
 
 func (s *controlPlaneService) ReportTaskResult(ctx context.Context, req *controlplanev1.TaskResultRequest) *controlplanev1.TaskResultResponse {
-	if req.GetTaskId() == "" {
-		return taskResultError(controlplanev1.ResponseStatus_CODE_INVALID_ARGUMENT, "task_id is required")
-	}
 	if s.controlPlane == nil {
 		return taskResultError(controlplanev1.ResponseStatus_CODE_UNAVAILABLE, "control plane not available")
 	}
 
+	result := req.GetResult()
+	if result == nil || result.GetTaskId() == "" {
+		return taskResultError(controlplanev1.ResponseStatus_CODE_INVALID_ARGUMENT, "task_id is required")
+	}
+
 	agentID := agentIDFromTaskResultRequest(req)
-	tr := probeconv.TaskResultFromPollProto(req, agentID)
+	tr := probeconv.TaskResultFromTaskProto(result, agentID)
 	if tr == nil {
 		return taskResultError(controlplanev1.ResponseStatus_CODE_INVALID_ARGUMENT, "invalid task result")
 	}

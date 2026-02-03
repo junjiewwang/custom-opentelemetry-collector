@@ -18,6 +18,9 @@ message ConfigRequest {
   // Agent ID 字符串（用于鉴权和路由）
   string agent_id = 5;
 
+  // 服务名称（用于配置下发的路由和筛选，必填）
+  string service_name = 8;
+
   // 当前配置版本 (首次请求为空)
   ConfigVersion current_version = 2;
 
