@@ -1,0 +1,174 @@
+<div class="flex items-center justify-between mb-6">
+    <h2 class="text-2xl font-bold text-gray-800">Arthas Management</h2>
+    <div class="flex items-center gap-3">
+        <button @click="loadArthasAgents()" 
+            :disabled="loading.arthas"
+            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2 disabled:opacity-50">
+            <i :class="loading.arthas ? 'fas fa-spinner fa-spin' : 'fas fa-sync'"></i> 
+            <span x-text="loading.arthas ? 'Loading...' : 'Refresh'"></span>
+        </button>
+    </div>
+</div>
+
+<!-- Task Status Panel -->
+<div x-show="arthasTask.taskId || arthasTask.active" x-cloak 
+    class="mb-6 p-4 rounded-lg border"
+    :class="{
+        'bg-blue-50 border-blue-200': arthasTask.status === 'pending' || arthasTask.status === 'running',
+        'bg-green-50 border-green-200': arthasTask.status === 'success',
+        'bg-red-50 border-red-200': arthasTask.status === 'failed' || arthasTask.status === 'timeout',
+        'bg-gray-50 border-gray-200': !arthasTask.status
+    }">
+    <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <i class="text-lg"
+                :class="{
+                    'fas fa-spinner fa-spin text-blue-500': arthasTask.status === 'pending' || arthasTask.status === 'running',
+                    'fas fa-check-circle text-green-500': arthasTask.status === 'success',
+                    'fas fa-times-circle text-red-500': arthasTask.status === 'failed' || arthasTask.status === 'timeout',
+                    'fas fa-info-circle text-gray-500': !arthasTask.status
+                }"></i>
+            <div>
+                <div class="font-medium text-gray-800">
+                    <span x-text="arthasTask.taskType === 'attach' ? 'Arthas Attach' : 'Arthas Detach'"></span>
+                    <span class="text-gray-500 text-sm ml-2" x-show="arthasTask.taskId">
+                        (<span x-text="arthasTask.taskId.substring(0, 12) + '...'"></span>)
+                    </span>
+                </div>
+                <div class="text-sm text-gray-600" x-text="arthasTask.message"></div>
+            </div>
+        </div>
+        <button x-show="!arthasTask.active" @click="closeTaskPanel()" 
+            class="text-gray-400 hover:text-gray-600 transition">
+            <i class="fas fa-times"></i>
+        </button>
+    </div>
+</div>
+
+<!-- Connection Error -->
+<div x-show="arthasSession.error && !arthasSession.active" class="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+    <div class="flex items-center gap-2 text-red-700">
+        <i class="fas fa-exclamation-circle"></i>
+        <span x-text="arthasSession.error"></span>
+    </div>
+</div>
+
+<!-- Instances Table -->
+<div>
+    <!-- Info Card -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
+        <h3 class="text-lg font-semibold text-gray-800 mb-4">
+            <i class="fas fa-info-circle text-primary-500 mr-2"></i>
+            Arthas Management
+        </h3>
+        <div class="text-gray-600 space-y-2 text-sm">
+            <p>1. <strong>Attach</strong>: Start Arthas agent on the target JVM instance</p>
+            <p>2. <strong>Detach</strong>: Stop Arthas agent from the target JVM instance</p>
+            <p>3. <strong>Connect</strong>: Open terminal to interact with Arthas (requires Arthas running)</p>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-lg p-4 border border-gray-100">
+            <div class="text-2xl font-bold text-gray-800" x-text="arthasInstances.length"></div>
+            <div class="text-sm text-gray-500">Online Instances</div>
+        </div>
+        <div class="bg-white rounded-lg p-4 border border-gray-100">
+            <div class="text-2xl font-bold text-green-600" x-text="arthasInstances.filter(i => i.arthasStatus?.state === 'running').length"></div>
+            <div class="text-sm text-gray-500">Arthas Running</div>
+        </div>
+        <div class="bg-white rounded-lg p-4 border border-gray-100">
+            <div class="text-2xl font-bold text-blue-600" x-text="arthasInstances.filter(i => i.arthasStatus?.tunnelReady).length"></div>
+            <div class="text-sm text-gray-500">Tunnel Ready</div>
+        </div>
+        <div class="bg-white rounded-lg p-4 border border-gray-100">
+            <div class="text-2xl font-bold text-gray-400" x-text="arthasInstances.filter(i => i.arthasStatus?.state === 'stopped' || i.arthasStatus?.state === 'unknown').length"></div>
+            <div class="text-sm text-gray-500">Arthas Stopped</div>
+        </div>
+    </div>
+
+    <!-- Instances Table -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <table class="w-full">
+            <thead class="bg-gray-50 border-b border-gray-100">
+                <tr>
+                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Instance</th>
+                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">IP</th>
+                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Arthas Status</th>
+                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Tunnel</th>
+                    <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                <template x-for="inst in arthasInstances" :key="inst.agent_id">
+                    <tr class="hover:bg-gray-50 transition">
+                        <td class="px-6 py-4">
+                            <div class="font-medium text-gray-800" x-text="inst.service_name || 'Unknown Service'"></div>
+                            <div class="text-xs text-gray-400 font-mono" x-text="inst.agent_id?.substring(0, 24) + '...'"></div>
+                        </td>
+                        <td class="px-6 py-4">
+                            <div class="text-gray-800" x-text="inst.ip || '-'"></div>
+                        </td>
+                        <td class="px-6 py-4">
+                            <div class="flex items-center gap-2">
+                                <span class="px-2 py-1 rounded-full text-xs font-medium"
+                                    :class="{
+                                        'bg-green-100 text-green-700': inst.arthasStatus?.state === 'running',
+                                        'bg-gray-100 text-gray-600': inst.arthasStatus?.state === 'stopped'
+                                    }"
+                                    x-text="inst.arthasStatus?.state || 'stopped'"></span>
+                                <span x-show="inst.arthasStatus?.arthasVersion" 
+                                    class="text-xs text-gray-400" 
+                                    x-text="'v' + inst.arthasStatus?.arthasVersion"></span>
+                            </div>
+                        </td>
+                        <td class="px-6 py-4">
+                            <span class="px-2 py-1 rounded-full text-xs font-medium"
+                                :class="inst.arthasStatus?.tunnelReady ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'"
+                                x-text="inst.arthasStatus?.tunnelReady ? 'Connected' : 'Not Connected'"></span>
+                        </td>
+                        <td class="px-6 py-4 text-right">
+                            <div class="flex items-center justify-end gap-2">
+                                <!-- Attach Button -->
+                                <button @click="attachArthas(inst)" 
+                                    :disabled="inst.operating || arthasTask.active || inst.arthasStatus?.state === 'running'"
+                                    class="px-3 py-1.5 text-sm rounded-lg transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    :class="inst.arthasStatus?.state === 'running' ? 'bg-gray-100 text-gray-400' : 'bg-green-100 text-green-700 hover:bg-green-200'"
+                                    :title="inst.arthasStatus?.state === 'running' ? 'Arthas already running' : 'Attach Arthas'">
+                                    <i :class="inst.operating && arthasTask.taskType === 'attach' ? 'fas fa-spinner fa-spin' : 'fas fa-play'"></i>
+                                    <span>Attach</span>
+                                </button>
+                                <!-- Detach Button -->
+                                <button @click="detachArthas(inst)" 
+                                    :disabled="inst.operating || arthasTask.active || inst.arthasStatus?.state !== 'running'"
+                                    class="px-3 py-1.5 text-sm rounded-lg transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    :class="inst.arthasStatus?.state !== 'running' ? 'bg-gray-100 text-gray-400' : 'bg-red-100 text-red-700 hover:bg-red-200'"
+                                    :title="inst.arthasStatus?.state !== 'running' ? 'Arthas not running' : 'Detach Arthas'">
+                                    <i :class="inst.operating && arthasTask.taskType === 'detach' ? 'fas fa-spinner fa-spin' : 'fas fa-stop'"></i>
+                                    <span>Detach</span>
+                                </button>
+                                <!-- Connect Terminal Button -->
+                                <button @click="connectArthas(inst)" 
+                                    :disabled="arthasSession.connecting || !inst.arthasStatus?.tunnelReady"
+                                    class="px-3 py-1.5 text-sm rounded-lg transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    :class="!inst.arthasStatus?.tunnelReady ? 'bg-gray-100 text-gray-400' : 'bg-primary-100 text-primary-700 hover:bg-primary-200'"
+                                    :title="!inst.arthasStatus?.tunnelReady ? 'Tunnel not ready' : 'Connect Terminal'">
+                                    <i :class="arthasSession.connecting && arthasSession.agentId === inst.agent_id ? 'fas fa-spinner fa-spin' : 'fas fa-terminal'"></i>
+                                    <span>Connect</span>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="arthasInstances.length === 0">
+                    <td colspan="5" class="px-6 py-12 text-center text-gray-500">
+                        <i class="fas fa-server text-4xl mb-3 text-gray-300"></i>
+                        <p>No online instances found</p>
+                        <p class="text-sm mt-1">Make sure your Java agents are connected and online</p>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>

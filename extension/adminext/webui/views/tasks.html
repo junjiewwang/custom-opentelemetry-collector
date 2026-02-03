@@ -1,0 +1,402 @@
+<!-- Tasks View -->
+<div class="fade-in">
+    <div class="flex items-center justify-between mb-6">
+        <h2 class="text-2xl font-bold text-gray-800">Tasks</h2>
+        <div class="flex items-center gap-3">
+            <!-- Search Box -->
+            <div class="relative">
+                <input type="text" x-model="taskSearchQuery" @input.debounce.300ms="applyTaskFilter()"
+                    placeholder="搜索任务..."
+                    class="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 w-48 text-sm">
+                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+            </div>
+            <!-- View Mode Toggle -->
+            <div class="flex items-center bg-gray-100 rounded-lg p-1">
+                <button @click="taskViewMode = 'tree'" 
+                    :class="taskViewMode === 'tree' ? 'bg-white shadow-sm text-primary-600' : 'text-gray-500'"
+                    class="px-3 py-1.5 text-xs font-bold rounded-md transition" title="树形视图">
+                    <i class="fas fa-sitemap mr-1"></i> 树形
+                </button>
+                <button @click="taskViewMode = 'flat'" 
+                    :class="taskViewMode === 'flat' ? 'bg-white shadow-sm text-primary-600' : 'text-gray-500'"
+                    class="px-3 py-1.5 text-xs font-bold rounded-md transition" title="列表视图">
+                    <i class="fas fa-list mr-1"></i> 列表
+                </button>
+            </div>
+            <button @click="showCreateTaskModal = true" 
+                class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2 shadow-sm text-sm">
+                <i class="fas fa-plus"></i> Create Task
+            </button>
+            <button @click="loadTasks()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
+                <i class="fas fa-sync" :class="loading.tasks ? 'fa-spin' : ''"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Task Stats Summary (Clickable Filters) -->
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+        <template x-for="stat in [
+            { label: '全部', filter: 'all', key: 'total', icon: 'fas fa-list', color: 'text-gray-500' },
+            { label: '运行中', filter: 'running', key: 'running', icon: 'fas fa-play-circle', color: 'text-blue-500' },
+            { label: '等待中', filter: 'pending', key: 'pending', icon: 'fas fa-clock', color: 'text-yellow-500' },
+            { label: '成功', filter: 'success', key: 'success', icon: 'fas fa-check-circle', color: 'text-green-500' },
+            { label: '失败', filter: 'failed', key: 'failed', icon: 'fas fa-times-circle', color: 'text-red-500' },
+            { label: '超时', filter: 'timeout', key: 'timeout', icon: 'fas fa-exclamation-circle', color: 'text-orange-500' }
+        ]" :key="stat.filter">
+            <div @click="taskStatusFilter = stat.filter; applyTaskFilter()" 
+                 :class="taskStatusFilter === stat.filter ? 'ring-2 ring-primary-500 bg-primary-50' : 'bg-white'"
+                 class="p-4 rounded-xl shadow-sm border border-gray-100 cursor-pointer hover:shadow-md transition group">
+                <div class="flex items-center justify-between mb-1">
+                    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest" x-text="stat.label"></p>
+                    <i :class="stat.icon + ' ' + stat.color" class="opacity-40 group-hover:opacity-100 transition text-xs"></i>
+                </div>
+                <p class="text-2xl font-bold text-gray-800" x-text="getTaskStats()[stat.key]"></p>
+            </div>
+        </template>
+    </div>
+
+    <!-- Tree View Container -->
+    <div x-show="taskViewMode === 'tree'" class="space-y-6">
+        <template x-for="app in taskTreeData" :key="app.id">
+            <div class="border border-gray-100 rounded-xl overflow-hidden shadow-sm bg-white">
+                <!-- App Header -->
+                <div class="bg-gray-50 px-4 py-3 flex items-center justify-between border-b border-gray-100">
+                    <div class="flex items-center gap-3">
+                        <i class="fas fa-cube text-blue-500"></i>
+                        <span class="font-bold text-gray-800" x-text="app.name"></span>
+                        <span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold" x-text="app.children.length + ' SERVICES'"></span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <!-- App Level Stats -->
+                        <template x-if="app.stats.running > 0">
+                            <span class="flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded">
+                                <i class="fas fa-circle text-[6px] status-running"></i>
+                                <span x-text="app.stats.running"></span>
+                            </span>
+                        </template>
+                        <template x-if="app.stats.failed > 0">
+                            <span class="flex items-center gap-1 text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded">
+                                <i class="fas fa-times-circle"></i>
+                                <span x-text="app.stats.failed"></span>
+                            </span>
+                        </template>
+                        <span class="text-[10px] text-gray-400 font-medium" x-text="'Updated ' + formatRelativeTime(app.lastUpdatedAt)"></span>
+                    </div>
+                </div>
+                <!-- Services -->
+                <div class="p-4 space-y-6">
+                    <template x-for="svc in app.children" :key="svc.id">
+                        <div class="ml-4 tree-line">
+                            <div class="flex items-center gap-2 mb-3">
+                                <i class="fas fa-sitemap text-purple-400 text-sm"></i>
+                                <span class="font-bold text-gray-700 text-sm" x-text="svc.name"></span>
+                                <span class="text-[9px] text-gray-400 font-bold uppercase" x-text="svc.stats.total + ' TASKS'"></span>
+                            </div>
+                            <!-- Task Grid within Service -->
+                            <div class="ml-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                <template x-for="task in (svc.allTasks || [])" :key="task.task_id">
+                                    <div @click="openTaskDetail(task)" 
+                                         class="bg-white border border-gray-100 rounded-lg p-3 hover:border-primary-300 hover:shadow-md transition cursor-pointer flex items-center justify-between group">
+                                        <div class="flex items-center gap-3 overflow-hidden">
+                                            <div :class="getStatusIconClass(task.status)" class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0">
+                                                <i :class="getStatusIcon(task.status)" class="text-xs"></i>
+                                            </div>
+                                            <div class="overflow-hidden">
+                                                <div class="text-xs font-bold text-gray-800 truncate" x-text="task.task_type"></div>
+                                                <div class="text-[9px] font-mono text-gray-400 truncate" x-text="task.task_id"></div>
+                                                <div class="text-[9px] text-gray-400 truncate" x-text="task._instance_label ? ('实例 ' + formatShortId(task._instance_label)) : 'Global'"></div>
+                                            </div>
+                                        </div>
+                                        <div class="text-right flex-shrink-0 ml-2">
+                                            <div class="text-[9px] text-gray-400 font-medium" x-text="formatRelativeTime(task.created_at_millis)"></div>
+                                            <i class="fas fa-chevron-right text-gray-200 group-hover:text-primary-500 transition text-[10px] mt-1"></i>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+        <!-- Empty State -->
+        <div x-show="taskTreeData.length === 0" class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
+            <i class="fas fa-tasks text-4xl mb-3 text-gray-200"></i>
+            <p class="text-gray-400">没有符合条件的任务</p>
+        </div>
+    </div>
+
+    <!-- Flat View -->
+    <div x-show="taskViewMode === 'flat'" class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <table class="w-full text-left">
+            <thead class="bg-gray-50/50 border-b border-gray-100">
+                <tr class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                    <th class="px-6 py-4">Task ID</th>
+                    <th class="px-6 py-4">Type</th>
+                    <th class="px-6 py-4">App / Service</th>
+                    <th class="px-6 py-4">Target</th>
+                    <th class="px-6 py-4">Status</th>
+                    <th class="px-6 py-4 text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                <template x-for="task in (taskStatusFilter === 'all' ? tasks : tasks.filter(t => t.status === taskStatusFilter))" :key="task.task_id">
+                    <tr @click="openTaskDetail(task)" class="hover:bg-primary-50/30 cursor-pointer transition group">
+                        <td class="px-6 py-4">
+                            <code class="text-[10px] font-mono bg-gray-100 px-2 py-1 rounded text-gray-500 group-hover:bg-primary-100 group-hover:text-primary-700 transition" x-text="formatShortId(task.task_id)"></code>
+                        </td>
+                        <td class="px-6 py-4 text-sm font-bold text-gray-700" x-text="task.task_type"></td>
+                        <td class="px-6 py-4">
+                            <div class="text-xs font-bold text-gray-700" x-text="task.app_id || '-'"></div>
+                            <div class="text-[10px] text-gray-400" x-text="task.service_name || ''"></div>
+                        </td>
+                        <td class="px-6 py-4">
+                            <code class="text-[10px] text-gray-400" x-text="formatShortId(task.target_agent_id) || 'Global'"></code>
+                        </td>
+                        <td class="px-6 py-4">
+                            <span :class="getStatusClass(task.status)" class="px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1.5 w-fit uppercase tracking-tight">
+                                <i x-show="task.status === 'running'" class="fas fa-circle text-[4px] status-running"></i>
+                                <span x-text="task.status"></span>
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 text-right">
+                            <button class="text-gray-300 hover:text-primary-600 p-2"><i class="fas fa-eye"></i></button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+        <!-- Empty State -->
+        <div x-show="tasks.length === 0" class="px-6 py-12 text-center text-gray-500">
+            <i class="fas fa-tasks text-4xl mb-3 text-gray-200"></i>
+            <p>No tasks found</p>
+        </div>
+    </div>
+</div>
+
+<!-- Task Detail Drawer (Optimized Slide-over) -->
+<div x-show="taskDrawerOpen" 
+     x-cloak
+     class="fixed inset-0 z-[60] overflow-hidden" 
+     role="dialog" aria-modal="true">
+    <div class="absolute inset-0 bg-black/20 backdrop-blur-sm transition-opacity" @click="closeTaskDrawer()"></div>
+    
+    <div class="absolute inset-y-0 right-0 max-w-2xl w-full flex">
+        <div class="relative w-full bg-white shadow-2xl flex flex-col"
+             x-show="taskDrawerOpen"
+             x-transition:enter="transform transition ease-in-out duration-300"
+             x-transition:enter-start="translate-x-full"
+             x-transition:enter-end="translate-x-0"
+             x-transition:leave="transform transition ease-in-out duration-300"
+             x-transition:leave-start="translate-x-0"
+             x-transition:leave-end="translate-x-full">
+            
+            <!-- Drawer Header -->
+            <div class="px-6 py-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                <div>
+                    <h2 class="text-xl font-bold text-gray-800 flex items-center gap-3">
+                        任务详情
+                        <span x-text="'#' + (selectedTask?.task_id?.substring(0,8) || '')" class="text-sm font-mono text-gray-400 font-normal"></span>
+                    </h2>
+                    <div class="mt-1 flex items-center gap-2">
+                         <span :class="getStatusClass(selectedTask?.status)" class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest" x-text="selectedTask?.status || 'UNKNOWN'"></span>
+                         <span class="text-xs text-gray-400 font-medium" x-text="formatTimestamp(selectedTask?.created_at_millis)"></span>
+                    </div>
+                </div>
+                <button @click="closeTaskDrawer()" class="w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-200 transition">
+                    <i class="fas fa-times text-gray-500"></i>
+                </button>
+            </div>
+
+            <!-- Drawer Content -->
+            <div class="flex-1 overflow-y-auto p-6">
+                <div class="space-y-8">
+                    <!-- Target Info -->
+                    <section>
+                        <h3 class="text-[10px] font-bold text-gray-400 uppercase tracking-[0.2em] mb-4">执行目标</h3>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                                <p class="text-[10px] font-bold text-gray-400 mb-1 uppercase">服务名称</p>
+                                <p class="font-bold text-gray-800" x-text="selectedTask?.service_name || '-'"></p>
+                            </div>
+                            <div class="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                                <p class="text-[10px] font-bold text-gray-400 mb-1 uppercase">实例 ID</p>
+                                <p class="font-mono text-xs text-gray-800 truncate" x-text="selectedTask?.target_agent_id || 'Global Broadcast'"></p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Parameters (JSON View) -->
+                    <section>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-[10px] font-bold text-gray-400 uppercase tracking-[0.2em]">任务参数</h3>
+                            <button @click="copyToClipboard(JSON.stringify(selectedTask?.parameters || {}))" class="text-[10px] font-bold text-primary-600 hover:underline uppercase">复制参数</button>
+                        </div>
+                        <div class="bg-gray-900 rounded-xl p-4 overflow-hidden shadow-inner">
+                            <pre class="text-blue-300 font-mono text-xs leading-relaxed overflow-x-auto" x-text="JSON.stringify(selectedTask?.parameters || {}, null, 2)"></pre>
+                        </div>
+                    </section>
+
+                    <!-- Execution Results/Logs -->
+                    <section>
+                        <h3 class="text-[10px] font-bold text-gray-400 uppercase tracking-[0.2em] mb-4">执行结果</h3>
+                        <div class="bg-gray-50 rounded-xl p-4 border border-gray-100 min-h-[100px]">
+                            <!-- Loading State -->
+                            <template x-if="selectedTask?._detailLoading">
+                                <div class="flex items-center justify-center py-10 text-gray-400">
+                                    <i class="fas fa-spinner fa-spin mr-2"></i>
+                                    正在加载任务详情...
+                                </div>
+                            </template>
+
+                            <!-- Error State -->
+                            <template x-if="!selectedTask?._detailLoading && selectedTask?._detailError">
+                                <div class="py-6 text-sm text-red-600">
+                                    <div class="font-bold mb-2">加载失败</div>
+                                    <div class="bg-red-50 border border-red-100 rounded-lg p-3" x-text="selectedTask?._detailError"></div>
+                                </div>
+                            </template>
+
+                            <!-- Success/Result State -->
+                            <template x-if="!selectedTask?._detailLoading && !selectedTask?._detailError">
+                                <div class="space-y-6">
+                                    <!-- If Result Data Exists -->
+                                    <template x-if="selectedTask?._result">
+                                        <div class="space-y-6">
+                                            <!-- Time Statistics Card -->
+                                            <div class="bg-white p-5 rounded-xl border border-gray-100 shadow-sm">
+                                                <div class="flex items-center gap-2 mb-4">
+                                                    <i class="fas fa-history text-primary-500 text-xs"></i>
+                                                    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">时间统计</p>
+                                                </div>
+                                                <div class="grid grid-cols-2 gap-y-4 gap-x-6">
+                                                    <div>
+                                                        <p class="text-[9px] font-bold text-gray-400 uppercase mb-1">创建时间</p>
+                                                        <p class="text-xs text-gray-700 font-medium" x-text="formatTimestamp(selectedTask?.created_at_millis)"></p>
+                                                    </div>
+                                                    <div>
+                                                        <p class="text-[9px] font-bold text-gray-400 uppercase mb-1">开始时间</p>
+                                                        <p class="text-xs text-gray-700 font-medium" x-text="formatTimestamp(selectedTask?._result?.started_at_millis)"></p>
+                                                    </div>
+                                                    <div>
+                                                        <p class="text-[9px] font-bold text-gray-400 uppercase mb-1">完成时间</p>
+                                                        <p class="text-xs text-gray-700 font-medium" x-text="formatTimestamp(selectedTask?._result?.completed_at_millis)"></p>
+                                                    </div>
+                                                    <div>
+                                                        <p class="text-[9px] font-bold text-gray-400 uppercase mb-1">执行耗时</p>
+                                                        <p class="text-sm font-bold text-primary-600" x-text="selectedTask?._result?.has_execution_info ? (selectedTask._result.execution_time_millis + ' ms') : '-'"></p>
+                                                    </div>
+                                                </div>
+                                                <template x-if="selectedTask?._result?.error_code">
+                                                    <div class="mt-4 pt-4 border-t border-gray-50 flex items-center justify-between">
+                                                        <span class="text-[9px] font-bold text-red-400 uppercase">错误代码</span>
+                                                        <span class="font-mono text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded" x-text="selectedTask?._result?.error_code"></span>
+                                                    </div>
+                                                </template>
+                                            </div>
+
+                                            <!-- Result Summary (Only if entries exist) -->
+                                            <template x-if="selectedTask?._result?.result_summary && selectedTask?._result?.result_summary.length > 0">
+                                                <div class="bg-white p-4 rounded-xl border border-gray-100">
+                                                    <div class="flex items-center justify-between mb-3">
+                                                        <div class="flex items-center gap-2">
+                                                            <i class="fas fa-list-ul text-primary-500 text-[10px]"></i>
+                                                            <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">关键结果摘要</p>
+                                                        </div>
+                                                        <button @click="copyToClipboard(JSON.stringify(selectedTask?._result?.result_json_obj || {}, null, 2))" class="text-[10px] font-bold text-primary-600 hover:underline uppercase">复制 JSON</button>
+                                                    </div>
+                                                    <div class="grid grid-cols-2 gap-3">
+                                                        <template x-for="item in selectedTask._result.result_summary" :key="item.key">
+                                                            <div class="bg-gray-50 p-3 rounded-lg border border-gray-100 group hover:border-primary-200 transition">
+                                                                <p class="text-[9px] font-bold text-gray-400 uppercase mb-0.5" x-text="item.key"></p>
+                                                                <p class="text-xs font-mono text-gray-800 break-all leading-relaxed" x-text="item.valueText"></p>
+                                                            </div>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                            </template>
+
+                                            <!-- Detailed Outputs -->
+                                            <div class="space-y-4">
+                                                <div class="flex items-center justify-between px-1">
+                                                    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">完整输出详情</p>
+                                                    <div class="flex gap-3">
+                                                        <button @click="copyToClipboard(JSON.stringify(selectedTask?._result?._raw || {}, null, 2))" class="text-[9px] font-bold text-gray-400 hover:text-gray-600 uppercase transition">复制 Raw</button>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Error Message Block -->
+                                                <template x-if="selectedTask?._result?.error_message">
+                                                    <div class="bg-red-50 border border-red-100 rounded-lg p-3">
+                                                        <p class="text-[9px] font-bold text-red-400 uppercase mb-1">Error Message</p>
+                                                        <pre class="text-xs text-red-800 font-mono whitespace-pre-wrap leading-relaxed" x-text="selectedTask?._result?.error_message"></pre>
+                                                    </div>
+                                                </template>
+
+                                                <!-- Result (JSON Content) -->
+                                                <template x-if="selectedTask?._result?.result_json_pretty">
+                                                    <div class="bg-gray-900 rounded-xl p-4 overflow-hidden shadow-inner group relative">
+                                                        <button @click="copyToClipboard(selectedTask?._result?.result_json_pretty || '')" class="absolute top-4 right-4 text-[10px] font-bold text-gray-500 hover:text-white opacity-0 group-hover:opacity-100 transition uppercase">复制</button>
+                                                        <pre class="text-blue-300 font-mono text-[11px] leading-relaxed overflow-x-auto" x-text="selectedTask?._result?.result_json_pretty"></pre>
+                                                    </div>
+                                                </template>
+
+                                                <!-- Result (Raw Text Data) -->
+                                                <template x-if="selectedTask?._result?.result_data_text">
+                                                    <div class="bg-white border border-gray-100 rounded-xl p-4 shadow-sm group relative">
+                                                        <button @click="copyToClipboard(selectedTask?._result?.result_data_text || '')" class="absolute top-4 right-4 text-[10px] font-bold text-gray-400 hover:text-primary-600 opacity-0 group-hover:opacity-100 transition uppercase">复制</button>
+                                                        <pre class="text-xs text-gray-700 font-mono overflow-x-auto whitespace-pre-wrap leading-relaxed" x-text="selectedTask?._result?.result_data_text"></pre>
+                                                    </div>
+                                                </template>
+
+                                                <!-- Empty Content Fallback -->
+                                                <template x-if="!selectedTask?._result?.result_json_pretty && !selectedTask?._result?.result_data_text && !selectedTask?._result?.error_message">
+                                                    <div class="text-center py-10 bg-white border border-dashed border-gray-200 rounded-xl text-gray-400 italic text-xs">
+                                                        <i class="fas fa-inbox mb-3 block text-2xl opacity-20"></i>
+                                                        当前任务没有可展示的输出内容
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <!-- If No Result exists yet -->
+                                    <template x-if="!selectedTask?._result">
+                                        <div class="space-y-4">
+                                            <div class="bg-yellow-50 border border-yellow-100 rounded-lg p-4 text-sm text-yellow-800">
+                                                <div class="font-bold mb-1 flex items-center gap-2">
+                                                    <i class="fas fa-exclamation-triangle"></i>
+                                                    结果暂不可用
+                                                </div>
+                                                <div class="text-xs leading-relaxed opacity-80">后端响应中没有 <code class="font-mono">result</code> 字段，说明执行端尚未上报 <code class="font-mono">TaskResult</code>。</div>
+                                            </div>
+                                            <div class="flex items-center justify-center">
+                                                <button @click="openTaskDetail(selectedTask)" class="px-4 py-2 bg-gray-900 text-white rounded-lg text-xs font-bold hover:bg-gray-800 transition flex items-center gap-2">
+                                                    <i class="fas fa-sync text-[10px]"></i>
+                                                    重新拉取详情
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Drawer Footer -->
+            <div class="p-6 border-t border-gray-100 bg-gray-50 flex gap-3">
+                <button @click="cancelTask(selectedTask)" 
+                        :disabled="selectedTask?.status !== 'running' && selectedTask?.status !== 'pending'"
+                        class="flex-1 px-4 py-3 bg-red-50 text-red-600 rounded-xl font-bold hover:bg-red-100 transition flex items-center justify-center gap-2 disabled:opacity-30 disabled:grayscale">
+                    <i class="fas fa-stop-circle"></i> 停止任务
+                </button>
+                <button @click="showToast('重试功能开发中', 'info')" 
+                        class="flex-1 px-4 py-3 bg-primary-600 text-white rounded-xl font-bold hover:bg-primary-700 transition flex items-center justify-center gap-2 shadow-lg shadow-primary-200">
+                    <i class="fas fa-sync"></i> 重新执行
+                </button>
+            </div>
+        </div>
+    </div>
+</div>

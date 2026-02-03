@@ -76,6 +76,61 @@ export const Utils = {
     },
 
     /**
+     * 格式化相对时间（例如：刚刚 / 5分钟前 / 2小时前）
+     * @param {number} timestamp - Unix 毫秒时间戳
+     * @returns {string}
+     */
+    formatRelativeTime(timestamp) {
+        if (!timestamp || timestamp === 0) return '-';
+        const now = Date.now();
+        const diff = now - timestamp;
+        if (diff < 0) return '-';
+
+        if (diff < 30 * 1000) return '刚刚';
+
+        const minutes = Math.floor(diff / (60 * 1000));
+        if (minutes < 60) return `${minutes}分钟前`;
+
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return `${hours}小时前`;
+
+        const days = Math.floor(hours / 24);
+        if (days < 30) return `${days}天前`;
+
+        return this.formatTimestamp(timestamp);
+    },
+
+    /**
+     * 格式化短 ID
+     * @param {string} id
+     * @param {number} len
+     * @returns {string}
+     */
+    formatShortId(id, len = 8) {
+        if (!id) return '-';
+        return id.length > len ? id.substring(0, len) : id;
+    },
+
+    /**
+     * 将 base64 字符串解码为 UTF-8 文本（失败则返回空字符串）
+     * @param {string} base64
+     * @returns {string}
+     */
+    decodeBase64ToText(base64) {
+        if (!base64 || typeof base64 !== 'string') return '';
+        try {
+            const binaryStr = atob(base64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) {
+                bytes[i] = binaryStr.charCodeAt(i);
+            }
+            return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        } catch (e) {
+            return '';
+        }
+    },
+
+    /**
      * 生成 UUID v4
      * @returns {string} UUID 字符串
      */

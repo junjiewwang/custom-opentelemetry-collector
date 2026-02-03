@@ -111,964 +111,98 @@
             <!-- Dashboard View -->
             <!-- ================================================================== -->
             <div x-show="currentView === 'dashboard'" x-cloak class="fade-in">
-                <h2 class="text-2xl font-bold text-gray-800 mb-6">Dashboard Overview</h2>
-                
-                <!-- Stats Cards -->
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                    <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-gray-500 text-sm">Total Apps</p>
-                                <p class="text-3xl font-bold text-gray-800" x-text="dashboard.apps?.total || 0"></p>
-                            </div>
-                            <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center">
-                                <i class="fas fa-cube text-primary-600 text-xl"></i>
-                            </div>
-                        </div>
+                <template x-if="viewTemplates.dashboard">
+                    <div x-html="viewTemplates.dashboard"></div>
+                </template>
+                <template x-if="!viewTemplates.dashboard">
+                    <div class="flex items-center justify-center h-64">
+                        <i class="fas fa-spinner fa-spin text-3xl text-primary-600"></i>
                     </div>
-                    <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-gray-500 text-sm">Online Instances</p>
-                                <p class="text-3xl font-bold text-success-600" x-text="dashboard.instances?.online || 0"></p>
-                            </div>
-                            <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-                                <i class="fas fa-server text-green-600 text-xl"></i>
-                            </div>
-                        </div>
-                        <div class="mt-3 flex gap-4 text-sm">
-                            <span class="text-gray-500">Total: <span class="text-gray-700" x-text="dashboard.instances?.total || 0"></span></span>
-                            <span class="text-red-500">Offline: <span x-text="dashboard.instances?.offline || 0"></span></span>
-                        </div>
-                    </div>
-                    <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-gray-500 text-sm">Unhealthy</p>
-                                <p class="text-3xl font-bold" :class="(dashboard.instances?.unhealthy || 0) > 0 ? 'text-danger-500' : 'text-gray-800'" 
-                                   x-text="dashboard.instances?.unhealthy || 0"></p>
-                            </div>
-                            <div class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
-                                <i class="fas fa-exclamation-triangle text-red-600 text-xl"></i>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-gray-500 text-sm">Pending Tasks</p>
-                                <p class="text-3xl font-bold text-warning-500" x-text="dashboard.tasks?.pending || 0"></p>
-                            </div>
-                            <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
-                                <i class="fas fa-tasks text-yellow-600 text-xl"></i>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Quick Actions -->
-                <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                    <h3 class="text-lg font-semibold text-gray-800 mb-4">Quick Actions</h3>
-                    <div class="flex flex-wrap gap-3">
-                        <button @click="currentView = 'apps'; showCreateAppModal = true" 
-                            class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
-                            <i class="fas fa-plus"></i> Create App
-                        </button>
-                        <button @click="currentView = 'instances'; loadInstances()" 
-                            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
-                            <i class="fas fa-sync"></i> Refresh Instances
-                        </button>
-                        <button @click="currentView = 'tasks'" 
-                            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
-                            <i class="fas fa-list-check"></i> View Tasks
-                        </button>
-                    </div>
-                </div>
+                </template>
             </div>
 
             <!-- ================================================================== -->
             <!-- Apps View -->
             <!-- ================================================================== -->
             <div x-show="currentView === 'apps'" x-cloak class="fade-in">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-2xl font-bold text-gray-800">Applications</h2>
-                    <button @click="showCreateAppModal = true" 
-                        class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
-                        <i class="fas fa-plus"></i> Create App
-                    </button>
-                </div>
-
-                <!-- Apps Table -->
-                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                    <table class="w-full">
-                        <thead class="bg-gray-50 border-b border-gray-100">
-                            <tr>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Name</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Token</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Agents</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Created</th>
-                                <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-100">
-                            <template x-for="app in apps" :key="app.id">
-                                <tr class="hover:bg-gray-50 transition">
-                                    <td class="px-6 py-4">
-                                        <div class="font-medium text-gray-800" x-text="app.name"></div>
-                                        <div class="text-xs text-gray-400 font-mono" x-text="app.id"></div>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <div class="flex items-center gap-2">
-                                            <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="app.token?.substring(0, 16) + '...'"></code>
-                                            <button @click="copyToClipboard(app.token)" class="text-gray-400 hover:text-gray-600">
-                                                <i class="fas fa-copy"></i>
-                                            </button>
-                                        </div>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-sm" x-text="app.agent_count || 0"></span>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <span class="px-2 py-1 rounded-full text-sm"
-                                            :class="app.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'"
-                                            x-text="app.status || 'active'"></span>
-                                    </td>
-                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatDate(app.created_at)"></td>
-                                    <td class="px-6 py-4 text-right">
-                                        <div class="flex items-center justify-end gap-2">
-                                            <button @click="viewAppDetail(app)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
-                                                <i class="fas fa-eye"></i>
-                                            </button>
-                                            <button @click="editApp(app)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="Edit">
-                                                <i class="fas fa-edit"></i>
-                                            </button>
-                                            <button @click="openSetTokenModal(app)" class="p-2 text-gray-400 hover:text-warning-500 transition" title="Manage Token">
-                                                <i class="fas fa-key"></i>
-                                            </button>
-                                            <button @click="confirmDeleteApp(app)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Delete">
-                                                <i class="fas fa-trash"></i>
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            </template>
-                            <tr x-show="apps.length === 0">
-                                <td colspan="6" class="px-6 py-12 text-center text-gray-500">
-                                    <i class="fas fa-inbox text-4xl mb-3 text-gray-300"></i>
-                                    <p>No applications found</p>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
+                <template x-if="viewTemplates.apps">
+                    <div x-html="viewTemplates.apps"></div>
+                </template>
+                <template x-if="!viewTemplates.apps">
+                    <div class="flex items-center justify-center h-64">
+                        <i class="fas fa-spinner fa-spin text-3xl text-primary-600"></i>
+                    </div>
+                </template>
             </div>
 
             <!-- ================================================================== -->
             <!-- Instances View -->
             <!-- ================================================================== -->
             <div x-show="currentView === 'instances'" x-cloak class="fade-in">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-2xl font-bold text-gray-800">Instances</h2>
-                    <div class="flex items-center gap-3">
-                        <select x-model="instanceFilter" @change="loadInstances()" 
-                            class="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
-                            <option value="">Online Only</option>
-                            <option value="all">All Instances</option>
-                        </select>
-                        <button @click="loadInstances()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                            <i class="fas fa-sync"></i>
-                        </button>
+                <template x-if="viewTemplates.instances">
+                    <div x-html="viewTemplates.instances"></div>
+                </template>
+                <template x-if="!viewTemplates.instances">
+                    <div class="flex items-center justify-center h-64">
+                        <i class="fas fa-spinner fa-spin text-3xl text-primary-600"></i>
                     </div>
-                </div>
-
-                <!-- Instance Stats -->
-                <div class="grid grid-cols-4 gap-4 mb-6">
-                    <div class="bg-white rounded-lg p-4 border border-gray-100">
-                        <div class="text-2xl font-bold text-gray-800" x-text="instanceStats.total_agents || 0"></div>
-                        <div class="text-sm text-gray-500">Total</div>
-                    </div>
-                    <div class="bg-white rounded-lg p-4 border border-gray-100">
-                        <div class="text-2xl font-bold text-green-600" x-text="instanceStats.online_agents || 0"></div>
-                        <div class="text-sm text-gray-500">Online</div>
-                    </div>
-                    <div class="bg-white rounded-lg p-4 border border-gray-100">
-                        <div class="text-2xl font-bold text-gray-400" x-text="instanceStats.offline_agents || 0"></div>
-                        <div class="text-sm text-gray-500">Offline</div>
-                    </div>
-                    <div class="bg-white rounded-lg p-4 border border-gray-100">
-                        <div class="text-2xl font-bold text-red-500" x-text="instanceStats.unhealthy_agents || 0"></div>
-                        <div class="text-sm text-gray-500">Unhealthy</div>
-                    </div>
-                </div>
-
-                <!-- Instances Table -->
-                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                    <table class="w-full">
-                        <thead class="bg-gray-50 border-b border-gray-100">
-                            <tr>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Agent ID</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Service</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Host</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Last Heartbeat</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Uptime</th>
-                                <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-100">
-                            <template x-for="instance in instances" :key="instance.agent_id">
-                                <tr class="hover:bg-gray-50 transition">
-                                    <td class="px-6 py-4">
-                                        <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="instance.agent_id?.substring(0, 20) + '...'"></code>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <div class="font-medium text-gray-800" x-text="instance.service_name || '-'"></div>
-                                        <div class="text-sm text-gray-500" x-text="instance.app_id || '-'"></div>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <div class="text-gray-800" x-text="instance.hostname || '-'"></div>
-                                        <div class="text-sm text-gray-500" x-text="instance.ip || '-'"></div>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <span class="px-2 py-1 rounded-full text-sm"
-                                            :class="{
-                                                'bg-green-100 text-green-700': instance.status?.state === 'online',
-                                                'bg-gray-100 text-gray-700': instance.status?.state === 'offline',
-                                                'bg-red-100 text-red-700': instance.status?.state === 'unhealthy'
-                                            }"
-                                            x-text="instance.status?.state || 'unknown'"></span>
-                                    </td>
-                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatTimestamp(instance.last_heartbeat)"></td>
-                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatUptime(instance.start_time)"></td>
-                                    <td class="px-6 py-4 text-right">
-                                        <div class="flex items-center justify-end gap-2">
-                                            <button @click="viewInstanceDetail(instance)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
-                                                <i class="fas fa-eye"></i>
-                                            </button>
-                                            <button @click="kickInstance(instance)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Kick">
-                                                <i class="fas fa-user-slash"></i>
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            </template>
-                            <tr x-show="instances.length === 0">
-                                <td colspan="7" class="px-6 py-12 text-center text-gray-500">
-                                    <i class="fas fa-server text-4xl mb-3 text-gray-300"></i>
-                                    <p>No instances found</p>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
+                </template>
             </div>
 
             <!-- ================================================================== -->
             <!-- Services View -->
             <!-- ================================================================== -->
             <div x-show="currentView === 'services'" x-cloak class="fade-in">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-2xl font-bold text-gray-800">Services</h2>
-                    <button @click="loadServices()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                        <i class="fas fa-sync"></i> Refresh
-                    </button>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    <template x-for="service in services" :key="service.service_name + service.app_id">
-                        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition">
-                            <div class="flex items-start justify-between mb-4">
-                                <div>
-                                    <h3 class="font-semibold text-gray-800" x-text="service.service_name"></h3>
-                                    <p class="text-sm text-gray-500" x-text="service.app_name"></p>
-                                </div>
-                                <span class="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium" 
-                                    x-text="service.instance_count + ' instances'"></span>
-                            </div>
-                            <button @click="viewServiceInstances(service)" 
-                                class="w-full mt-4 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
-                                View Instances
-                            </button>
-                        </div>
-                    </template>
-                    <div x-show="services.length === 0" class="col-span-full text-center py-12 text-gray-500">
-                        <i class="fas fa-sitemap text-4xl mb-3 text-gray-300"></i>
-                        <p>No services found</p>
+                <template x-if="viewTemplates.services">
+                    <div x-html="viewTemplates.services"></div>
+                </template>
+                <template x-if="!viewTemplates.services">
+                    <div class="flex items-center justify-center h-64">
+                        <i class="fas fa-spinner fa-spin text-3xl text-primary-600"></i>
                     </div>
-                </div>
+                </template>
             </div>
 
             <!-- ================================================================== -->
             <!-- Tasks View -->
             <!-- ================================================================== -->
             <div x-show="currentView === 'tasks'" x-cloak class="fade-in">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-2xl font-bold text-gray-800">Tasks</h2>
-                    <div class="flex items-center gap-3">
-                        <!-- Search Box -->
-                        <div class="relative">
-                            <input type="text" x-model="taskSearchQuery" @input.debounce.300ms="applyTaskFilter()"
-                                placeholder="搜索任务..."
-                                class="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 w-48">
-                            <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
-                        </div>
-                        <!-- Only Failed Toggle -->
-                        <label class="flex items-center gap-2 px-3 py-2 bg-gray-100 rounded-lg cursor-pointer hover:bg-gray-200 transition">
-                            <input type="checkbox" x-model="taskFilterOnlyFailed" @change="applyTaskFilter()"
-                                class="w-4 h-4 text-red-600 border-gray-300 rounded focus:ring-red-500">
-                            <span class="text-sm text-gray-700">只看异常</span>
-                        </label>
-                        <!-- View Mode Toggle -->
-                        <div class="flex items-center bg-gray-100 rounded-lg p-1">
-                            <button @click="taskViewMode = 'tree'" 
-                                :class="taskViewMode === 'tree' ? 'bg-white shadow-sm' : ''"
-                                class="px-3 py-1.5 text-sm rounded-md transition" title="树形视图">
-                                <i class="fas fa-sitemap"></i>
-                            </button>
-                            <button @click="taskViewMode = 'flat'" 
-                                :class="taskViewMode === 'flat' ? 'bg-white shadow-sm' : ''"
-                                class="px-3 py-1.5 text-sm rounded-md transition" title="列表视图">
-                                <i class="fas fa-list"></i>
-                            </button>
-                        </div>
-                        <button @click="showCreateTaskModal = true" 
-                            class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2">
-                            <i class="fas fa-plus"></i> Create Task
-                        </button>
-                        <button @click="loadTasks()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                            <i class="fas fa-sync"></i>
-                        </button>
+                <template x-if="viewTemplates.tasks">
+                    <div x-html="viewTemplates.tasks"></div>
+                </template>
+                <template x-if="!viewTemplates.tasks">
+                    <div class="flex items-center justify-center h-64">
+                        <i class="fas fa-spinner fa-spin text-3xl text-primary-600"></i>
                     </div>
-                </div>
-
-                <!-- Task Stats Summary -->
-                <div class="grid grid-cols-6 gap-3 mb-6">
-                    <div class="bg-white rounded-lg p-3 border border-gray-100 text-center">
-                        <div class="text-xl font-bold text-gray-800" x-text="getTaskStats().total"></div>
-                        <div class="text-xs text-gray-500">全部</div>
-                    </div>
-                    <div class="bg-white rounded-lg p-3 border border-gray-100 text-center">
-                        <div class="text-xl font-bold text-blue-600" x-text="getTaskStats().running"></div>
-                        <div class="text-xs text-gray-500">运行中</div>
-                    </div>
-                    <div class="bg-white rounded-lg p-3 border border-gray-100 text-center">
-                        <div class="text-xl font-bold text-yellow-600" x-text="getTaskStats().pending"></div>
-                        <div class="text-xs text-gray-500">等待中</div>
-                    </div>
-                    <div class="bg-white rounded-lg p-3 border border-gray-100 text-center">
-                        <div class="text-xl font-bold text-green-600" x-text="getTaskStats().success"></div>
-                        <div class="text-xs text-gray-500">成功</div>
-                    </div>
-                    <div class="bg-white rounded-lg p-3 border border-gray-100 text-center">
-                        <div class="text-xl font-bold text-red-600" x-text="getTaskStats().failed"></div>
-                        <div class="text-xs text-gray-500">失败</div>
-                    </div>
-                    <div class="bg-white rounded-lg p-3 border border-gray-100 text-center">
-                        <div class="text-xl font-bold text-orange-600" x-text="getTaskStats().timeout"></div>
-                        <div class="text-xs text-gray-500">超时</div>
-                    </div>
-                </div>
-
-                <!-- Tree View - App -> Service -> Instance -> Task -->
-                <div x-show="taskViewMode === 'tree'" class="space-y-2">
-                    <!-- Tree Controls -->
-                    <div class="flex items-center gap-2 mb-4">
-                        <button @click="expandAllTreeNodes()" class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition">
-                            <i class="fas fa-expand-alt mr-1"></i>展开全部
-                        </button>
-                        <button @click="collapseAllTreeNodes()" class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition">
-                            <i class="fas fa-compress-alt mr-1"></i>折叠全部
-                        </button>
-                    </div>
-
-                    <!-- App Level -->
-                    <template x-for="appNode in taskTreeData" :key="appNode.id">
-                        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                            <!-- App Header -->
-                            <div class="bg-gradient-to-r from-blue-50 to-white px-4 py-3 border-b border-gray-100 flex items-center justify-between cursor-pointer hover:bg-blue-50/80 transition"
-                                @click="toggleTreeNode(appNode)">
-                                <div class="flex items-center gap-3">
-                                    <i class="fas fa-chevron-right text-gray-400 transition-transform duration-200 text-sm"
-                                        :class="appNode.expanded ? 'rotate-90' : ''"></i>
-                                    <i class="fas fa-cube text-blue-500"></i>
-                                    <span class="font-semibold text-gray-800" x-text="appNode.name"></span>
-                                    <span class="text-xs text-gray-500" x-text="appNode.children.length + ' 服务'"></span>
-                                </div>
-                                <div class="flex items-center gap-3">
-                                    <!-- Stats Badges -->
-                                    <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs" x-text="appNode.stats.total + ' 任务'"></span>
-                                    <span x-show="appNode.stats.running > 0" class="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs flex items-center gap-1">
-                                        <i class="fas fa-circle text-[6px] animate-pulse"></i>
-                                        <span x-text="appNode.stats.running"></span>
-                                    </span>
-                                    <span x-show="appNode.stats.failed > 0" class="px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs flex items-center gap-1">
-                                        <i class="fas fa-times-circle text-xs"></i>
-                                        <span x-text="appNode.stats.failed"></span>
-                                    </span>
-                                    <span x-show="appNode.stats.timeout > 0" class="px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs flex items-center gap-1">
-                                        <i class="fas fa-clock text-xs"></i>
-                                        <span x-text="appNode.stats.timeout"></span>
-                                    </span>
-                                    <span class="text-xs text-gray-400" x-text="formatRelativeTime(appNode.lastUpdatedAt)"></span>
-                                </div>
-                            </div>
-
-                            <!-- Service Level -->
-                            <div x-show="appNode.expanded" x-collapse>
-                                <template x-for="serviceNode in appNode.children" :key="serviceNode.id">
-                                    <div class="border-l-2 border-blue-100 ml-4">
-                                        <!-- Service Header -->
-                                        <div class="px-4 py-2.5 border-b border-gray-50 flex items-center justify-between cursor-pointer hover:bg-gray-50 transition"
-                                            @click="toggleTreeNode(serviceNode)">
-                                            <div class="flex items-center gap-3">
-                                                <i class="fas fa-chevron-right text-gray-400 transition-transform duration-200 text-xs"
-                                                    :class="serviceNode.expanded ? 'rotate-90' : ''"></i>
-                                                <i class="fas fa-sitemap text-purple-500 text-sm"></i>
-                                                <span class="font-medium text-gray-700" x-text="serviceNode.name"></span>
-                                                <span class="text-xs text-gray-400" x-text="serviceNode.children.length + ' 实例'"></span>
-                                            </div>
-                                            <div class="flex items-center gap-2">
-                                                <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs" x-text="serviceNode.stats.total + ' 任务'"></span>
-                                                <span x-show="serviceNode.stats.running > 0" class="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs">
-                                                    <i class="fas fa-circle text-[6px] animate-pulse mr-1"></i><span x-text="serviceNode.stats.running"></span>
-                                                </span>
-                                                <span x-show="serviceNode.stats.failed > 0" class="px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs">
-                                                    <i class="fas fa-times-circle text-xs mr-1"></i><span x-text="serviceNode.stats.failed"></span>
-                                                </span>
-                                            </div>
-                                        </div>
-
-                                        <!-- Instance Level -->
-                                        <div x-show="serviceNode.expanded" x-collapse>
-                                            <template x-for="instanceNode in serviceNode.children" :key="instanceNode.id">
-                                                <div class="border-l-2 border-purple-100 ml-4">
-                                                    <!-- Instance Header -->
-                                                    <div class="px-4 py-2 border-b border-gray-50 flex items-center justify-between cursor-pointer hover:bg-gray-50 transition"
-                                                        @click="toggleTreeNode(instanceNode)">
-                                                        <div class="flex items-center gap-3">
-                                                            <i class="fas fa-chevron-right text-gray-400 transition-transform duration-200 text-xs"
-                                                                :class="instanceNode.expanded ? 'rotate-90' : ''"></i>
-                                                            <i class="fas fa-server text-gray-400 text-sm"></i>
-                                                            <code class="text-sm bg-gray-100 px-2 py-0.5 rounded truncate max-w-md" x-text="instanceNode.name"
-                                                                :title="instanceNode.fullId || instanceNode.name"></code>
-                                                        </div>
-                                                        <div class="flex items-center gap-2">
-                                                            <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs" x-text="instanceNode.tasks.length + ' 任务'"></span>
-                                                            <span x-show="instanceNode.stats.running > 0" class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
-                                                            <span x-show="instanceNode.stats.failed > 0" class="w-2 h-2 bg-red-500 rounded-full"></span>
-                                                        </div>
-                                                    </div>
-
-                                                    <!-- Task Level -->
-                                                    <div x-show="instanceNode.expanded" x-collapse>
-                                                        <table class="w-full text-sm">
-                                                            <thead class="bg-gray-50/50">
-                                                                <tr class="text-gray-500 text-xs uppercase tracking-wider">
-                                                                    <th class="text-left px-4 py-2 font-medium">Task ID</th>
-                                                                    <th class="text-left px-4 py-2 font-medium">类型</th>
-                                                                    <th class="text-left px-4 py-2 font-medium">状态</th>
-                                                                    <th class="text-left px-4 py-2 font-medium">时间</th>
-                                                                    <th class="text-right px-4 py-2 font-medium">操作</th>
-                                                                </tr>
-                                                            </thead>
-                                                            <tbody class="divide-y divide-gray-50">
-                                                                <template x-for="(task, taskIdx) in (instanceNode.tasks || [])" :key="instanceNode.id + '-task-' + taskIdx">
-                                                                    <tr class="hover:bg-gray-50/50 transition-colors">
-                                                                        <td class="px-4 py-2">
-                                                                            <code class="text-xs bg-gray-100 px-2 py-0.5 rounded cursor-pointer hover:bg-gray-200"
-                                                                                @click.stop="copyToClipboard(task.task_id)"
-                                                                                :title="task.task_id"
-                                                                                x-text="formatShortId(task.task_id)"></code>
-                                                                        </td>
-                                                                        <td class="px-4 py-2">
-                                                                            <span class="text-gray-700" x-text="task.task_type || '-'"></span>
-                                                                        </td>
-                                                                        <td class="px-4 py-2">
-                                                                            <span class="px-2 py-0.5 rounded-full text-xs font-medium"
-                                                                                :class="{
-                                                                                    'bg-yellow-100 text-yellow-700': task.status === 'pending',
-                                                                                    'bg-blue-100 text-blue-700': task.status === 'running',
-                                                                                    'bg-green-100 text-green-700': task.status === 'success',
-                                                                                    'bg-red-100 text-red-700': task.status === 'failed',
-                                                                                    'bg-orange-100 text-orange-700': task.status === 'timeout',
-                                                                                    'bg-gray-100 text-gray-600': task.status === 'cancelled' || task.status === 'unknown'
-                                                                                }"
-                                                                                x-text="task.status || 'unknown'"></span>
-                                                                        </td>
-                                                                        <td class="px-4 py-2 text-gray-500 text-xs" x-text="formatRelativeTime(task.created_at_millis)"></td>
-                                                                        <td class="px-4 py-2 text-right">
-                                                                            <div class="flex items-center justify-end gap-1">
-                                                                                <button @click.stop="viewTaskDetail(task)" 
-                                                                                    class="p-1 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded transition" title="查看详情">
-                                                                                    <i class="fas fa-eye text-xs"></i>
-                                                                                </button>
-                                                                                <button @click.stop="cancelTask(task)" 
-                                                                                    class="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition" title="取消">
-                                                                                    <i class="fas fa-times text-xs"></i>
-                                                                                </button>
-                                                                            </div>
-                                                                        </td>
-                                                                    </tr>
-                                                                </template>
-                                                            </tbody>
-                                                        </table>
-                                                    </div>
-                                                </div>
-                                            </template>
-                                        </div>
-                                    </div>
-                                </template>
-                            </div>
-                        </div>
-                    </template>
-
-                    <!-- Empty State -->
-                    <div x-show="taskTreeData.length === 0" class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
-                        <i class="fas fa-tasks text-4xl mb-3 text-gray-300"></i>
-                        <p x-text="taskFilterOnlyFailed ? '没有异常任务' : (taskSearchQuery ? '没有匹配的任务' : '暂无任务')"></p>
-                    </div>
-                </div>
-
-                <!-- Flat View (Original Table) -->
-                <div x-show="taskViewMode === 'flat'" class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                    <table class="w-full">
-                        <thead class="bg-gray-50 border-b border-gray-100">
-                            <tr>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Task ID</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Type</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">App / Service</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Target</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
-                                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Created</th>
-                                <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-100">
-                            <template x-for="(task, idx) in tasks" :key="'flat-' + idx">
-                                <tr class="hover:bg-gray-50 transition">
-                                    <td class="px-6 py-4">
-                                        <code class="text-sm bg-gray-100 px-2 py-1 rounded cursor-pointer hover:bg-gray-200"
-                                            @click="copyToClipboard(task.task_id)"
-                                            :title="task.task_id"
-                                            x-text="formatShortId(task.task_id)"></code>
-                                    </td>
-                                    <td class="px-6 py-4 font-medium text-gray-800" x-text="task.task_type || '-'"></td>
-                                    <td class="px-6 py-4">
-                                        <div class="text-sm text-gray-700" x-text="task.app_id || '-'"></div>
-                                        <div class="text-xs text-gray-400" x-text="task.service_name || ''"></div>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <code class="text-sm text-gray-500" x-text="task.target_agent_id ? formatShortId(task.target_agent_id) : 'Global'"></code>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <span class="px-2 py-1 rounded-full text-sm"
-                                            :class="{
-                                                'bg-yellow-100 text-yellow-700': task.status === 'pending',
-                                                'bg-blue-100 text-blue-700': task.status === 'running',
-                                                'bg-green-100 text-green-700': task.status === 'success',
-                                                'bg-red-100 text-red-700': task.status === 'failed',
-                                                'bg-orange-100 text-orange-700': task.status === 'timeout',
-                                                'bg-gray-100 text-gray-700': task.status === 'cancelled' || task.status === 'unknown'
-                                            }"
-                                            x-text="task.status || 'unknown'"></span>
-                                    </td>
-                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatRelativeTime(task.created_at_millis)"></td>
-                                    <td class="px-6 py-4 text-right">
-                                        <div class="flex items-center justify-end gap-2">
-                                            <button @click="viewTaskDetail(task)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
-                                                <i class="fas fa-eye"></i>
-                                            </button>
-                                            <button @click="cancelTask(task)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Cancel">
-                                                <i class="fas fa-times"></i>
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            </template>
-                            <tr x-show="tasks.length === 0">
-                                <td colspan="7" class="px-6 py-12 text-center text-gray-500">
-                                    <i class="fas fa-tasks text-4xl mb-3 text-gray-300"></i>
-                                    <p>No tasks found</p>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
+                </template>
             </div>
 
             <!-- ================================================================== -->
-            <!-- Configs View (Simplified: Service-level only) -->
+            <!-- Configs View -->
             <!-- ================================================================== -->
             <div x-show="currentView === 'configs'" x-cloak class="fade-in h-[calc(100vh-160px)]">
-                <div class="flex h-full gap-6">
-                    <!-- Left: Service Tree -->
-                    <div class="w-1/3 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden">
-                        <div class="p-4 border-b border-gray-100 flex items-center justify-between">
-                            <h3 class="font-bold text-gray-800">Service Tree</h3>
-                            <button @click="loadConfigData()" class="text-gray-400 hover:text-primary-600 transition">
-                                <i class="fas fa-sync" :class="loading.configs ? 'fa-spin' : ''"></i>
-                            </button>
-                        </div>
-                        <div class="p-4 border-b border-gray-100">
-                            <div class="relative">
-                                <input type="text" x-model="configSearchQuery" placeholder="Search services/instances..."
-                                    class="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500">
-                                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
-                            </div>
-                        </div>
-                        <div class="flex-1 overflow-y-auto p-2">
-                            <div class="space-y-1">
-                                <template x-for="app in configTree" :key="app.id">
-                                    <div x-show="!configSearchQuery || app.name.toLowerCase().includes(configSearchQuery.toLowerCase()) || 
-                                        app.services.some(s => s.name.toLowerCase().includes(configSearchQuery.toLowerCase()) || 
-                                        s.instances.some(i => i.name.toLowerCase().includes(configSearchQuery.toLowerCase())))">
-                                        
-                                        <!-- App Node (Header Only) -->
-                                        <div class="flex items-center gap-2 px-3 py-2 text-gray-500 text-xs uppercase tracking-wider font-semibold">
-                                            <i class="fas fa-cube"></i>
-                                            <span class="truncate" x-text="app.name"></span>
-                                        </div>
-                                        
-                                        <!-- Service Level -->
-                                        <div class="ml-2 mt-1 space-y-1 border-l-2 border-gray-100 pl-2">
-                                            <template x-for="svc in app.services" :key="svc.id">
-                                                <div x-show="!configSearchQuery || svc.name.toLowerCase().includes(configSearchQuery.toLowerCase()) || 
-                                                    svc.instances.some(i => i.name.toLowerCase().includes(configSearchQuery.toLowerCase()))">
-                                                    
-                                                    <!-- Service Node -->
-                                                    <div @click="selectConfigNode(svc)"
-                                                        :class="selectedConfigNode?.id === svc.id ? 'bg-primary-50 text-primary-700 border-primary-200' : 'text-gray-700 border-transparent hover:bg-gray-50'"
-                                                        class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors group">
-                                                        <i class="fas fa-chevron-right text-[10px] text-gray-300 transition-transform"
-                                                            :class="svc.expanded ? 'rotate-90' : ''"
-                                                            @click.stop="svc.expanded = !svc.expanded"></i>
-                                                        <i class="fas fa-sitemap text-purple-500"></i>
-                                                        <span class="font-medium flex-1 truncate" x-text="svc.name"></span>
-                                                        <span class="text-xs text-gray-400" x-text="svc.instances.length"></span>
-                                                    </div>
-
-                                                    <!-- Instance Level (Status Only) -->
-                                                    <div x-show="svc.expanded" x-collapse class="ml-6 mt-1 space-y-1">
-                                                        <template x-for="inst in svc.instances" :key="inst.id">
-                                                            <div x-show="!configSearchQuery || inst.name.toLowerCase().includes(configSearchQuery.toLowerCase())"
-                                                                class="flex items-center gap-2 px-3 py-1 text-gray-500 text-xs">
-                                                                <span class="w-1.5 h-1.5 rounded-full" :class="inst.status === 'online' ? 'bg-green-500' : 'bg-gray-300'"></span>
-                                                                <span class="flex-1 truncate" x-text="inst.name"></span>
-                                                            </div>
-                                                        </template>
-                                                    </div>
-                                                </div>
-                                            </template>
-                                        </div>
-                                    </div>
-                                </template>
-                            </div>
-                        </div>
+                <template x-if="viewTemplates.configs">
+                    <div x-html="viewTemplates.configs" class="h-full"></div>
+                </template>
+                <template x-if="!viewTemplates.configs">
+                    <div class="flex items-center justify-center h-full">
+                        <i class="fas fa-spinner fa-spin text-3xl text-primary-600"></i>
                     </div>
-
-                    <!-- Right: Config Editor -->
-                    <div class="flex-1 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden relative">
-                        <!-- Loading Overlay -->
-                        <div x-show="editingConfig.loading" class="absolute inset-0 bg-white/80 z-10 flex items-center justify-center">
-                            <div class="text-center">
-                                <i class="fas fa-spinner fa-spin text-3xl text-primary-600 mb-2"></i>
-                                <p class="text-gray-500">Loading configuration...</p>
-                            </div>
-                        </div>
-
-                        <!-- Editor Header -->
-                        <div class="p-4 border-b border-gray-100 flex items-center justify-between">
-                            <div class="flex items-center gap-3">
-                                <div class="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
-                                    <i class="fas fa-sitemap text-gray-500"></i>
-                                </div>
-                                <div>
-                                    <h3 class="font-bold text-gray-800" x-text="selectedConfigNode ? selectedConfigNode.name : 'Select a service'"></h3>
-                                    <p class="text-xs text-gray-400">Service Configuration</p>
-                                </div>
-                            </div>
-                            <div class="flex items-center gap-2" x-show="selectedConfigNode">
-                                <button @click="deleteOverrideConfig()"
-                                    class="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg transition text-sm flex items-center gap-2">
-                                    <i class="fas fa-trash-alt"></i> Delete Config
-                                </button>
-                                <button @click="resetConfigEditor()" :disabled="!editingConfig.isDirty"
-                                    class="px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition text-sm flex items-center gap-2 disabled:opacity-50">
-                                    <i class="fas fa-undo"></i> Reset
-                                </button>
-                                <button @click="saveConfig()" :disabled="!editingConfig.isDirty || editingConfig.saving"
-                                    class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition text-sm flex items-center gap-2 disabled:opacity-50 shadow-sm">
-                                    <i class="fas" :class="editingConfig.saving ? 'fa-spinner fa-spin' : 'fa-save'"></i>
-                                    <span x-text="editingConfig.saving ? 'Saving...' : 'Save Changes'"></span>
-                                </button>
-                            </div>
-                        </div>
-
-                        <!-- Editor Body -->
-                        <div class="flex-1 p-0 flex flex-col bg-gray-50 overflow-hidden">
-                            <template x-if="!selectedConfigNode">
-                                <div class="flex-1 flex flex-col items-center justify-center text-gray-400 p-8 text-center">
-                                    <i class="fas fa-cog text-6xl mb-4 opacity-20"></i>
-                                    <p class="text-lg font-medium">Please select a service from the tree</p>
-                                    <p class="text-sm mt-1">Configurations are applied to all instances belonging to the selected service.</p>
-                                </div>
-                            </template>
-                            
-                            <template x-if="selectedConfigNode">
-                                <div class="flex-1 flex flex-col overflow-hidden">
-                                    <!-- Tip -->
-                                    <div class="px-4 py-2 bg-blue-50 text-blue-700 text-xs border-b border-blue-100 flex items-center gap-2">
-                                        <i class="fas fa-info-circle"></i>
-                                        <span>Configuration is stored in JSON format. Use service name as DataId in Nacos.</span>
-                                        <div x-show="editingConfig.isDirty" class="ml-auto flex items-center gap-1 font-bold animate-pulse">
-                                            <i class="fas fa-circle text-[6px]"></i> Unsaved Changes
-                                        </div>
-                                    </div>
-
-                                    <!-- Config Hints Banner -->
-                                    <div x-show="editingConfig.showHint" x-collapse>
-                                        <div class="px-4 py-3 border-b flex items-center justify-between"
-                                            :class="editingConfig.hintType === 'template' ? 'bg-amber-50 border-amber-100 text-amber-800' : 'bg-blue-50 border-blue-100 text-blue-800'">
-                                            <div class="flex items-center gap-3">
-                                                <i class="fas" :class="editingConfig.hintType === 'template' ? 'fa-magic text-amber-500' : 'fa-lightbulb text-blue-500'"></i>
-                                                <div class="text-xs">
-                                                    <template x-if="editingConfig.hintType === 'template'">
-                                                        <div>
-                                                            <span class="font-bold">Recommendation:</span> No configuration found. Would you like to use the recommended template?
-                                                        </div>
-                                                    </template>
-                                                    <template x-if="editingConfig.hintType === 'missing'">
-                                                        <div>
-                                                            <span class="font-bold">Optimization:</span> Found <span x-text="editingConfig.missingFields.length"></span> missing fields compared to latest template: 
-                                                            <code class="bg-blue-100 px-1 rounded" x-text="editingConfig.missingFields.join(', ')"></code>
-                                                        </div>
-                                                    </template>
-                                                </div>
-                                            </div>
-                                            <div class="flex items-center gap-2">
-                                                <template x-if="editingConfig.hintType === 'template'">
-                                                    <button @click="applyConfigTemplate()" class="px-3 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 transition">
-                                                        Apply Template
-                                                    </button>
-                                                </template>
-                                                <template x-if="editingConfig.hintType === 'missing'">
-                                                    <button @click="fillMissingConfigFields()" class="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition">
-                                                        Fill Missing Fields
-                                                    </button>
-                                                </template>
-                                                <button @click="editingConfig.showHint = false" class="p-1 hover:bg-black/5 rounded">
-                                                    <i class="fas fa-times opacity-50"></i>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- JSON Editor Area -->
-                                    <div class="flex-1 relative overflow-hidden">
-                                        <textarea x-model="editingConfig.content" @input="checkConfigDirty()"
-                                            class="absolute inset-0 w-full h-full p-4 font-mono text-sm bg-white border-none focus:ring-0 resize-none outline-none leading-relaxed"
-                                            placeholder='{ "sampling": { "rate": 0.5 } }'></textarea>
-                                    </div>
-                                    
-                                    <!-- Status Bar -->
-                                    <div class="px-4 py-2 bg-white border-t border-gray-100 text-[10px] text-gray-400 flex justify-between items-center">
-                                        <div class="flex items-center gap-4">
-                                            <div x-text="'Target: ' + editingConfig.serviceName"></div>
-                                        </div>
-                                        <div class="flex items-center gap-4">
-                                            <div x-text="'Version: ' + (editingConfig.version || 'none')"></div>
-                                            <div x-text="'Chars: ' + editingConfig.content.length"></div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </template>
-                        </div>
-                    </div>
-                </div>
+                </template>
             </div>
 
             <!-- ================================================================== -->
             <!-- Arthas View -->
             <!-- ================================================================== -->
             <div x-show="currentView === 'arthas'" x-cloak class="fade-in">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-2xl font-bold text-gray-800">Arthas Management</h2>
-                    <div class="flex items-center gap-3">
-                        <button @click="loadArthasAgents()" 
-                            :disabled="loading.arthas"
-                            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2 disabled:opacity-50">
-                            <i :class="loading.arthas ? 'fas fa-spinner fa-spin' : 'fas fa-sync'"></i> 
-                            <span x-text="loading.arthas ? 'Loading...' : 'Refresh'"></span>
-                        </button>
+                <template x-if="viewTemplates.arthas">
+                    <div x-html="viewTemplates.arthas"></div>
+                </template>
+                <template x-if="!viewTemplates.arthas">
+                    <div class="flex items-center justify-center h-64">
+                        <i class="fas fa-spinner fa-spin text-3xl text-primary-600"></i>
                     </div>
-                </div>
-
-                <!-- Task Status Panel -->
-                <div x-show="arthasTask.taskId || arthasTask.active" x-cloak 
-                    class="mb-6 p-4 rounded-lg border"
-                    :class="{
-                        'bg-blue-50 border-blue-200': arthasTask.status === 'pending' || arthasTask.status === 'running',
-                        'bg-green-50 border-green-200': arthasTask.status === 'success',
-                        'bg-red-50 border-red-200': arthasTask.status === 'failed' || arthasTask.status === 'timeout',
-                        'bg-gray-50 border-gray-200': !arthasTask.status
-                    }">
-                    <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-3">
-                            <i class="text-lg"
-                                :class="{
-                                    'fas fa-spinner fa-spin text-blue-500': arthasTask.status === 'pending' || arthasTask.status === 'running',
-                                    'fas fa-check-circle text-green-500': arthasTask.status === 'success',
-                                    'fas fa-times-circle text-red-500': arthasTask.status === 'failed' || arthasTask.status === 'timeout',
-                                    'fas fa-info-circle text-gray-500': !arthasTask.status
-                                }"></i>
-                            <div>
-                                <div class="font-medium text-gray-800">
-                                    <span x-text="arthasTask.taskType === 'attach' ? 'Arthas Attach' : 'Arthas Detach'"></span>
-                                    <span class="text-gray-500 text-sm ml-2" x-show="arthasTask.taskId">
-                                        (<span x-text="arthasTask.taskId.substring(0, 12) + '...'"></span>)
-                                    </span>
-                                </div>
-                                <div class="text-sm text-gray-600" x-text="arthasTask.message"></div>
-                            </div>
-                        </div>
-                        <button x-show="!arthasTask.active" @click="closeTaskPanel()" 
-                            class="text-gray-400 hover:text-gray-600 transition">
-                            <i class="fas fa-times"></i>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Arthas Terminal (when connected) - now using xterm.js via terminalManager -->
-                <!-- The terminal UI is rendered in #terminalContainer -->
-
-                <!-- Connection Error -->
-                <div x-show="arthasSession.error && !arthasSession.active" class="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-                    <div class="flex items-center gap-2 text-red-700">
-                        <i class="fas fa-exclamation-circle"></i>
-                        <span x-text="arthasSession.error"></span>
-                    </div>
-                </div>
-
-                <!-- Instances Table -->
-                <div>
-                    <!-- Info Card -->
-                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
-                        <h3 class="text-lg font-semibold text-gray-800 mb-4">
-                            <i class="fas fa-info-circle text-primary-500 mr-2"></i>
-                            Arthas Management
-                        </h3>
-                        <div class="text-gray-600 space-y-2 text-sm">
-                            <p>1. <strong>Attach</strong>: Start Arthas agent on the target JVM instance</p>
-                            <p>2. <strong>Detach</strong>: Stop Arthas agent from the target JVM instance</p>
-                            <p>3. <strong>Connect</strong>: Open terminal to interact with Arthas (requires Arthas running)</p>
-                        </div>
-                    </div>
-
-                    <!-- Stats -->
-                    <div class="grid grid-cols-4 gap-4 mb-6">
-                        <div class="bg-white rounded-lg p-4 border border-gray-100">
-                            <div class="text-2xl font-bold text-gray-800" x-text="arthasInstances.length"></div>
-                            <div class="text-sm text-gray-500">Online Instances</div>
-                        </div>
-                        <div class="bg-white rounded-lg p-4 border border-gray-100">
-                            <div class="text-2xl font-bold text-green-600" x-text="arthasInstances.filter(i => i.arthasStatus?.state === 'running').length"></div>
-                            <div class="text-sm text-gray-500">Arthas Running</div>
-                        </div>
-                        <div class="bg-white rounded-lg p-4 border border-gray-100">
-                            <div class="text-2xl font-bold text-blue-600" x-text="arthasInstances.filter(i => i.arthasStatus?.tunnelReady).length"></div>
-                            <div class="text-sm text-gray-500">Tunnel Ready</div>
-                        </div>
-                        <div class="bg-white rounded-lg p-4 border border-gray-100">
-                            <div class="text-2xl font-bold text-gray-400" x-text="arthasInstances.filter(i => i.arthasStatus?.state === 'stopped' || i.arthasStatus?.state === 'unknown').length"></div>
-                            <div class="text-sm text-gray-500">Arthas Stopped</div>
-                        </div>
-                    </div>
-
-                    <!-- Instances Table -->
-                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                        <table class="w-full">
-                            <thead class="bg-gray-50 border-b border-gray-100">
-                                <tr>
-                                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Instance</th>
-                                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">IP</th>
-                                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Arthas Status</th>
-                                    <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Tunnel</th>
-                                    <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-gray-100">
-                                <template x-for="inst in arthasInstances" :key="inst.agent_id">
-                                    <tr class="hover:bg-gray-50 transition">
-                                        <td class="px-6 py-4">
-                                            <div class="font-medium text-gray-800" x-text="inst.service_name || 'Unknown Service'"></div>
-                                            <div class="text-xs text-gray-400 font-mono" x-text="inst.agent_id?.substring(0, 24) + '...'"></div>
-                                        </td>
-                                        <td class="px-6 py-4">
-                                            <div class="text-gray-800" x-text="inst.ip || '-'"></div>
-                                        </td>
-                                        <td class="px-6 py-4">
-                                            <div class="flex items-center gap-2">
-                                                <span class="px-2 py-1 rounded-full text-xs font-medium"
-                                                    :class="{
-                                                        'bg-green-100 text-green-700': inst.arthasStatus?.state === 'running',
-                                                        'bg-gray-100 text-gray-600': inst.arthasStatus?.state === 'stopped'
-                                                    }"
-                                                    x-text="inst.arthasStatus?.state || 'stopped'"></span>
-                                                <span x-show="inst.arthasStatus?.arthasVersion" 
-                                                    class="text-xs text-gray-400" 
-                                                    x-text="'v' + inst.arthasStatus?.arthasVersion"></span>
-                                            </div>
-                                        </td>
-                                        <td class="px-6 py-4">
-                                            <span class="px-2 py-1 rounded-full text-xs font-medium"
-                                                :class="inst.arthasStatus?.tunnelReady ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'"
-                                                x-text="inst.arthasStatus?.tunnelReady ? 'Connected' : 'Not Connected'"></span>
-                                        </td>
-                                        <td class="px-6 py-4 text-right">
-                                            <div class="flex items-center justify-end gap-2">
-                                                <!-- Attach Button -->
-                                                <button @click="attachArthas(inst)" 
-                                                    :disabled="inst.operating || arthasTask.active || inst.arthasStatus?.state === 'running'"
-                                                    class="px-3 py-1.5 text-sm rounded-lg transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    :class="inst.arthasStatus?.state === 'running' ? 'bg-gray-100 text-gray-400' : 'bg-green-100 text-green-700 hover:bg-green-200'"
-                                                    :title="inst.arthasStatus?.state === 'running' ? 'Arthas already running' : 'Attach Arthas'">
-                                                    <i :class="inst.operating && arthasTask.taskType === 'attach' ? 'fas fa-spinner fa-spin' : 'fas fa-play'"></i>
-                                                    <span>Attach</span>
-                                                </button>
-                                                <!-- Detach Button -->
-                                                <button @click="detachArthas(inst)" 
-                                                    :disabled="inst.operating || arthasTask.active || inst.arthasStatus?.state !== 'running'"
-                                                    class="px-3 py-1.5 text-sm rounded-lg transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    :class="inst.arthasStatus?.state !== 'running' ? 'bg-gray-100 text-gray-400' : 'bg-red-100 text-red-700 hover:bg-red-200'"
-                                                    :title="inst.arthasStatus?.state !== 'running' ? 'Arthas not running' : 'Detach Arthas'">
-                                                    <i :class="inst.operating && arthasTask.taskType === 'detach' ? 'fas fa-spinner fa-spin' : 'fas fa-stop'"></i>
-                                                    <span>Detach</span>
-                                                </button>
-                                                <!-- Connect Terminal Button -->
-                                                <button @click="connectArthas(inst)" 
-                                                    :disabled="arthasSession.connecting || !inst.arthasStatus?.tunnelReady"
-                                                    class="px-3 py-1.5 text-sm rounded-lg transition flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    :class="!inst.arthasStatus?.tunnelReady ? 'bg-gray-100 text-gray-400' : 'bg-primary-100 text-primary-700 hover:bg-primary-200'"
-                                                    :title="!inst.arthasStatus?.tunnelReady ? 'Tunnel not ready' : 'Connect Terminal'">
-                                                    <i :class="arthasSession.connecting && arthasSession.agentId === inst.agent_id ? 'fas fa-spinner fa-spin' : 'fas fa-terminal'"></i>
-                                                    <span>Connect</span>
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                </template>
-                                <tr x-show="arthasInstances.length === 0">
-                                    <td colspan="5" class="px-6 py-12 text-center text-gray-500">
-                                        <i class="fas fa-server text-4xl mb-3 text-gray-300"></i>
-                                        <p>No online instances found</p>
-                                        <p class="text-sm mt-1">Make sure your Java agents are connected and online</p>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                </template>
             </div>
         </main>
     </div>
@@ -1219,7 +353,7 @@
         </div>
     </div>
 
-    <!-- Detail Modal -->
+    <!-- Detail Modal (Generic) -->
     <div x-show="showDetailModal" x-cloak 
         class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" 
         @click.self="showDetailModal = false">

@@ -1,0 +1,94 @@
+<div class="flex items-center justify-between mb-6">
+    <h2 class="text-2xl font-bold text-gray-800">Instances</h2>
+    <div class="flex items-center gap-3">
+        <select x-model="instanceFilter" @change="loadInstances()" 
+            class="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+            <option value="">Online Only</option>
+            <option value="all">All Instances</option>
+        </select>
+        <button @click="loadInstances()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
+            <i class="fas fa-sync"></i>
+        </button>
+    </div>
+</div>
+
+<!-- Instance Stats -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+    <div class="bg-white rounded-lg p-4 border border-gray-100">
+        <div class="text-2xl font-bold text-gray-800" x-text="instanceStats.total_agents || 0"></div>
+        <div class="text-sm text-gray-500">Total</div>
+    </div>
+    <div class="bg-white rounded-lg p-4 border border-gray-100">
+        <div class="text-2xl font-bold text-green-600" x-text="instanceStats.online_agents || 0"></div>
+        <div class="text-sm text-gray-500">Online</div>
+    </div>
+    <div class="bg-white rounded-lg p-4 border border-gray-100">
+        <div class="text-2xl font-bold text-gray-400" x-text="instanceStats.offline_agents || 0"></div>
+        <div class="text-sm text-gray-500">Offline</div>
+    </div>
+    <div class="bg-white rounded-lg p-4 border border-gray-100">
+        <div class="text-2xl font-bold text-red-500" x-text="instanceStats.unhealthy_agents || 0"></div>
+        <div class="text-sm text-gray-500">Unhealthy</div>
+    </div>
+</div>
+
+<!-- Instances Table -->
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+    <table class="w-full">
+        <thead class="bg-gray-50 border-b border-gray-100">
+            <tr>
+                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Agent ID</th>
+                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Service</th>
+                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Host</th>
+                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
+                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Last Heartbeat</th>
+                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Uptime</th>
+                <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+            <template x-for="instance in instances" :key="instance.agent_id">
+                <tr class="hover:bg-gray-50 transition">
+                    <td class="px-6 py-4">
+                        <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="instance.agent_id?.substring(0, 20) + '...'"></code>
+                    </td>
+                    <td class="px-6 py-4">
+                        <div class="font-medium text-gray-800" x-text="instance.service_name || '-'"></div>
+                        <div class="text-sm text-gray-500" x-text="instance.app_id || '-'"></div>
+                    </td>
+                    <td class="px-6 py-4">
+                        <div class="text-gray-800" x-text="instance.hostname || '-'"></div>
+                        <div class="text-sm text-gray-500" x-text="instance.ip || '-'"></div>
+                    </td>
+                    <td class="px-6 py-4">
+                        <span class="px-2 py-1 rounded-full text-sm"
+                            :class="{
+                                'bg-green-100 text-green-700': instance.status?.state === 'online',
+                                'bg-gray-100 text-gray-700': instance.status?.state === 'offline',
+                                'bg-red-100 text-red-700': instance.status?.state === 'unhealthy'
+                            }"
+                            x-text="instance.status?.state || 'unknown'"></span>
+                    </td>
+                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatTimestamp(instance.last_heartbeat)"></td>
+                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatUptime(instance.start_time)"></td>
+                    <td class="px-6 py-4 text-right">
+                        <div class="flex items-center justify-end gap-2">
+                            <button @click="viewInstanceDetail(instance)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
+                                <i class="fas fa-eye"></i>
+                            </button>
+                            <button @click="kickInstance(instance)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Kick">
+                                <i class="fas fa-user-slash"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            </template>
+            <tr x-show="instances.length === 0">
+                <td colspan="7" class="px-6 py-12 text-center text-gray-500">
+                    <i class="fas fa-server text-4xl mb-3 text-gray-300"></i>
+                    <p>No instances found</p>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>

@@ -584,6 +584,19 @@ func (e *Extension) getTaskV2(w http.ResponseWriter, r *http.Request) {
 
 	info, err := e.taskMgr.GetTaskStatus(r.Context(), taskID)
 	if err == nil && info != nil {
+		// Some backends may persist task detail and result separately.
+		// If detail exists but Result is empty, try to enrich it with the stored result.
+		if info.Result == nil {
+			result, found, err := e.taskMgr.GetTaskResult(r.Context(), taskID)
+			if err != nil {
+				e.handleError(w, err)
+				return
+			}
+			if found {
+				info.Result = result
+			}
+		}
+
 		e.writeJSON(w, http.StatusOK, toTaskInfoV2(info))
 		return
 	}
