@@ -1,94 +1,259 @@
-<div class="flex items-center justify-between mb-6">
-    <h2 class="text-2xl font-bold text-gray-800">Instances</h2>
-    <div class="flex items-center gap-3">
-        <select x-model="instanceFilter" @change="loadInstances()" 
-            class="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
-            <option value="">Online Only</option>
-            <option value="all">All Instances</option>
-        </select>
-        <button @click="loadInstances()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-            <i class="fas fa-sync"></i>
-        </button>
+<div class="space-y-6 fade-in">
+    <!-- Header: Stats & Actions -->
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h2 class="text-2xl font-bold text-gray-800">实例管理</h2>
+            <p class="text-sm text-gray-500 mt-1">实时监控所有接入的 Collector 节点及其健康状态</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <div class="relative">
+                <input type="text" x-model="instanceSearch" placeholder="搜索 Agent ID, Host 或 Service..." 
+                    class="w-64 pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm">
+                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+            </div>
+            <button @click="loadInstances()" class="p-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 text-gray-600 transition shadow-sm">
+                <i class="fas fa-sync-alt" :class="{ 'fa-spin': loading.instances }"></i>
+            </button>
+        </div>
     </div>
-</div>
 
-<!-- Instance Stats -->
-<div class="grid grid-cols-4 gap-4 mb-6">
-    <div class="bg-white rounded-lg p-4 border border-gray-100">
-        <div class="text-2xl font-bold text-gray-800" x-text="instanceStats.total_agents || 0"></div>
-        <div class="text-sm text-gray-500">Total</div>
+    <!-- Quick Stats Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
+            <div class="w-12 h-12 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center text-xl">
+                <i class="fas fa-server"></i>
+            </div>
+            <div>
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">总实例数</p>
+                <p class="text-2xl font-bold text-gray-800" x-text="instances.length">0</p>
+            </div>
+        </div>
+        <div class="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
+            <div class="w-12 h-12 bg-green-50 text-green-600 rounded-lg flex items-center justify-center text-xl">
+                <i class="fas fa-check-circle"></i>
+            </div>
+            <div>
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">在线节点</p>
+                <p class="text-2xl font-bold text-gray-800" x-text="instances.filter(i => i.status?.state === 'online').length">0</p>
+            </div>
+        </div>
+        <div class="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
+            <div class="w-12 h-12 bg-gray-50 text-gray-500 rounded-lg flex items-center justify-center text-xl">
+                <i class="fas fa-moon"></i>
+            </div>
+            <div>
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">离线节点</p>
+                <p class="text-2xl font-bold text-gray-800" x-text="instances.filter(i => i.status?.state === 'offline').length">0</p>
+            </div>
+        </div>
+        <div class="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex items-center gap-4">
+            <div class="w-12 h-12 bg-red-50 text-red-600 rounded-lg flex items-center justify-center text-xl">
+                <i class="fas fa-exclamation-triangle"></i>
+            </div>
+            <div>
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">异常告警</p>
+                <p class="text-2xl font-bold text-gray-800">0</p>
+            </div>
+        </div>
     </div>
-    <div class="bg-white rounded-lg p-4 border border-gray-100">
-        <div class="text-2xl font-bold text-green-600" x-text="instanceStats.online_agents || 0"></div>
-        <div class="text-sm text-gray-500">Online</div>
-    </div>
-    <div class="bg-white rounded-lg p-4 border border-gray-100">
-        <div class="text-2xl font-bold text-gray-400" x-text="instanceStats.offline_agents || 0"></div>
-        <div class="text-sm text-gray-500">Offline</div>
-    </div>
-    <div class="bg-white rounded-lg p-4 border border-gray-100">
-        <div class="text-2xl font-bold text-red-500" x-text="instanceStats.unhealthy_agents || 0"></div>
-        <div class="text-sm text-gray-500">Unhealthy</div>
-    </div>
-</div>
 
-<!-- Instances Table -->
-<div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-    <table class="w-full">
-        <thead class="bg-gray-50 border-b border-gray-100">
-            <tr>
-                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Agent ID</th>
-                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Service</th>
-                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Host</th>
-                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Status</th>
-                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Last Heartbeat</th>
-                <th class="px-6 py-4 text-left text-sm font-semibold text-gray-600">Uptime</th>
-                <th class="px-6 py-4 text-right text-sm font-semibold text-gray-600">Actions</th>
-            </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-            <template x-for="instance in instances" :key="instance.agent_id">
-                <tr class="hover:bg-gray-50 transition">
-                    <td class="px-6 py-4">
-                        <code class="text-sm bg-gray-100 px-2 py-1 rounded" x-text="instance.agent_id?.substring(0, 20) + '...'"></code>
-                    </td>
-                    <td class="px-6 py-4">
-                        <div class="font-medium text-gray-800" x-text="instance.service_name || '-'"></div>
-                        <div class="text-sm text-gray-500" x-text="instance.app_id || '-'"></div>
-                    </td>
-                    <td class="px-6 py-4">
-                        <div class="text-gray-800" x-text="instance.hostname || '-'"></div>
-                        <div class="text-sm text-gray-500" x-text="instance.ip || '-'"></div>
-                    </td>
-                    <td class="px-6 py-4">
-                        <span class="px-2 py-1 rounded-full text-sm"
-                            :class="{
-                                'bg-green-100 text-green-700': instance.status?.state === 'online',
-                                'bg-gray-100 text-gray-700': instance.status?.state === 'offline',
-                                'bg-red-100 text-red-700': instance.status?.state === 'unhealthy'
-                            }"
-                            x-text="instance.status?.state || 'unknown'"></span>
-                    </td>
-                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatTimestamp(instance.last_heartbeat)"></td>
-                    <td class="px-6 py-4 text-sm text-gray-500" x-text="formatUptime(instance.start_time)"></td>
-                    <td class="px-6 py-4 text-right">
-                        <div class="flex items-center justify-end gap-2">
-                            <button @click="viewInstanceDetail(instance)" class="p-2 text-gray-400 hover:text-primary-600 transition" title="View">
-                                <i class="fas fa-eye"></i>
-                            </button>
-                            <button @click="kickInstance(instance)" class="p-2 text-gray-400 hover:text-danger-500 transition" title="Kick">
-                                <i class="fas fa-user-slash"></i>
-                            </button>
+    <!-- Instance Table Card -->
+    <div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-gray-50 bg-gray-50/30 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <nav class="flex gap-2 p-1 bg-gray-100 rounded-lg">
+                    <button @click="instanceFilter = 'all'" :class="instanceFilter === 'all' ? 'bg-white shadow-sm text-primary-600' : 'text-gray-500 hover:text-gray-700'"
+                        class="px-3 py-1.5 text-xs font-medium rounded-md transition-all">全部</button>
+                    <button @click="instanceFilter = 'online'" :class="instanceFilter === 'online' ? 'bg-white shadow-sm text-green-600' : 'text-gray-500 hover:text-gray-700'"
+                        class="px-3 py-1.5 text-xs font-medium rounded-md transition-all">在线</button>
+                    <button @click="instanceFilter = 'offline'" :class="instanceFilter === 'offline' ? 'bg-white shadow-sm text-gray-600' : 'text-gray-500 hover:text-gray-700'"
+                        class="px-3 py-1.5 text-xs font-medium rounded-md transition-all">离线</button>
+                </nav>
+            </div>
+            <span class="text-xs text-gray-400" x-text="'共显示 ' + filteredInstances().length + ' 个节点'"></span>
+        </div>
+        
+        <div class="overflow-x-auto">
+            <table class="w-full text-left">
+                <thead>
+                    <tr class="text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-50">
+                        <th class="px-6 py-4">节点 ID & 宿主机</th>
+                        <th class="px-6 py-4">所属服务</th>
+                        <th class="px-6 py-4">状态</th>
+                        <th class="px-6 py-4 text-right">操作</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-50">
+                    <template x-for="inst in filteredInstances()" :key="inst.agent_id">
+                        <tr class="hover:bg-gray-50/80 transition-colors group cursor-pointer" @click="showInstanceDetails(inst)">
+                            <td class="px-6 py-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-400 group-hover:bg-primary-50 group-hover:text-primary-600 transition-colors">
+                                        <i class="fas fa-microchip"></i>
+                                    </div>
+                                    <div>
+                                        <div class="text-sm font-bold text-gray-800 flex items-center gap-2">
+                                            <span x-text="inst.agent_id.substring(0, 12)"></span>
+                                            <span class="text-[10px] bg-gray-100 text-gray-500 px-1 rounded font-normal" x-text="'v' + (inst.version || '0.0.0')"></span>
+                                        </div>
+                                        <div class="text-xs text-gray-400 flex items-center gap-1 mt-0.5">
+                                            <i class="fas fa-network-wired text-[10px]"></i>
+                                            <span x-text="inst.hostname || 'Unknown'"></span>
+                                            <span class="mx-1">·</span>
+                                            <span x-text="inst.ip || '0.0.0.0'"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="px-6 py-4 text-sm">
+                                <div class="font-medium text-gray-700" x-text="inst.service_name || 'default'"></div>
+                                <div class="text-[11px] text-gray-400 px-2 py-0.5 bg-gray-50 rounded inline-block mt-1" x-text="inst.app_id || 'Global'"></div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="flex flex-col">
+                                    <div class="flex items-center gap-2">
+                                        <div class="relative flex h-2 w-2">
+                                            <span x-show="inst.status?.state === 'online'" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                            <span class="relative inline-flex rounded-full h-2 w-2" 
+                                                :class="inst.status?.state === 'online' ? 'bg-green-500' : 'bg-gray-400'"></span>
+                                        </div>
+                                        <span class="text-xs font-semibold" 
+                                            :class="inst.status?.state === 'online' ? 'text-green-600' : 'text-gray-500'"
+                                            x-text="inst.status?.state === 'online' ? '在线' : '离线'"></span>
+                                    </div>
+                                    <div class="text-[10px] text-gray-400 mt-1 space-y-0.5">
+                                        <div x-text="'心跳: ' + formatRelativeTime(inst.last_heartbeat)"></div>
+                                        <div x-show="inst.start_time" x-text="'运行: ' + formatUptime(inst.start_time)"></div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="px-6 py-4 text-right">
+                                <div class="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button @click.stop="openArthas(inst)" class="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-md transition" title="Arthas Debug">
+                                        <i class="fas fa-bug text-sm"></i>
+                                    </button>
+                                    <button @click.stop="showInstanceDetails(inst)" class="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-md transition" title="查看详情">
+                                        <i class="fas fa-external-link-alt text-sm"></i>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Instance Detail Slide-over -->
+    <div x-show="instanceDrawerOpen" 
+        class="fixed inset-0 z-[100] overflow-hidden" x-cloak
+        x-transition:enter="transition ease-in-out duration-300"
+        x-transition:enter-start="opacity-0"
+        x-transition:enter-end="opacity-100"
+        x-transition:leave="transition ease-in-out duration-300"
+        x-transition:leave-start="opacity-100"
+        x-transition:leave-end="opacity-0">
+        
+        <div class="absolute inset-0 bg-gray-900/50 backdrop-blur-sm" @click="instanceDrawerOpen = false"></div>
+        
+        <div class="fixed inset-y-0 right-0 max-w-2xl w-full bg-white shadow-2xl flex flex-col"
+            x-transition:enter="transform transition ease-in-out duration-300"
+            x-transition:enter-start="translate-x-full"
+            x-transition:enter-end="translate-x-0"
+            x-transition:leave="transform transition ease-in-out duration-300"
+            x-transition:leave-start="translate-x-0"
+            x-transition:leave-end="translate-x-full">
+            
+            <div class="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 bg-primary-600 text-white rounded-xl flex items-center justify-center text-xl shadow-lg shadow-primary-200">
+                        <i class="fas fa-server"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-xl font-bold text-gray-800" x-text="selectedInstance?.agent_id"></h3>
+                        <div class="flex items-center gap-2 mt-1">
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+                                :class="selectedInstance?.status?.state === 'online' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'"
+                                x-text="selectedInstance?.status?.state === 'online' ? 'ONLINE' : 'OFFLINE'"></span>
+                            <span class="text-xs text-gray-400" x-text="selectedInstance?.hostname"></span>
                         </div>
-                    </td>
-                </tr>
-            </template>
-            <tr x-show="instances.length === 0">
-                <td colspan="7" class="px-6 py-12 text-center text-gray-500">
-                    <i class="fas fa-server text-4xl mb-3 text-gray-300"></i>
-                    <p>No instances found</p>
-                </td>
-            </tr>
-        </tbody>
-    </table>
+                    </div>
+                </div>
+                <button @click="instanceDrawerOpen = false" class="p-2 text-gray-400 hover:text-gray-600 hover:bg-white rounded-full transition">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-6 space-y-8">
+                <!-- Attributes Section -->
+                <section>
+                    <h4 class="text-sm font-bold text-gray-900 mb-4 flex items-center gap-2">
+                        <i class="fas fa-tags text-primary-500"></i> 元数据 (Attributes)
+                    </h4>
+                    <div class="grid grid-cols-2 gap-3">
+                        <template x-for="(val, key) in selectedInstance?.attributes" :key="key">
+                            <div class="p-3 bg-gray-50 rounded-lg border border-gray-100 overflow-hidden">
+                                <div class="text-[10px] text-gray-400 font-mono truncate" x-text="key"></div>
+                                <div class="text-sm font-medium text-gray-800 mt-1 truncate" x-text="val"></div>
+                            </div>
+                        </template>
+                    </div>
+                </section>
+
+                <!-- Status History / Logs placeholder -->
+                <section>
+                    <h4 class="text-sm font-bold text-gray-900 mb-4 flex items-center gap-2">
+                        <i class="fas fa-history text-primary-500"></i> 生命周期
+                    </h4>
+                    <div class="space-y-4">
+                        <div class="flex gap-4">
+                            <div class="flex flex-col items-center">
+                                <div class="w-2.5 h-2.5 bg-green-500 rounded-full"></div>
+                                <div class="w-0.5 h-full bg-gray-100"></div>
+                            </div>
+                            <div class="pb-4">
+                                <div class="text-sm font-bold text-gray-800">最后一次心跳</div>
+                                <div class="text-xs text-gray-500 mt-1" x-text="formatFullTime(selectedInstance?.last_heartbeat)"></div>
+                            </div>
+                        </div>
+                        <div class="flex gap-4">
+                            <div class="flex flex-col items-center">
+                                <div class="w-2.5 h-2.5 bg-blue-500 rounded-full"></div>
+                                <div class="w-0.5 h-full bg-gray-100"></div>
+                            </div>
+                            <div class="pb-4">
+                                <div class="text-sm font-bold text-gray-800">注册时间</div>
+                                <div class="text-xs text-gray-500 mt-1" x-text="formatFullTime(selectedInstance?.registered_at)"></div>
+                            </div>
+                        </div>
+                        <div class="flex gap-4">
+                            <div class="flex flex-col items-center">
+                                <div class="w-2.5 h-2.5 bg-indigo-500 rounded-full"></div>
+                            </div>
+                            <div>
+                                <div class="text-sm font-bold text-gray-800">启动时间</div>
+                                <div class="text-xs text-gray-500 mt-1">
+                                    <span x-text="formatFullTime(selectedInstance?.start_time)"></span>
+                                    <span class="ml-2 text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded" x-text="'已运行 ' + formatUptime(selectedInstance?.start_time)"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Actions -->
+                <section>
+                    <h4 class="text-sm font-bold text-gray-900 mb-4">快捷操作</h4>
+                    <div class="flex gap-3">
+                        <button @click="openArthas(selectedInstance)" class="flex-1 py-3 bg-primary-600 text-white rounded-xl font-bold hover:bg-primary-700 transition shadow-lg shadow-primary-100 flex items-center justify-center gap-2">
+                            <i class="fas fa-bug"></i> Arthas 控制台
+                        </button>
+                        <button @click="unRegisterAgent(selectedInstance)" class="flex-1 py-3 bg-white border border-red-200 text-red-600 rounded-xl font-bold hover:bg-red-50 transition flex items-center justify-center gap-2">
+                            <i class="fas fa-trash-alt"></i> 下线实例
+                        </button>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </div>
 </div>

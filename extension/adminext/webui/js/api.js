@@ -72,7 +72,7 @@ class ApiServiceClass {
         return this.request('GET', '/instances/stats');
     }
 
-    kickInstance(id) {
+    unregisterAgent(id) {
         return this.request('POST', `/instances/${id}/kick`);
     }
 

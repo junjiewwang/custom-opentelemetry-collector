@@ -7,6 +7,7 @@ import { ApiService } from './api.js';
 import { Utils } from './utils.js';
 import { Storage } from './storage.js';
 import { tasksView } from './views/tasks.js';
+import { instancesView } from './views/instances.js';
 
 /**
  * 组件加载器 - 负责异步加载 HTML 模板
@@ -61,6 +62,7 @@ export function adminApp() {
         // Mixin - Modules
         // ============================================================================
         ...tasksView(),
+        ...instancesView(),
 
         // ============================================================================
         // Constants (exposed to template)
@@ -96,7 +98,6 @@ export function adminApp() {
         dashboard: {},
         apps: [],
         instances: [],
-        instanceStats: {},
         services: [],
         arthasAgents: [],
 
@@ -148,13 +149,7 @@ export function adminApp() {
         // ============================================================================
         // State - 筛选
         // ============================================================================
-        instanceFilter: '',
-        taskViewMode: 'tree', // 'tree' (层级树) or 'flat' (扁平列表)
-        taskStatusFilter: 'all', // all/running/pending/success/failed/timeout
-        taskFilterOnlyFailed: false, // 只看异常
-        taskSearchQuery: '', // 搜索关键词
         taskTreeData: [], // 层级树数据: App -> Service -> Instance -> Task
-        selectedTask: null, // 当前选中的任务（用于侧滑详情）
 
         // ============================================================================
         // State - 加载状态
@@ -372,7 +367,6 @@ export function adminApp() {
             this.instances = [];
             this.services = [];
             this.tasks = [];
-            this.instanceStats = {};
         },
 
         // ============================================================================
@@ -408,12 +402,9 @@ export function adminApp() {
             if (this.loading.instances) return;
             this.loading.instances = true;
             try {
-                const [instancesRes, statsRes] = await Promise.all([
-                    ApiService.getInstances(this.instanceFilter),
-                    ApiService.getInstanceStats(),
-                ]);
+                // Fetch all instances for client-side filtering
+                const instancesRes = await ApiService.getInstances('');
                 this.instances = instancesRes.instances || [];
-                this.instanceStats = statsRes;
             } catch (e) {
                 this.handleError(e, 'Failed to load instances');
             } finally {
@@ -506,20 +497,7 @@ export function adminApp() {
         // ============================================================================
         // Actions - Instances
         // ============================================================================
-        async kickInstance(instance) {
-            if (!confirm(`Kick instance "${Utils.truncate(instance.agent_id)}"?`)) return;
-            try {
-                await ApiService.kickInstance(instance.agent_id);
-                this.showToast('Instance kicked successfully', 'success');
-                await this.loadInstances();
-            } catch (e) {
-                this.handleError(e, 'Failed to kick instance');
-            }
-        },
-
-        viewInstanceDetail(instance) {
-            this.showDetail(`Instance: ${Utils.truncate(instance.agent_id)}`, instance);
-        },
+        // Replaced by instancesView module
 
         // ============================================================================
         // Actions - Services
@@ -1216,6 +1194,19 @@ export function adminApp() {
          * 前提：Arthas 已 running 且 tunnel 已就绪
          * 行为：直接建立 WebSocket 连接，使用 xterm.js 终端
          */
+        openArthas(instance) {
+            return this.connectArthas(instance);
+        },
+
+        /**
+         * 连接 Arthas Terminal
+         * 前提：Arthas 已 running 且 tunnel 已就绪
+         * 行为：直接建立 WebSocket 连接，使用 xterm.js 终端
+         */
+        openArthas(instance) {
+            return this.connectArthas(instance);
+        },
+
         async connectArthas(instance) {
             if (this.arthasSession.connecting) return;
             
