@@ -31,10 +31,11 @@ func TestExtension_NewStorageExtension(t *testing.T) {
 	require.NotNil(t, ext)
 
 	assert.Equal(t, cfg, ext.config)
-	assert.NotNil(t, ext.redisClients)
-	assert.NotNil(t, ext.nacosConfigClients)
-	assert.NotNil(t, ext.nacosNamingClients)
-	assert.False(t, ext.started)
+	require.NotNil(t, ext.registry)
+	assert.NotNil(t, ext.registry.redisClients)
+	assert.NotNil(t, ext.registry.nacosConfigClients)
+	assert.NotNil(t, ext.registry.nacosNamingClients)
+	assert.False(t, ext.registry.started)
 }
 
 func TestExtension_StartShutdown_EmptyConfig(t *testing.T) {
@@ -47,7 +48,7 @@ func TestExtension_StartShutdown_EmptyConfig(t *testing.T) {
 	// Start with empty config should succeed
 	err = ext.Start(context.Background(), componenttest.NewNopHost())
 	require.NoError(t, err)
-	assert.True(t, ext.started)
+	assert.True(t, ext.registry.started)
 
 	// Double start should be idempotent
 	err = ext.Start(context.Background(), componenttest.NewNopHost())
@@ -56,7 +57,7 @@ func TestExtension_StartShutdown_EmptyConfig(t *testing.T) {
 	// Shutdown should succeed
 	err = ext.Shutdown(context.Background())
 	require.NoError(t, err)
-	assert.False(t, ext.started)
+	assert.False(t, ext.registry.started)
 
 	// Double shutdown should be idempotent
 	err = ext.Shutdown(context.Background())

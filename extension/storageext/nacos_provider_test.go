@@ -12,12 +12,12 @@ import (
 
 func TestParseNacosServerAddr(t *testing.T) {
 	tests := []struct {
-		name       string
-		addr       string
-		wantCount  int
-		wantErr    bool
-		wantHost   string
-		wantPort   uint64
+		name      string
+		addr      string
+		wantCount int
+		wantErr   bool
+		wantHost  string
+		wantPort  uint64
 	}{
 		{
 			name:      "single address",

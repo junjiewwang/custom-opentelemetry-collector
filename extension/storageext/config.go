@@ -5,6 +5,9 @@ package storageext
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -67,23 +70,87 @@ type NacosConfig struct {
 	LogLevel string `mapstructure:"log_level"`
 }
 
+// ApplyDefaults sets reasonable default values and initializes nil maps.
+// It is safe to call multiple times.
+func (cfg *Config) ApplyDefaults() {
+	if cfg == nil {
+		return
+	}
+	if cfg.Redis == nil {
+		cfg.Redis = make(map[string]RedisConfig)
+	}
+	if cfg.Nacos == nil {
+		cfg.Nacos = make(map[string]NacosConfig)
+	}
+
+	for name := range cfg.Redis {
+		rc := cfg.Redis[name]
+		rc.ApplyDefaults()
+		cfg.Redis[name] = rc
+	}
+	for name := range cfg.Nacos {
+		nc := cfg.Nacos[name]
+		nc.ApplyDefaults()
+		cfg.Nacos[name] = nc
+	}
+}
+
 // Validate checks if the configuration is valid.
 func (cfg *Config) Validate() error {
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+
 	// Validate Redis configurations
 	for name, redisCfg := range cfg.Redis {
 		if err := redisCfg.Validate(); err != nil {
-			return errors.New("redis." + name + ": " + err.Error())
+			return fmt.Errorf("redis.%s: %w", name, err)
 		}
 	}
 
 	// Validate Nacos configurations
 	for name, nacosCfg := range cfg.Nacos {
 		if err := nacosCfg.Validate(); err != nil {
-			return errors.New("nacos." + name + ": " + err.Error())
+			return fmt.Errorf("nacos.%s: %w", name, err)
 		}
 	}
 
 	return nil
+}
+
+// ApplyDefaults sets default values for RedisConfig.
+func (cfg *RedisConfig) ApplyDefaults() {
+	if cfg == nil {
+		return
+	}
+	if cfg.PoolSize <= 0 {
+		cfg.PoolSize = 10
+	}
+	if cfg.DialTimeout <= 0 {
+		cfg.DialTimeout = 5 * time.Second
+	}
+	if cfg.ReadTimeout <= 0 {
+		cfg.ReadTimeout = 3 * time.Second
+	}
+	if cfg.WriteTimeout <= 0 {
+		cfg.WriteTimeout = 3 * time.Second
+	}
+}
+
+// ApplyDefaults sets default values for NacosConfig.
+func (cfg *NacosConfig) ApplyDefaults() {
+	if cfg == nil {
+		return
+	}
+	if cfg.LogDir == "" {
+		cfg.LogDir = filepath.Join(os.TempDir(), "nacos", "log")
+	}
+	if cfg.CacheDir == "" {
+		cfg.CacheDir = filepath.Join(os.TempDir(), "nacos", "cache")
+	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "warn"
+	}
 }
 
 // Validate checks if the Redis configuration is valid.

@@ -39,5 +39,9 @@ func createExtension(
 	cfg component.Config,
 ) (extension.Extension, error) {
 	config := cfg.(*Config)
+	config.ApplyDefaults()
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	return newStorageExtension(ctx, set, config)
 }

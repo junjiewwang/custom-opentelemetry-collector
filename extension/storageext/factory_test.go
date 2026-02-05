@@ -67,10 +67,11 @@ func TestFactory_CreateExtension_InvalidConfig(t *testing.T) {
 		Nacos: make(map[string]NacosConfig),
 	}
 
-	// Factory should still create the extension (validation happens at Start)
+	// Validate should happen during Create.
 	ext, err := factory.Create(context.Background(), set, cfg)
-	require.NoError(t, err)
-	require.NotNil(t, ext)
+	require.Error(t, err)
+	assert.Nil(t, ext)
+	assert.Contains(t, err.Error(), "redis.invalid")
 }
 
 func TestFactory_Type(t *testing.T) {

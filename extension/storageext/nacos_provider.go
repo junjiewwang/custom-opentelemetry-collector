@@ -5,8 +5,6 @@ package storageext
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -17,38 +15,25 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 )
 
-// createNacosClients creates Nacos config and naming clients based on configuration.
-func (e *Extension) createNacosClients(cfg NacosConfig) (config_client.IConfigClient, naming_client.INamingClient, error) {
+type defaultNacosProvider struct{}
+
+func (defaultNacosProvider) Create(cfg NacosConfig) (config_client.IConfigClient, naming_client.INamingClient, error) {
 	// Parse server address
 	serverConfigs, err := parseNacosServerAddr(cfg.ServerAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse server address: %w", err)
 	}
 
-	// Set up directories
-	logDir := cfg.LogDir
-	if logDir == "" {
-		logDir = filepath.Join(os.TempDir(), "nacos", "log")
-	}
-
-	cacheDir := cfg.CacheDir
-	if cacheDir == "" {
-		cacheDir = filepath.Join(os.TempDir(), "nacos", "cache")
-	}
-
-	logLevel := cfg.LogLevel
-	if logLevel == "" {
-		logLevel = "warn"
-	}
+	cfg.ApplyDefaults()
 
 	// Create client config
 	clientConfig := constant.ClientConfig{
 		NamespaceId:         cfg.Namespace,
 		TimeoutMs:           uint64(cfg.Timeout.Milliseconds()),
 		NotLoadCacheAtStart: true,
-		LogDir:              logDir,
-		CacheDir:            cacheDir,
-		LogLevel:            logLevel,
+		LogDir:              cfg.LogDir,
+		CacheDir:            cfg.CacheDir,
+		LogLevel:            cfg.LogLevel,
 	}
 
 	if cfg.Username != "" {
