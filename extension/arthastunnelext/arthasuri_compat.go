@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -15,9 +16,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext/pending"
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext/registry"
 )
@@ -62,6 +65,11 @@ type arthasURICompat struct {
 
 	// Distributed manager (optional, nil in local mode)
 	distributed *DistributedManager
+
+	// Task submitter (optional). When set, used by auto-detach to submit arthas_detach tasks.
+	taskSubmitter interface {
+		SubmitTaskForAgent(ctx context.Context, agentID string, task *model.Task) error
+	}
 }
 
 type compatAgent struct {
@@ -78,6 +86,15 @@ type compatAgent struct {
 
 	connectedAt int64 // unix milli, set once at registration
 	lastPongAt  int64 // unix milli, updated atomically on pong
+
+	// Session activity tracking (all unix milli)
+	lastActivityAt    int64 // updated on pending/tunnel lifecycle
+	lastTunnelEndedAt int64 // updated when relay ends
+	lastAutoDetachAt  int64 // updated when auto-detach task submitted
+
+	// Counters
+	activePendings int64 // number of connectArthas pending (waiting for openTunnel)
+	activeTunnels  int64 // number of active relays
 }
 
 // safeWriteMessage writes a message to the agent connection with mutex protection.
@@ -100,7 +117,44 @@ func (a *compatAgent) safeWriteControl(messageType int, data []byte, deadline ti
 	return a.conn.WriteControl(messageType, data, deadline)
 }
 
+func (a *compatAgent) incPending(nowMillis int64) {
+	if a == nil {
+		return
+	}
+	atomic.AddInt64(&a.activePendings, 1)
+	atomic.StoreInt64(&a.lastActivityAt, nowMillis)
+}
 
+func (a *compatAgent) decPending(nowMillis int64) {
+	if a == nil {
+		return
+	}
+	v := atomic.AddInt64(&a.activePendings, -1)
+	if v < 0 {
+		atomic.StoreInt64(&a.activePendings, 0)
+	}
+	atomic.StoreInt64(&a.lastActivityAt, nowMillis)
+}
+
+func (a *compatAgent) incTunnel(nowMillis int64) {
+	if a == nil {
+		return
+	}
+	atomic.AddInt64(&a.activeTunnels, 1)
+	atomic.StoreInt64(&a.lastActivityAt, nowMillis)
+}
+
+func (a *compatAgent) decTunnel(nowMillis int64) {
+	if a == nil {
+		return
+	}
+	v := atomic.AddInt64(&a.activeTunnels, -1)
+	if v < 0 {
+		atomic.StoreInt64(&a.activeTunnels, 0)
+	}
+	atomic.StoreInt64(&a.lastTunnelEndedAt, nowMillis)
+	atomic.StoreInt64(&a.lastActivityAt, nowMillis)
+}
 
 // ANSI color codes for terminal output.
 const (
@@ -157,7 +211,9 @@ func sendBrowserStatus(conn *websocket.Conn, sessionID, status, message string) 
 	return conn.WriteMessage(websocket.TextMessage, []byte(formatTerminalStatus(status, message)))
 }
 
-func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config, distributed *DistributedManager) *arthasURICompat {
+func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config, distributed *DistributedManager, taskSubmitter interface {
+	SubmitTaskForAgent(ctx context.Context, agentID string, task *model.Task) error
+}) *arthasURICompat {
 	baseCtx := ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -174,7 +230,7 @@ func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config, di
 		pendingStore = pending.NewLocalPendingStore(logger, "local", "")
 	}
 
-	return &arthasURICompat{
+	s := &arthasURICompat{
 		logger: logger,
 		cfg:    cfg,
 		ctx:    cctx,
@@ -186,10 +242,14 @@ func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config, di
 				return true
 			},
 		},
-		agents:       make(map[string]*compatAgent),
-		pendingStore: pendingStore,
-		distributed:  distributed,
+		agents:        make(map[string]*compatAgent),
+		pendingStore:  pendingStore,
+		distributed:   distributed,
+		taskSubmitter: taskSubmitter,
 	}
+
+	s.startAutoDetachLoop()
+	return s
 }
 
 func (s *arthasURICompat) shutdown(ctx context.Context) {
@@ -226,6 +286,162 @@ func (s *arthasURICompat) shutdown(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	}
+}
+
+func (s *arthasURICompat) startAutoDetachLoop() {
+	if s == nil || s.cfg == nil {
+		return
+	}
+	cfg := s.cfg.AutoDetach
+	if !cfg.Enabled {
+		return
+	}
+	if s.taskSubmitter == nil {
+		// Make it explicit: enabled in config but no task submitter wired.
+		s.logger.Warn("auto_detach enabled but task submitter not available; auto_detach disabled")
+		return
+	}
+	if cfg.SweepInterval <= 0 {
+		s.logger.Warn("auto_detach disabled due to invalid sweep_interval", zap.Duration("sweep_interval", cfg.SweepInterval))
+		return
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(cfg.SweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				s.runAutoDetachSweep()
+			}
+		}
+	}()
+
+	s.logger.Info("auto_detach enabled",
+		zap.Duration("idle_threshold", cfg.IdleThreshold),
+		zap.Duration("min_register_age", cfg.MinRegisterAge),
+		zap.Duration("cooldown", cfg.Cooldown),
+		zap.Duration("sweep_interval", cfg.SweepInterval),
+		zap.Bool("require_no_pending", cfg.RequireNoPending),
+		zap.Int("max_tasks_per_sweep", cfg.MaxTasksPerSweep),
+	)
+}
+
+func (s *arthasURICompat) runAutoDetachSweep() {
+	if s == nil || s.cfg == nil || !s.cfg.AutoDetach.Enabled {
+		return
+	}
+	cfg := s.cfg.AutoDetach
+
+	// Snapshot local agents to avoid holding the mutex while submitting tasks.
+	s.mu.Lock()
+	agents := make([]*compatAgent, 0, len(s.agents))
+	for _, a := range s.agents {
+		agents = append(agents, a)
+	}
+	s.mu.Unlock()
+
+	nowMillis := time.Now().UnixMilli()
+	submitted := 0
+
+	for _, a := range agents {
+		if a == nil || a.conn == nil {
+			continue
+		}
+		if submitted >= cfg.MaxTasksPerSweep {
+			break
+		}
+
+		// Only consider healthy control connections.
+		if s.isAgentTimeout(a) {
+			continue
+		}
+
+		// Cold-start protection.
+		if cfg.MinRegisterAge > 0 {
+			if age := nowMillis - a.connectedAt; age < cfg.MinRegisterAge.Milliseconds() {
+				continue
+			}
+		}
+
+		if atomic.LoadInt64(&a.activeTunnels) > 0 {
+			continue
+		}
+		if cfg.RequireNoPending && atomic.LoadInt64(&a.activePendings) > 0 {
+			continue
+		}
+
+		lastAct := atomic.LoadInt64(&a.lastActivityAt)
+		if lastAct <= 0 {
+			lastAct = a.connectedAt
+		}
+		if idle := nowMillis - lastAct; idle < cfg.IdleThreshold.Milliseconds() {
+			continue
+		}
+
+		if cfg.Cooldown > 0 {
+			lastDetach := atomic.LoadInt64(&a.lastAutoDetachAt)
+			if lastDetach > 0 && nowMillis-lastDetach < cfg.Cooldown.Milliseconds() {
+				continue
+			}
+		}
+
+		probeAgentID := strings.TrimSpace(a.agentID)
+		if probeAgentID == "" {
+			continue
+		}
+
+		if err := s.submitAutoDetachTask(probeAgentID, a, nowMillis, lastAct); err != nil {
+			s.logger.Warn("auto_detach submit failed",
+				zap.String("probe_agent_id", probeAgentID),
+				zap.String("tunnel_agent_id", a.agentID),
+				zap.Error(err),
+			)
+			continue
+		}
+		atomic.StoreInt64(&a.lastAutoDetachAt, nowMillis)
+		submitted++
+	}
+
+	if submitted > 0 {
+		s.logger.Info("auto_detach tasks submitted", zap.Int("count", submitted))
+	}
+}
+
+func (s *arthasURICompat) submitAutoDetachTask(probeAgentID string, a *compatAgent, nowMillis int64, lastActMillis int64) error {
+	if s == nil || s.taskSubmitter == nil || a == nil {
+		return errors.New("nil submitter or agent")
+	}
+
+	params := map[string]any{
+		"reason":          "idle_no_tunnel",
+		"tunnel_agent_id": a.agentID,
+		"idle_millis":     nowMillis - lastActMillis,
+		"connected_at":    a.connectedAt,
+		"last_pong_at":    atomic.LoadInt64(&a.lastPongAt),
+		"app_id":          a.appID,
+		"app_name":        a.appName,
+		"remote_addr":     a.remoteAddr,
+	}
+	b, _ := json.Marshal(params)
+
+	t := &model.Task{
+		ID:              uuid.NewString(),
+		TypeName:        "arthas_detach",
+		TargetAgentID:   probeAgentID,
+		TimeoutMillis:   int64(s.cfg.AutoDetach.TaskTimeout / time.Millisecond),
+		CreatedAtMillis: nowMillis,
+		ParametersJSON:  b,
+	}
+
+	// Bound task submission latency to avoid blocking the sweep loop.
+	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+	defer cancel()
+	return s.taskSubmitter.SubmitTaskForAgent(ctx, probeAgentID, t)
 }
 
 func (a *compatAgent) close() {
@@ -440,14 +656,15 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 
 	now := time.Now().UnixMilli()
 	a := &compatAgent{
-		agentID:       agentID,
-		appName:       appName,
-		arthasVersion: arthasVersion,
-		appID:         appID,
-		remoteAddr:    remoteAddr,
-		conn:          ctx.conn,
-		connectedAt:   now,
-		lastPongAt:    now,
+		agentID:        agentID,
+		appName:        appName,
+		arthasVersion:  arthasVersion,
+		appID:          appID,
+		remoteAddr:     remoteAddr,
+		conn:           ctx.conn,
+		connectedAt:    now,
+		lastPongAt:     now,
+		lastActivityAt: now,
 	}
 
 	// Replace old agent connection if exists.
@@ -717,6 +934,14 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		return
 	}
 
+	pendingCounted := true
+	agent.incPending(time.Now().UnixMilli())
+	defer func() {
+		if pendingCounted {
+			agent.decPending(time.Now().UnixMilli())
+		}
+	}()
+
 	ctx.logger.Info("[connectArthas] Registered pending connection",
 		zap.String("agent_id", agentID),
 		zap.String("session_id", sessionID),
@@ -799,8 +1024,12 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		return
 	}
 
-	// Success: remove pending and start relay.
-	s.cleanupPending(clientConnID, nil, "") // Don't close browser conn, it's used for relay
+	// Success: pending delivered, remove pending record and start relay.
+	pendingCounted = false
+	nowMillis := time.Now().UnixMilli()
+	agent.decPending(nowMillis)
+	// Don't close browser conn, it's used for relay.
+	s.cleanupPending(clientConnID, nil, "")
 
 	ctx.logger.Info("[connectArthas] openTunnel received, tunnel bound successfully",
 		zap.String("agent_id", agentID),
@@ -826,7 +1055,9 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		zap.String("agent_tunnel_addr", tunnelConn.RemoteAddr().String()),
 	)
 
+	agent.incTunnel(nowMillis)
 	relayWebSocketPair(s.ctx, ctx.logger, ctx.conn, tunnelConn)
+	agent.decTunnel(time.Now().UnixMilli())
 }
 
 // proxyConnectArthas proxies the connectArthas request to another node.

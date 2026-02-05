@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/extension/extensioncapabilities"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 )
 
@@ -81,8 +82,24 @@ func (e *Extension) start(ctx context.Context, host component.Host) error {
 		}
 	}
 
+	// Find controlplane task submitter (optional). Required by auto_detach.
+	var taskSubmitter interface {
+		SubmitTaskForAgent(ctx context.Context, agentID string, task *model.Task) error
+	}
+	for _, ext := range host.GetExtensions() {
+		if ts, ok := ext.(interface {
+			SubmitTaskForAgent(ctx context.Context, agentID string, task *model.Task) error
+		}); ok {
+			taskSubmitter = ts
+			break
+		}
+	}
+	if e.config.AutoDetach.Enabled && taskSubmitter == nil {
+		e.logger.Warn("auto_detach enabled but no controlplane task submitter found; tasks will not be submitted")
+	}
+
 	// Create arthasURICompat with optional distributed manager
-	e.compat = newArthasURICompat(e.ctx, e.logger, e.config, e.distributed)
+	e.compat = newArthasURICompat(e.ctx, e.logger, e.config, e.distributed, taskSubmitter)
 
 	if e.distributed != nil {
 		e.logger.Info("Arthas tunnel extension started (distributed mode)",

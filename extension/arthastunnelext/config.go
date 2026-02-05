@@ -51,6 +51,10 @@ type Config struct {
 	// Distributed contains configuration for multi-replica deployment.
 	Distributed DistributedConfig `mapstructure:"distributed"`
 
+	// ===== Auto detach options =====
+	// AutoDetach controls automatic detaching Arthas when control connection is idle.
+	AutoDetach AutoDetachConfig `mapstructure:"auto_detach"`
+
 	// ===== Legacy fields (kept for compatibility; unused in compat mode) =====
 
 	MaxSessionsPerAgent       int           `mapstructure:"max_sessions_per_agent"`
@@ -62,6 +66,48 @@ type Config struct {
 	TerminalOpenRetryInterval time.Duration `mapstructure:"terminal_open_retry_interval"`
 	ArthasStartCooldown       time.Duration `mapstructure:"arthas_start_cooldown"`
 	MaxReconnectAttempts      int           `mapstructure:"max_reconnect_attempts"`
+}
+
+// AutoDetachConfig contains settings for automatic detaching Arthas on idle.
+//
+// Semantics (local node only): if an agentRegister control connection is healthy but
+// has no active tunnel sessions (and, optionally, no pending connects) for a long time,
+// the server will submit an "arthas_detach" task to the probe-side agent.
+//
+// NOTE: This feature requires a controlplane task submitter to be available.
+type AutoDetachConfig struct {
+	// Enabled enables the auto-detach background loop.
+	// Default: true
+	Enabled bool `mapstructure:"enabled"`
+
+	// IdleThreshold is the duration since last activity to consider an agent idle.
+	// Default: 15m
+	IdleThreshold time.Duration `mapstructure:"idle_threshold"`
+
+	// SweepInterval is how often to scan local registered agents.
+	// Default: 90s
+	SweepInterval time.Duration `mapstructure:"sweep_interval"`
+
+	// MinRegisterAge is the minimum duration since agent register before auto-detach may trigger.
+	// This prevents detaching a newly registered agent that hasn't been used yet.
+	// Default: 10m
+	MinRegisterAge time.Duration `mapstructure:"min_register_age"`
+
+	// RequireNoPending requires there to be no pending connectArthas attempts before detaching.
+	// Default: true
+	RequireNoPending bool `mapstructure:"require_no_pending"`
+
+	// Cooldown is the minimum time between auto-detach submissions for the same agent.
+	// Default: 10m
+	Cooldown time.Duration `mapstructure:"cooldown"`
+
+	// TaskTimeout is the timeout_millis field for the submitted arthas_detach task.
+	// Default: 60s
+	TaskTimeout time.Duration `mapstructure:"task_timeout"`
+
+	// MaxTasksPerSweep caps how many tasks can be submitted in a single sweep.
+	// Default: 200
+	MaxTasksPerSweep int `mapstructure:"max_tasks_per_sweep"`
 }
 
 // DistributedConfig contains configuration for distributed/multi-replica mode.
@@ -289,6 +335,30 @@ func (c *DistributedConfig) detectLocalIP() string {
 
 // Validate validates the configuration.
 func (cfg *Config) Validate() error {
+	if cfg.AutoDetach.Enabled {
+		if cfg.AutoDetach.IdleThreshold <= 0 {
+			return fmt.Errorf("auto_detach.idle_threshold must be > 0")
+		}
+		if cfg.AutoDetach.SweepInterval <= 0 {
+			return fmt.Errorf("auto_detach.sweep_interval must be > 0")
+		}
+		if cfg.AutoDetach.MinRegisterAge < 0 {
+			return fmt.Errorf("auto_detach.min_register_age must be >= 0")
+		}
+		if cfg.AutoDetach.Cooldown < 0 {
+			return fmt.Errorf("auto_detach.cooldown must be >= 0")
+		}
+		if cfg.AutoDetach.TaskTimeout <= 0 {
+			return fmt.Errorf("auto_detach.task_timeout must be > 0")
+		}
+		if cfg.AutoDetach.MaxTasksPerSweep <= 0 {
+			return fmt.Errorf("auto_detach.max_tasks_per_sweep must be > 0")
+		}
+		if cfg.AutoDetach.SweepInterval >= cfg.AutoDetach.IdleThreshold {
+			return fmt.Errorf("auto_detach.sweep_interval (%v) should be less than auto_detach.idle_threshold (%v)", cfg.AutoDetach.SweepInterval, cfg.AutoDetach.IdleThreshold)
+		}
+	}
+
 	if cfg.Distributed.Enabled {
 		if cfg.Distributed.InternalAuth.Token == "" {
 			return fmt.Errorf("distributed.internal_auth.token is required when distributed mode is enabled")
@@ -311,6 +381,17 @@ func createDefaultConfig() *Config {
 		PingInterval:  20 * time.Second,
 		PongTimeout:   60 * time.Second,
 		LivenessGrace: 30 * time.Second,
+
+		AutoDetach: AutoDetachConfig{
+			Enabled:          true,
+			IdleThreshold:    15 * time.Minute,
+			SweepInterval:    90 * time.Second,
+			MinRegisterAge:   10 * time.Minute,
+			RequireNoPending: true,
+			Cooldown:         10 * time.Minute,
+			TaskTimeout:      60 * time.Second,
+			MaxTasksPerSweep: 200,
+		},
 
 		Distributed: DistributedConfig{
 			Enabled:                   false,

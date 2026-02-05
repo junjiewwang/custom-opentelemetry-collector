@@ -346,6 +346,26 @@ extensions:
     # Liveness grace period (additional buffer for network jitter)
     # Effective liveness timeout = pong_timeout + liveness_grace = 90s
     liveness_grace: 30s
+
+    # ===== Auto detach options (idle control connection -> submit arthas_detach) =====
+    # Default: enabled
+    auto_detach:
+      # Enable/disable auto detach
+      enabled: true
+      # Only detach when there are no active tunnels AND no pending connect attempts
+      require_no_pending: true
+      # Idle threshold since last activity (pending/tunnel lifecycle)
+      idle_threshold: 15m
+      # Sweep interval for scanning local registered agents
+      sweep_interval: 90s
+      # Cold-start protection: do not detach newly registered agents
+      min_register_age: 10m
+      # Per-agent cooldown between auto-detach submissions
+      cooldown: 10m
+      # Timeout passed to arthas_detach task (does not block server)
+      task_timeout: 60s
+      # Cap tasks per sweep to avoid bursts
+      max_tasks_per_sweep: 200
     
     # ===== Distributed mode options (for multi-replica deployment) =====
     
