@@ -191,19 +191,7 @@
                 </template>
             </div>
 
-            <!-- ================================================================== -->
-            <!-- Arthas View -->
-            <!-- ================================================================== -->
-            <div x-show="currentView === 'arthas'" x-cloak class="fade-in">
-                <template x-if="viewTemplates.arthas">
-                    <div x-html="viewTemplates.arthas"></div>
-                </template>
-                <template x-if="!viewTemplates.arthas">
-                    <div class="flex items-center justify-center h-64">
-                        <i class="fas fa-spinner fa-spin text-3xl text-primary-600"></i>
-                    </div>
-                </template>
-            </div>
+
         </main>
     </div>
 

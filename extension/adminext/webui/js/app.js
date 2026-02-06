@@ -34,7 +34,6 @@ const MENU_ITEMS = [
     { id: 'services', label: 'Services', icon: 'fas fa-sitemap' },
     { id: 'tasks', label: 'Tasks', icon: 'fas fa-tasks' },
     { id: 'configs', label: 'Configs', icon: 'fas fa-cog' },
-    { id: 'arthas', label: 'Arthas', icon: 'fas fa-terminal' },
 ];
 
 /**
@@ -102,9 +101,8 @@ export function adminApp() {
         arthasAgents: [],
 
         // ============================================================================
-        // State - Arthas Management (新设计：实例列表 + Arthas 状态 + 任务)
+        // State - Arthas Management (集成在实例列表中)
         // ============================================================================
-        arthasInstances: [],  // 所有在线实例，带 arthasStatus 字段
         
         // ============================================================================
         // State - Config Management
@@ -311,7 +309,6 @@ export function adminApp() {
                 services: () => this.loadServices(),
                 tasks: () => this.loadTasks(),
                 configs: () => this.loadConfigData(),
-                arthas: () => this.loadArthasAgents(),
             };
 
             if (loaders[view]) loaders[view]();
@@ -402,9 +399,38 @@ export function adminApp() {
             if (this.loading.instances) return;
             this.loading.instances = true;
             try {
-                // Fetch all instances for client-side filtering
-                const instancesRes = await ApiService.getInstances('');
-                this.instances = instancesRes.instances || [];
+                // Fetch all instances and arthas agents in parallel
+                const [instancesRes, arthasRes] = await Promise.allSettled([
+                    ApiService.getInstances(''),
+                    ApiService.getArthasAgents()
+                ]);
+
+                const instancesList = instancesRes.status === 'fulfilled' ? (instancesRes.value.instances || []) : [];
+                const tunnelAgents = arthasRes.status === 'fulfilled' ? (arthasRes.value || []) : [];
+                
+                // Map tunnel agents by agent_id
+                const tunnelMap = new Map();
+                tunnelAgents.forEach(a => {
+                    if (a.agent_id) tunnelMap.set(a.agent_id, a);
+                });
+
+                // Enrich instances with arthas status
+                this.instances = instancesList.map(inst => {
+                    const tunnelInfo = tunnelMap.get(inst.agent_id);
+                    return {
+                        ...inst,
+                        arthasStatus: {
+                            state: tunnelInfo ? 'running' : 'stopped',
+                            arthasVersion: tunnelInfo?.version || '',
+                            tunnelReady: !!tunnelInfo,
+                            tunnelAgentId: tunnelInfo?.agent_id || '',
+                        },
+                        operating: false
+                    };
+                });
+                
+                // 更新 arthasAgents (保持兼容)
+                this.arthasAgents = this.instances.filter(i => i.arthasStatus?.tunnelReady);
             } catch (e) {
                 this.handleError(e, 'Failed to load instances');
             } finally {
@@ -857,70 +883,6 @@ export function adminApp() {
         // ============================================================================
 
         /**
-         * 加载所有在线实例，并获取各实例的 Arthas 状态
-         * 
-         * 设计说明：
-         * - 后端 ListConnectedAgents 返回已注册且健康的 agent 列表
-         * - 如果 agent 在 tunnel 列表中，说明 Arthas 已连接，可以进行 terminal 操作
-         * - 不再调用 getAgentArthasStatus，tunnel 连接即表示 Arthas 运行中
-         */
-        async loadArthasAgents() {
-            if (this.loading.arthas) return;
-            this.loading.arthas = true;
-            try {
-                // 1. 获取所有在线实例
-                const instancesRes = await ApiService.getInstances('');
-                const onlineInstances = (instancesRes.instances || []).filter(i => i.status?.state === 'online');
-
-                // 2. 获取 tunnel 在线列表（用于判断 tunnel_ready）
-                // 后端 ListConnectedAgents 返回的是已注册且健康的 agent
-                // 字段：agent_id, app_id, service_name, ip, version, connected_at, last_ping_at
-                let tunnelAgentsByAgentId = new Map();
-                try {
-                    const tunnelAgents = await ApiService.getArthasAgents();
-                    for (const a of (tunnelAgents || [])) {
-                        // 用 agent_id 作为 key 来匹配
-                        if (a.agent_id) {
-                            tunnelAgentsByAgentId.set(a.agent_id, a);
-                        }
-                    }
-                } catch (e) {
-                    // 接口不可用时忽略
-                }
-
-                // 3. 为每个实例构建 Arthas 状态
-                const instancesWithStatus = onlineInstances.map((inst) => {
-                    // 通过 agent_id 匹配 tunnel agent
-                    const tunnelInfo = tunnelAgentsByAgentId.get(inst.agent_id);
-                    
-                    // tunnel 连接即表示 Arthas 运行中
-                    const arthasStatus = {
-                        state: tunnelInfo ? 'running' : 'stopped',
-                        arthasVersion: tunnelInfo?.version || '',
-                        tunnelReady: !!tunnelInfo,
-                        // 保存 tunnel 的 agent_id，用于 connect
-                        tunnelAgentId: tunnelInfo?.agent_id || '',
-                    };
-
-                    return {
-                        ...inst,
-                        arthasStatus,
-                        // 操作状态
-                        operating: false,
-                    };
-                });
-
-                this.arthasInstances = instancesWithStatus;
-                // 兼容旧的 arthasAgents（用于 Terminal 连接）
-                this.arthasAgents = instancesWithStatus.filter(i => i.arthasStatus.tunnelReady);
-            } catch (e) {
-                this.handleError(e, 'Failed to load Arthas agents');
-            } finally {
-                this.loading.arthas = false;
-            }
-        },
-
-        /**
          * 刷新单个实例的 Arthas 状态
          * 
          * 设计说明：
@@ -928,7 +890,7 @@ export function adminApp() {
          * - tunnel 连接即表示 Arthas 运行中，不再调用 getAgentArthasStatus
          */
         async refreshInstanceArthasStatus(agentId) {
-            const inst = this.arthasInstances.find(i => i.agent_id === agentId);
+            const inst = this.instances.find(i => i.agent_id === agentId);
             if (!inst) return;
 
             try {
@@ -958,7 +920,7 @@ export function adminApp() {
                 }
 
                 // 更新 arthasAgents
-                this.arthasAgents = this.arthasInstances.filter(i => i.arthasStatus.tunnelReady);
+                this.arthasAgents = this.instances.filter(i => i.arthasStatus?.tunnelReady);
             } catch (e) {
                 console.error('Failed to refresh Arthas status:', e);
             }
@@ -966,21 +928,23 @@ export function adminApp() {
 
         /**
          * Attach Arthas 到指定实例
+         * @returns {Promise<boolean>} 是否成功 attach 并连接 tunnel
          */
         async attachArthas(instance) {
             if (this.arthasTask.active) {
                 this.showToast('Another task is running', 'warning');
-                return;
+                return false;
             }
 
             instance.operating = true;
+            const shortId = instance.agent_id.substring(0, 8);
             this.arthasTask = {
                 active: true,
                 taskId: '',
                 taskType: 'attach',
                 targetAgentId: instance.agent_id,
                 status: 'pending',
-                message: 'Creating attach task...',
+                message: `Creating attach task for ${shortId}...`,
                 startTime: Date.now(),
             };
 
@@ -994,23 +958,22 @@ export function adminApp() {
                 });
 
                 this.arthasTask.taskId = taskRes.task_id;
-                this.arthasTask.message = `Task created: ${taskRes.task_id}`;
+                this.arthasTask.message = `Task created: ${taskRes.task_id.substring(0, 8)}`;
 
                 // 2. 轮询任务状态
-                await this.pollTaskStatus(taskRes.task_id, 'Arthas attach');
+                await this.pollTaskStatus(taskRes.task_id, `Arthas Attach [${shortId}]`);
 
                 // 3. 成功后刷新状态（带重试，等待 tunnel 连接）
-                console.log('[Arthas] pollTaskStatus completed, status:', this.arthasTask.status);
                 if (this.arthasTask.status === 'success') {
-                    this.showToast('Arthas attached successfully, waiting for tunnel connection...', 'success');
-                    console.log('[Arthas] Calling waitForTunnelConnection for agent:', instance.agent_id);
-                    await this.waitForTunnelConnection(instance, 30); // 最多等待 30 秒
-                    console.log('[Arthas] waitForTunnelConnection completed');
+                    this.showToast(`Arthas attached to ${shortId} successfully, waiting for tunnel...`, 'success');
+                    return await this.waitForTunnelConnection(instance, 30);
                 }
+                return false;
             } catch (e) {
                 this.arthasTask.status = 'failed';
                 this.arthasTask.message = e.message || 'Attach failed';
                 this.showToast(this.arthasTask.message, 'error');
+                return false;
             } finally {
                 instance.operating = false;
             }
@@ -1026,13 +989,14 @@ export function adminApp() {
             }
 
             instance.operating = true;
+            const shortId = instance.agent_id.substring(0, 8);
             this.arthasTask = {
                 active: true,
                 taskId: '',
                 taskType: 'detach',
                 targetAgentId: instance.agent_id,
                 status: 'pending',
-                message: 'Creating detach task...',
+                message: `Creating detach task for ${shortId}...`,
                 startTime: Date.now(),
             };
 
@@ -1046,14 +1010,14 @@ export function adminApp() {
                 });
 
                 this.arthasTask.taskId = taskRes.task_id;
-                this.arthasTask.message = `Task created: ${taskRes.task_id}`;
+                this.arthasTask.message = `Task created: ${taskRes.task_id.substring(0, 8)}`;
 
                 // 2. 轮询任务状态
-                await this.pollTaskStatus(taskRes.task_id, 'Arthas detach');
+                await this.pollTaskStatus(taskRes.task_id, `Arthas Detach [${shortId}]`);
 
                 // 3. 成功后刷新状态
                 if (this.arthasTask.status === 'success') {
-                    this.showToast('Arthas detached successfully', 'success');
+                    this.showToast(`Arthas detached from ${shortId} successfully`, 'success');
                     await new Promise(r => setTimeout(r, 1000));
                     await this.refreshInstanceArthasStatus(instance.agent_id);
                 }
@@ -1123,49 +1087,50 @@ export function adminApp() {
         async waitForTunnelConnection(instance, maxWaitSeconds = 30) {
             const pollInterval = 2000; // 每 2 秒检查一次
             const maxRetries = Math.ceil(maxWaitSeconds * 1000 / pollInterval);
-            
-            console.log('[Arthas] waitForTunnelConnection started, agent_id:', instance.agent_id, 'maxRetries:', maxRetries);
+
             this.arthasTask.message = 'Waiting for tunnel connection...';
-            
+
             for (let i = 0; i < maxRetries; i++) {
                 await new Promise(r => setTimeout(r, pollInterval));
-                
+
+                let tunnelAgents;
                 try {
-                    // 获取最新的 tunnel agents 列表
-                    console.log('[Arthas] Fetching tunnel agents, attempt:', i + 1);
-                    const tunnelAgents = await ApiService.getArthasAgents();
-                    console.log('[Arthas] Got tunnel agents:', tunnelAgents);
-                    
-                    // 通过 agent_id 匹配（后端返回 snake_case 字段）
-                    const tunnelInfo = (tunnelAgents || []).find(a => a.agent_id === instance.agent_id);
-                    console.log('[Arthas] Looking for agent_id:', instance.agent_id, 'found:', tunnelInfo);
-                    
-                    if (tunnelInfo) {
-                        // Tunnel 已连接，更新实例状态
-                        const inst = this.arthasInstances.find(i => i.agent_id === instance.agent_id);
-                        if (inst) {
-                            inst.arthasStatus = {
-                                state: 'running',
-                                arthasVersion: tunnelInfo.version || '',
-                                tunnelReady: true,
-                                tunnelAgentId: tunnelInfo.agent_id,
-                            };
-                            
-                            // 更新 arthasAgents
-                            this.arthasAgents = this.arthasInstances.filter(i => i.arthasStatus?.tunnelReady);
-                        }
-                        
-                        this.arthasTask.message = 'Tunnel connected successfully';
-                        this.showToast('Arthas tunnel connected', 'success');
-                        return true;
-                    }
-                    
-                    this.arthasTask.message = `Waiting for tunnel connection... (${i + 1}/${maxRetries})`;
+                    tunnelAgents = await ApiService.getArthasAgents();
                 } catch (e) {
-                    console.warn('Failed to check tunnel status:', e);
+                    // 网络/服务端错误：继续等待，但不要中断流程
+                    this.arthasTask.message = `Waiting for tunnel connection... (${i + 1}/${maxRetries})`;
+                    continue;
                 }
+
+                // 通过 agent_id 匹配（后端返回 snake_case 字段）
+                const tunnelInfo = (tunnelAgents || []).find(a => a.agent_id === instance.agent_id);
+                if (!tunnelInfo) {
+                    this.arthasTask.message = `Waiting for tunnel connection... (${i + 1}/${maxRetries})`;
+                    continue;
+                }
+
+                // tunnel 已连接：更新当前 instance（避免引用漂移）
+                instance.arthasStatus = {
+                    state: 'running',
+                    arthasVersion: tunnelInfo.version || '',
+                    tunnelReady: true,
+                    tunnelAgentId: tunnelInfo.agent_id,
+                };
+
+                // 同步更新全局 instances 列表（如果存在）
+                const inst = (this.instances || []).find(x => x.agent_id === instance.agent_id);
+                if (inst) {
+                    inst.arthasStatus = { ...instance.arthasStatus };
+                }
+
+                // 更新 arthasAgents
+                this.arthasAgents = (this.instances || []).filter(x => x.arthasStatus?.tunnelReady);
+
+                this.arthasTask.message = 'Tunnel connected successfully';
+                this.showToast('Arthas tunnel connected', 'success');
+                return true;
             }
-            
+
             // 超时但不报错，只是提示用户手动刷新
             this.arthasTask.message = 'Tunnel connection timeout. Please click Refresh to check status.';
             this.showToast('Tunnel connection timeout. Please refresh manually.', 'warning');
@@ -1191,20 +1156,31 @@ export function adminApp() {
 
         /**
          * 连接 Arthas Terminal
-         * 前提：Arthas 已 running 且 tunnel 已就绪
-         * 行为：直接建立 WebSocket 连接，使用 xterm.js 终端
+         * 逻辑：如果未注册则先 attach，注册后连接；如果已注册直接连接
          */
-        openArthas(instance) {
-            return this.connectArthas(instance);
-        },
+        async openArthas(instance) {
+            if (instance.operating || this.arthasSession.connecting) return;
 
-        /**
-         * 连接 Arthas Terminal
-         * 前提：Arthas 已 running 且 tunnel 已就绪
-         * 行为：直接建立 WebSocket 连接，使用 xterm.js 终端
-         */
-        openArthas(instance) {
-            return this.connectArthas(instance);
+            // 如果已经连接了 tunnel，直接 connect
+            if (instance.arthasStatus?.tunnelReady) {
+                return this.connectArthas(instance);
+            }
+
+            // 否则，先尝试 attach
+            try {
+                const shortId = instance.agent_id.substring(0, 8);
+                this.showToast(`Attaching Arthas to ${shortId}...`, 'info');
+                const attached = await this.attachArthas(instance);
+                
+                if (attached && instance.arthasStatus?.tunnelReady) {
+                    // 等待一小会儿确保状态同步
+                    await new Promise(r => setTimeout(r, 500));
+                    return this.connectArthas(instance);
+                }
+            } catch (e) {
+                console.error('[Arthas] Auto-attach and connect failed:', e);
+                // Error toast is already shown by attachArthas or pollTaskStatus
+            }
         },
 
         async connectArthas(instance) {
@@ -1301,6 +1277,7 @@ export function adminApp() {
                 };
 
                 ws.onclose = (event) => {
+                    const closedAgentId = this.arthasSession.agentInfo?.agent_id;
                     this.arthasSession.active = false;
                     this.arthasSession.ws = null;
                     
@@ -1311,6 +1288,11 @@ export function adminApp() {
                     const reason = event.reason ? `, reason: ${event.reason}` : '';
                     window.terminalManager.writeDataBySessionId(sessionId, 
                         `\r\n\x1b[33m[System] Connection closed (code: ${event.code}${reason})\x1b[0m\r\n`);
+
+                    // 同步刷新实例状态，确保 UI 上的圆点及时变灰/变绿
+                    if (closedAgentId) {
+                        setTimeout(() => this.refreshInstanceArthasStatus(closedAgentId), 500);
+                    }
                 };
 
                 // Connection timeout protection

@@ -30,8 +30,8 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 		})
 	}
 
-	pump := func(src, dst *websocket.Conn, dir string) {
-		defer closeBoth("relay closed")
+	pump := func(src, dst *websocket.Conn, srcName, dstName string) {
+		defer closeBoth(srcName + " closed")
 		for {
 			select {
 			case <-ctx.Done():
@@ -47,13 +47,13 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 				var ce *websocket.CloseError
 				if errors.As(err, &ce) {
 					logger.Debug("Relay read close",
-						zap.String("dir", dir),
+						zap.String("src", srcName),
 						zap.Int("code", ce.Code),
 						zap.String("text", ce.Text),
 					)
 				} else {
 					logger.Debug("Relay read error",
-						zap.String("dir", dir),
+						zap.String("src", srcName),
 						zap.Error(err),
 					)
 				}
@@ -63,7 +63,7 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 			dst.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := dst.WriteMessage(mt, data); err != nil {
 				logger.Debug("Relay write error",
-					zap.String("dir", dir),
+					zap.String("dst", dstName),
 					zap.Error(err),
 				)
 				return
@@ -71,8 +71,8 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 		}
 	}
 
-	go pump(a, b, "a->b")
-	go pump(b, a, "b->a")
+	go pump(a, b, "browser", "tunnel")
+	go pump(b, a, "tunnel", "browser")
 
 	select {
 	case <-ctx.Done():

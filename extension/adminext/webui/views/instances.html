@@ -1,4 +1,39 @@
 <div class="space-y-6 fade-in">
+    <!-- Arthas Task Status Panel (Synchronized from arthas.html) -->
+    <div x-show="arthasTask.active || (arthasTask.taskId && arthasTask.status !== 'success' && arthasTask.status !== '')" x-cloak 
+        class="mb-6 p-4 rounded-lg border slide-in"
+        :class="{
+            'bg-blue-50 border-blue-200': arthasTask.status === 'pending' || arthasTask.status === 'running',
+            'bg-green-50 border-green-200': arthasTask.status === 'success',
+            'bg-red-50 border-red-200': arthasTask.status === 'failed' || arthasTask.status === 'timeout',
+            'bg-gray-50 border-gray-200': !arthasTask.status
+        }">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <i class="text-lg"
+                    :class="{
+                        'fas fa-spinner fa-spin text-blue-500': arthasTask.status === 'pending' || arthasTask.status === 'running',
+                        'fas fa-check-circle text-green-500': arthasTask.status === 'success',
+                        'fas fa-times-circle text-red-500': arthasTask.status === 'failed' || arthasTask.status === 'timeout',
+                        'fas fa-info-circle text-gray-500': !arthasTask.status
+                    }"></i>
+                <div>
+                    <div class="font-medium text-gray-800">
+                        <span x-text="(arthasTask.taskType === 'attach' ? 'Arthas Attach' : 'Arthas Detach') + ' : ' + (arthasTask.targetAgentId ? arthasTask.targetAgentId.substring(0, 12) + '...' : '')"></span>
+                        <span class="text-gray-400 text-[10px] ml-2 font-normal" x-show="arthasTask.taskId">
+                            ID: <span x-text="arthasTask.taskId.substring(0, 8)"></span>...
+                        </span>
+                    </div>
+                    <div class="text-sm text-gray-600" x-text="arthasTask.message"></div>
+                </div>
+            </div>
+            <button x-show="!arthasTask.active" @click="closeTaskPanel()" 
+                class="text-gray-400 hover:text-gray-600 transition">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+    </div>
+
     <!-- Header: Stats & Actions -->
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -120,6 +155,15 @@
                                         <span class="text-xs font-semibold" 
                                             :class="inst.status?.state === 'online' ? 'text-green-600' : 'text-gray-500'"
                                             x-text="inst.status?.state === 'online' ? '在线' : '离线'"></span>
+
+                                        <!-- Arthas register indicator -->
+                                        <span class="ml-3 inline-flex items-center gap-1.5" title="Arthas 注册状态">
+                                            <span class="inline-flex rounded-full h-2 w-2"
+                                                :class="inst.arthasStatus?.tunnelReady ? 'bg-green-500' : 'bg-gray-300'"></span>
+                                            <span class="text-[10px]"
+                                                :class="inst.arthasStatus?.tunnelReady ? 'text-green-600' : 'text-gray-400'"
+                                                x-text="inst.arthasStatus?.tunnelReady ? 'Arthas 已注册' : 'Arthas 未注册'"></span>
+                                        </span>
                                     </div>
                                     <div class="text-[10px] text-gray-400 mt-1 space-y-0.5">
                                         <div x-text="'心跳: ' + formatRelativeTime(inst.last_heartbeat)"></div>
@@ -128,9 +172,12 @@
                                 </div>
                             </td>
                             <td class="px-6 py-4 text-right">
-                                <div class="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button @click.stop="openArthas(inst)" class="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-md transition" title="Arthas Debug">
-                                        <i class="fas fa-bug text-sm"></i>
+                                <div class="flex items-center justify-end gap-2">
+                                    <button @click.stop="openArthas(inst)"
+                                        :disabled="inst.operating || arthasSession.connecting"
+                                        class="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-md transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                        :title="inst.arthasStatus?.tunnelReady ? 'Connect Arthas' : 'Attach & Connect Arthas'">
+                                        <i :class="inst.operating || (arthasSession.connecting && arthasSession.agentInfo?.agent_id === inst.agent_id) ? 'fas fa-spinner fa-spin' : 'fas fa-bug'" class="text-sm"></i>
                                     </button>
                                     <button @click.stop="showInstanceDetails(inst)" class="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-md transition" title="查看详情">
                                         <i class="fas fa-external-link-alt text-sm"></i>
@@ -145,24 +192,25 @@
     </div>
 
     <!-- Instance Detail Slide-over -->
-    <div x-show="instanceDrawerOpen" 
-        class="fixed inset-0 z-[100] overflow-hidden" x-cloak
-        x-transition:enter="transition ease-in-out duration-300"
-        x-transition:enter-start="opacity-0"
-        x-transition:enter-end="opacity-100"
-        x-transition:leave="transition ease-in-out duration-300"
-        x-transition:leave-start="opacity-100"
-        x-transition:leave-end="opacity-0">
-        
-        <div class="absolute inset-0 bg-gray-900/50 backdrop-blur-sm" @click="instanceDrawerOpen = false"></div>
-        
-        <div class="fixed inset-y-0 right-0 max-w-2xl w-full bg-white shadow-2xl flex flex-col"
-            x-transition:enter="transform transition ease-in-out duration-300"
-            x-transition:enter-start="translate-x-full"
-            x-transition:enter-end="translate-x-0"
-            x-transition:leave="transform transition ease-in-out duration-300"
-            x-transition:leave-start="translate-x-0"
-            x-transition:leave-end="translate-x-full">
+    <template x-teleport="body">
+        <div x-show="instanceDrawerOpen" 
+            class="fixed inset-0 z-[9999] overflow-hidden" x-cloak
+            x-transition:enter="transition ease-in-out duration-300"
+            x-transition:enter-start="opacity-0"
+            x-transition:enter-end="opacity-100"
+            x-transition:leave="transition ease-in-out duration-300"
+            x-transition:leave-start="opacity-100"
+            x-transition:leave-end="opacity-0">
+            
+            <div class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm" @click="instanceDrawerOpen = false"></div>
+            
+            <div class="fixed inset-y-0 right-0 max-w-2xl w-full bg-white shadow-2xl flex flex-col"
+                x-transition:enter="transform transition ease-in-out duration-300"
+                x-transition:enter-start="translate-x-full"
+                x-transition:enter-end="translate-x-0"
+                x-transition:leave="transform transition ease-in-out duration-300"
+                x-transition:leave-start="translate-x-0"
+                x-transition:leave-end="translate-x-full">
             
             <div class="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
                 <div class="flex items-center gap-4">
@@ -191,12 +239,16 @@
                         <i class="fas fa-tags text-primary-500"></i> 元数据 (Attributes)
                     </h4>
                     <div class="grid grid-cols-2 gap-3">
-                        <template x-for="(val, key) in selectedInstance?.attributes" :key="key">
+                        <template x-for="(val, key) in (selectedInstance?.attributes || selectedInstance?.labels || {})" :key="key">
                             <div class="p-3 bg-gray-50 rounded-lg border border-gray-100 overflow-hidden">
                                 <div class="text-[10px] text-gray-400 font-mono truncate" x-text="key"></div>
                                 <div class="text-sm font-medium text-gray-800 mt-1 truncate" x-text="val"></div>
                             </div>
                         </template>
+                        <div x-show="Object.keys(selectedInstance?.attributes || selectedInstance?.labels || {}).length === 0"
+                            class="col-span-2 text-sm text-gray-400 bg-gray-50 border border-gray-100 rounded-lg p-4">
+                            无元数据
+                        </div>
                     </div>
                 </section>
 
@@ -240,20 +292,8 @@
                         </div>
                     </div>
                 </section>
-
-                <!-- Actions -->
-                <section>
-                    <h4 class="text-sm font-bold text-gray-900 mb-4">快捷操作</h4>
-                    <div class="flex gap-3">
-                        <button @click="openArthas(selectedInstance)" class="flex-1 py-3 bg-primary-600 text-white rounded-xl font-bold hover:bg-primary-700 transition shadow-lg shadow-primary-100 flex items-center justify-center gap-2">
-                            <i class="fas fa-bug"></i> Arthas 控制台
-                        </button>
-                        <button @click="unRegisterAgent(selectedInstance)" class="flex-1 py-3 bg-white border border-red-200 text-red-600 rounded-xl font-bold hover:bg-red-50 transition flex items-center justify-center gap-2">
-                            <i class="fas fa-trash-alt"></i> 下线实例
-                        </button>
-                    </div>
-                </section>
             </div>
         </div>
     </div>
+    </template>
 </div>
