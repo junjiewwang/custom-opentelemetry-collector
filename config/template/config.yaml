@@ -126,6 +126,25 @@ extensions:
         cache_dir: "/tmp/nacos/cache"
         log_level: "warn"
 
+    # Blob store configuration (for persisting artifacts: profiling data, heap dumps, etc.)
+    # Supported types: "noop" (default), "local", "cos" (Tencent Cloud COS)
+    blob_store:
+      type: cos  # "local", "cos", or "noop" (default: noop, no persistence)
+      # data_dir: "/data/blobstore"  # Required when type is "local"
+      max_blob_size: 536870912  # 512MB max per blob
+      ttl: 24h                  # Blob expiration time
+      cleanup_interval: 30m     # How often to scan for expired blobs
+    
+      # COS configuration (required when type is "cos")
+      cos:
+        bucket: "[[ .Service.perf_bucket.bucket_name ]]"       # COS bucket name (required)
+        region: "[[ .Service.perf_bucket.region_name ]]"    # COS region (required)
+        secret_id: "[[.Service.csp_secret.secret_id]]"             # COS SecretID (required)
+        secret_key: "[[.Service.csp_secret.secret_key]]"            # COS SecretKey (required)
+        domain: "[[ .Service.perf_bucket.host ]]"    # COS domain (default: myqcloud.com)
+        scheme: "https"           # URL scheme (default: https)
+        key_prefix: "artifacts/"  # Object key prefix (optional)
+
   # Control plane extension - Agent interaction interface
   # Handles: Agent registration, heartbeat, task execution, status reporting
   controlplane:
@@ -195,6 +214,11 @@ extensions:
     status_reporter:
       completed_tasks_buffer: 50
       health_check_interval: 10s
+    
+    # Chunk manager configuration (for chunked upload management)
+    # chunk_manager:
+    #   cleanup_interval: 5m  # How often to scan for stale uploads
+    #   upload_ttl: 1h        # How long incomplete uploads are kept
     
     # Token manager for validating agent tokens
     # Shares the same backend as admin extension's token_manager
