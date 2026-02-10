@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
+	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
 
 // Ensure Extension implements the required interfaces.
@@ -45,6 +46,9 @@ type Extension struct {
 
 	// Arthas tunnel extension reference
 	arthasTunnel arthastunnelext.ArthasTunnel
+
+	// BlobStore for artifact download
+	blobStore blobstore.BlobStore
 
 	// Core components (either created locally or reused from controlplane)
 	configMgr configmanager.ConfigManager
@@ -163,6 +167,7 @@ func (e *Extension) initFromControlPlane(host component.Host) error {
 	e.taskMgr = cpExt.GetTaskManager()
 	e.agentReg = cpExt.GetAgentRegistry()
 	e.tokenMgr = cpExt.GetTokenManager()
+	e.blobStore = cpExt.GetBlobStore()
 	e.ownsComponents = false // Don't close these on shutdown
 
 	e.logger.Info("Reusing components from controlplane extension",
@@ -303,6 +308,12 @@ func (e *Extension) initOwnComponents(ctx context.Context, host component.Host) 
 	}
 
 	e.ownsComponents = true // We own these, close them on shutdown
+
+	// Get BlobStore from storage extension
+	if e.storage != nil {
+		e.blobStore = e.storage.GetBlobStore()
+	}
+
 	return nil
 }
 

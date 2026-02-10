@@ -131,6 +131,10 @@ func (e *Extension) newRouter() http.Handler {
 			r.Post("/batch", e.batchTaskActionV2)
 			r.Get("/{taskID}", e.getTaskV2)
 			r.Delete("/{taskID}", e.cancelTaskV2)
+
+			// Artifact download (profiling data, heap dumps, etc.)
+			r.Get("/{taskID}/artifact", e.handleGetTaskArtifact)
+			r.Get("/{taskID}/artifact/meta", e.handleGetTaskArtifactMeta)
 		})
 
 		// ============================================================================
