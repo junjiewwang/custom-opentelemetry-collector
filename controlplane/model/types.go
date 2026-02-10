@@ -151,6 +151,11 @@ type TaskResult struct {
 	Compression    CompressionType `json:"compression,omitempty"`
 	OriginalSize   int64           `json:"original_size,omitempty"`
 	CompressedSize int64           `json:"compressed_size,omitempty"`
+
+	// Artifact fields — set when chunked upload is persisted to BlobStore.
+	// ArtifactRef is the blob key (e.g., "artifacts/<taskID>").
+	ArtifactRef  string `json:"artifact_ref,omitempty"`
+	ArtifactSize int64  `json:"artifact_size,omitempty"`
 }
 
 // ChunkUpload is the internal chunk upload request model.

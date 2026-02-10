@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
+	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
 
 // TokenValidationResult holds the result of token validation.
@@ -92,6 +93,7 @@ type Extension struct {
 	taskExecutor   *TaskExecutor
 	statusReporter *StatusReporter
 	chunkManager   *ChunkManager
+	artifactMgr    *ArtifactManager
 
 	// Agent identity
 	agentID string
@@ -174,7 +176,17 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	// Initialize local components
 	e.taskExecutor = newTaskExecutor(e.logger, e.config.TaskExecutor)
 	e.statusReporter = newStatusReporter(e.logger, e.agentID, e.config.StatusReporter)
-	e.chunkManager = newChunkManager(e.logger)
+	e.chunkManager = newChunkManager(e.logger, e.config.ChunkManager)
+
+	// Initialize artifact manager with BlobStore from storage extension
+	var bs blobstore.BlobStore
+	if e.storage != nil {
+		bs = e.storage.GetBlobStore()
+	}
+	if bs == nil {
+		bs = blobstore.NewNoopBlobStore()
+	}
+	e.artifactMgr = NewArtifactManager(e.logger, e.chunkManager, bs, e.taskMgr)
 
 	// Start all components
 	if err := e.configMgr.Start(ctx); err != nil {
@@ -221,6 +233,14 @@ func (e *Extension) Shutdown(ctx context.Context) error {
 	// Shutdown components in reverse order
 	if err := e.statusReporter.Shutdown(ctx); err != nil {
 		e.logger.Warn("Error shutting down status reporter", zap.Error(err))
+	}
+
+	if e.artifactMgr != nil {
+		e.artifactMgr.Close()
+	}
+
+	if e.chunkManager != nil {
+		e.chunkManager.Close()
 	}
 
 	if err := e.taskExecutor.Shutdown(ctx); err != nil {
@@ -376,8 +396,7 @@ func (e *Extension) GetAgentStats(ctx context.Context) (*agentregistry.AgentStat
 
 // UploadChunk implements ControlPlane.
 func (e *Extension) UploadChunk(ctx context.Context, req *model.ChunkUpload) (*model.ChunkUploadResponse, error) {
-	resp, _, err := e.chunkManager.HandleChunkV2(ctx, req)
-	return resp, err
+	return e.artifactMgr.HandleUploadChunk(ctx, req)
 }
 
 // ValidateToken implements ControlPlane.
@@ -445,6 +464,15 @@ func (e *Extension) GetTokenManager() tokenmanager.TokenManager {
 // GetStorage returns the storage extension for direct access.
 func (e *Extension) GetStorage() storageext.Storage {
 	return e.storage
+}
+
+// GetBlobStore returns the blob store from the storage extension.
+// Returns a no-op BlobStore if none is configured.
+func (e *Extension) GetBlobStore() blobstore.BlobStore {
+	if e.storage != nil {
+		return e.storage.GetBlobStore()
+	}
+	return blobstore.NewNoopBlobStore()
 }
 
 // ===== Deprecated V2 methods (for backward compatibility) =====
