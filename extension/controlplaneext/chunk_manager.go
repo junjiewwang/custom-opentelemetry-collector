@@ -19,9 +19,13 @@ import (
 // ChunkManager manages chunked uploads.
 type ChunkManager struct {
 	logger *zap.Logger
+	cfg    ChunkManagerConfig
 
 	mu      sync.Mutex
 	uploads map[string]*chunkUpload
+
+	stopOnce sync.Once
+	stopCh   chan struct{}
 }
 
 // chunkUpload tracks an ongoing chunked upload.
@@ -34,14 +38,41 @@ type chunkUpload struct {
 	createdAt   time.Time
 }
 
+// ChunkManagerConfig defines chunk manager settings.
+type ChunkManagerConfig struct {
+	// CleanupInterval is how often to scan for expired uploads.
+	// Default: 5 minutes.
+	CleanupInterval time.Duration `mapstructure:"cleanup_interval"`
+
+	// UploadTTL is how long an incomplete upload is kept before being cleaned up.
+	// Default: 1 hour.
+	UploadTTL time.Duration `mapstructure:"upload_ttl"`
+}
+
+// DefaultChunkManagerConfig returns default chunk manager configuration.
+func DefaultChunkManagerConfig() ChunkManagerConfig {
+	return ChunkManagerConfig{
+		CleanupInterval: 5 * time.Minute,
+		UploadTTL:       1 * time.Hour,
+	}
+}
+
 // newChunkManager creates a new chunk manager.
-func newChunkManager(logger *zap.Logger) *ChunkManager {
-	cm := &ChunkManager{
-		logger:  logger,
-		uploads: make(map[string]*chunkUpload),
+func newChunkManager(logger *zap.Logger, cfg ChunkManagerConfig) *ChunkManager {
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = 5 * time.Minute
+	}
+	if cfg.UploadTTL <= 0 {
+		cfg.UploadTTL = 1 * time.Hour
 	}
 
-	// Start cleanup goroutine
+	cm := &ChunkManager{
+		logger:  logger,
+		cfg:     cfg,
+		uploads: make(map[string]*chunkUpload),
+		stopCh:  make(chan struct{}),
+	}
+
 	go cm.cleanupLoop()
 
 	return cm
@@ -184,24 +215,36 @@ func (m *ChunkManager) GetCompleteUpload(key string) ([]byte, bool) {
 
 // cleanupLoop periodically removes stale uploads.
 func (m *ChunkManager) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(m.cfg.CleanupInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		m.cleanup()
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+			m.cleanup()
+		}
 	}
 }
 
-// cleanup removes uploads older than 1 hour.
+// cleanup removes uploads older than the configured TTL.
 func (m *ChunkManager) cleanup() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cutoff := time.Now().Add(-1 * time.Hour)
-	for taskID, upload := range m.uploads {
+	cutoff := time.Now().Add(-m.cfg.UploadTTL)
+	for key, upload := range m.uploads {
 		if upload.createdAt.Before(cutoff) {
-			m.logger.Debug("Cleaning up stale upload", zap.String("task_id", taskID))
-			delete(m.uploads, taskID)
+			m.logger.Debug("Cleaning up stale upload", zap.String("key", key))
+			delete(m.uploads, key)
 		}
 	}
+}
+
+// Close stops the cleanup goroutine and releases resources.
+func (m *ChunkManager) Close() {
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
 }

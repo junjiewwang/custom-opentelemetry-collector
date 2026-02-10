@@ -15,8 +15,15 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
+func newTestChunkManager(t *testing.T) *ChunkManager {
+	t.Helper()
+	cm := newChunkManager(zap.NewNop(), DefaultChunkManagerConfig())
+	t.Cleanup(func() { cm.Close() })
+	return cm
+}
+
 func TestChunkManager_HandleChunkV2_ChecksumMismatch(t *testing.T) {
-	cm := newChunkManager(zap.NewNop())
+	cm := newTestChunkManager(t)
 
 	resp, chunksReceived, err := cm.HandleChunkV2(context.Background(), &model.ChunkUpload{
 		TaskID:        "t1",
@@ -34,7 +41,7 @@ func TestChunkManager_HandleChunkV2_ChecksumMismatch(t *testing.T) {
 }
 
 func TestChunkManager_HandleChunkV2_CompleteWithUploadID(t *testing.T) {
-	cm := newChunkManager(zap.NewNop())
+	cm := newTestChunkManager(t)
 
 	resp1, chunks1, err := cm.HandleChunkV2(context.Background(), &model.ChunkUpload{
 		TaskID:      "t1",
@@ -64,7 +71,7 @@ func TestChunkManager_HandleChunkV2_CompleteWithUploadID(t *testing.T) {
 }
 
 func TestChunkManager_HandleChunkV2_KeyFallbackToTaskID(t *testing.T) {
-	cm := newChunkManager(zap.NewNop())
+	cm := newTestChunkManager(t)
 
 	hash := md5.Sum([]byte("x"))
 	checksum := hex.EncodeToString(hash[:])
@@ -84,7 +91,7 @@ func TestChunkManager_HandleChunkV2_KeyFallbackToTaskID(t *testing.T) {
 }
 
 func TestChunkManager_HandleChunkV2_TotalChunksMismatch(t *testing.T) {
-	cm := newChunkManager(zap.NewNop())
+	cm := newTestChunkManager(t)
 
 	_, _, err := cm.HandleChunkV2(context.Background(), &model.ChunkUpload{
 		TaskID:      "t1",

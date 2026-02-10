@@ -40,6 +40,9 @@ type Config struct {
 
 	// StatusReporter configuration.
 	StatusReporter StatusReporterConfig `mapstructure:"status_reporter"`
+
+	// ChunkManager configuration for chunked upload management.
+	ChunkManager ChunkManagerConfig `mapstructure:"chunk_manager"`
 }
 
 // TaskExecutorConfig defines task executor settings.
@@ -111,5 +114,6 @@ func createDefaultConfig() *Config {
 			CompletedTasksBuffer: 50,
 			HealthCheckInterval:  10 * time.Second,
 		},
+		ChunkManager: DefaultChunkManagerConfig(),
 	}
 }
