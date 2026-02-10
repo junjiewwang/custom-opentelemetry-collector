@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
 	"go.uber.org/zap"
+
+	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
 
 // Ensure Extension implements the required interfaces.
@@ -102,4 +104,14 @@ func (e *Extension) ListRedisNames() []string {
 // ListNacosNames implements Storage.
 func (e *Extension) ListNacosNames() []string {
 	return e.registry.ListNacosNames()
+}
+
+// GetBlobStore implements Storage.
+func (e *Extension) GetBlobStore() blobstore.BlobStore {
+	return e.registry.GetBlobStore()
+}
+
+// HasBlobStore implements Storage.
+func (e *Extension) HasBlobStore() bool {
+	return e.registry.HasBlobStore()
 }

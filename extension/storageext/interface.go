@@ -7,6 +7,8 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/redis/go-redis/v9"
+
+	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
 
 // Storage is the interface exposed by the storage extension to other components.
@@ -46,4 +48,11 @@ type Storage interface {
 
 	// ListNacosNames returns all configured Nacos connection names.
 	ListNacosNames() []string
+
+	// GetBlobStore returns the configured BlobStore.
+	// Returns a no-op BlobStore if none is configured.
+	GetBlobStore() blobstore.BlobStore
+
+	// HasBlobStore checks if a BlobStore is configured (not noop).
+	HasBlobStore() bool
 }

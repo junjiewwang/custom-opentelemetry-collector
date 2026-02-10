@@ -12,6 +12,8 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+
+	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
 
 type redisClientProvider interface {
@@ -34,6 +36,9 @@ type clientRegistry struct {
 	nacosMu            sync.RWMutex
 	nacosConfigClients map[string]config_client.IConfigClient
 	nacosNamingClients map[string]naming_client.INamingClient
+
+	blobMu    sync.RWMutex
+	blobStore blobstore.BlobStore
 
 	mu      sync.Mutex
 	started bool
@@ -106,6 +111,19 @@ func (r *clientRegistry) Start(ctx context.Context, cfg *Config) error {
 		r.logger.Info("Nacos client initialized", zap.String("name", name))
 	}
 
+	// Build BlobStore
+	bs, err := blobstore.NewBlobStore(r.logger, cfg.BlobStore)
+	if err != nil {
+		_ = r.shutdownLocked(ctx)
+		return fmt.Errorf("failed to create blob store: %w", err)
+	}
+	r.blobMu.Lock()
+	r.blobStore = bs
+	r.blobMu.Unlock()
+	if cfg.BlobStore.Type != "" && cfg.BlobStore.Type != "noop" {
+		r.logger.Info("Blob store initialized", zap.String("type", cfg.BlobStore.Type))
+	}
+
 	r.started = true
 	r.logger.Info("Storage extension started",
 		zap.Int("redis_clients", r.redisCount()),
@@ -152,6 +170,17 @@ func (r *clientRegistry) shutdownLocked(_ context.Context) error {
 	r.nacosConfigClients = make(map[string]config_client.IConfigClient)
 	r.nacosNamingClients = make(map[string]naming_client.INamingClient)
 	r.nacosMu.Unlock()
+
+	// Close BlobStore
+	r.blobMu.Lock()
+	if r.blobStore != nil {
+		if err := r.blobStore.Close(); err != nil {
+			r.logger.Warn("Failed to close blob store", zap.Error(err))
+			lastErr = err
+		}
+		r.blobStore = nil
+	}
+	r.blobMu.Unlock()
 
 	r.started = false
 	return lastErr
@@ -236,4 +265,23 @@ func (r *clientRegistry) nacosCount() int {
 	r.nacosMu.RLock()
 	defer r.nacosMu.RUnlock()
 	return len(r.nacosConfigClients)
+}
+
+func (r *clientRegistry) GetBlobStore() blobstore.BlobStore {
+	r.blobMu.RLock()
+	defer r.blobMu.RUnlock()
+	if r.blobStore != nil {
+		return r.blobStore
+	}
+	return blobstore.NewNoopBlobStore()
+}
+
+func (r *clientRegistry) HasBlobStore() bool {
+	r.blobMu.RLock()
+	defer r.blobMu.RUnlock()
+	if r.blobStore == nil {
+		return false
+	}
+	_, isNoop := r.blobStore.(*blobstore.NoopBlobStore)
+	return !isNoop
 }

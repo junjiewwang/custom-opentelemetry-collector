@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
 
 // Config defines the configuration for the storage extension.
@@ -18,6 +20,9 @@ type Config struct {
 
 	// Nacos holds named Nacos client configurations.
 	Nacos map[string]NacosConfig `mapstructure:"nacos"`
+
+	// BlobStore holds the blob store configuration.
+	BlobStore blobstore.Config `mapstructure:"blob_store"`
 }
 
 // RedisConfig holds Redis connection configuration.
@@ -115,6 +120,11 @@ func (cfg *Config) Validate() error {
 		}
 	}
 
+	// Validate BlobStore configuration
+	if err := cfg.BlobStore.Validate(); err != nil {
+		return fmt.Errorf("blob_store: %w", err)
+	}
+
 	return nil
 }
 
@@ -191,7 +201,8 @@ func (cfg *NacosConfig) Validate() error {
 // createDefaultConfig creates the default configuration.
 func createDefaultConfig() *Config {
 	return &Config{
-		Redis: make(map[string]RedisConfig),
-		Nacos: make(map[string]NacosConfig),
+		Redis:     make(map[string]RedisConfig),
+		Nacos:     make(map[string]NacosConfig),
+		BlobStore: blobstore.DefaultConfig(),
 	}
 }
