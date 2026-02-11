@@ -279,68 +279,6 @@
         </div>
     </div>
 
-    <!-- Create Task Modal -->
-    <div x-show="showCreateTaskModal" x-cloak 
-        class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" 
-        @click.self="showCreateTaskModal = false">
-        <div class="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 slide-in">
-            <h3 class="text-xl font-bold text-gray-800 mb-4">Create Task</h3>
-            <form @submit.prevent="submitTask()">
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Task Type *</label>
-                        <select x-model="newTask.task_type" required
-                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
-                            <option value="">Select task type...</option>
-                            <option value="arthas_attach">Arthas Attach</option>
-                            <option value="arthas_detach">Arthas Detach</option>
-                            <option value="heap_dump">Heap Dump</option>
-                            <option value="thread_dump">Thread Dump</option>
-                            <option value="config_export">Config Export</option>
-                            <option value="custom">Custom</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Target Agent</label>
-                        <select x-model="newTask.target_agent_id"
-                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
-                            <option value="">All Agents (Global)</option>
-                            <template x-for="inst in instances.filter(i => i.status?.state === 'online')" :key="inst.agent_id">
-                                <option :value="inst.agent_id" x-text="(inst.service_name || 'Unknown') + ' (' + (inst.hostname || inst.agent_id.substring(0, 12)) + ')'"></option>
-                            </template>
-                        </select>
-                        <p class="text-xs text-gray-400 mt-1">Leave empty to broadcast to all agents</p>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Timeout (ms)</label>
-                        <input type="number" x-model.number="newTask.timeout_millis" min="1000" max="300000"
-                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                            placeholder="60000">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Priority</label>
-                        <input type="number" x-model.number="newTask.priority" min="0" max="10"
-                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                            placeholder="0">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Parameters (JSON)</label>
-                        <textarea x-model="newTask.parameters_json" rows="3"
-                            class="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm"
-                            placeholder='{"action": "attach"}'></textarea>
-                        <p class="text-xs text-gray-400 mt-1">Optional JSON object for task-specific parameters</p>
-                    </div>
-                </div>
-                <div class="flex justify-end gap-3 mt-6">
-                    <button type="button" @click="showCreateTaskModal = false" 
-                        class="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition">Cancel</button>
-                    <button type="submit" 
-                        class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition">Create Task</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
     <!-- Detail Modal (Generic) -->
     <div x-show="showDetailModal" x-cloak 
         class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" 

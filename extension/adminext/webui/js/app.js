@@ -532,66 +532,9 @@ export function adminApp() {
             this.currentView = 'instances';
         },
 
-        // ============================================================================
-        // Actions - Tasks
-        // ============================================================================
-        async cancelTask(task) {
-            if (!confirm(`Cancel task "${task.task_id}"?`)) return;
-            try {
-                await ApiService.cancelTask(task.task_id);
-                this.showToast('Task cancelled successfully', 'success');
-                await this.loadTasks();
-            } catch (e) {
-                this.handleError(e, 'Failed to cancel task');
-            }
-        },
-
         viewTaskDetail(task) {
             // Show raw TaskInfo data if available
             this.showDetail(`Task: ${task.task_id}`, task._raw || task);
-        },
-
-        async submitTask() {
-            try {
-                // 构建任务数据
-                const taskData = {
-                    task_type_name: this.newTask.task_type,
-                    timeout_millis: this.newTask.timeout_millis || 60000,
-                    priority_num: this.newTask.priority || 0,
-                };
-
-                // 可选字段
-                if (this.newTask.target_agent_id) {
-                    taskData.target_agent_id = this.newTask.target_agent_id;
-                }
-
-                // 解析 parameters JSON
-                if (this.newTask.parameters_json && this.newTask.parameters_json.trim()) {
-                    try {
-                        taskData.parameters_json = JSON.parse(this.newTask.parameters_json);
-                    } catch (parseErr) {
-                        this.showToast('Invalid JSON in parameters field', 'error');
-                        return;
-                    }
-                }
-
-                await ApiService.createTask(taskData);
-                this.showToast('Task created successfully', 'success');
-                this.showCreateTaskModal = false;
-                
-                // 重置表单
-                this.newTask = {
-                    task_type: '',
-                    target_agent_id: '',
-                    timeout_millis: 60000,
-                    priority: 0,
-                    parameters_json: '',
-                };
-                
-                await this.loadTasks();
-            } catch (e) {
-                this.handleError(e, 'Failed to create task');
-            }
         },
 
         // ============================================================================

@@ -25,7 +25,8 @@ export function tasksView() {
 
         showCreateTaskModal: false,
         newTask: {
-            task_type: '',
+            task_type_preset: 'arthas_attach',
+            task_type_custom: '',
             target_agent_id: '',
             timeout_millis: 60000,
             priority: 0,
@@ -253,8 +254,17 @@ export function tasksView() {
 
         async submitTask() {
             try {
+                const taskType = this.newTask.task_type_preset === 'custom' 
+                    ? this.newTask.task_type_custom 
+                    : this.newTask.task_type_preset;
+
+                if (!taskType) {
+                    this.showToast('Please specify task type', 'error');
+                    return;
+                }
+
                 const taskData = {
-                    task_type_name: this.newTask.task_type,
+                    task_type_name: taskType,
                     timeout_millis: this.newTask.timeout_millis || 60000,
                     priority_num: this.newTask.priority || 0,
                 };
@@ -270,7 +280,14 @@ export function tasksView() {
                 await ApiService.createTask(taskData);
                 this.showToast('Task created successfully', 'success');
                 this.showCreateTaskModal = false;
-                this.newTask = { task_type: '', target_agent_id: '', timeout_millis: 60000, priority: 0, parameters_json: '' };
+                this.newTask = { 
+                    task_type_preset: 'arthas_attach', 
+                    task_type_custom: '', 
+                    target_agent_id: '', 
+                    timeout_millis: 60000, 
+                    priority: 0, 
+                    parameters_json: '' 
+                };
                 await this.loadTasks();
             } catch (e) {
                 this.handleError(e, 'Failed to create task');

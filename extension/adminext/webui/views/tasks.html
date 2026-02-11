@@ -400,3 +400,107 @@
         </div>
     </div>
 </div>
+
+<!-- Create Task Modal -->
+<div x-show="showCreateTaskModal" 
+     x-cloak
+     class="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+     @keydown.escape.window="showCreateTaskModal = false">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]"
+         @click.away="showCreateTaskModal = false"
+         x-show="showCreateTaskModal"
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="opacity-0 scale-95"
+         x-transition:enter-end="opacity-100 scale-100">
+        
+        <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+            <h3 class="text-lg font-bold text-gray-800">Create New Task</h3>
+            <button @click="showCreateTaskModal = false" class="text-gray-400 hover:text-gray-600 transition">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+
+        <div class="p-6 overflow-y-auto space-y-5">
+            <!-- Task Type Selector -->
+            <div>
+                <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Task Type</label>
+                <div class="space-y-3">
+                    <select x-model="newTask.task_type_preset" 
+                            class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm font-medium transition">
+                        <option value="arthas_attach">Arthas Attach</option>
+                        <option value="arthas_detach">Arthas Detach</option>
+                        <option value="async_profiler">Async Profiler</option>
+                        <option value="custom">-- Custom --</option>
+                    </select>
+                    
+                    <!-- Custom Task Type Input -->
+                    <template x-if="newTask.task_type_preset === 'custom'">
+                        <div x-transition class="relative">
+                            <input type="text" x-model="newTask.task_type_custom" 
+                                   placeholder="Enter custom task type name..."
+                                   class="w-full px-4 py-2.5 bg-white border-2 border-primary-100 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm font-bold placeholder:font-normal placeholder:text-gray-300 transition">
+                            <div class="absolute right-3 top-1/2 -translate-y-1/2">
+                                <span class="text-[10px] bg-primary-50 text-primary-600 px-2 py-0.5 rounded font-bold">MANUAL</span>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Target Agent -->
+            <div>
+                <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Target Agent (Optional)</label>
+                <div class="relative">
+                    <select x-model="newTask.target_agent_id" 
+                            @focus="if(instances.length === 0) loadInstances()"
+                            class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm font-medium transition appearance-none">
+                        <option value="">Global Broadcast (All Agents)</option>
+                        <template x-for="inst in instances" :key="inst.agent_id">
+                            <option :value="inst.agent_id" x-text="`${inst.service_name} - ${inst.hostname || inst.ip} (${formatShortId(inst.agent_id)})`"></option>
+                        </template>
+                    </select>
+                    <div class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                        <i class="fas fa-chevron-down text-xs"></i>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <!-- Timeout -->
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Timeout (ms)</label>
+                    <input type="number" x-model="newTask.timeout_millis" 
+                           class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm transition">
+                </div>
+                <!-- Priority -->
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Priority</label>
+                    <input type="number" x-model="newTask.priority" 
+                           class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm transition">
+                </div>
+            </div>
+
+            <!-- Parameters -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest">Parameters (JSON)</label>
+                    <span class="text-[9px] text-gray-300 font-mono">Optional</span>
+                </div>
+                <textarea x-model="newTask.parameters_json" rows="4" 
+                          placeholder='{ "key": "value" }'
+                          class="w-full px-4 py-3 bg-gray-900 text-blue-300 font-mono text-xs rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition shadow-inner"></textarea>
+            </div>
+        </div>
+
+        <div class="px-6 py-4 bg-gray-50 border-t border-gray-100 flex gap-3">
+            <button @click="showCreateTaskModal = false" 
+                    class="flex-1 px-4 py-2.5 border border-gray-200 text-gray-600 rounded-xl font-bold hover:bg-gray-100 transition">
+                Cancel
+            </button>
+            <button @click="submitTask()" 
+                    class="flex-1 px-4 py-2.5 bg-primary-600 text-white rounded-xl font-bold hover:bg-primary-700 transition shadow-lg shadow-primary-200">
+                Submit Task
+            </button>
+        </div>
+    </div>
+</div>
