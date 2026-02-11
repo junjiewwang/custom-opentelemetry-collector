@@ -174,6 +174,32 @@ func (f *ComponentFactory) CreateTokenManager(cfg tokenmanager.Config) (tokenman
 	}
 }
 
+// CreateChunkManager creates the appropriate ChunkManager based on config.
+func (f *ComponentFactory) CreateChunkManager(cfg ChunkManagerConfig) (*ChunkManager, error) {
+	var store ChunkStore
+
+	switch cfg.Type {
+	case "redis":
+		if f.storage == nil {
+			return nil, fmt.Errorf("storage extension required for redis chunk manager")
+		}
+		redisName := cfg.RedisName
+		if redisName == "" {
+			redisName = "default"
+		}
+		client, err := f.storage.GetRedis(redisName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
+		}
+		store = NewRedisChunkStore(f.logger.Named("chunk-store"), client, cfg.KeyPrefix, cfg.UploadTTL)
+
+	default:
+		store = NewMemoryChunkStore(f.logger.Named("chunk-store"), cfg)
+	}
+
+	return NewChunkManager(f.logger.Named("chunk-mgr"), store), nil
+}
+
 // ComponentConfigs holds the configuration for all control plane components.
 type ComponentConfigs struct {
 	StorageExtension string
@@ -181,6 +207,7 @@ type ComponentConfigs struct {
 	TaskManager      taskmanager.Config
 	AgentRegistry    agentregistry.Config
 	TokenManager     tokenmanager.Config
+	ChunkManager     ChunkManagerConfig
 }
 
 // ValidateComponentConfigs validates the component configurations.
@@ -230,6 +257,15 @@ func ValidateComponentConfigs(cfg ComponentConfigs) error {
 
 	if cfg.TokenManager.Type == "redis" && cfg.StorageExtension == "" {
 		return errors.New("storage_extension is required when token_manager.type is 'redis'")
+	}
+
+	// Validate ChunkManager
+	if cfg.ChunkManager.Type != "" && cfg.ChunkManager.Type != "memory" && cfg.ChunkManager.Type != "redis" {
+		return errors.New("chunk_manager.type must be 'memory' or 'redis'")
+	}
+
+	if cfg.ChunkManager.Type == "redis" && cfg.StorageExtension == "" {
+		return errors.New("storage_extension is required when chunk_manager.type is 'redis'")
 	}
 
 	return nil

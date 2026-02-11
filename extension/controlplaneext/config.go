@@ -75,6 +75,7 @@ func (cfg *Config) Validate() error {
 		TaskManager:      cfg.TaskManager,
 		AgentRegistry:    cfg.AgentRegistry,
 		TokenManager:     cfg.TokenManager,
+		ChunkManager:     cfg.ChunkManager,
 	}); err != nil {
 		return err
 	}

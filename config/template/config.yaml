@@ -137,13 +137,13 @@ extensions:
     
       # COS configuration (required when type is "cos")
       cos:
-        bucket: "[[ .Service.perf_bucket.bucket_name ]]"       # COS bucket name (required)
+        bucket: "[[ .Service.perf_bucket.bucket_name ]]-[[.Service.csp_secret.secret_appid]]"       # COS bucket name (required)
         region: "[[ .Service.perf_bucket.region_name ]]"    # COS region (required)
         secret_id: "[[.Service.csp_secret.secret_id]]"             # COS SecretID (required)
         secret_key: "[[.Service.csp_secret.secret_key]]"            # COS SecretKey (required)
         domain: "[[ .Service.perf_bucket.host ]]"    # COS domain (default: myqcloud.com)
         scheme: "https"           # URL scheme (default: https)
-        key_prefix: "artifacts/"  # Object key prefix (optional)
+        key_prefix: "otel-collector-artifacts"  # Object key prefix (optional)
 
   # Control plane extension - Agent interaction interface
   # Handles: Agent registration, heartbeat, task execution, status reporting
@@ -216,9 +216,12 @@ extensions:
       health_check_interval: 10s
     
     # Chunk manager configuration (for chunked upload management)
-    # chunk_manager:
-    #   cleanup_interval: 5m  # How often to scan for stale uploads
-    #   upload_ttl: 1h        # How long incomplete uploads are kept
+    chunk_manager:
+      type: redis              # "memory" (default) or "redis"
+      redis_name: default      # Reference to redis connection name (redis only)
+      key_prefix: "otel:chunks"  # Redis key prefix (redis only)
+      cleanup_interval: 5m     # How often to scan for stale uploads (memory only)
+      upload_ttl: 1h           # How long incomplete uploads are kept
     
     # Token manager for validating agent tokens
     # Shares the same backend as admin extension's token_manager
