@@ -6,7 +6,7 @@ package controlplaneext
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -84,7 +84,7 @@ func (am *ArtifactManager) persistArtifact(uploadKey, taskID string) {
 	defer cancel()
 
 	// Step 1: Get assembled data from ChunkManager
-	data, ok := am.chunkMgr.GetCompleteUpload(uploadKey)
+	complete, ok := am.chunkMgr.GetCompleteUpload(uploadKey)
 	if !ok {
 		am.logger.Warn("Complete upload data not found, may have already been consumed or expired",
 			zap.String("upload_key", uploadKey),
@@ -96,11 +96,14 @@ func (am *ArtifactManager) persistArtifact(uploadKey, taskID string) {
 	am.logger.Info("Persisting artifact",
 		zap.String("task_id", taskID),
 		zap.String("upload_key", uploadKey),
-		zap.Int("data_size", len(data)),
+		zap.String("file_name", complete.FileName),
+		zap.Int("data_size", len(complete.Data)),
 	)
 
-	// Step 2: Build blob key (use task_id as the primary key)
-	blobKey := fmt.Sprintf("artifacts/%s", taskID)
+	// Step 2: Build blob key from taskID and original file extension.
+	// The key_prefix in BlobStore config handles namespace isolation,
+	// so ArtifactManager only provides the business key.
+	blobKey := buildArtifactKey(taskID, complete.FileName)
 
 	// Step 3: Persist to BlobStore
 	metadata := map[string]string{
@@ -108,8 +111,14 @@ func (am *ArtifactManager) persistArtifact(uploadKey, taskID string) {
 		"upload_key": uploadKey,
 		"created_at": time.Now().UTC().Format(time.RFC3339),
 	}
+	if complete.FileName != "" {
+		metadata["filename"] = complete.FileName
+	}
+	if complete.ContentType != "" {
+		metadata["content_type"] = complete.ContentType
+	}
 
-	written, err := am.blobStore.Put(ctx, blobKey, bytes.NewReader(data), metadata)
+	written, err := am.blobStore.Put(ctx, blobKey, bytes.NewReader(complete.Data), metadata)
 	if err != nil {
 		am.logger.Error("Failed to persist artifact",
 			zap.String("task_id", taskID),
@@ -127,6 +136,18 @@ func (am *ArtifactManager) persistArtifact(uploadKey, taskID string) {
 
 	// Step 4: Update TaskResult with artifact reference
 	am.updateTaskResultWithArtifact(ctx, taskID, blobKey, written)
+}
+
+// buildArtifactKey constructs the blob key from taskID and an optional fileName.
+// If fileName has an extension, the key uses that extension (e.g., "taskid.collapsed").
+// Otherwise, falls back to just the taskID.
+func buildArtifactKey(taskID, fileName string) string {
+	if fileName != "" {
+		if ext := filepath.Ext(fileName); ext != "" {
+			return taskID + ext
+		}
+	}
+	return taskID
 }
 
 // updateTaskResultWithArtifact updates the TaskResult to include artifact reference info.

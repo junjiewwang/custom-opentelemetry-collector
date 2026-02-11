@@ -35,8 +35,9 @@ func (e *Extension) handleGetTaskArtifact(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Build the blob key (must match the key used by ArtifactManager)
-	blobKey := fmt.Sprintf("artifacts/%s", taskID)
+	// Resolve blob key from TaskResult.ArtifactRef (set by ArtifactManager),
+	// falling back to taskID if ArtifactRef is empty (backward compatibility).
+	blobKey := e.resolveArtifactKey(r, taskID)
 
 	// Get metadata first to set Content-Length and other headers
 	meta, err := e.blobStore.GetMeta(r.Context(), blobKey)
@@ -117,7 +118,7 @@ func (e *Extension) handleGetTaskArtifactMeta(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	blobKey := fmt.Sprintf("artifacts/%s", taskID)
+	blobKey := e.resolveArtifactKey(r, taskID)
 
 	meta, err := e.blobStore.GetMeta(r.Context(), blobKey)
 	if err != nil {
@@ -138,4 +139,17 @@ func (e *Extension) handleGetTaskArtifactMeta(w http.ResponseWriter, r *http.Req
 		"metadata":     meta.Metadata,
 		"created_at":   meta.CreatedAt,
 	})
+}
+
+// resolveArtifactKey looks up the TaskResult.ArtifactRef for the given taskID.
+// If ArtifactRef is set, it is used as the blob key; otherwise, falls back to
+// the taskID alone (backward compatibility with older uploads).
+func (e *Extension) resolveArtifactKey(r *http.Request, taskID string) string {
+	if e.taskMgr != nil {
+		result, found, err := e.taskMgr.GetTaskResult(r.Context(), taskID)
+		if err == nil && found && result != nil && result.ArtifactRef != "" {
+			return result.ArtifactRef
+		}
+	}
+	return taskID
 }

@@ -87,13 +87,22 @@ func (m *mockTaskManager) getResult(taskID string) *model.TaskResult {
 	return m.results[taskID]
 }
 
+// --- Helper ---
+
+func newTestMemoryChunkManager(t *testing.T) *ChunkManager {
+	t.Helper()
+	store := NewMemoryChunkStore(zap.NewNop(), DefaultChunkManagerConfig())
+	cm := NewChunkManager(zap.NewNop(), store)
+	t.Cleanup(func() { cm.Close() })
+	return cm
+}
+
 // --- Tests ---
 
 func newTestArtifactManager(t *testing.T) (*ArtifactManager, *ChunkManager, blobstore.BlobStore, *mockTaskManager) {
 	t.Helper()
 
-	cm := newChunkManager(zap.NewNop(), DefaultChunkManagerConfig())
-	t.Cleanup(func() { cm.Close() })
+	cm := newTestMemoryChunkManager(t)
 
 	dir := t.TempDir()
 	bs, err := blobstore.NewLocalBlobStore(zap.NewNop(), blobstore.Config{
@@ -134,8 +143,12 @@ func TestArtifactManager_HandleUploadChunk_SingleChunk(t *testing.T) {
 		return result != nil && result.ArtifactRef != ""
 	}, 5*time.Second, 50*time.Millisecond)
 
-	// Verify blob was persisted
-	reader, err := bs.Get(ctx, "artifacts/task-1")
+	// Verify blob was persisted (key is just taskID, no "artifacts/" prefix)
+	result := tm.getResult("task-1")
+	require.NotNil(t, result)
+	blobKey := result.ArtifactRef
+
+	reader, err := bs.Get(ctx, blobKey)
 	require.NoError(t, err)
 	defer reader.Close()
 
@@ -143,10 +156,6 @@ func TestArtifactManager_HandleUploadChunk_SingleChunk(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, data, got)
 
-	// Verify task result was updated
-	result := tm.getResult("task-1")
-	require.NotNil(t, result)
-	assert.Equal(t, "artifacts/task-1", result.ArtifactRef)
 	assert.Equal(t, int64(len(data)), result.ArtifactSize)
 }
 
@@ -183,7 +192,8 @@ func TestArtifactManager_HandleUploadChunk_MultiChunk(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 
 	// Verify assembled data
-	reader, err := bs.Get(ctx, "artifacts/task-2")
+	result := tm.getResult("task-2")
+	reader, err := bs.Get(ctx, result.ArtifactRef)
 	require.NoError(t, err)
 	defer reader.Close()
 
@@ -228,11 +238,6 @@ func TestArtifactManager_PersistArtifact_TaskResultNotFound(t *testing.T) {
 	am, _, bs, tm := newTestArtifactManager(t)
 	ctx := context.Background()
 
-	// Make GetTaskResult return not found
-	tm.mu.Lock()
-	// results map is empty, so GetTaskResult returns nil, false, nil
-	tm.mu.Unlock()
-
 	resp, err := am.HandleUploadChunk(ctx, &model.ChunkUpload{
 		TaskID:      "task-no-result",
 		UploadID:    "upload-no-result",
@@ -250,14 +255,14 @@ func TestArtifactManager_PersistArtifact_TaskResultNotFound(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 
 	// Verify blob was still persisted
-	reader, err := bs.Get(ctx, "artifacts/task-no-result")
+	result := tm.getResult("task-no-result")
+	reader, err := bs.Get(ctx, result.ArtifactRef)
 	require.NoError(t, err)
 	_ = reader.Close()
 
 	// Verify minimal result was created
-	result := tm.getResult("task-no-result")
 	require.NotNil(t, result)
-	assert.Equal(t, "artifacts/task-no-result", result.ArtifactRef)
+	assert.NotEmpty(t, result.ArtifactRef)
 }
 
 func TestArtifactManager_PersistArtifact_WithExistingResult(t *testing.T) {
@@ -266,9 +271,9 @@ func TestArtifactManager_PersistArtifact_WithExistingResult(t *testing.T) {
 
 	// Pre-populate a task result
 	existing := &model.TaskResult{
-		TaskID:    "task-existing",
-		AgentID:   "agent-1",
-		Status:    model.TaskStatusSuccess,
+		TaskID:     "task-existing",
+		AgentID:    "agent-1",
+		Status:     model.TaskStatusSuccess,
 		ResultJSON: []byte(`{"key":"value"}`),
 	}
 	tm.mu.Lock()
@@ -295,7 +300,7 @@ func TestArtifactManager_PersistArtifact_WithExistingResult(t *testing.T) {
 	result := tm.getResult("task-existing")
 	assert.Equal(t, "agent-1", result.AgentID)
 	assert.Equal(t, model.TaskStatusSuccess, result.Status)
-	assert.Equal(t, "artifacts/task-existing", result.ArtifactRef)
+	assert.NotEmpty(t, result.ArtifactRef)
 	assert.Equal(t, int64(len("artifact data")), result.ArtifactSize)
 }
 
@@ -306,8 +311,7 @@ func TestArtifactManager_Close_Idempotent(t *testing.T) {
 }
 
 func TestArtifactManager_PersistArtifact_BlobStoreError(t *testing.T) {
-	cm := newChunkManager(zap.NewNop(), DefaultChunkManagerConfig())
-	defer cm.Close()
+	cm := newTestMemoryChunkManager(t)
 
 	// Use a blob store that always fails on Put
 	failBS := &failingBlobStore{}
@@ -350,8 +354,7 @@ func (f *failingBlobStore) Delete(_ context.Context, _ string) error { return ni
 func (f *failingBlobStore) Close() error                             { return nil }
 
 func TestArtifactManager_PersistArtifact_NilTaskManager(t *testing.T) {
-	cm := newChunkManager(zap.NewNop(), DefaultChunkManagerConfig())
-	defer cm.Close()
+	cm := newTestMemoryChunkManager(t)
 
 	dir := t.TempDir()
 	bs, err := blobstore.NewLocalBlobStore(zap.NewNop(), blobstore.Config{
@@ -379,7 +382,8 @@ func TestArtifactManager_PersistArtifact_NilTaskManager(t *testing.T) {
 	// Wait for async persistence — blob should still be saved even without TaskManager
 	time.Sleep(200 * time.Millisecond)
 
-	reader, err := bs.Get(ctx, "artifacts/task-nil-tm")
+	// Key is just "task-nil-tm" (no "artifacts/" prefix, no extension)
+	reader, err := bs.Get(ctx, "task-nil-tm")
 	require.NoError(t, err)
 	defer reader.Close()
 
@@ -402,7 +406,7 @@ type putCall struct {
 	metadata map[string]string
 }
 
-func (r *recordingBlobStore) Put(ctx context.Context, key string, reader io.Reader, metadata map[string]string) (int64, error) {
+func (r *recordingBlobStore) Put(_ context.Context, key string, reader io.Reader, metadata map[string]string) (int64, error) {
 	data, _ := io.ReadAll(reader)
 	r.mu.Lock()
 	r.putCalls = append(r.putCalls, putCall{key: key, data: data, metadata: metadata})
@@ -417,8 +421,7 @@ func (r *recordingBlobStore) getPutCalls() []putCall {
 }
 
 func TestArtifactManager_PersistArtifact_BlobKeyFormat(t *testing.T) {
-	cm := newChunkManager(zap.NewNop(), DefaultChunkManagerConfig())
-	defer cm.Close()
+	cm := newTestMemoryChunkManager(t)
 
 	rbs := &recordingBlobStore{BlobStore: blobstore.NewNoopBlobStore()}
 	tm := newMockTaskManager()
@@ -444,8 +447,42 @@ func TestArtifactManager_PersistArtifact_BlobKeyFormat(t *testing.T) {
 
 	calls := rbs.getPutCalls()
 	require.Len(t, calls, 1)
-	assert.Equal(t, "artifacts/task-key-test", calls[0].key)
+	// Key should be just taskID (no "artifacts/" prefix)
+	assert.Equal(t, "task-key-test", calls[0].key)
 	assert.Equal(t, []byte("data"), calls[0].data)
 	assert.Equal(t, "task-key-test", calls[0].metadata["task_id"])
 	assert.Equal(t, "upload-key-test", calls[0].metadata["upload_key"])
+}
+
+func TestArtifactManager_PersistArtifact_WithFileExtension(t *testing.T) {
+	cm := newTestMemoryChunkManager(t)
+
+	rbs := &recordingBlobStore{BlobStore: blobstore.NewNoopBlobStore()}
+	tm := newMockTaskManager()
+
+	am := NewArtifactManager(zap.NewNop(), cm, rbs, tm)
+	defer am.Close()
+
+	ctx := context.Background()
+	_, err := am.HandleUploadChunk(ctx, &model.ChunkUpload{
+		TaskID:      "task-ext",
+		UploadID:    "upload-ext",
+		ChunkIndex:  0,
+		TotalChunks: 1,
+		ChunkData:   []byte("collapsed data"),
+		FileName:    "7556ebed.collapsed",
+	})
+	require.NoError(t, err)
+
+	// Wait for async persistence
+	assert.Eventually(t, func() bool {
+		calls := rbs.getPutCalls()
+		return len(calls) > 0
+	}, 5*time.Second, 50*time.Millisecond)
+
+	calls := rbs.getPutCalls()
+	require.Len(t, calls, 1)
+	// Key should include extension from fileName
+	assert.Equal(t, "task-ext.collapsed", calls[0].key)
+	assert.Equal(t, "7556ebed.collapsed", calls[0].metadata["filename"])
 }
