@@ -692,7 +692,11 @@ type ChunkedTaskResult struct {
 	// 分片校验和 (MD5)
 	ChunkChecksum string `protobuf:"bytes,6,opt,name=chunk_checksum,json=chunkChecksum,proto3" json:"chunk_checksum,omitempty"`
 	// 是否最后一片
-	IsLastChunk   bool `protobuf:"varint,7,opt,name=is_last_chunk,json=isLastChunk,proto3" json:"is_last_chunk,omitempty"`
+	IsLastChunk bool `protobuf:"varint,7,opt,name=is_last_chunk,json=isLastChunk,proto3" json:"is_last_chunk,omitempty"`
+	// 原始文件名 (如 "taskid.collapsed")，仅第一片需要填写
+	FileName string `protobuf:"bytes,8,opt,name=file_name,json=fileName,proto3" json:"file_name,omitempty"`
+	// 内容类型提示 (如 "application/octet-stream")
+	ContentType   string `protobuf:"bytes,9,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -774,6 +778,20 @@ func (x *ChunkedTaskResult) GetIsLastChunk() bool {
 		return x.IsLastChunk
 	}
 	return false
+}
+
+func (x *ChunkedTaskResult) GetFileName() string {
+	if x != nil {
+		return x.FileName
+	}
+	return ""
+}
+
+func (x *ChunkedTaskResult) GetContentType() string {
+	if x != nil {
+		return x.ContentType
+	}
+	return ""
 }
 
 // 分片上传响应
@@ -910,7 +928,7 @@ const file_controlplane_v1_task_proto_rawDesc = "" +
 	"\vcompression\x18\t \x01(\x0e2A.io.opentelemetry.extension.controlplane.proto.v1.CompressionTypeR\vcompression\x12#\n" +
 	"\roriginal_size\x18\n" +
 	" \x01(\x03R\foriginalSize\x12'\n" +
-	"\x0fcompressed_size\x18\v \x01(\x03R\x0ecompressedSize\"\xf7\x01\n" +
+	"\x0fcompressed_size\x18\v \x01(\x03R\x0ecompressedSize\"\xb7\x02\n" +
 	"\x11ChunkedTaskResult\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1b\n" +
 	"\tupload_id\x18\x02 \x01(\tR\buploadId\x12\x1f\n" +
@@ -920,7 +938,9 @@ const file_controlplane_v1_task_proto_rawDesc = "" +
 	"\n" +
 	"chunk_data\x18\x05 \x01(\fR\tchunkData\x12%\n" +
 	"\x0echunk_checksum\x18\x06 \x01(\tR\rchunkChecksum\x12\"\n" +
-	"\ris_last_chunk\x18\a \x01(\bR\visLastChunk\"\xe8\x01\n" +
+	"\ris_last_chunk\x18\a \x01(\bR\visLastChunk\x12\x1b\n" +
+	"\tfile_name\x18\b \x01(\tR\bfileName\x12!\n" +
+	"\fcontent_type\x18\t \x01(\tR\vcontentType\"\xe8\x01\n" +
 	"\x15ChunkedUploadResponse\x12\x1b\n" +
 	"\tupload_id\x18\x01 \x01(\tR\buploadId\x120\n" +
 	"\x14received_chunk_index\x18\x02 \x01(\x05R\x12receivedChunkIndex\x12[\n" +

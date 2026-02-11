@@ -182,6 +182,12 @@ message ChunkedTaskResult {
 
   // 是否最后一片
   bool is_last_chunk = 7;
+
+  // 原始文件名 (如 "taskid.collapsed")，仅第一片需要填写
+  string file_name = 8;
+
+  // 内容类型提示 (如 "application/octet-stream")
+  string content_type = 9;
 }
 
 // 分片上传状态
