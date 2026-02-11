@@ -72,7 +72,7 @@ func NewLocalBlobStore(logger *zap.Logger, cfg Config) (BlobStore, error) {
 }
 
 func (s *localBlobStore) blobPath(key string) string {
-	return filepath.Join(s.dataDir, key+".blob")
+	return filepath.Join(s.dataDir, key+blobDataSuffix(key))
 }
 
 func (s *localBlobStore) metaPath(key string) string {

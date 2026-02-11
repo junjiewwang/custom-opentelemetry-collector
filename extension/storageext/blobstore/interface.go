@@ -11,6 +11,7 @@ package blobstore
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"time"
 )
 
@@ -56,4 +57,14 @@ type BlobMeta struct {
 
 	// CreatedAt is the time the blob was stored.
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// blobDataSuffix returns the file suffix for the blob data object.
+// If the key already has a recognized file extension, no additional suffix is appended.
+// Otherwise, ".blob" is used as the default data suffix.
+func blobDataSuffix(key string) string {
+	if ext := filepath.Ext(key); ext != "" {
+		return ""
+	}
+	return ".blob"
 }

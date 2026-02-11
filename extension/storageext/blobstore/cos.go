@@ -4,13 +4,13 @@
 package blobstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/tencentyun/cos-go-sdk-v5"
@@ -85,9 +85,20 @@ func NewCOSBlobStore(logger *zap.Logger, cfg Config) (BlobStore, error) {
 	return s, nil
 }
 
-// objectKey returns the full COS object key with prefix.
+// objectKey returns the full COS object key with prefix and suffix.
 func (s *cosBlobStore) objectKey(key, suffix string) string {
 	return s.keyPrefix + key + suffix
+}
+
+// blobObjectKey returns the COS object key for the blob data.
+// If the key already has a file extension, it is used as-is (no ".blob" suffix).
+func (s *cosBlobStore) blobObjectKey(key string) string {
+	return s.keyPrefix + key + blobDataSuffix(key)
+}
+
+// metaObjectKey returns the COS object key for the metadata file.
+func (s *cosBlobStore) metaObjectKey(key string) string {
+	return s.keyPrefix + key + ".meta.json"
 }
 
 // Put implements BlobStore.
@@ -106,11 +117,11 @@ func (s *cosBlobStore) Put(ctx context.Context, key string, reader io.Reader, me
 			return 0, ErrTooLarge
 		}
 		written = int64(len(data))
-		dataReader = strings.NewReader(string(data))
+		dataReader = bytes.NewReader(data)
 	}
 
 	// Upload blob data
-	blobKey := s.objectKey(key, ".blob")
+	blobKey := s.blobObjectKey(key)
 	_, err := s.client.Object.Put(ctx, blobKey, dataReader, nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload blob to COS %q: %w", blobKey, err)
@@ -137,8 +148,8 @@ func (s *cosBlobStore) Put(ctx context.Context, key string, reader io.Reader, me
 		return written, fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
-	metaKey := s.objectKey(key, ".meta.json")
-	_, err = s.client.Object.Put(ctx, metaKey, strings.NewReader(string(metaData)), nil)
+	metaKey := s.metaObjectKey(key)
+	_, err = s.client.Object.Put(ctx, metaKey, bytes.NewReader(metaData), nil)
 	if err != nil {
 		return written, fmt.Errorf("failed to upload metadata to COS %q: %w", metaKey, err)
 	}
@@ -153,7 +164,7 @@ func (s *cosBlobStore) Put(ctx context.Context, key string, reader io.Reader, me
 
 // Get implements BlobStore.
 func (s *cosBlobStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	blobKey := s.objectKey(key, ".blob")
+	blobKey := s.blobObjectKey(key)
 
 	resp, err := s.client.Object.Get(ctx, blobKey, nil)
 	if err != nil {
@@ -168,7 +179,7 @@ func (s *cosBlobStore) Get(ctx context.Context, key string) (io.ReadCloser, erro
 
 // GetMeta implements BlobStore.
 func (s *cosBlobStore) GetMeta(ctx context.Context, key string) (*BlobMeta, error) {
-	metaKey := s.objectKey(key, ".meta.json")
+	metaKey := s.metaObjectKey(key)
 
 	resp, err := s.client.Object.Get(ctx, metaKey, nil)
 	if err != nil {
@@ -200,8 +211,8 @@ func (s *cosBlobStore) GetMeta(ctx context.Context, key string) (*BlobMeta, erro
 
 // Delete implements BlobStore.
 func (s *cosBlobStore) Delete(ctx context.Context, key string) error {
-	blobKey := s.objectKey(key, ".blob")
-	metaKey := s.objectKey(key, ".meta.json")
+	blobKey := s.blobObjectKey(key)
+	metaKey := s.metaObjectKey(key)
 
 	// Delete metadata first (best effort)
 	_, _ = s.client.Object.Delete(ctx, metaKey)
