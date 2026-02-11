@@ -176,7 +176,11 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	// Initialize local components
 	e.taskExecutor = newTaskExecutor(e.logger, e.config.TaskExecutor)
 	e.statusReporter = newStatusReporter(e.logger, e.agentID, e.config.StatusReporter)
-	e.chunkManager = newChunkManager(e.logger, e.config.ChunkManager)
+
+	e.chunkManager, err = factory.CreateChunkManager(e.config.ChunkManager)
+	if err != nil {
+		return fmt.Errorf("failed to create chunk manager: %w", err)
+	}
 
 	// Initialize artifact manager with BlobStore from storage extension
 	var bs blobstore.BlobStore

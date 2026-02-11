@@ -17,7 +17,8 @@ import (
 
 func newTestChunkManager(t *testing.T) *ChunkManager {
 	t.Helper()
-	cm := newChunkManager(zap.NewNop(), DefaultChunkManagerConfig())
+	store := NewMemoryChunkStore(zap.NewNop(), DefaultChunkManagerConfig())
+	cm := NewChunkManager(zap.NewNop(), store)
 	t.Cleanup(func() { cm.Close() })
 	return cm
 }
