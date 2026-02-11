@@ -20,6 +20,8 @@ func ChunkUploadFromProto(req *controlplanev1.ChunkedTaskResult) *model.ChunkUpl
 		ChunkData:     req.GetChunkData(),
 		ChunkChecksum: req.GetChunkChecksum(),
 		IsLastChunk:   req.GetIsLastChunk(),
+		FileName:      req.GetFileName(),
+		ContentType:   req.GetContentType(),
 	}
 }
 
@@ -35,6 +37,8 @@ func ChunkUploadToProto(req *model.ChunkUpload) *controlplanev1.ChunkedTaskResul
 		ChunkData:     req.ChunkData,
 		ChunkChecksum: req.ChunkChecksum,
 		IsLastChunk:   req.IsLastChunk,
+		FileName:      req.FileName,
+		ContentType:   req.ContentType,
 	}
 }
 

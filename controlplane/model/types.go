@@ -167,6 +167,8 @@ type ChunkUpload struct {
 	ChunkData     []byte `json:"chunk_data"`
 	ChunkChecksum string `json:"chunk_checksum,omitempty"`
 	IsLastChunk   bool   `json:"is_last_chunk,omitempty"`
+	FileName      string `json:"file_name,omitempty"`
+	ContentType   string `json:"content_type,omitempty"`
 }
 
 // ChunkUploadResponse is the internal response model.
