@@ -501,6 +501,16 @@ export function tasksView() {
                 compression: result.compression ?? result.Compression,
                 original_size: result.original_size ?? result.OriginalSize,
                 compressed_size: result.compressed_size ?? result.CompressedSize,
+                // Analysis fields (extracted from ResultJSON for async-profiler tasks)
+                analysis_view_url: resultJSONObj?.analysis_view_url || '',
+                analysis_status: resultJSONObj?.analysis_status || '',
+                analysis_error: resultJSONObj?.analysis_error || '',
+                analysis_mode: resultJSONObj?.analysis_mode || '',
+                analysis_summary: resultJSONObj?.analysis_summary || null,
+                analysis_metadata: resultJSONObj?.analysis_metadata || null,
+                // Artifact fields
+                artifact_ref: result.artifact_ref || result.ArtifactRef || '',
+                artifact_size: result.artifact_size || result.ArtifactSize || 0,
                 _raw: result,
             };
         },

@@ -295,6 +295,83 @@
                                                 </template>
                                             </div>
 
+                                            <!-- Analysis Result Card (for async-profiler tasks) -->
+                                            <template x-if="selectedTask?._result?.analysis_status || selectedTask?._result?.analysis_view_url">
+                                                <div class="bg-white p-5 rounded-xl border border-gray-100 shadow-sm">
+                                                    <div class="flex items-center gap-2 mb-4">
+                                                        <i class="fas fa-chart-bar text-indigo-500 text-xs"></i>
+                                                        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">性能分析结果</p>
+                                                        <span :class="{
+                                                            'bg-green-100 text-green-700': selectedTask?._result?.analysis_status === 'completed',
+                                                            'bg-yellow-100 text-yellow-700': selectedTask?._result?.analysis_status === 'processing',
+                                                            'bg-red-100 text-red-700': selectedTask?._result?.analysis_status === 'failed',
+                                                            'bg-gray-100 text-gray-600': !['completed','processing','failed'].includes(selectedTask?._result?.analysis_status)
+                                                        }" class="text-[9px] font-bold px-2 py-0.5 rounded-full uppercase" x-text="selectedTask?._result?.analysis_status || 'unknown'"></span>
+                                                        <template x-if="selectedTask?._result?.analysis_mode">
+                                                            <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700" x-text="selectedTask._result.analysis_mode"></span>
+                                                        </template>
+                                                    </div>
+                                                    <div class="space-y-3">
+                                                        <!-- Analysis Summary (total_records & suggestions) -->
+                                                        <template x-if="selectedTask?._result?.analysis_summary">
+                                                            <div class="bg-indigo-50/50 border border-indigo-100 rounded-lg p-3 space-y-2">
+                                                                <div class="flex items-center gap-4">
+                                                                    <div>
+                                                                        <p class="text-[9px] font-bold text-indigo-400 uppercase mb-0.5">采样记录数</p>
+                                                                        <p class="text-sm font-bold text-indigo-800" x-text="selectedTask._result.analysis_summary.total_records ?? '-'"></p>
+                                                                    </div>
+                                                                    <template x-if="selectedTask._result.analysis_summary.suggestions">
+                                                                        <div>
+                                                                            <p class="text-[9px] font-bold text-indigo-400 uppercase mb-0.5">分析建议</p>
+                                                                            <p class="text-sm font-bold text-indigo-800" x-text="selectedTask._result.analysis_summary.suggestions"></p>
+                                                                        </div>
+                                                                    </template>
+                                                                </div>
+                                                            </div>
+                                                        </template>
+                                                        <template x-if="selectedTask?._result?.analysis_view_url">
+                                                            <a :href="selectedTask._result.analysis_view_url" target="_blank" rel="noopener noreferrer"
+                                                               class="flex items-center gap-3 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl p-4 transition group">
+                                                                <div class="w-10 h-10 bg-indigo-500 rounded-lg flex items-center justify-center flex-shrink-0 group-hover:bg-indigo-600 transition">
+                                                                    <i class="fas fa-fire text-white text-sm"></i>
+                                                                </div>
+                                                                <div class="flex-1 min-w-0">
+                                                                    <p class="text-sm font-bold text-indigo-800">查看火焰图 / 分析报告</p>
+                                                                    <p class="text-[10px] text-indigo-500 truncate font-mono" x-text="selectedTask._result.analysis_view_url"></p>
+                                                                </div>
+                                                                <i class="fas fa-external-link-alt text-indigo-400 group-hover:text-indigo-600 transition"></i>
+                                                            </a>
+                                                        </template>
+                                                        <template x-if="selectedTask?._result?.analysis_error">
+                                                            <div class="bg-red-50 border border-red-100 rounded-lg p-3">
+                                                                <p class="text-[9px] font-bold text-red-400 uppercase mb-1">分析错误</p>
+                                                                <pre class="text-xs text-red-800 font-mono whitespace-pre-wrap" x-text="selectedTask._result.analysis_error"></pre>
+                                                            </div>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                            </template>
+
+                                            <!-- Artifact Info Card -->
+                                            <template x-if="selectedTask?._result?.artifact_ref">
+                                                <div class="bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
+                                                    <div class="flex items-center gap-2 mb-3">
+                                                        <i class="fas fa-archive text-amber-500 text-xs"></i>
+                                                        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">产物信息</p>
+                                                    </div>
+                                                    <div class="grid grid-cols-2 gap-3">
+                                                        <div class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                                                            <p class="text-[9px] font-bold text-gray-400 uppercase mb-0.5">Artifact Ref</p>
+                                                            <p class="text-xs font-mono text-gray-800 break-all" x-text="selectedTask._result.artifact_ref"></p>
+                                                        </div>
+                                                        <div class="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                                                            <p class="text-[9px] font-bold text-gray-400 uppercase mb-0.5">Size</p>
+                                                            <p class="text-xs font-mono text-gray-800" x-text="selectedTask._result.artifact_size ? (Math.round(selectedTask._result.artifact_size / 1024) + ' KB') : '-'"></p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </template>
+
                                             <!-- Result Summary (Only if entries exist) -->
                                             <template x-if="selectedTask?._result?.result_summary && selectedTask?._result?.result_summary.length > 0">
                                                 <div class="bg-white p-4 rounded-xl border border-gray-100">
@@ -429,7 +506,7 @@
                             class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm font-medium transition">
                         <option value="arthas_attach">Arthas Attach</option>
                         <option value="arthas_detach">Arthas Detach</option>
-                        <option value="async_profiler">Async Profiler</option>
+                        <option value="async-profiler">Async Profiler</option>
                         <option value="custom">-- Custom --</option>
                     </select>
                     
