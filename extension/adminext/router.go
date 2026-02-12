@@ -64,6 +64,13 @@ func (e *Extension) newRouter() http.Handler {
 		})
 	}
 
+	// ============================================================================
+	// Analysis Callback (from perf-analysis service, no admin auth needed)
+	// External services call back without admin credentials, so this must be
+	// registered OUTSIDE the authMiddleware scope.
+	// ============================================================================
+	r.Post("/api/v2/callback/analysis", e.handleAnalysisCallback)
+
 	// API v2 routes (admin API is v2-only)
 	r.Route("/api/v2", func(r chi.Router) {
 		// Apply auth middleware only to API routes
@@ -141,6 +148,16 @@ func (e *Extension) newRouter() http.Handler {
 		// Dashboard
 		// ============================================================================
 		r.Get("/dashboard/overview", e.getDashboardOverview)
+
+		// ============================================================================
+		// Notification Management (monitoring & retry)
+		// ============================================================================
+		r.Route("/notifications", func(r chi.Router) {
+			r.Get("/", e.listNotifications)
+			r.Post("/retry-all", e.retryAllFailedNotifications)
+			r.Get("/{id}", e.getNotification)
+			r.Post("/{id}/retry", e.retryNotification)
+		})
 
 		// ============================================================================
 		// Arthas Tunnel (if enabled)

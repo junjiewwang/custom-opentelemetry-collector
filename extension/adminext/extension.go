@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
@@ -61,6 +62,10 @@ type Extension struct {
 
 	// WebSocket token manager for secure WS authentication
 	wsTokenMgr WSTokenManager
+
+	// Notification components (from controlplane extension)
+	notificationStore notification.Store
+	artifactNotifier  notification.Notifier
 
 	// Flag to track if we own the components (need to close them on shutdown)
 	ownsComponents bool
@@ -168,6 +173,8 @@ func (e *Extension) initFromControlPlane(host component.Host) error {
 	e.agentReg = cpExt.GetAgentRegistry()
 	e.tokenMgr = cpExt.GetTokenManager()
 	e.blobStore = cpExt.GetBlobStore()
+	e.notificationStore = cpExt.GetNotificationStore()
+	e.artifactNotifier = cpExt.GetArtifactNotifier()
 	e.ownsComponents = false // Don't close these on shutdown
 
 	e.logger.Info("Reusing components from controlplane extension",
