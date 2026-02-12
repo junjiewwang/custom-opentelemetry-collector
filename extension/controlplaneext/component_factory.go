@@ -14,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
@@ -200,14 +201,44 @@ func (f *ComponentFactory) CreateChunkManager(cfg ChunkManagerConfig) (*ChunkMan
 	return NewChunkManager(f.logger.Named("chunk-mgr"), store), nil
 }
 
+// CreateArtifactNotifier creates the appropriate Notifier and Store based on config.
+// Returns (NoopNotifier, nil) when notification is disabled.
+func (f *ComponentFactory) CreateArtifactNotifier(cfg notification.Config) (notification.Notifier, notification.Store) {
+	if !cfg.Enabled {
+		return notification.NewNoopNotifier(), nil
+	}
+
+	notifier := notification.NewHTTPNotifier(f.logger, cfg)
+
+	var store notification.Store
+	if f.storage != nil {
+		redisName := cfg.RedisName
+		if redisName == "" {
+			redisName = "default"
+		}
+		client, err := f.storage.GetRedis(redisName)
+		if err == nil && client != nil {
+			store = notification.NewRedisStore(client, cfg.KeyPrefix, cfg.RecordTTL)
+		} else {
+			f.logger.Warn("Failed to get Redis for notification store, records will not be persisted",
+				zap.String("redis_name", redisName),
+				zap.Error(err),
+			)
+		}
+	}
+
+	return notifier, store
+}
+
 // ComponentConfigs holds the configuration for all control plane components.
 type ComponentConfigs struct {
-	StorageExtension string
-	ConfigManager    configmanager.Config
-	TaskManager      taskmanager.Config
-	AgentRegistry    agentregistry.Config
-	TokenManager     tokenmanager.Config
-	ChunkManager     ChunkManagerConfig
+	StorageExtension     string
+	ConfigManager        configmanager.Config
+	TaskManager          taskmanager.Config
+	AgentRegistry        agentregistry.Config
+	TokenManager         tokenmanager.Config
+	ChunkManager         ChunkManagerConfig
+	ArtifactNotification notification.Config
 }
 
 // ValidateComponentConfigs validates the component configurations.
@@ -266,6 +297,16 @@ func ValidateComponentConfigs(cfg ComponentConfigs) error {
 
 	if cfg.ChunkManager.Type == "redis" && cfg.StorageExtension == "" {
 		return errors.New("storage_extension is required when chunk_manager.type is 'redis'")
+	}
+
+	// Validate ArtifactNotification
+	if cfg.ArtifactNotification.Enabled {
+		if cfg.ArtifactNotification.AnalysisServiceURL == "" {
+			return errors.New("artifact_notification.analysis_service_url is required when enabled")
+		}
+		if cfg.ArtifactNotification.CallbackURL == "" {
+			return errors.New("artifact_notification.callback_url is required when enabled")
+		}
 	}
 
 	return nil

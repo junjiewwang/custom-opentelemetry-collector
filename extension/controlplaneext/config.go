@@ -9,6 +9,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 )
@@ -43,6 +44,10 @@ type Config struct {
 
 	// ChunkManager configuration for chunked upload management.
 	ChunkManager ChunkManagerConfig `mapstructure:"chunk_manager"`
+
+	// ArtifactNotification configuration for notifying analysis services
+	// after artifact persistence (e.g., trigger perf-analysis for profiling data).
+	ArtifactNotification notification.Config `mapstructure:"artifact_notification"`
 }
 
 // TaskExecutorConfig defines task executor settings.
@@ -70,12 +75,13 @@ type StatusReporterConfig struct {
 func (cfg *Config) Validate() error {
 	// Validate component configs using shared validation
 	if err := ValidateComponentConfigs(ComponentConfigs{
-		StorageExtension: cfg.StorageExtension,
-		ConfigManager:    cfg.ConfigManager,
-		TaskManager:      cfg.TaskManager,
-		AgentRegistry:    cfg.AgentRegistry,
-		TokenManager:     cfg.TokenManager,
-		ChunkManager:     cfg.ChunkManager,
+		StorageExtension:     cfg.StorageExtension,
+		ConfigManager:        cfg.ConfigManager,
+		TaskManager:          cfg.TaskManager,
+		AgentRegistry:        cfg.AgentRegistry,
+		TokenManager:         cfg.TokenManager,
+		ChunkManager:         cfg.ChunkManager,
+		ArtifactNotification: cfg.ArtifactNotification,
 	}); err != nil {
 		return err
 	}
@@ -116,5 +122,6 @@ func createDefaultConfig() *Config {
 			HealthCheckInterval:  10 * time.Second,
 		},
 		ChunkManager: DefaultChunkManagerConfig(),
+		ArtifactNotification: notification.DefaultConfig(),
 	}
 }

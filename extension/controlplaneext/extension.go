@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
@@ -190,7 +191,10 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	if bs == nil {
 		bs = blobstore.NewNoopBlobStore()
 	}
-	e.artifactMgr = NewArtifactManager(e.logger, e.chunkManager, bs, e.taskMgr)
+
+	// Create artifact notifier and notification store
+	notifier, notificationStore := factory.CreateArtifactNotifier(e.config.ArtifactNotification)
+	e.artifactMgr = NewArtifactManager(e.logger, e.chunkManager, bs, e.taskMgr, notifier, notificationStore)
 
 	// Start all components
 	if err := e.configMgr.Start(ctx); err != nil {
@@ -477,6 +481,24 @@ func (e *Extension) GetBlobStore() blobstore.BlobStore {
 		return e.storage.GetBlobStore()
 	}
 	return blobstore.NewNoopBlobStore()
+}
+
+// GetNotificationStore returns the notification store for managing notification records.
+// Returns nil if artifact notification is not configured.
+func (e *Extension) GetNotificationStore() notification.Store {
+	if e.artifactMgr != nil {
+		return e.artifactMgr.GetNotificationStore()
+	}
+	return nil
+}
+
+// GetArtifactNotifier returns the artifact notifier for retry operations.
+// Returns nil if artifact notification is not configured.
+func (e *Extension) GetArtifactNotifier() notification.Notifier {
+	if e.artifactMgr != nil {
+		return e.artifactMgr.GetNotifier()
+	}
+	return nil
 }
 
 // ===== Deprecated V2 methods (for backward compatibility) =====

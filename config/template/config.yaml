@@ -223,6 +223,20 @@ extensions:
       cleanup_interval: 5m     # How often to scan for stale uploads (memory only)
       upload_ttl: 1h           # How long incomplete uploads are kept
     
+    # Artifact notification configuration
+    # When enabled, notifies external analysis services (e.g., perf-analysis)
+    # after artifact persistence for automated profiling data analysis.
+    artifact_notification:
+      enabled: true            # Set to true to enable analysis notification
+      analysis_service_url: "http://localhost:8081/tasks"  # perf-analysis task submission endpoint
+      callback_url: "http://localhost:8088/api/v2/callback/analysis"  # Callback URL for analysis completion
+      task_types:               # Only these task types trigger notification
+        - async-profiler
+      timeout: 10s              # HTTP request timeout
+      redis_name: default       # Redis connection for notification records
+      key_prefix: "otel:notifications"
+      record_ttl: 72h           # How long notification records are retained
+    
     # Token manager for validating agent tokens
     # Shares the same backend as admin extension's token_manager
     token_manager:
