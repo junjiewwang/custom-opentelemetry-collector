@@ -33,6 +33,10 @@ func (n *NoopBlobStore) Delete(_ context.Context, _ string) error {
 	return nil
 }
 
+func (n *NoopBlobStore) FullKey(key string) string {
+	return key + blobDataSuffix(key)
+}
+
 func (n *NoopBlobStore) Close() error {
 	return nil
 }

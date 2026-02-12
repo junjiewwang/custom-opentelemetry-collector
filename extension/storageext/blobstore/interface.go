@@ -37,6 +37,12 @@ type BlobStore interface {
 	// Returns nil if the key does not exist (idempotent).
 	Delete(ctx context.Context, key string) error
 
+	// FullKey returns the complete storage path for the given business key,
+	// including any configured prefix and data suffix.
+	// This is needed when external systems access the storage directly
+	// and require the full object key (e.g., COS key with key_prefix).
+	FullKey(key string) string
+
 	// Close releases any resources held by the store.
 	Close() error
 }

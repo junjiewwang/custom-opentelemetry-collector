@@ -226,6 +226,11 @@ func (s *cosBlobStore) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// FullKey implements BlobStore.
+func (s *cosBlobStore) FullKey(key string) string {
+	return s.blobObjectKey(key)
+}
+
 // Close implements BlobStore.
 func (s *cosBlobStore) Close() error {
 	// COS client does not hold persistent connections that need explicit cleanup.

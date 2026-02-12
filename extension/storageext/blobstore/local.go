@@ -213,6 +213,11 @@ func (s *localBlobStore) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+// FullKey implements BlobStore.
+func (s *localBlobStore) FullKey(key string) string {
+	return s.blobPath(key)
+}
+
 // Close implements BlobStore.
 func (s *localBlobStore) Close() error {
 	s.stopOnce.Do(func() {
