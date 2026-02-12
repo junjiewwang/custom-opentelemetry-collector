@@ -115,7 +115,7 @@ func newTestArtifactManager(t *testing.T) (*ArtifactManager, *ChunkManager, blob
 
 	tm := newMockTaskManager()
 
-	am := NewArtifactManager(zap.NewNop(), cm, bs, tm)
+	am := NewArtifactManager(zap.NewNop(), cm, bs, tm, nil, nil)
 	t.Cleanup(func() { am.Close() })
 
 	return am, cm, bs, tm
@@ -317,7 +317,7 @@ func TestArtifactManager_PersistArtifact_BlobStoreError(t *testing.T) {
 	failBS := &failingBlobStore{}
 	tm := newMockTaskManager()
 
-	am := NewArtifactManager(zap.NewNop(), cm, failBS, tm)
+	am := NewArtifactManager(zap.NewNop(), cm, failBS, tm, nil, nil)
 	defer am.Close()
 
 	ctx := context.Background()
@@ -351,6 +351,7 @@ func (f *failingBlobStore) GetMeta(_ context.Context, _ string) (*blobstore.Blob
 	return nil, blobstore.ErrNotFound
 }
 func (f *failingBlobStore) Delete(_ context.Context, _ string) error { return nil }
+func (f *failingBlobStore) FullKey(key string) string                { return key }
 func (f *failingBlobStore) Close() error                             { return nil }
 
 func TestArtifactManager_PersistArtifact_NilTaskManager(t *testing.T) {
@@ -365,7 +366,7 @@ func TestArtifactManager_PersistArtifact_NilTaskManager(t *testing.T) {
 	defer func() { _ = bs.Close() }()
 
 	// Create with nil TaskManager
-	am := NewArtifactManager(zap.NewNop(), cm, bs, nil)
+	am := NewArtifactManager(zap.NewNop(), cm, bs, nil, nil, nil)
 	defer am.Close()
 
 	ctx := context.Background()
@@ -426,7 +427,7 @@ func TestArtifactManager_PersistArtifact_BlobKeyFormat(t *testing.T) {
 	rbs := &recordingBlobStore{BlobStore: blobstore.NewNoopBlobStore()}
 	tm := newMockTaskManager()
 
-	am := NewArtifactManager(zap.NewNop(), cm, rbs, tm)
+	am := NewArtifactManager(zap.NewNop(), cm, rbs, tm, nil, nil)
 	defer am.Close()
 
 	ctx := context.Background()
@@ -460,7 +461,7 @@ func TestArtifactManager_PersistArtifact_WithFileExtension(t *testing.T) {
 	rbs := &recordingBlobStore{BlobStore: blobstore.NewNoopBlobStore()}
 	tm := newMockTaskManager()
 
-	am := NewArtifactManager(zap.NewNop(), cm, rbs, tm)
+	am := NewArtifactManager(zap.NewNop(), cm, rbs, tm, nil, nil)
 	defer am.Close()
 
 	ctx := context.Background()
