@@ -29,16 +29,21 @@ func NewRedisLoader(client redis.UniversalClient, keys *KeyBuilder) *RedisLoader
 // LoadAgentsByPaths loads multiple agents by their full paths using Pipeline.
 // Returns agents that were successfully loaded (skips expired/invalid entries).
 // This reduces N+1 Redis calls to just 2 calls (HGETALL + Pipeline GET).
+// Deduplicates by instanceKey to avoid returning the same agent twice when
+// multiple agentIDs (e.g., stale entries in _ids hash) point to the same fullPath.
 func (l *RedisLoader) LoadAgentsByPaths(ctx context.Context, paths map[string]string) ([]*AgentInfo, error) {
 	if len(paths) == 0 {
 		return []*AgentInfo{}, nil
 	}
 
-	// Build instance keys for batch retrieval
+	// Build instance keys for batch retrieval, deduplicating by instanceKey.
+	// Multiple agentIDs can map to the same fullPath (stale _ids entries),
+	// which would result in duplicate agents in the response.
 	type keyInfo struct {
 		agentID     string
 		instanceKey string
 	}
+	seen := make(map[string]struct{})
 	keyInfos := make([]keyInfo, 0, len(paths))
 
 	for agentID, fullPath := range paths {
@@ -47,6 +52,10 @@ func (l *RedisLoader) LoadAgentsByPaths(ctx context.Context, paths map[string]st
 			continue
 		}
 		key := l.keys.InstanceKeyFromParts(appIDEsc, serviceNameEsc, instanceKey)
+		if _, exists := seen[key]; exists {
+			continue // skip duplicate instanceKey
+		}
+		seen[key] = struct{}{}
 		keyInfos = append(keyInfos, keyInfo{agentID: agentID, instanceKey: key})
 	}
 

@@ -10,19 +10,6 @@
                     class="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 w-48 text-sm">
                 <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
             </div>
-            <!-- View Mode Toggle -->
-            <div class="flex items-center bg-gray-100 rounded-lg p-1">
-                <button @click="taskViewMode = 'tree'" 
-                    :class="taskViewMode === 'tree' ? 'bg-white shadow-sm text-primary-600' : 'text-gray-500'"
-                    class="px-3 py-1.5 text-xs font-bold rounded-md transition" title="树形视图">
-                    <i class="fas fa-sitemap mr-1"></i> 树形
-                </button>
-                <button @click="taskViewMode = 'flat'" 
-                    :class="taskViewMode === 'flat' ? 'bg-white shadow-sm text-primary-600' : 'text-gray-500'"
-                    class="px-3 py-1.5 text-xs font-bold rounded-md transition" title="列表视图">
-                    <i class="fas fa-list mr-1"></i> 列表
-                </button>
-            </div>
             <button @click="showCreateTaskModal = true" 
                 class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2 shadow-sm text-sm">
                 <i class="fas fa-plus"></i> Create Task
@@ -34,7 +21,7 @@
     </div>
 
     <!-- Task Stats Summary (Clickable Filters) -->
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
         <template x-for="stat in [
             { label: '全部', filter: 'all', key: 'total', icon: 'fas fa-list', color: 'text-gray-500' },
             { label: '运行中', filter: 'running', key: 'running', icon: 'fas fa-play-circle', color: 'text-blue-500' },
@@ -55,61 +42,76 @@
         </template>
     </div>
 
-    <!-- Tree View Container -->
-    <div x-show="taskViewMode === 'tree'" class="space-y-6">
-        <template x-for="app in taskTreeData" :key="app.id">
-            <div class="border border-gray-100 rounded-xl overflow-hidden shadow-sm bg-white">
-                <!-- App Header -->
-                <div class="bg-gray-50 px-4 py-3 flex items-center justify-between border-b border-gray-100">
-                    <div class="flex items-center gap-3">
-                        <i class="fas fa-cube text-blue-500"></i>
-                        <span class="font-bold text-gray-800" x-text="app.name"></span>
-                        <span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold" x-text="app.children.length + ' SERVICES'"></span>
-                    </div>
-                    <div class="flex items-center gap-3">
-                        <!-- App Level Stats -->
-                        <template x-if="app.stats.running > 0">
-                            <span class="flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded">
-                                <i class="fas fa-circle text-[6px] status-running"></i>
-                                <span x-text="app.stats.running"></span>
-                            </span>
-                        </template>
-                        <template x-if="app.stats.failed > 0">
-                            <span class="flex items-center gap-1 text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded">
-                                <i class="fas fa-times-circle"></i>
-                                <span x-text="app.stats.failed"></span>
-                            </span>
-                        </template>
-                        <span class="text-[10px] text-gray-400 font-medium" x-text="'Updated ' + formatRelativeTime(app.lastUpdatedAt)"></span>
-                    </div>
+    <!-- Two-column Layout: Left Tree + Right Task List -->
+    <div class="flex gap-6" style="min-height: 500px;">
+        
+        <!-- Left Column: Navigation Tree -->
+        <div class="w-72 flex-shrink-0">
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden sticky top-4">
+                <div class="px-4 py-3 bg-gray-50 border-b border-gray-100">
+                    <h3 class="text-xs font-bold text-gray-500 uppercase tracking-widest">App / Service / Instance</h3>
                 </div>
-                <!-- Services -->
-                <div class="p-4 space-y-6">
-                    <template x-for="svc in app.children" :key="svc.id">
-                        <div class="ml-4 tree-line">
-                            <div class="flex items-center gap-2 mb-3">
-                                <i class="fas fa-sitemap text-purple-400 text-sm"></i>
-                                <span class="font-bold text-gray-700 text-sm" x-text="svc.name"></span>
-                                <span class="text-[9px] text-gray-400 font-bold uppercase" x-text="svc.stats.total + ' TASKS'"></span>
+                <div class="overflow-y-auto" style="max-height: calc(100vh - 320px);">
+                    <!-- Empty State -->
+                    <div x-show="taskTreeData.length === 0" class="p-6 text-center text-gray-400 text-xs">
+                        <i class="fas fa-folder-open text-2xl mb-2 text-gray-200 block"></i>
+                        暂无数据
+                    </div>
+
+                    <template x-for="app in taskTreeData" :key="app.id">
+                        <div class="border-b border-gray-50 last:border-b-0">
+                            <!-- App Node -->
+                            <div @click="toggleTreeNode(app)" 
+                                 class="flex items-center gap-2 px-4 py-2.5 cursor-pointer hover:bg-gray-50 transition select-none">
+                                <i :class="app.expanded ? 'fas fa-chevron-down' : 'fas fa-chevron-right'" class="text-[9px] text-gray-400 w-3 text-center"></i>
+                                <i class="fas fa-cube text-blue-500 text-xs"></i>
+                                <span class="text-xs font-bold text-gray-700 truncate flex-1" x-text="app.name" :title="app.name"></span>
+                                <span class="text-[9px] font-bold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded" x-text="app.stats.total"></span>
                             </div>
-                            <!-- Task Grid within Service -->
-                            <div class="ml-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                                <template x-for="task in (svc.allTasks || [])" :key="task.task_id">
-                                    <div @click="openTaskDetail(task)" 
-                                         class="bg-white border border-gray-100 rounded-lg p-3 hover:border-primary-300 hover:shadow-md transition cursor-pointer flex items-center justify-between group">
-                                        <div class="flex items-center gap-3 overflow-hidden">
-                                            <div :class="getStatusIconClass(task.status)" class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0">
-                                                <i :class="getStatusIcon(task.status)" class="text-xs"></i>
-                                            </div>
-                                            <div class="overflow-hidden">
-                                                <div class="text-xs font-bold text-gray-800 truncate" x-text="task.task_type"></div>
-                                                <div class="text-[9px] font-mono text-gray-400 truncate" x-text="task.task_id"></div>
-                                                <div class="text-[9px] text-gray-400 truncate" x-text="task._instance_label ? ('实例 ' + formatShortId(task._instance_label)) : 'Global'"></div>
-                                            </div>
+
+                            <!-- Service Nodes (inside App) -->
+                            <div x-show="app.expanded" x-collapse>
+                                <template x-for="svc in app.children" :key="svc.id">
+                                    <div>
+                                        <div @click="toggleTreeNode(svc)" 
+                                             class="flex items-center gap-2 pl-8 pr-4 py-2 cursor-pointer hover:bg-gray-50 transition select-none">
+                                            <i :class="svc.expanded ? 'fas fa-chevron-down' : 'fas fa-chevron-right'" class="text-[9px] text-gray-400 w-3 text-center"></i>
+                                            <i class="fas fa-sitemap text-purple-400 text-[10px]"></i>
+                                            <span class="text-[11px] font-bold text-gray-600 truncate flex-1" x-text="svc.name" :title="svc.name"></span>
+                                            <span class="text-[9px] font-bold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded" x-text="svc.stats.total"></span>
                                         </div>
-                                        <div class="text-right flex-shrink-0 ml-2">
-                                            <div class="text-[9px] text-gray-400 font-medium" x-text="formatRelativeTime(task.created_at_millis)"></div>
-                                            <i class="fas fa-chevron-right text-gray-200 group-hover:text-primary-500 transition text-[10px] mt-1"></i>
+
+                                        <!-- Instance Nodes (inside Service) -->
+                                        <div x-show="svc.expanded" x-collapse>
+                                            <template x-for="inst in svc.children" :key="inst.id">
+                                                <div @click="selectInstance(inst)" 
+                                                     :class="selectedInstanceId === inst.id ? 'bg-primary-50 border-l-2 border-l-primary-500' : 'border-l-2 border-l-transparent hover:bg-gray-50'"
+                                                     class="flex items-center gap-2 pl-12 pr-4 py-2 cursor-pointer transition select-none">
+                                                    <!-- Agent online/offline status dot -->
+                                                    <span class="w-2 h-2 rounded-full flex-shrink-0"
+                                                          :class="{
+                                                              'bg-green-500': inst.agentState === 'online',
+                                                              'bg-gray-300': inst.agentState === 'offline' || !inst.agentState,
+                                                              'bg-yellow-500': inst.agentState === 'unhealthy'
+                                                          }"
+                                                          :title="inst.agentState === 'online' ? '在线' : inst.agentState === 'unhealthy' ? '异常' : '离线'"></span>
+                                                    <i class="fas fa-server text-[9px]" 
+                                                       :class="selectedInstanceId === inst.id ? 'text-primary-500' : 'text-gray-400'"></i>
+                                                    <span class="text-[10px] font-mono truncate flex-1" 
+                                                          :class="selectedInstanceId === inst.id ? 'text-primary-700 font-bold' : 'text-gray-500'"
+                                                          x-text="inst.name === '全局任务' ? inst.name : formatShortId(inst.name)" 
+                                                          :title="inst.name"></span>
+                                                    <div class="flex items-center gap-1">
+                                                        <template x-if="inst.stats.running > 0">
+                                                            <span class="w-1.5 h-1.5 rounded-full bg-blue-500 status-running"></span>
+                                                        </template>
+                                                        <template x-if="inst.stats.failed > 0 || inst.stats.timeout > 0">
+                                                            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                                                        </template>
+                                                        <span class="text-[9px] font-bold text-gray-400" x-text="inst.stats.total"></span>
+                                                    </div>
+                                                </div>
+                                            </template>
                                         </div>
                                     </div>
                                 </template>
@@ -118,58 +120,67 @@
                     </template>
                 </div>
             </div>
-        </template>
-        <!-- Empty State -->
-        <div x-show="taskTreeData.length === 0" class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
-            <i class="fas fa-tasks text-4xl mb-3 text-gray-200"></i>
-            <p class="text-gray-400">没有符合条件的任务</p>
         </div>
-    </div>
 
-    <!-- Flat View -->
-    <div x-show="taskViewMode === 'flat'" class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <table class="w-full text-left">
-            <thead class="bg-gray-50/50 border-b border-gray-100">
-                <tr class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                    <th class="px-6 py-4">Task ID</th>
-                    <th class="px-6 py-4">Type</th>
-                    <th class="px-6 py-4">App / Service</th>
-                    <th class="px-6 py-4">Target</th>
-                    <th class="px-6 py-4">Status</th>
-                    <th class="px-6 py-4 text-right">Actions</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-100">
-                <template x-for="task in (taskStatusFilter === 'all' ? tasks : tasks.filter(t => t.status === taskStatusFilter))" :key="task.task_id">
-                    <tr @click="openTaskDetail(task)" class="hover:bg-primary-50/30 cursor-pointer transition group">
-                        <td class="px-6 py-4">
-                            <code class="text-[10px] font-mono bg-gray-100 px-2 py-1 rounded text-gray-500 group-hover:bg-primary-100 group-hover:text-primary-700 transition" x-text="formatShortId(task.task_id)"></code>
-                        </td>
-                        <td class="px-6 py-4 text-sm font-bold text-gray-700" x-text="task.task_type"></td>
-                        <td class="px-6 py-4">
-                            <div class="text-xs font-bold text-gray-700" x-text="task.app_id || '-'"></div>
-                            <div class="text-[10px] text-gray-400" x-text="task.service_name || ''"></div>
-                        </td>
-                        <td class="px-6 py-4">
-                            <code class="text-[10px] text-gray-400" x-text="formatShortId(task.target_agent_id) || 'Global'"></code>
-                        </td>
-                        <td class="px-6 py-4">
-                            <span :class="getStatusClass(task.status)" class="px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1.5 w-fit uppercase tracking-tight">
-                                <i x-show="task.status === 'running'" class="fas fa-circle text-[4px] status-running"></i>
-                                <span x-text="task.status"></span>
-                            </span>
-                        </td>
-                        <td class="px-6 py-4 text-right">
-                            <button class="text-gray-300 hover:text-primary-600 p-2"><i class="fas fa-eye"></i></button>
-                        </td>
-                    </tr>
+        <!-- Right Column: Task List -->
+        <div class="flex-1 min-w-0">
+            <!-- Selection Breadcrumb -->
+            <div x-show="selectedInstanceId" class="mb-4 flex items-center gap-2">
+                <div class="bg-primary-50 border border-primary-200 rounded-lg px-3 py-1.5 flex items-center gap-2">
+                    <i class="fas fa-server text-primary-500 text-xs"></i>
+                    <span class="text-xs font-bold text-primary-700" x-text="getSelectedInstanceLabel()"></span>
+                    <button @click="selectedInstanceId = ''" class="text-primary-400 hover:text-primary-600 transition ml-1">
+                        <i class="fas fa-times text-[10px]"></i>
+                    </button>
+                </div>
+                <span class="text-[10px] text-gray-400" x-text="filteredTasksForView().length + ' 个任务'"></span>
+            </div>
+            <div x-show="!selectedInstanceId" class="mb-4">
+                <p class="text-xs text-gray-400"><i class="fas fa-info-circle mr-1"></i>点击左侧实例节点可筛选任务列表</p>
+            </div>
+
+            <!-- Task Cards -->
+            <div class="space-y-3">
+                <template x-for="task in filteredTasksForView()" :key="task.task_id">
+                    <div @click="openTaskDetail(task)" 
+                         class="bg-white border border-gray-100 rounded-xl p-4 hover:border-primary-300 hover:shadow-md transition cursor-pointer group">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3 overflow-hidden flex-1">
+                                <div :class="getStatusIconClass(task.status)" class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0">
+                                    <i :class="getStatusIcon(task.status)" class="text-xs"></i>
+                                </div>
+                                <div class="overflow-hidden flex-1 min-w-0">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-sm font-bold text-gray-800 truncate" x-text="task.task_type"></span>
+                                        <span :class="getStatusClass(task.status)" class="px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-tight flex-shrink-0" x-text="task.status"></span>
+                                    </div>
+                                    <div class="flex items-center gap-3 mt-1">
+                                        <code class="text-[9px] font-mono text-gray-400 truncate" x-text="formatShortId(task.task_id)"></code>
+                                        <span class="text-[9px] text-gray-300">|</span>
+                                        <span class="text-[9px] text-gray-400 truncate" x-text="(task.app_name || task.app_id || '-') + ' / ' + (task.service_name || '-')"></span>
+                                        <template x-if="task.target_agent_id">
+                                            <span class="text-[9px] text-gray-400 truncate">
+                                                <i class="fas fa-server text-[8px] mr-0.5"></i>
+                                                <span x-text="formatShortId(task.target_agent_id)"></span>
+                                            </span>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="text-right flex-shrink-0 ml-3">
+                                <div class="text-[9px] text-gray-400 font-medium" x-text="formatRelativeTime(task.created_at_millis)"></div>
+                                <i class="fas fa-chevron-right text-gray-200 group-hover:text-primary-500 transition text-[10px] mt-1"></i>
+                            </div>
+                        </div>
+                    </div>
                 </template>
-            </tbody>
-        </table>
-        <!-- Empty State -->
-        <div x-show="tasks.length === 0" class="px-6 py-12 text-center text-gray-500">
-            <i class="fas fa-tasks text-4xl mb-3 text-gray-200"></i>
-            <p>No tasks found</p>
+
+                <!-- Empty State -->
+                <div x-show="filteredTasksForView().length === 0" class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center text-gray-500">
+                    <i class="fas fa-tasks text-4xl mb-3 text-gray-200"></i>
+                    <p class="text-gray-400">没有符合条件的任务</p>
+                </div>
+            </div>
         </div>
     </div>
 </div>

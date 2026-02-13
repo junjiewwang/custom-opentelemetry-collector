@@ -321,9 +321,9 @@ func (r *RedisAgentRegistry) GetAllAgents(ctx context.Context) ([]*AgentInfo, er
 }
 
 // GetAgentsByLabel returns agents matching the specified label.
+// Returns all agents (including offline) to be consistent with MemoryAgentRegistry.
 func (r *RedisAgentRegistry) GetAgentsByLabel(ctx context.Context, labelKey, labelValue string) ([]*AgentInfo, error) {
-	// Get all online agents and filter by label
-	agents, err := r.GetOnlineAgents(ctx)
+	agents, err := r.GetAllAgents(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -339,8 +339,9 @@ func (r *RedisAgentRegistry) GetAgentsByLabel(ctx context.Context, labelKey, lab
 }
 
 // GetAgentsByToken returns all agents under a specific token/app.
+// Returns all agents (including offline) to be consistent with MemoryAgentRegistry.
 func (r *RedisAgentRegistry) GetAgentsByToken(ctx context.Context, token string) ([]*AgentInfo, error) {
-	agents, err := r.GetOnlineAgents(ctx)
+	agents, err := r.GetAllAgents(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -687,14 +688,13 @@ func (r *RedisAgentRegistry) markAgentOffline(ctx context.Context, client redis.
 		}
 	}
 
-	// Remove from online set
+	// Remove from online set (offline agents should NOT appear in GetOnlineAgents)
 	pipe := client.TxPipeline()
 	pipe.ZRem(ctx, r.keys.OnlineKey(), fullPath)
 
-	// Remove from instances set (only if hierarchy index is enabled)
-	if r.config.EnableHierarchyIndex {
-		pipe.SRem(ctx, r.keys.InstancesKeyEscaped(appIDEsc, serviceNameEsc), instanceKey)
-	}
+	// NOTE: We intentionally keep the agent in _instances set so that
+	// GetInstancesByService() still returns offline agents. The instance
+	// will be naturally cleaned up when its instance key expires (InstanceTTL).
 
 	// Get agentID for event publishing
 	agentID := agentIDMap[fullPath]
@@ -717,15 +717,6 @@ func (r *RedisAgentRegistry) markAgentOffline(ctx context.Context, client redis.
 		zap.String("full_path", fullPath),
 		zap.String("agent_id", agentID),
 	)
-
-	// Clean up empty indexes (only if hierarchy index is enabled)
-	if r.config.EnableHierarchyIndex {
-		appID := r.keys.Unescape(appIDEsc)
-		serviceName := r.keys.Unescape(serviceNameEsc)
-		if appID != "" && serviceName != "" {
-			r.cleanupEmptyIndexes(ctx, client, appID, serviceName)
-		}
-	}
 }
 
 // offlineDetectionLoop periodically checks for offline agents.

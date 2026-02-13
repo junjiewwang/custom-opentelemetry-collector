@@ -17,6 +17,9 @@ export function tasksView() {
         taskStatusFilter: 'all',
         taskSearchQuery: '',
 
+        // Left-right linkage: selected instance node
+        selectedInstanceId: '',
+
         // Task Detail Drawer
         selectedTask: null,
         taskDrawerOpen: false,
@@ -68,7 +71,9 @@ export function tasksView() {
                         task_type: taskType,
                         target_agent_id: targetAgentId,
                         app_id: info.app_id || '',
+                        app_name: info.app_name || '',
                         service_name: info.service_name || '',
+                        agent_state: info.agent_state || '',
                         status: this.taskStatusToString(statusNum),
                         created_at_millis: createdAt,
                         priority: task.priority_num ?? task.priority ?? 0,
@@ -103,6 +108,7 @@ export function tasksView() {
                 filteredTasks = filteredTasks.filter(t => 
                     (t.task_id && t.task_id.toLowerCase().includes(query)) ||
                     (t.app_id && t.app_id.toLowerCase().includes(query)) ||
+                    (t.app_name && t.app_name.toLowerCase().includes(query)) ||
                     (t.service_name && t.service_name.toLowerCase().includes(query)) ||
                     (t.target_agent_id && t.target_agent_id.toLowerCase().includes(query)) ||
                     (t.task_type && t.task_type.toLowerCase().includes(query))
@@ -116,9 +122,14 @@ export function tasksView() {
                 const instanceId = task.target_agent_id || '_global_';
                 
                 if (!appMap.has(appId)) {
+                    // Determine display name: prefer app_name, fall back to appId
+                    let displayName = appId === '_uncategorized_' ? '未分类' : appId;
+                    if (task.app_name) {
+                        displayName = task.app_name + ' (' + appId.substring(0, 8) + ')';
+                    }
                     appMap.set(appId, {
                         id: `app-${appId}`,
-                        name: appId === '_uncategorized_' ? '未分类' : appId,
+                        name: displayName,
                         type: 'app',
                         expanded: false,
                         stats: { total: 0, running: 0, failed: 0, success: 0, pending: 0, timeout: 0 },
@@ -147,6 +158,7 @@ export function tasksView() {
                         name: instanceId === '_global_' ? '全局任务' : instanceId,
                         fullId: instanceId === '_global_' ? '' : instanceId,
                         type: 'instance',
+                        agentState: task.agent_state || '',
                         expanded: false,
                         stats: { total: 0, running: 0, failed: 0, success: 0, pending: 0, timeout: 0 },
                         tasks: [],
@@ -318,6 +330,67 @@ export function tasksView() {
 
         applyTaskFilter() {
             this.taskTreeData = this.buildTaskTree(this.tasks);
+        },
+
+        toggleTreeNode(node) {
+            node.expanded = !node.expanded;
+        },
+
+        selectInstance(instanceNode) {
+            // Toggle selection: clicking the same instance deselects it
+            if (this.selectedInstanceId === instanceNode.id) {
+                this.selectedInstanceId = '';
+            } else {
+                this.selectedInstanceId = instanceNode.id;
+            }
+        },
+
+        filteredTasksForView() {
+            if (!this.selectedInstanceId) {
+                // No instance selected: return all tasks (respecting status filter & search)
+                let filtered = this.tasks;
+                if (this.taskStatusFilter !== 'all') {
+                    filtered = filtered.filter(t => t.status === this.taskStatusFilter);
+                }
+                if (this.taskSearchQuery && this.taskSearchQuery.trim()) {
+                    const query = this.taskSearchQuery.toLowerCase().trim();
+                    filtered = filtered.filter(t =>
+                        (t.task_id && t.task_id.toLowerCase().includes(query)) ||
+                        (t.app_id && t.app_id.toLowerCase().includes(query)) ||
+                        (t.app_name && t.app_name.toLowerCase().includes(query)) ||
+                        (t.service_name && t.service_name.toLowerCase().includes(query)) ||
+                        (t.target_agent_id && t.target_agent_id.toLowerCase().includes(query)) ||
+                        (t.task_type && t.task_type.toLowerCase().includes(query))
+                    );
+                }
+                return filtered;
+            }
+
+            // Find the selected instance node and return its tasks
+            for (const app of this.taskTreeData) {
+                for (const svc of (app.children || [])) {
+                    for (const inst of (svc.children || [])) {
+                        if (inst.id === this.selectedInstanceId) {
+                            return inst.tasks || [];
+                        }
+                    }
+                }
+            }
+            return [];
+        },
+
+        getSelectedInstanceLabel() {
+            if (!this.selectedInstanceId) return '';
+            for (const app of this.taskTreeData) {
+                for (const svc of (app.children || [])) {
+                    for (const inst of (svc.children || [])) {
+                        if (inst.id === this.selectedInstanceId) {
+                            return `${app.name} / ${svc.name} / ${inst.name}`;
+                        }
+                    }
+                }
+            }
+            return '';
         },
 
         closeTaskDrawer() {

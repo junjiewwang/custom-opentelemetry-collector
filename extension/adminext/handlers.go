@@ -490,7 +490,9 @@ type taskInfoV2 struct {
 	Status          model.TaskStatus  `json:"status"`
 	AgentID         string            `json:"agent_id,omitempty"`
 	AppID           string            `json:"app_id,omitempty"`
+	AppName         string            `json:"app_name,omitempty"`
 	ServiceName     string            `json:"service_name,omitempty"`
+	AgentState      string            `json:"agent_state,omitempty"`
 	CreatedAtMillis int64             `json:"created_at_millis"`
 	StartedAtMillis int64             `json:"started_at_millis,omitempty"`
 	Result          *model.TaskResult `json:"result,omitempty"`
@@ -519,9 +521,61 @@ func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build appID→appName map for display enrichment
+	appNameMap := make(map[string]string)
+	if apps, err := e.tokenMgr.ListApps(r.Context()); err == nil {
+		for _, app := range apps {
+			appNameMap[app.ID] = app.Name
+		}
+	}
+
+	// Build agentID→metadata map to backfill offline agent info and agent state
+	type agentMeta struct {
+		AppID       string
+		ServiceName string
+		State       string
+	}
+	agentMetaMap := make(map[string]agentMeta)
+	if agents, err := e.agentReg.GetAllAgents(r.Context()); err == nil {
+		for _, agent := range agents {
+			state := ""
+			if agent.Status != nil {
+				state = string(agent.Status.State)
+			}
+			agentMetaMap[agent.AgentID] = agentMeta{
+				AppID:       agent.AppID,
+				ServiceName: agent.ServiceName,
+				State:       state,
+			}
+		}
+	}
+
 	out := make([]*taskInfoV2, 0, len(tasks))
 	for _, t := range tasks {
-		out = append(out, toTaskInfoV2(t))
+		info := toTaskInfoV2(t)
+		if info == nil {
+			continue
+		}
+
+		// Backfill missing app_id/service_name and enrich agent_state from agent registry
+		if info.AgentID != "" {
+			if meta, ok := agentMetaMap[info.AgentID]; ok {
+				if info.AppID == "" {
+					info.AppID = meta.AppID
+				}
+				if info.ServiceName == "" {
+					info.ServiceName = meta.ServiceName
+				}
+				info.AgentState = meta.State
+			}
+		}
+
+		// Enrich app_name
+		if info.AppID != "" {
+			info.AppName = appNameMap[info.AppID]
+		}
+
+		out = append(out, info)
 	}
 
 	e.writeJSON(w, http.StatusOK, listResponse("tasks", out, len(out)))
@@ -554,15 +608,22 @@ func (e *Extension) createTaskV2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if task.TargetAgentID != "" {
-		var agentMeta *taskmanager.AgentMeta
-		if agent, err := e.agentReg.GetAgent(r.Context(), task.TargetAgentID); err == nil && agent != nil {
-			agentMeta = &taskmanager.AgentMeta{
-				AgentID:     agent.AgentID,
-				AppID:       agent.AppID,
-				ServiceName: agent.ServiceName,
-			}
-		} else {
-			agentMeta = &taskmanager.AgentMeta{AgentID: task.TargetAgentID}
+		agent, err := e.agentReg.GetAgent(r.Context(), task.TargetAgentID)
+		if err != nil || agent == nil {
+			e.handleError(w, errNotFound("agent not found: "+task.TargetAgentID))
+			return
+		}
+
+		// Reject task submission if agent is not online
+		if agent.Status == nil || agent.Status.State != agentregistry.AgentStateOnline {
+			e.handleError(w, errBadRequest("agent is not online, cannot submit task"))
+			return
+		}
+
+		agentMeta := &taskmanager.AgentMeta{
+			AgentID:     agent.AgentID,
+			AppID:       agent.AppID,
+			ServiceName: agent.ServiceName,
 		}
 
 		if err := e.taskMgr.SubmitTaskForAgent(r.Context(), agentMeta, task); err != nil {

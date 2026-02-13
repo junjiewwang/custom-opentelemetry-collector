@@ -221,6 +221,14 @@ export function adminApp() {
             if (this.viewTemplates[viewName]) return;
             try {
                 this.viewTemplates[viewName] = await ComponentLoader.load(viewName);
+                // x-html 注入的 DOM 不会自动初始化 Alpine 指令（如 x-for）,
+                // 需要在 DOM 更新后手动调用 Alpine.initTree() 初始化新节点
+                this.$nextTick(() => {
+                    const container = document.querySelector(`[x-html="viewTemplates.${viewName}"]`);
+                    if (container) {
+                        Alpine.initTree(container);
+                    }
+                });
             } catch (e) {
                 console.error(`Failed to load template: ${viewName}`, e);
                 this.showToast(`Failed to load view: ${viewName}`, 'error');
@@ -401,7 +409,7 @@ export function adminApp() {
             try {
                 // Fetch all instances and arthas agents in parallel
                 const [instancesRes, arthasRes] = await Promise.allSettled([
-                    ApiService.getInstances(''),
+                    ApiService.getInstances('all'),
                     ApiService.getArthasAgents()
                 ]);
 
