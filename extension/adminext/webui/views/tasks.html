@@ -535,15 +535,15 @@
                 </div>
             </div>
 
-            <!-- Target Agent -->
+            <!-- Target Agent (online only) -->
             <div>
                 <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Target Agent (Optional)</label>
                 <div class="relative">
                     <select x-model="newTask.target_agent_id" 
                             @focus="if(instances.length === 0) loadInstances()"
                             class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm font-medium transition appearance-none">
-                        <option value="">Global Broadcast (All Agents)</option>
-                        <template x-for="inst in instances" :key="inst.agent_id">
+                        <option value="">Global Broadcast (All Online Agents)</option>
+                        <template x-for="inst in instances.filter(i => i.status?.state === 'online')" :key="inst.agent_id">
                             <option :value="inst.agent_id" x-text="`${inst.service_name} - ${inst.hostname || inst.ip} (${formatShortId(inst.agent_id)})`"></option>
                         </template>
                     </select>

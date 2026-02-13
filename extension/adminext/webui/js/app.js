@@ -923,6 +923,7 @@ export function adminApp() {
             } catch (e) {
                 this.arthasTask.status = 'failed';
                 this.arthasTask.message = e.message || 'Attach failed';
+                this.arthasTask.active = false;
                 this.showToast(this.arthasTask.message, 'error');
                 return false;
             } finally {
@@ -975,6 +976,7 @@ export function adminApp() {
             } catch (e) {
                 this.arthasTask.status = 'failed';
                 this.arthasTask.message = e.message || 'Detach failed';
+                this.arthasTask.active = false;
                 this.showToast(this.arthasTask.message, 'error');
             } finally {
                 instance.operating = false;
@@ -1090,9 +1092,10 @@ export function adminApp() {
 
         /**
          * 关闭任务状态面板
+         * 当任务已结束（非 active）时直接重置；当任务处于 failed 状态时强制重置，防止状态卡死
          */
         closeTaskPanel() {
-            if (!this.arthasTask.active) {
+            if (!this.arthasTask.active || this.arthasTask.status === 'failed') {
                 this.arthasTask = {
                     active: false,
                     taskId: '',

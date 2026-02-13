@@ -429,20 +429,38 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 			e.handleError(w, err)
 			return
 		}
-	} else if status == "all" {
-		// Get all instances (including offline)
-		instances, err = e.agentReg.GetAllAgents(r.Context())
-		if err != nil {
-			e.handleError(w, err)
-			return
-		}
 	} else {
-		// Default: online only
-		instances, err = e.agentReg.GetOnlineAgents(r.Context())
+		// Fetch base set based on status parameter
+		switch status {
+		case "all":
+			instances, err = e.agentReg.GetAllAgents(r.Context())
+		case "online", "":
+			instances, err = e.agentReg.GetOnlineAgents(r.Context())
+		case "offline":
+			instances, err = e.agentReg.GetAllAgents(r.Context())
+		default:
+			e.handleError(w, errBadRequest("invalid status filter: "+status+", valid values: all, online, offline"))
+			return
+		}
 		if err != nil {
 			e.handleError(w, err)
 			return
 		}
+	}
+
+	// Apply status filter when needed (for appID queries or "offline" filter)
+	if status == "online" || status == "offline" {
+		filtered := make([]*agentregistry.AgentInfo, 0, len(instances))
+		for _, inst := range instances {
+			state := ""
+			if inst.Status != nil {
+				state = string(inst.Status.State)
+			}
+			if state == status {
+				filtered = append(filtered, inst)
+			}
+		}
+		instances = filtered
 	}
 
 	e.writeJSON(w, http.StatusOK, listResponse("instances", instances, len(instances)))
