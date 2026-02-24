@@ -151,8 +151,11 @@ extensions:
     # Reference to storage extension for Redis/Nacos clients
     storage_extension: storage
     
-    # Agent ID (auto-generated UUID if empty, or set via AGENT_ID env var)
-    agent_id: ""
+    # Node ID - unique identifier for this collector instance
+    # Used for distributed coordination (shared with arthas_tunnel's node_id concept)
+    # Resolution: configured value → POD_NAME env → os.Hostname() → "unknown"
+    # In Gateway-Server mode, this will serve as the gateway_id
+    node_id: ""
     
     # Agent registry configuration
     agent_registry:

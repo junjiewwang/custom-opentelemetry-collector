@@ -20,9 +20,11 @@ type Config struct {
 	// If empty, in-memory storage will be used.
 	StorageExtension string `mapstructure:"storage_extension"`
 
-	// AgentID is the unique identifier for this agent instance.
-	// If empty, a UUID will be generated.
-	AgentID string `mapstructure:"agent_id"`
+	// NodeID is the unique identifier for this collector instance (node).
+	// Used for distributed coordination and will serve as gateway_id in Gateway-Server mode.
+	// Resolution order: configured value → POD_NAME env → os.Hostname() → "unknown".
+	// If empty, auto-detected via the shared identity resolver.
+	NodeID string `mapstructure:"node_id"`
 
 	// ConfigManager configuration for managing agent configuration.
 	ConfigManager configmanager.Config `mapstructure:"config_manager"`
@@ -107,7 +109,7 @@ func (cfg *Config) Validate() error {
 func createDefaultConfig() *Config {
 	return &Config{
 		StorageExtension: "",
-		AgentID:          "",
+		NodeID:           "",
 		ConfigManager:    configmanager.DefaultConfig(),
 		TaskManager:      taskmanager.DefaultConfig(),
 		AgentRegistry:    agentregistry.DefaultConfig(),

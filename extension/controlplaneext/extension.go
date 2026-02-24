@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/custom/identity"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/extensioncapabilities"
 	"go.uber.org/zap"
@@ -96,8 +96,8 @@ type Extension struct {
 	chunkManager   *ChunkManager
 	artifactMgr    *ArtifactManager
 
-	// Agent identity
-	agentID string
+	// Node identity
+	nodeID string
 
 	// Lifecycle
 	mu       sync.RWMutex
@@ -111,16 +111,13 @@ func newControlPlaneExtension(
 	set extension.Settings,
 	config *Config,
 ) (*Extension, error) {
-	agentID := config.AgentID
-	if agentID == "" {
-		agentID = uuid.New().String()
-	}
+	nodeID := identity.ResolveNodeID(config.NodeID)
 
 	ext := &Extension{
 		config:   config,
 		settings: set,
 		logger:   set.Logger,
-		agentID:  agentID,
+		nodeID:   nodeID,
 		stopChan: make(chan struct{}),
 	}
 
@@ -137,7 +134,7 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	}
 
 	e.logger.Info("Starting control plane extension",
-		zap.String("agent_id", e.agentID),
+		zap.String("node_id", e.nodeID),
 		zap.String("storage_extension", e.config.StorageExtension),
 	)
 
@@ -176,7 +173,7 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 
 	// Initialize local components
 	e.taskExecutor = newTaskExecutor(e.logger, e.config.TaskExecutor)
-	e.statusReporter = newStatusReporter(e.logger, e.agentID, e.config.StatusReporter)
+	e.statusReporter = newStatusReporter(e.logger, e.config.StatusReporter)
 
 	e.chunkManager, err = factory.CreateChunkManager(e.config.ChunkManager)
 	if err != nil {
@@ -430,9 +427,9 @@ func (e *Extension) ValidateToken(ctx context.Context, token string) (*TokenVali
 	}, nil
 }
 
-// GetAgentID returns the agent's unique identifier.
-func (e *Extension) GetAgentID() string {
-	return e.agentID
+// GetNodeID returns the collector node's unique identifier.
+func (e *Extension) GetNodeID() string {
+	return e.nodeID
 }
 
 // GetTaskManagerConfig returns the task manager configuration.

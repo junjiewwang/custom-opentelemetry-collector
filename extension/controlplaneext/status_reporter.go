@@ -14,9 +14,8 @@ import (
 
 // StatusReporter manages agent status reporting.
 type StatusReporter struct {
-	logger  *zap.Logger
-	agentID string
-	config  StatusReporterConfig
+	logger *zap.Logger
+	config StatusReporterConfig
 
 	mu            sync.RWMutex
 	healthState   string // "healthy", "degraded", "unhealthy"
@@ -33,10 +32,9 @@ type StatusReporter struct {
 }
 
 // newStatusReporter creates a new status reporter.
-func newStatusReporter(logger *zap.Logger, agentID string, config StatusReporterConfig) *StatusReporter {
+func newStatusReporter(logger *zap.Logger, config StatusReporterConfig) *StatusReporter {
 	return &StatusReporter{
 		logger:      logger,
-		agentID:     agentID,
 		config:      config,
 		healthState: "healthy",
 		stopChan:    make(chan struct{}),

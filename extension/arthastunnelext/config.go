@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/collector/custom/identity"
 )
 
 // Config defines the configuration for the Arthas tunnel extension.
@@ -235,18 +237,9 @@ type InternalAuthConfig struct {
 }
 
 // ResolveNodeID returns the effective node ID.
+// Delegates to the shared identity package for consistent resolution across extensions.
 func (c *DistributedConfig) ResolveNodeID() string {
-	if c.NodeID != "" {
-		return c.NodeID
-	}
-	// Try POD_NAME first (K8s), then HOSTNAME
-	if podName := os.Getenv("POD_NAME"); podName != "" {
-		return podName
-	}
-	if hostname, err := os.Hostname(); err == nil {
-		return hostname
-	}
-	return "unknown"
+	return identity.ResolveNodeID(c.NodeID)
 }
 
 // ResolveNodeAddr returns the effective node address for internal communication.

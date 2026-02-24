@@ -144,7 +144,7 @@ func TestCreateDefaultConfig(t *testing.T) {
 
 	require.NotNil(t, cfg)
 	assert.Empty(t, cfg.StorageExtension)
-	assert.Empty(t, cfg.AgentID)
+	assert.Empty(t, cfg.NodeID)
 
 	// TaskExecutor defaults
 	assert.Equal(t, 4, cfg.TaskExecutor.Workers)
