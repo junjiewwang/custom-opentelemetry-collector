@@ -11,6 +11,7 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componentstatus"
+	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
@@ -27,8 +28,16 @@ func (r *agentGatewayReceiver) startGRPCServer(ctx context.Context, host compone
 		return nil
 	}
 
+	// Build gRPC server options with auth interceptor.
+	var serverOpts []configgrpc.ToServerOption
+	if r.config.TokenAuth.Enabled && r.controlPlane != nil {
+		serverOpts = append(serverOpts,
+			configgrpc.WithGrpcServerOption(grpc.ChainUnaryInterceptor(r.grpcAuthInterceptor())),
+		)
+	}
+
 	var err error
-	r.serverGRPC, err = r.config.GRPC.ToServer(ctx, host, r.settings.TelemetrySettings)
+	r.serverGRPC, err = r.config.GRPC.ToServer(ctx, host, r.settings.TelemetrySettings, serverOpts...)
 	if err != nil {
 		return err
 	}
@@ -67,6 +76,7 @@ func (r *agentGatewayReceiver) registerOTLPGRPC() {
 		ptraceotlp.RegisterGRPCServer(r.serverGRPC, &traceReceiver{
 			consumer: r.tracesConsumer,
 			obsrep:   r.obsrepGRPC,
+			recv:     r,
 		})
 	}
 
@@ -74,6 +84,7 @@ func (r *agentGatewayReceiver) registerOTLPGRPC() {
 		pmetricotlp.RegisterGRPCServer(r.serverGRPC, &metricsReceiver{
 			consumer: r.metricsConsumer,
 			obsrep:   r.obsrepGRPC,
+			recv:     r,
 		})
 	}
 
@@ -81,6 +92,7 @@ func (r *agentGatewayReceiver) registerOTLPGRPC() {
 		plogotlp.RegisterGRPCServer(r.serverGRPC, &logsReceiver{
 			consumer: r.logsConsumer,
 			obsrep:   r.obsrepGRPC,
+			recv:     r,
 		})
 	}
 }

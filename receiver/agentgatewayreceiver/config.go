@@ -83,6 +83,13 @@ type TokenAuthConfig struct {
 	// InjectAttributeKey is the resource attribute key to inject the validated app ID.
 	// When set, the app ID from token validation will be written to this attribute.
 	InjectAttributeKey string `mapstructure:"inject_attribute_key"`
+
+	// InjectTokenKey is the resource attribute key to inject the raw token.
+	// When set, the original token from the request header will be written to this attribute,
+	// allowing downstream tokenauthprocessor to validate it from resource attributes.
+	// The tokenauthprocessor should be configured with remove_token_attribute: true
+	// to prevent the token from leaking to exporters.
+	InjectTokenKey string `mapstructure:"inject_token_key"`
 }
 
 var _ confmap.Unmarshaler = (*Config)(nil)

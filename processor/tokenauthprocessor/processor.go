@@ -299,7 +299,7 @@ func (p *tokenAuthProcessor) Shutdown(ctx context.Context) error {
 
 // Capabilities implements processor.Traces/Metrics/Logs.
 func (p *tokenAuthProcessor) Capabilities() consumer.Capabilities {
-	return consumer.Capabilities{MutatesData: false}
+	return consumer.Capabilities{MutatesData: true}
 }
 
 // ConsumeTraces implements processor.Traces.
@@ -321,6 +321,10 @@ func (p *tokenAuthProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces
 			// Copy valid resource spans to output
 			newRS := validTraces.ResourceSpans().AppendEmpty()
 			rs.CopyTo(newRS)
+			// Remove token attribute to prevent leaking to exporters
+			if p.config.RemoveTokenAttribute {
+				newRS.Resource().Attributes().Remove(p.config.AttributeKey)
+			}
 		} else {
 			invalidCount += rs.ScopeSpans().Len()
 		}
@@ -360,6 +364,10 @@ func (p *tokenAuthProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metr
 			// Copy valid resource metrics to output
 			newRM := validMetrics.ResourceMetrics().AppendEmpty()
 			rm.CopyTo(newRM)
+			// Remove token attribute to prevent leaking to exporters
+			if p.config.RemoveTokenAttribute {
+				newRM.Resource().Attributes().Remove(p.config.AttributeKey)
+			}
 		} else {
 			invalidCount += rm.ScopeMetrics().Len()
 		}
@@ -399,6 +407,10 @@ func (p *tokenAuthProcessor) ConsumeLogs(ctx context.Context, ld plog.Logs) erro
 			// Copy valid resource logs to output
 			newRL := validLogs.ResourceLogs().AppendEmpty()
 			rl.CopyTo(newRL)
+			// Remove token attribute to prevent leaking to exporters
+			if p.config.RemoveTokenAttribute {
+				newRL.Resource().Attributes().Remove(p.config.AttributeKey)
+			}
 		} else {
 			invalidCount += rl.ScopeLogs().Len()
 		}

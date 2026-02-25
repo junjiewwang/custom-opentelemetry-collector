@@ -63,22 +63,9 @@ receivers:
       # Inject validated app_id into resource attributes
       # This allows downstream processors to access the app_id
       inject_attribute_key: "app_id"
-
-  # [DEPRECATED] Enhanced OTLP receiver - Use agent_gateway instead
-  # Kept for backward compatibility, will be removed in future versions
-  # enhanced_otlp:
-  #   protocols:
-  #     grpc:
-  #       endpoint: 0.0.0.0:4317
-  #     http:
-  #       endpoint: 0.0.0.0:4318
-  #   control_plane:
-  #     enabled: true
-  #   token_auth:
-  #     enabled: true
-  #     header_name: "Authorization"
-  #     header_prefix: "Bearer "
-  #     inject_attribute_key: "token"
+      # Inject raw token into resource attributes for tokenauthprocessor validation
+      # The token will be removed by tokenauthprocessor after validation to prevent leaking
+      inject_token_key: "token"
 
 extensions:
   # Storage extension - provides Redis and Nacos client management
@@ -562,6 +549,8 @@ processors:
     control_plane_extension: controlplane
     # Log dropped data due to invalid tokens
     log_dropped: true
+    # Remove the token attribute after validation to prevent leaking to exporters
+    remove_token_attribute: true
     # Token validation cache configuration
     cache:
       enabled: true

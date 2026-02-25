@@ -28,6 +28,11 @@ type Config struct {
 	// Default is true.
 	LogDropped bool `mapstructure:"log_dropped"`
 
+	// RemoveTokenAttribute indicates whether to remove the token attribute after successful validation.
+	// This prevents the raw token from leaking to downstream exporters.
+	// Default is true.
+	RemoveTokenAttribute bool `mapstructure:"remove_token_attribute"`
+
 	// Cache configuration
 	Cache CacheConfig `mapstructure:"cache"`
 }
@@ -74,6 +79,7 @@ func createDefaultConfig() component.Config {
 		Action:                "drop",
 		ControlPlaneExtension: "controlplane",
 		LogDropped:            true,
+		RemoveTokenAttribute:  true,
 		Cache: CacheConfig{
 			Enabled:         true,
 			ValidTTL:        300, // 5 minutes

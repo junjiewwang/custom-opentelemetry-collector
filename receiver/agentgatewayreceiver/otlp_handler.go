@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -30,6 +31,7 @@ type traceReceiver struct {
 	ptraceotlp.UnimplementedGRPCServer
 	consumer consumer.Traces
 	obsrep   *receiverhelper.ObsReport
+	recv     *agentGatewayReceiver
 }
 
 func (r *traceReceiver) Export(ctx context.Context, req ptraceotlp.ExportRequest) (ptraceotlp.ExportResponse, error) {
@@ -38,6 +40,8 @@ func (r *traceReceiver) Export(ctx context.Context, req ptraceotlp.ExportRequest
 	if numSpans == 0 {
 		return ptraceotlp.NewExportResponse(), nil
 	}
+
+	r.recv.injectAuthToTraces(td, ctx)
 
 	ctx = r.obsrep.StartTracesOp(ctx)
 	err := r.consumer.ConsumeTraces(ctx, td)
@@ -51,6 +55,7 @@ type metricsReceiver struct {
 	pmetricotlp.UnimplementedGRPCServer
 	consumer consumer.Metrics
 	obsrep   *receiverhelper.ObsReport
+	recv     *agentGatewayReceiver
 }
 
 func (r *metricsReceiver) Export(ctx context.Context, req pmetricotlp.ExportRequest) (pmetricotlp.ExportResponse, error) {
@@ -59,6 +64,8 @@ func (r *metricsReceiver) Export(ctx context.Context, req pmetricotlp.ExportRequ
 	if numDataPoints == 0 {
 		return pmetricotlp.NewExportResponse(), nil
 	}
+
+	r.recv.injectAuthToMetrics(md, ctx)
 
 	ctx = r.obsrep.StartMetricsOp(ctx)
 	err := r.consumer.ConsumeMetrics(ctx, md)
@@ -72,6 +79,7 @@ type logsReceiver struct {
 	plogotlp.UnimplementedGRPCServer
 	consumer consumer.Logs
 	obsrep   *receiverhelper.ObsReport
+	recv     *agentGatewayReceiver
 }
 
 func (r *logsReceiver) Export(ctx context.Context, req plogotlp.ExportRequest) (plogotlp.ExportResponse, error) {
@@ -80,6 +88,8 @@ func (r *logsReceiver) Export(ctx context.Context, req plogotlp.ExportRequest) (
 	if numRecords == 0 {
 		return plogotlp.NewExportResponse(), nil
 	}
+
+	r.recv.injectAuthToLogs(ld, ctx)
 
 	ctx = r.obsrep.StartLogsOp(ctx)
 	err := r.consumer.ConsumeLogs(ctx, ld)
@@ -167,8 +177,8 @@ func (r *agentGatewayReceiver) handleTraces(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	// Inject app ID into resource attributes if configured
-	r.injectAppIDToTraces(td, req.Context())
+	// Inject auth info into resource attributes if configured
+	r.injectAuthToTraces(td, req.Context())
 
 	ctx := r.obsrepHTTP.StartTracesOp(req.Context())
 	err = r.tracesConsumer.ConsumeTraces(ctx, td)
@@ -206,8 +216,8 @@ func (r *agentGatewayReceiver) handleMetrics(w http.ResponseWriter, req *http.Re
 		return
 	}
 
-	// Inject app ID into resource attributes if configured
-	r.injectAppIDToMetrics(md, req.Context())
+	// Inject auth info into resource attributes if configured
+	r.injectAuthToMetrics(md, req.Context())
 
 	ctx := r.obsrepHTTP.StartMetricsOp(req.Context())
 	err = r.metricsConsumer.ConsumeMetrics(ctx, md)
@@ -245,8 +255,8 @@ func (r *agentGatewayReceiver) handleLogs(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	// Inject app ID into resource attributes if configured
-	r.injectAppIDToLogs(ld, req.Context())
+	// Inject auth info into resource attributes if configured
+	r.injectAuthToLogs(ld, req.Context())
 
 	ctx := r.obsrepHTTP.StartLogsOp(req.Context())
 	err = r.logsConsumer.ConsumeLogs(ctx, ld)
@@ -260,61 +270,42 @@ func (r *agentGatewayReceiver) handleLogs(w http.ResponseWriter, req *http.Reque
 	writeOTLPResponse(w, contentType, plogotlp.NewExportResponse())
 }
 
-// ===== App ID Injection =====
+// ===== Auth Info Injection =====
 
-// injectAppIDToTraces injects the app ID into all resource attributes of the traces.
-func (r *agentGatewayReceiver) injectAppIDToTraces(td ptrace.Traces, ctx context.Context) {
-	attrKey := r.config.TokenAuth.InjectAttributeKey
-	if attrKey == "" {
-		return
+// injectAuthAttrs injects appID and token into resource attributes based on config.
+func (r *agentGatewayReceiver) injectAuthAttrs(attrs pcommon.Map, ctx context.Context) {
+	if appIDKey := r.config.TokenAuth.InjectAttributeKey; appIDKey != "" {
+		if appID := GetAppIDFromContext(ctx); appID != "" {
+			attrs.PutStr(appIDKey, appID)
+		}
 	}
-
-	appID := GetAppIDFromContext(ctx)
-	if appID == "" {
-		return
+	if tokenKey := r.config.TokenAuth.InjectTokenKey; tokenKey != "" {
+		if token := GetTokenFromContext(ctx); token != "" {
+			attrs.PutStr(tokenKey, token)
+		}
 	}
+}
 
+// injectAuthToTraces injects auth info into all resource attributes of the traces.
+func (r *agentGatewayReceiver) injectAuthToTraces(td ptrace.Traces, ctx context.Context) {
 	resourceSpans := td.ResourceSpans()
 	for i := 0; i < resourceSpans.Len(); i++ {
-		rs := resourceSpans.At(i)
-		rs.Resource().Attributes().PutStr(attrKey, appID)
+		r.injectAuthAttrs(resourceSpans.At(i).Resource().Attributes(), ctx)
 	}
 }
 
-// injectAppIDToMetrics injects the app ID into all resource attributes of the metrics.
-func (r *agentGatewayReceiver) injectAppIDToMetrics(md pmetric.Metrics, ctx context.Context) {
-	attrKey := r.config.TokenAuth.InjectAttributeKey
-	if attrKey == "" {
-		return
-	}
-
-	appID := GetAppIDFromContext(ctx)
-	if appID == "" {
-		return
-	}
-
+// injectAuthToMetrics injects auth info into all resource attributes of the metrics.
+func (r *agentGatewayReceiver) injectAuthToMetrics(md pmetric.Metrics, ctx context.Context) {
 	resourceMetrics := md.ResourceMetrics()
 	for i := 0; i < resourceMetrics.Len(); i++ {
-		rm := resourceMetrics.At(i)
-		rm.Resource().Attributes().PutStr(attrKey, appID)
+		r.injectAuthAttrs(resourceMetrics.At(i).Resource().Attributes(), ctx)
 	}
 }
 
-// injectAppIDToLogs injects the app ID into all resource attributes of the logs.
-func (r *agentGatewayReceiver) injectAppIDToLogs(ld plog.Logs, ctx context.Context) {
-	attrKey := r.config.TokenAuth.InjectAttributeKey
-	if attrKey == "" {
-		return
-	}
-
-	appID := GetAppIDFromContext(ctx)
-	if appID == "" {
-		return
-	}
-
+// injectAuthToLogs injects auth info into all resource attributes of the logs.
+func (r *agentGatewayReceiver) injectAuthToLogs(ld plog.Logs, ctx context.Context) {
 	resourceLogs := ld.ResourceLogs()
 	for i := 0; i < resourceLogs.Len(); i++ {
-		rl := resourceLogs.At(i)
-		rl.Resource().Attributes().PutStr(attrKey, appID)
+		r.injectAuthAttrs(resourceLogs.At(i).Resource().Attributes(), ctx)
 	}
 }
