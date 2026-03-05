@@ -24,6 +24,9 @@ import (
 	// Contrib exporters
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter"
 
+	// Contrib receivers
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver"
+
 	// Contrib connectors
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector"
 
@@ -58,6 +61,8 @@ func components() (otelcol.Factories, error) {
 	factories.Receivers, err = receiver.MakeFactoryMap(
 		nopreceiver.NewFactory(),
 		otlpreceiver.NewFactory(),
+		// Contrib receivers
+		jaegerreceiver.NewFactory(),
 		// Custom agent gateway receiver (unified OTLP + ControlPlane + Arthas)
 		agentgatewayreceiver.NewFactory(),
 	)

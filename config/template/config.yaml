@@ -67,6 +67,13 @@ receivers:
       # The token will be removed by tokenauthprocessor after validation to prevent leaking
       inject_token_key: "token"
 
+  # Jaeger Receiver - Accepts Jaeger Agent traces via thrift_compact (UDP 6831)
+  # This enables legacy Jaeger agents to send traces to the collector
+  jaeger:
+    protocols:
+      thrift_compact:
+        endpoint: 0.0.0.0:6831
+
 extensions:
   # Storage extension - provides Redis and Nacos client management
   # Other extensions reference this by name to reuse storage connections
@@ -592,7 +599,7 @@ service:
   
   pipelines:
     traces:
-      receivers: [agent_gateway]
+      receivers: [agent_gateway, jaeger]
       # tokenauth processor validates token from resource attributes
       # Place it before other processors for early rejection of invalid data
       processors: [tokenauth, memory_limiter, batch]

@@ -1,5 +1,5 @@
 # Auto-generated docker-compose.yaml
-# Generated at: 2025-12-31T15:27:01+08:00
+# Generated at: 2026-03-05T12:51:36+08:00
 
 services:
   custom-otlp-collector:
@@ -23,6 +23,7 @@ services:
       - "4317"
       - "4318"
       - "8088"
+      - "6831/udp"
     environment:
       - GO_ENV=production
       - LOG_LEVEL=info

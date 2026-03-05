@@ -48,6 +48,11 @@ service:
     expose: true
     description: "Admin API port"
 
+  - name: jeager-udp
+    port: 6831
+    protocol: UDP
+    expose: true
+    description: "jeager-udp"
   # 服务部署目录
   # 默认值：/usr/local/services
   # 如需自定义，取消注释并修改：

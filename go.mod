@@ -9,8 +9,10 @@ require (
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.5
 	github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector v0.120.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter v0.120.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver v0.120.0
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/stretchr/testify v1.10.0
+	github.com/tencentyun/cos-go-sdk-v5 v0.7.72
 	go.opentelemetry.io/collector/component v0.120.0
 	go.opentelemetry.io/collector/component/componentstatus v0.120.0
 	go.opentelemetry.io/collector/component/componenttest v0.120.0
@@ -18,11 +20,11 @@ require (
 	go.opentelemetry.io/collector/config/confighttp v0.120.0
 	go.opentelemetry.io/collector/config/confignet v1.26.0
 	go.opentelemetry.io/collector/confmap v1.26.0
-	go.opentelemetry.io/collector/confmap/provider/envprovider v1.24.0
-	go.opentelemetry.io/collector/confmap/provider/fileprovider v1.24.0
-	go.opentelemetry.io/collector/confmap/provider/httpprovider v1.24.0
-	go.opentelemetry.io/collector/confmap/provider/httpsprovider v1.24.0
-	go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.24.0
+	go.opentelemetry.io/collector/confmap/provider/envprovider v1.25.0
+	go.opentelemetry.io/collector/confmap/provider/fileprovider v1.25.0
+	go.opentelemetry.io/collector/confmap/provider/httpprovider v1.25.0
+	go.opentelemetry.io/collector/confmap/provider/httpsprovider v1.25.0
+	go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.25.0
 	go.opentelemetry.io/collector/connector v0.120.0
 	go.opentelemetry.io/collector/connector/forwardconnector v0.120.0
 	go.opentelemetry.io/collector/consumer v1.26.0
@@ -46,6 +48,7 @@ require (
 	go.opentelemetry.io/collector/receiver/otlpreceiver v0.120.0
 	go.uber.org/zap v1.27.0
 	google.golang.org/grpc v1.70.0
+	google.golang.org/protobuf v1.36.5
 )
 
 require (
@@ -70,6 +73,7 @@ require (
 	github.com/aliyun/alibabacloud-dkms-transfer-go-sdk v0.1.8 // indirect
 	github.com/aliyun/aliyun-secretsmanager-client-go v1.1.5 // indirect
 	github.com/aliyun/credentials-go v1.4.3 // indirect
+	github.com/apache/thrift v0.21.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
@@ -86,16 +90,20 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/gogo/googleapis v1.4.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
+	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/grafana/regexp v0.0.0-20240518133315-a468a5bfb3bc // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.25.1 // indirect
 	github.com/hashicorp/go-version v1.7.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/jaegertracing/jaeger v1.66.0 // indirect
+	github.com/jaegertracing/jaeger-idl v0.5.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/jonboulle/clockwork v0.4.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -104,9 +112,9 @@ require (
 	github.com/knadh/koanf/providers/confmap v0.1.0 // indirect
 	github.com/knadh/koanf/v2 v2.1.2 // indirect
 	github.com/lightstep/go-expohisto v1.0.0 // indirect
-	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
+	github.com/lufia/plan9stats v0.0.0-20220913051719-115f729f3c8c // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
-	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/mitchellh/mapstructure v1.5.1-0.20231216201459-8508981c8b6c // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
@@ -115,15 +123,17 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.120.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/internal/pdatautil v0.120.0 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils v0.120.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil v0.120.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/resourcetotelemetry v0.120.0 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger v0.120.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/prometheus v0.120.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/prometheusremotewrite v0.120.0 // indirect
 	github.com/orcaman/concurrent-map v0.0.0-20210501183033-44dafcb38ecc // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
+	github.com/power-devops/perfstat v0.0.0-20220216144756-c35f1ee13d7c // indirect
 	github.com/prometheus/client_golang v1.20.5 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.62.0 // indirect
@@ -132,8 +142,7 @@ require (
 	github.com/rs/cors v1.11.1 // indirect
 	github.com/shirou/gopsutil/v4 v4.25.1 // indirect
 	github.com/spf13/cobra v1.8.1 // indirect
-	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/tencentyun/cos-go-sdk-v5 v0.7.72 // indirect
+	github.com/spf13/pflag v1.0.6 // indirect
 	github.com/tidwall/gjson v1.10.2 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
@@ -214,7 +223,6 @@ require (
 	gonum.org/v1/gonum v0.15.1 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250115164207-1a7da9e5054f // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250115164207-1a7da9e5054f // indirect
-	google.golang.org/protobuf v1.36.5 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
