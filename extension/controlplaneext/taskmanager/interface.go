@@ -89,17 +89,22 @@ type Config struct {
 
 	// DefaultTimeout is the default task execution timeout.
 	DefaultTimeout time.Duration `mapstructure:"default_timeout"`
+
+	// StaleTaskReaper configures the stale task reaper that detects
+	// stuck RUNNING tasks and marks them as TIMEOUT.
+	StaleTaskReaper StaleTaskReaperConfig `mapstructure:"stale_task_reaper"`
 }
 
 // DefaultConfig returns the default configuration.
 func DefaultConfig() Config {
 	return Config{
-		Type:           "memory",
-		RedisName:      "default",
-		KeyPrefix:      "otel:tasks",
-		ResultTTL:      24 * time.Hour,
-		Workers:        4,
-		QueueSize:      100,
-		DefaultTimeout: 30 * time.Second,
+		Type:            "memory",
+		RedisName:       "default",
+		KeyPrefix:       "otel:tasks",
+		ResultTTL:       24 * time.Hour,
+		Workers:         4,
+		QueueSize:       100,
+		DefaultTimeout:  30 * time.Second,
+		StaleTaskReaper: DefaultStaleTaskReaperConfig(),
 	}
 }

@@ -22,6 +22,7 @@ type TaskService struct {
 	config Config
 	store  store.TaskStore
 	helper *TaskHelper
+	reaper *StaleTaskReaper
 }
 
 // NewTaskService creates a new TaskService with the given store.
@@ -31,6 +32,7 @@ func NewTaskService(logger *zap.Logger, config Config, taskStore store.TaskStore
 		config: config,
 		store:  taskStore,
 		helper: NewTaskHelper(),
+		reaper: NewStaleTaskReaper(logger.Named("stale-reaper"), config.StaleTaskReaper, taskStore),
 	}
 }
 
@@ -418,11 +420,19 @@ func (s *TaskService) SetTaskRunning(ctx context.Context, taskID string, agentID
 // Start initializes the task service.
 func (s *TaskService) Start(ctx context.Context) error {
 	s.logger.Info("Starting task service")
-	return s.store.Start(ctx)
+	if err := s.store.Start(ctx); err != nil {
+		return err
+	}
+	// Start stale task reaper to detect stuck RUNNING tasks
+	return s.reaper.Start(ctx)
 }
 
 // Close releases resources.
 func (s *TaskService) Close() error {
+	// Stop reaper first to avoid accessing a closed store
+	if s.reaper != nil {
+		s.reaper.Stop()
+	}
 	return s.store.Close()
 }
 

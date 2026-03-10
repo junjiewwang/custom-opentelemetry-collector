@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -147,6 +148,11 @@ func (h *TaskPollHandler) CheckImmediate(ctx context.Context, req *PollRequest) 
 	)
 
 	if len(tasks) > 0 {
+		// Claim-on-dispatch: remove from pending queues and mark as RUNNING
+		// before returning to the agent. This prevents other poll requests
+		// from seeing the same tasks, eliminating duplicate dispatch.
+		h.claimDispatchedTasks(ctx, req.AgentID, tasks)
+
 		result := &HandlerResult{
 			HasChanges: true,
 			Response:   NewTaskResponse(true, tasks, fmt.Sprintf("%d tasks available", len(tasks))),
@@ -285,7 +291,9 @@ func (h *TaskPollHandler) parseTaskDetail(data []byte) (*model.Task, model.TaskS
 }
 
 func isDispatchableStatus(status model.TaskStatus) bool {
-	return status == model.TaskStatusPending || status == model.TaskStatusRunning
+	// Only PENDING tasks are dispatchable.
+	// RUNNING tasks must NOT be re-dispatched to avoid duplicate execution.
+	return status == model.TaskStatusPending
 }
 
 // parseAndValidateTask parses and validates a task from Redis.
@@ -562,6 +570,81 @@ func (h *TaskPollHandler) notifyAllWaiters(task *model.Task) {
 
 		return true
 	})
+}
+
+// claimDispatchedTasks removes dispatched tasks from pending queues and
+// atomically marks them as RUNNING in the detail record ("claim-on-dispatch").
+// This ensures that once a task is sent to an agent, no other poll request
+// can pick it up. If the agent crashes, the StaleTaskReaper will detect
+// the stuck RUNNING task and mark it as TIMEOUT.
+func (h *TaskPollHandler) claimDispatchedTasks(ctx context.Context, agentID string, tasks []*model.Task) {
+	agentQueueKey := fmt.Sprintf(keyPendingAgent, h.keyPrefix, agentID)
+	globalQueueKey := fmt.Sprintf(keyPendingGlobal, h.keyPrefix)
+
+	for _, task := range tasks {
+		// Remove from both queues (best effort, ignore errors)
+		_ = h.redisClient.LRem(ctx, agentQueueKey, 0, task.ID).Err()
+		_ = h.redisClient.LRem(ctx, globalQueueKey, 0, task.ID).Err()
+
+		// Atomically mark as RUNNING in the detail record
+		h.markTaskDispatched(ctx, task.ID, agentID)
+
+		h.logger.Debug("Claimed dispatched task from pending queue",
+			zap.String("task_id", task.ID),
+			zap.String("agent_id", agentID),
+		)
+	}
+}
+
+// markTaskDispatched atomically marks a task as RUNNING (dispatched) in the detail record.
+// Only transitions from PENDING → RUNNING; if the task is already in another state,
+// the update is silently skipped.
+var markDispatchedScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+
+local info = cjson.decode(current)
+local cur = tonumber(info.status) or 0
+
+-- Only mark RUNNING if currently PENDING (status=1)
+if cur ~= 1 then return 0 end
+
+info.status = 2
+info.last_updated_at_millis = tonumber(ARGV[1])
+info.version = (tonumber(info.version) or 0) + 1
+
+if ARGV[2] and ARGV[2] ~= '' then
+    if not info.agent_id or info.agent_id == '' then
+        info.agent_id = ARGV[2]
+    end
+end
+
+local started = tonumber(info.started_at_millis) or 0
+if started == 0 then
+    info.started_at_millis = tonumber(ARGV[1])
+end
+
+local ttl = redis.call('TTL', KEYS[1])
+if ttl > 0 then
+    redis.call('SET', KEYS[1], cjson.encode(info), 'EX', ttl)
+else
+    redis.call('SET', KEYS[1], cjson.encode(info))
+end
+return 1
+`)
+
+func (h *TaskPollHandler) markTaskDispatched(ctx context.Context, taskID string, agentID string) {
+	detailKey := fmt.Sprintf(keyTaskDetail, h.keyPrefix, taskID)
+	nowMillis := time.Now().UnixMilli()
+
+	_, err := markDispatchedScript.Run(ctx, h.redisClient, []string{detailKey}, nowMillis, agentID).Int()
+	if err != nil {
+		h.logger.Warn("Failed to mark task as dispatched",
+			zap.String("task_id", taskID),
+			zap.String("agent_id", agentID),
+			zap.Error(err),
+		)
+	}
 }
 
 // GetWaiterCount returns the number of active waiters.

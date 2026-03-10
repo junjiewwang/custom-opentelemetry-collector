@@ -137,9 +137,10 @@ func (h *TaskHelper) EnsureStartedAtMillis(info *TaskInfo, nowMillis int64) {
 }
 
 // IsTaskInfoDispatchable checks if a task should be dispatched to agents.
-// A task is dispatchable if:
+// A task is dispatchable only if:
 // - It is not cancelled
-// - Its status is PENDING or RUNNING (not terminal)
+// - Its status is PENDING (not RUNNING or terminal)
+// RUNNING tasks must NOT be re-dispatched to avoid duplicate execution.
 func (h *TaskHelper) IsTaskInfoDispatchable(info *TaskInfo, isCancelled bool) bool {
 	if isCancelled {
 		return false
@@ -148,8 +149,8 @@ func (h *TaskHelper) IsTaskInfoDispatchable(info *TaskInfo, isCancelled bool) bo
 		// If no info found, assume dispatchable (shouldn't happen normally)
 		return true
 	}
-	// Dispatchable if not in terminal state
-	return !isTerminal(info.Status)
+	// Only PENDING tasks are dispatchable.
+	return info.Status == model.TaskStatusPending
 }
 
 // ValidateResult validates a TaskResult before processing.
