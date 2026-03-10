@@ -413,9 +413,17 @@ func (e *Extension) listAllServices(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	appID := r.URL.Query().Get("app_id")
+	sortBy := r.URL.Query().Get("sort_by")
+	sortOrder := r.URL.Query().Get("sort_order")
+
+	// Parse and validate sort parameters (whitelist validation)
+	sortOpts, err := agentregistry.ParseSortOptions(sortBy, sortOrder)
+	if err != nil {
+		e.handleError(w, errBadRequest(err.Error()))
+		return
+	}
 
 	var instances []*agentregistry.AgentInfo
-	var err error
 
 	if appID != "" {
 		// Filter by specific app
@@ -462,6 +470,9 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 		}
 		instances = filtered
 	}
+
+	// Sort instances after filtering
+	agentregistry.SortAgents(instances, sortOpts)
 
 	e.writeJSON(w, http.StatusOK, listResponse("instances", instances, len(instances)))
 }

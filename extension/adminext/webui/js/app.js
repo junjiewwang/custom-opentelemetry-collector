@@ -439,6 +439,9 @@ export function adminApp() {
                 
                 // 更新 arthasAgents (保持兼容)
                 this.arthasAgents = this.instances.filter(i => i.arthasStatus?.tunnelReady);
+
+                // 构建实例树（供左侧导航使用）
+                this.instanceTreeData = this.buildInstanceTree(this.instances);
             } catch (e) {
                 this.handleError(e, 'Failed to load instances');
             } finally {
