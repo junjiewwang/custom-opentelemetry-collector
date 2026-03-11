@@ -5,6 +5,7 @@
 
 import { ApiService } from '../api.js';
 import { Utils } from '../utils.js';
+import { SearchableSelect } from '../components/searchable-select.js';
 
 export function tasksView() {
     return {
@@ -34,6 +35,161 @@ export function tasksView() {
             timeout_millis: 60000,
             priority: 0,
             parameters_json: '',
+        },
+
+        // ── SearchableSelect: Task Type ────────────────
+        ...SearchableSelect.create('tt', {
+            options: [
+                { value: 'dynamic_instrument',   label: '🔧 Dynamic Instrument',   group: 'Dynamic Instrumentation' },
+                { value: 'dynamic_uninstrument', label: '🔄 Dynamic Uninstrument', group: 'Dynamic Instrumentation' },
+                { value: 'arthas_attach',        label: '🔗 Arthas Attach',        group: 'Diagnostics' },
+                { value: 'arthas_detach',        label: '🔌 Arthas Detach',        group: 'Diagnostics' },
+                { value: 'async-profiler',       label: '📊 Async Profiler',       group: 'Diagnostics' },
+            ],
+            value: 'arthas_attach',
+            placeholder: 'Search task type...',
+            groups: ['Dynamic Instrumentation', 'Diagnostics'],
+            allowCustom: true,
+            customLabel: '⌨️ Custom Type',
+            emptyText: 'No matching task types',
+        }),
+
+        // ── SearchableSelect: Target Agent ─────────────
+        ...SearchableSelect.create('ta', {
+            options: [],
+            value: '',
+            placeholder: 'Search by service, hostname, IP...',
+            searchKeys: ['label', 'service_name', 'hostname', 'ip', 'agent_id'],
+            emptyText: 'No online agents found',
+        }),
+
+        // ============================================================================
+        // Dynamic Instrumentation Form State
+        // ============================================================================
+
+        // dynamic_instrument 表单数据
+        dynInstrumentForm: {
+            class_name: '',
+            method_name: '',
+            type: 'trace',
+            span_name: '',
+            rule_id: '',
+            parameter_types: '',
+            method_descriptor: '',
+            capture_args: '',
+            capture_return: '',
+            capture_max_length: '256',
+            force: false,
+        },
+
+        // dynamic_uninstrument 表单数据
+        dynUninstrumentForm: {
+            mode: 'rule_id',          // 'rule_id' | 'method'
+            rule_id: '',
+            class_name: '',
+            method_name: '',
+            type: '',                  // '' 表示还原所有类型
+        },
+
+        /**
+         * 判断当前选中的任务类型是否有动态表单（而非原生 JSON textarea）
+         */
+        hasDynamicForm() {
+            const val = this.ttGetValue();
+            return val === 'dynamic_instrument' || val === 'dynamic_uninstrument';
+        },
+
+        /**
+         * 重置动态表单到初始状态
+         */
+        resetDynamicForms() {
+            this.dynInstrumentForm = {
+                class_name: '', method_name: '', type: 'trace', span_name: '',
+                rule_id: '', parameter_types: '', method_descriptor: '',
+                capture_args: '', capture_return: '', capture_max_length: '256', force: false,
+            };
+            this.dynUninstrumentForm = {
+                mode: 'rule_id', rule_id: '', class_name: '', method_name: '', type: '',
+            };
+        },
+
+        /**
+         * 从 dynInstrumentForm 组装 parameters_json 对象
+         * 只包含非空字段，保持 JSON 简洁
+         */
+        buildInstrumentParams() {
+            const f = this.dynInstrumentForm;
+            const params = {};
+            // 必填字段
+            if (f.class_name.trim())  params.class_name = f.class_name.trim();
+            if (f.method_name.trim()) params.method_name = f.method_name.trim();
+            if (f.type)               params.type = f.type;
+            // 可选字段 — 只在有值时加入
+            if (f.rule_id.trim())            params.rule_id = f.rule_id.trim();
+            if (f.span_name.trim())          params.span_name = f.span_name.trim();
+            if (f.parameter_types.trim())    params.parameter_types = f.parameter_types.trim();
+            if (f.method_descriptor.trim())  params.method_descriptor = f.method_descriptor.trim();
+            if (f.capture_args.trim())       params['config.capture_args'] = f.capture_args.trim();
+            if (f.capture_return.trim())     params['config.capture_return'] = f.capture_return.trim();
+            if (f.capture_max_length.trim() && f.capture_max_length.trim() !== '256') {
+                params['config.capture_max_length'] = f.capture_max_length.trim();
+            }
+            if (f.force) params['config.force'] = 'true';
+            return params;
+        },
+
+        /**
+         * 从 dynUninstrumentForm 组装 parameters_json 对象
+         */
+        buildUninstrumentParams() {
+            const f = this.dynUninstrumentForm;
+            const params = {};
+            if (f.mode === 'rule_id') {
+                if (f.rule_id.trim()) params.rule_id = f.rule_id.trim();
+            } else {
+                // method 模式
+                if (f.class_name.trim())  params.class_name = f.class_name.trim();
+                if (f.method_name.trim()) params.method_name = f.method_name.trim();
+                if (f.type)               params.type = f.type;
+            }
+            return params;
+        },
+
+        // ============================================================================
+        // SearchableSelect Helpers
+        // ============================================================================
+
+        /**
+         * 初始化 Target Agent 搜索下拉框的懒加载
+         * 应在 init() 或 showCreateTaskModal 打开时调用
+         */
+        initTargetAgentSelect() {
+            // 绑定懒加载函数：打开下拉时自动加载 instances
+            this.taLazyLoadFn = async () => {
+                if (this.instances.length === 0) {
+                    await this.loadInstances();
+                }
+                this.syncTargetAgentOptions();
+            };
+        },
+
+        /**
+         * 将 instances 数据同步到 Target Agent 搜索下拉框选项
+         */
+        syncTargetAgentOptions() {
+            const onlineInstances = (this.instances || []).filter(i => i.status?.state === 'online');
+            const options = [
+                { value: '', label: '🌐 Global Broadcast (All Online Agents)', service_name: '', hostname: '', ip: '', agent_id: '' },
+                ...onlineInstances.map(inst => ({
+                    value: inst.agent_id,
+                    label: `${inst.service_name || '-'} — ${inst.hostname || inst.ip || '-'} (${(inst.agent_id || '').substring(0, 8)})`,
+                    service_name: inst.service_name || '',
+                    hostname: inst.hostname || '',
+                    ip: inst.ip || '',
+                    agent_id: inst.agent_id || '',
+                })),
+            ];
+            this.taUpdateOptions(options);
         },
 
         // ============================================================================
@@ -266,22 +422,69 @@ export function tasksView() {
 
         async submitTask() {
             try {
-                const taskType = this.newTask.task_type_preset === 'custom' 
-                    ? this.newTask.task_type_custom 
-                    : this.newTask.task_type_preset;
+                // 从 SearchableSelect 获取 task type
+                const taskType = this.ttGetValue();
 
                 if (!taskType) {
                     this.showToast('Please specify task type', 'error');
                     return;
                 }
 
+                // 同步到 newTask 以保持兼容
+                if (this.ttIsCustomMode) {
+                    this.newTask.task_type_preset = 'custom';
+                    this.newTask.task_type_custom = taskType;
+                } else {
+                    this.newTask.task_type_preset = taskType;
+                }
+
+                // 从 SearchableSelect 获取 target agent
+                const targetAgentId = this.taValue || '';
+
                 const taskData = {
                     task_type_name: taskType,
                     timeout_millis: this.newTask.timeout_millis || 60000,
                     priority_num: this.newTask.priority || 0,
                 };
-                if (this.newTask.target_agent_id) taskData.target_agent_id = this.newTask.target_agent_id;
-                if (this.newTask.parameters_json && this.newTask.parameters_json.trim()) {
+                if (targetAgentId) taskData.target_agent_id = targetAgentId;
+
+                // 根据任务类型组装 parameters_json
+                if (taskType === 'dynamic_instrument') {
+                    // 必填字段校验
+                    const f = this.dynInstrumentForm;
+                    if (!f.class_name.trim()) {
+                        this.showToast('Class Name is required', 'error');
+                        return;
+                    }
+                    if (!f.method_name.trim()) {
+                        this.showToast('Method Name is required', 'error');
+                        return;
+                    }
+                    if (!f.type) {
+                        this.showToast('Instrumentation Type is required', 'error');
+                        return;
+                    }
+                    taskData.parameters_json = this.buildInstrumentParams();
+                } else if (taskType === 'dynamic_uninstrument') {
+                    const f = this.dynUninstrumentForm;
+                    if (f.mode === 'rule_id') {
+                        if (!f.rule_id.trim()) {
+                            this.showToast('Rule ID is required', 'error');
+                            return;
+                        }
+                    } else {
+                        if (!f.class_name.trim()) {
+                            this.showToast('Class Name is required', 'error');
+                            return;
+                        }
+                        if (!f.method_name.trim()) {
+                            this.showToast('Method Name is required', 'error');
+                            return;
+                        }
+                    }
+                    taskData.parameters_json = this.buildUninstrumentParams();
+                } else if (this.newTask.parameters_json && this.newTask.parameters_json.trim()) {
+                    // 原有逻辑：手动 JSON 输入
                     try {
                         taskData.parameters_json = JSON.parse(this.newTask.parameters_json);
                     } catch (parseErr) {
@@ -289,9 +492,11 @@ export function tasksView() {
                         return;
                     }
                 }
+
                 await ApiService.createTask(taskData);
                 this.showToast('Task created successfully', 'success');
                 this.showCreateTaskModal = false;
+                // 重置表单
                 this.newTask = { 
                     task_type_preset: 'arthas_attach', 
                     task_type_custom: '', 
@@ -300,6 +505,10 @@ export function tasksView() {
                     priority: 0, 
                     parameters_json: '' 
                 };
+                // 重置 SearchableSelect 实例
+                this.ttSetValue('arthas_attach');
+                this.taSetValue('');
+                this.resetDynamicForms();
                 await this.loadTasks();
             } catch (e) {
                 this.handleError(e, 'Failed to create task');

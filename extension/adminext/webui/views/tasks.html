@@ -494,7 +494,7 @@
      x-cloak
      class="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
      @keydown.escape.window="showCreateTaskModal = false">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]"
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]"
          @click.away="showCreateTaskModal = false"
          x-show="showCreateTaskModal"
          x-transition:enter="transition ease-out duration-300"
@@ -509,22 +509,84 @@
         </div>
 
         <div class="p-6 overflow-y-auto space-y-5">
-            <!-- Task Type Selector -->
+            <!-- Task Type Selector (SearchableSelect: prefix=tt) -->
             <div>
                 <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Task Type</label>
                 <div class="space-y-3">
-                    <select x-model="newTask.task_type_preset" 
-                            class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm font-medium transition">
-                        <option value="arthas_attach">Arthas Attach</option>
-                        <option value="arthas_detach">Arthas Detach</option>
-                        <option value="async-profiler">Async Profiler</option>
-                        <option value="custom">-- Custom --</option>
-                    </select>
-                    
+                    <!-- 搜索下拉框 -->
+                    <div class="relative" @click.away="ttClose()" @keydown="ttKeydown($event)">
+                        <!-- 触发器：显示当前选中值，点击展开 -->
+                        <div @click="ttToggle(); $nextTick(() => { if(ttIsOpen && $refs.ttSearchInput) $refs.ttSearchInput.focus(); })" 
+                             class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-primary-500 text-sm font-medium transition cursor-pointer flex items-center justify-between gap-2"
+                             :class="ttIsOpen ? 'ring-2 ring-primary-500 border-primary-500' : ''">
+                            <span x-show="!ttIsOpen" x-text="ttSelectedLabel() || ttPlaceholder" 
+                                  :class="ttSelectedLabel() ? 'text-gray-800' : 'text-gray-400'"></span>
+                            <input x-show="ttIsOpen" x-ref="ttSearchInput"
+                                   x-model="ttSearch" 
+                                   @click.stop
+                                   :placeholder="ttPlaceholder"
+                                   class="w-full bg-transparent outline-none text-sm text-gray-800 placeholder:text-gray-400"
+                                   autocomplete="off">
+                            <div class="flex items-center gap-1 flex-shrink-0">
+                                <i class="fas fa-search text-[10px] text-gray-300" x-show="ttIsOpen"></i>
+                                <i class="fas fa-chevron-down text-xs text-gray-400 transition-transform" :class="ttIsOpen ? 'rotate-180' : ''"></i>
+                            </div>
+                        </div>
+
+                        <!-- 下拉面板 -->
+                        <div x-show="ttIsOpen" x-ref="ttDropdown"
+                             x-transition:enter="transition ease-out duration-150"
+                             x-transition:enter-start="opacity-0 -translate-y-1"
+                             x-transition:enter-end="opacity-100 translate-y-0"
+                             x-transition:leave="transition ease-in duration-100"
+                             x-transition:leave-start="opacity-100"
+                             x-transition:leave-end="opacity-0"
+                             class="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden"
+                             @click.stop>
+                            <div class="max-h-64 overflow-y-auto py-1">
+                                <!-- 分组选项 -->
+                                <template x-for="group in ttGroupedOptions()" :key="group.group">
+                                    <div>
+                                        <div x-show="group.group" class="px-3 py-1.5 text-[9px] font-bold text-gray-400 uppercase tracking-widest bg-gray-50 sticky top-0" x-text="group.group"></div>
+                                        <template x-for="opt in group.options" :key="opt.value">
+                                            <div @click="ttSelect(opt); newTask.task_type_preset = opt.value"
+                                                 :data-ss-highlighted="ttIsHighlighted(opt)"
+                                                 class="px-4 py-2 cursor-pointer transition text-sm flex items-center justify-between"
+                                                 :class="{
+                                                     'bg-primary-50 text-primary-700': ttIsSelected(opt),
+                                                     'bg-primary-100': ttIsHighlighted(opt) && !ttIsSelected(opt),
+                                                     'hover:bg-gray-50': !ttIsSelected(opt) && !ttIsHighlighted(opt)
+                                                 }">
+                                                <span x-html="ttHighlight(opt.label)"></span>
+                                                <i x-show="ttIsSelected(opt)" class="fas fa-check text-primary-500 text-xs"></i>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </template>
+
+                                <!-- Custom 选项 -->
+                                <template x-if="ttAllowCustom">
+                                    <div @click="ttSelect({ value: '__custom__', label: ttCustomLabel, _isCustom: true }); newTask.task_type_preset = 'custom'"
+                                         class="px-4 py-2 cursor-pointer transition text-sm border-t border-gray-100 text-gray-500 hover:bg-gray-50 flex items-center gap-2">
+                                        <i class="fas fa-keyboard text-[10px]"></i>
+                                        <span x-text="ttCustomLabel"></span>
+                                    </div>
+                                </template>
+
+                                <!-- 无结果 -->
+                                <div x-show="ttFilteredOptions().length === 0 && ttSearch.trim()" class="px-4 py-3 text-sm text-gray-400 text-center">
+                                    <i class="fas fa-search text-gray-300 mr-1"></i>
+                                    <span x-text="ttEmptyText"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Custom Task Type Input -->
-                    <template x-if="newTask.task_type_preset === 'custom'">
+                    <template x-if="ttIsCustomMode">
                         <div x-transition class="relative">
-                            <input type="text" x-model="newTask.task_type_custom" 
+                            <input type="text" x-model="ttCustomValue" x-ref="ttCustomInput"
+                                   @input="newTask.task_type_custom = ttCustomValue"
                                    placeholder="Enter custom task type name..."
                                    class="w-full px-4 py-2.5 bg-white border-2 border-primary-100 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm font-bold placeholder:font-normal placeholder:text-gray-300 transition">
                             <div class="absolute right-3 top-1/2 -translate-y-1/2">
@@ -535,20 +597,78 @@
                 </div>
             </div>
 
-            <!-- Target Agent (online only) -->
+            <!-- Target Agent (SearchableSelect: prefix=ta) -->
             <div>
                 <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Target Agent (Optional)</label>
-                <div class="relative">
-                    <select x-model="newTask.target_agent_id" 
-                            @focus="if(instances.length === 0) loadInstances()"
-                            class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm font-medium transition appearance-none">
-                        <option value="">Global Broadcast (All Online Agents)</option>
-                        <template x-for="inst in instances.filter(i => i.status?.state === 'online')" :key="inst.agent_id">
-                            <option :value="inst.agent_id" x-text="`${inst.service_name} - ${inst.hostname || inst.ip} (${formatShortId(inst.agent_id)})`"></option>
-                        </template>
-                    </select>
-                    <div class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                        <i class="fas fa-chevron-down text-xs"></i>
+                <div class="relative" @click.away="taClose()" @keydown="taKeydown($event)">
+                    <!-- 触发器 -->
+                    <div @click="initTargetAgentSelect(); taToggle(); $nextTick(() => { if(taIsOpen && $refs.taSearchInput) $refs.taSearchInput.focus(); })" 
+                         class="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-primary-500 text-sm font-medium transition cursor-pointer flex items-center justify-between gap-2"
+                         :class="taIsOpen ? 'ring-2 ring-primary-500 border-primary-500' : ''">
+                        <span x-show="!taIsOpen" x-text="taSelectedLabel() || '🌐 Global Broadcast (All Online Agents)'" 
+                              :class="taValue ? 'text-gray-800' : 'text-gray-500'"></span>
+                        <input x-show="taIsOpen" x-ref="taSearchInput"
+                               x-model="taSearch" 
+                               @click.stop
+                               :placeholder="taPlaceholder"
+                               class="w-full bg-transparent outline-none text-sm text-gray-800 placeholder:text-gray-400"
+                               autocomplete="off">
+                        <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <!-- Loading Spinner -->
+                            <i x-show="taLoading" class="fas fa-spinner fa-spin text-xs text-primary-500"></i>
+                            <i class="fas fa-search text-[10px] text-gray-300" x-show="taIsOpen && !taLoading"></i>
+                            <i class="fas fa-chevron-down text-xs text-gray-400 transition-transform" :class="taIsOpen ? 'rotate-180' : ''"></i>
+                        </div>
+                    </div>
+
+                    <!-- 下拉面板 -->
+                    <div x-show="taIsOpen" x-ref="taDropdown"
+                         x-transition:enter="transition ease-out duration-150"
+                         x-transition:enter-start="opacity-0 -translate-y-1"
+                         x-transition:enter-end="opacity-100 translate-y-0"
+                         x-transition:leave="transition ease-in duration-100"
+                         x-transition:leave-start="opacity-100"
+                         x-transition:leave-end="opacity-0"
+                         class="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden"
+                         @click.stop>
+                        <div class="max-h-64 overflow-y-auto py-1">
+                            <!-- Loading 状态 -->
+                            <div x-show="taLoading" class="px-4 py-6 text-center text-gray-400">
+                                <i class="fas fa-spinner fa-spin mr-2"></i>Loading agents...
+                            </div>
+
+                            <!-- 选项列表 -->
+                            <template x-if="!taLoading">
+                                <div>
+                                    <template x-for="opt in taFilteredOptions()" :key="opt.value">
+                                        <div @click="taSelect(opt); newTask.target_agent_id = opt.value"
+                                             :data-ss-highlighted="taIsHighlighted(opt)"
+                                             class="px-4 py-2.5 cursor-pointer transition text-sm flex items-center gap-3"
+                                             :class="{
+                                                 'bg-primary-50 text-primary-700': taIsSelected(opt),
+                                                 'bg-primary-100': taIsHighlighted(opt) && !taIsSelected(opt),
+                                                 'hover:bg-gray-50': !taIsSelected(opt) && !taIsHighlighted(opt)
+                                             }">
+                                            <!-- Global icon or instance status dot -->
+                                            <template x-if="opt.value === ''">
+                                                <i class="fas fa-globe text-primary-400 text-xs flex-shrink-0"></i>
+                                            </template>
+                                            <template x-if="opt.value !== ''">
+                                                <span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+                                            </template>
+                                            <span class="flex-1 truncate" x-html="taHighlight(opt.label)"></span>
+                                            <i x-show="taIsSelected(opt)" class="fas fa-check text-primary-500 text-xs flex-shrink-0"></i>
+                                        </div>
+                                    </template>
+
+                                    <!-- 无结果 -->
+                                    <div x-show="taFilteredOptions().length === 0 && taSearch.trim()" class="px-4 py-3 text-sm text-gray-400 text-center">
+                                        <i class="fas fa-search text-gray-300 mr-1"></i>
+                                        <span x-text="taEmptyText"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -568,16 +688,210 @@
                 </div>
             </div>
 
-            <!-- Parameters -->
-            <div>
-                <div class="flex items-center justify-between mb-2">
-                    <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest">Parameters (JSON)</label>
-                    <span class="text-[9px] text-gray-300 font-mono">Optional</span>
+            <!-- ============================================================ -->
+            <!-- Dynamic Instrument Form -->
+            <!-- ============================================================ -->
+            <template x-if="ttGetValue() === 'dynamic_instrument'">
+                <div class="space-y-4 bg-gradient-to-br from-emerald-50/50 to-blue-50/50 border border-emerald-200/60 rounded-xl p-5">
+                    <div class="flex items-center gap-2 mb-1">
+                        <i class="fas fa-magic text-emerald-500 text-xs"></i>
+                        <span class="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Dynamic Instrument Parameters</span>
+                    </div>
+
+                    <!-- Row 1: Class + Method (Required) -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                                Class Name <span class="text-red-400">*</span>
+                            </label>
+                            <input type="text" x-model="dynInstrumentForm.class_name" 
+                                   placeholder="com.example.UserService"
+                                   class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-xs font-mono transition placeholder:text-gray-300">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                                Method Name <span class="text-red-400">*</span>
+                            </label>
+                            <input type="text" x-model="dynInstrumentForm.method_name" 
+                                   placeholder="handleLogin"
+                                   class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-xs font-mono transition placeholder:text-gray-300">
+                        </div>
+                    </div>
+
+                    <!-- Row 2: Type + Span Name -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                                Type <span class="text-red-400">*</span>
+                            </label>
+                            <select x-model="dynInstrumentForm.type" 
+                                    class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-xs font-medium transition">
+                                <option value="trace">🔍 Trace</option>
+                                <option value="metric">📊 Metric</option>
+                                <option value="log">📝 Log</option>
+                            </select>
+                        </div>
+                        <div x-show="dynInstrumentForm.type === 'trace'" x-transition>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Span Name</label>
+                            <input type="text" x-model="dynInstrumentForm.span_name" 
+                                   placeholder="custom-span-name"
+                                   class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-xs font-mono transition placeholder:text-gray-300">
+                        </div>
+                    </div>
+
+                    <!-- Row 3: Parameter Types + Rule ID -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Parameter Types</label>
+                            <input type="text" x-model="dynInstrumentForm.parameter_types" 
+                                   placeholder="String,int (match overloads)"
+                                   class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-xs font-mono transition placeholder:text-gray-300">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Rule ID</label>
+                            <input type="text" x-model="dynInstrumentForm.rule_id" 
+                                   placeholder="auto-generated if empty"
+                                   class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-xs font-mono transition placeholder:text-gray-300">
+                        </div>
+                    </div>
+
+                    <!-- Trace-only: Capture Options (conditional) -->
+                    <div x-show="dynInstrumentForm.type === 'trace'" x-transition class="space-y-3">
+                        <div class="flex items-center gap-2 pt-2 border-t border-emerald-200/40">
+                            <i class="fas fa-camera text-blue-400 text-[10px]"></i>
+                            <span class="text-[10px] font-bold text-blue-500 uppercase tracking-widest">Capture Options (Trace only)</span>
+                        </div>
+                        <div class="grid grid-cols-3 gap-3">
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Capture Args</label>
+                                <input type="text" x-model="dynInstrumentForm.capture_args" 
+                                       placeholder="0,2 or * or userId"
+                                       class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-xs font-mono transition placeholder:text-gray-300">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Capture Return</label>
+                                <input type="text" x-model="dynInstrumentForm.capture_return" 
+                                       placeholder="* or id,name"
+                                       class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-xs font-mono transition placeholder:text-gray-300">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Max Length</label>
+                                <input type="text" x-model="dynInstrumentForm.capture_max_length" 
+                                       placeholder="256"
+                                       class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-xs font-mono transition placeholder:text-gray-300">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Advanced: Force + Method Descriptor -->
+                    <div class="flex items-center gap-4 pt-2 border-t border-emerald-200/40">
+                        <label class="flex items-center gap-2 cursor-pointer select-none">
+                            <input type="checkbox" x-model="dynInstrumentForm.force" 
+                                   class="w-4 h-4 text-emerald-600 bg-gray-100 border-gray-300 rounded focus:ring-emerald-500">
+                            <span class="text-[10px] font-bold text-gray-500 uppercase">Force (ignore conflicts)</span>
+                        </label>
+                        <div class="flex-1">
+                            <input type="text" x-model="dynInstrumentForm.method_descriptor" 
+                                   placeholder="JVM descriptor (advanced): (Ljava/lang/String;I)V"
+                                   class="w-full px-3 py-1.5 bg-white/60 border border-gray-200 rounded-lg text-[10px] font-mono text-gray-400 transition placeholder:text-gray-300 focus:ring-1 focus:ring-emerald-500">
+                        </div>
+                    </div>
                 </div>
-                <textarea x-model="newTask.parameters_json" rows="4" 
-                          placeholder='{ "key": "value" }'
-                          class="w-full px-4 py-3 bg-gray-900 text-blue-300 font-mono text-xs rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition shadow-inner"></textarea>
-            </div>
+            </template>
+
+            <!-- ============================================================ -->
+            <!-- Dynamic Uninstrument Form -->
+            <!-- ============================================================ -->
+            <template x-if="ttGetValue() === 'dynamic_uninstrument'">
+                <div class="space-y-4 bg-gradient-to-br from-amber-50/50 to-orange-50/50 border border-amber-200/60 rounded-xl p-5">
+                    <div class="flex items-center gap-2 mb-1">
+                        <i class="fas fa-undo-alt text-amber-500 text-xs"></i>
+                        <span class="text-[10px] font-bold text-amber-600 uppercase tracking-widest">Dynamic Uninstrument Parameters</span>
+                    </div>
+
+                    <!-- Mode Tabs -->
+                    <div class="flex gap-1 bg-gray-100 rounded-lg p-1">
+                        <button type="button" @click="dynUninstrumentForm.mode = 'rule_id'"
+                                :class="dynUninstrumentForm.mode === 'rule_id' ? 'bg-white shadow-sm text-amber-700 font-bold' : 'text-gray-500 hover:text-gray-700'"
+                                class="flex-1 px-3 py-1.5 rounded-md text-[10px] uppercase tracking-widest transition font-medium">
+                            <i class="fas fa-key mr-1"></i> By Rule ID
+                        </button>
+                        <button type="button" @click="dynUninstrumentForm.mode = 'method'"
+                                :class="dynUninstrumentForm.mode === 'method' ? 'bg-white shadow-sm text-amber-700 font-bold' : 'text-gray-500 hover:text-gray-700'"
+                                class="flex-1 px-3 py-1.5 rounded-md text-[10px] uppercase tracking-widest transition font-medium">
+                            <i class="fas fa-crosshairs mr-1"></i> By Method
+                        </button>
+                    </div>
+
+                    <!-- Tab content wrapper: fixed min-height to prevent modal jump on tab switch -->
+                    <div class="min-h-[160px]">
+                        <!-- Mode: Rule ID -->
+                        <div x-show="dynUninstrumentForm.mode === 'rule_id'">
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                                Rule ID <span class="text-red-400">*</span>
+                            </label>
+                            <input type="text" x-model="dynUninstrumentForm.rule_id" 
+                                   placeholder="UserService.handleLogin_trace"
+                                   class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-xs font-mono transition placeholder:text-gray-300">
+                            <p class="text-[9px] text-gray-400 mt-1.5 leading-relaxed">
+                                <i class="fas fa-info-circle mr-0.5"></i>
+                                Rule ID 格式: <code class="bg-gray-100 px-1 rounded">SimpleClassName.methodName[(paramTypes)]_type</code>
+                            </p>
+                        </div>
+
+                        <!-- Mode: Method -->
+                        <div x-show="dynUninstrumentForm.mode === 'method'" class="space-y-3">
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                                        Class Name <span class="text-red-400">*</span>
+                                    </label>
+                                    <input type="text" x-model="dynUninstrumentForm.class_name" 
+                                           placeholder="com.example.UserService"
+                                           class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-xs font-mono transition placeholder:text-gray-300">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                                        Method Name <span class="text-red-400">*</span>
+                                    </label>
+                                    <input type="text" x-model="dynUninstrumentForm.method_name" 
+                                           placeholder="handleLogin"
+                                           class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-xs font-mono transition placeholder:text-gray-300">
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Type (Optional)</label>
+                                <select x-model="dynUninstrumentForm.type" 
+                                        class="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-xs font-medium transition">
+                                    <option value="">All types (revert all)</option>
+                                    <option value="trace">🔍 Trace</option>
+                                    <option value="metric">📊 Metric</option>
+                                    <option value="log">📝 Log</option>
+                                </select>
+                                <p class="text-[9px] text-gray-400 mt-1.5">
+                                    <i class="fas fa-info-circle mr-0.5"></i>
+                                    不指定 Type 将还原该方法上所有类型的增强
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <!-- ============================================================ -->
+            <!-- Original Parameters JSON (for non-dynamic types) -->
+            <!-- ============================================================ -->
+            <template x-if="!hasDynamicForm()">
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest">Parameters (JSON)</label>
+                        <span class="text-[9px] text-gray-300 font-mono">Optional</span>
+                    </div>
+                    <textarea x-model="newTask.parameters_json" rows="4" 
+                              placeholder='{ "key": "value" }'
+                              class="w-full px-4 py-3 bg-gray-900 text-blue-300 font-mono text-xs rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition shadow-inner"></textarea>
+                </div>
+            </template>
         </div>
 
         <div class="px-6 py-4 bg-gray-50 border-t border-gray-100 flex gap-3">
