@@ -1,1 +1,38 @@
+# Build output
+bin/
+dist/
 config/build/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.make
+.env.local
+
+# Debug
+__debug_bin*
+
+# Proto generated (optional, uncomment if you don't want to track)
+# *.pb.go
+
+# CodeBuddy
+.codebuddy/
