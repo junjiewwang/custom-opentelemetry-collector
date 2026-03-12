@@ -36,3 +36,11 @@ __debug_bin*
 
 # CodeBuddy
 .codebuddy/
+
+# >>> svcgen generated - DO NOT EDIT >>>
+# Generated files (only service.yaml needs to be tracked)
+.env.make
+.tad/
+Makefile
+compose.yaml
+# <<< svcgen generated <<<

@@ -400,3 +400,4 @@ metadata:
   template_version: "2.0.0"
   generated_at: "" # 自动填充
   generator: "svcgen"
+  manage_gitignore: true
