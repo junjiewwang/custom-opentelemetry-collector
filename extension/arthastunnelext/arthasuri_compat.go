@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -1381,4 +1382,114 @@ func writeClose(conn *websocket.Conn, code int, reason string) error {
 	msg := websocket.FormatCloseMessage(code, reason)
 	_ = conn.WriteControl(websocket.CloseMessage, msg, deadline)
 	return nil
+}
+
+// connectToAgentProgrammatic establishes a programmatic tunnel connection to an agent.
+// This is the internal implementation of ConnectToAgent, used by MCP Extension.
+//
+// Unlike handleConnectArthas (which operates over a browser WebSocket), this method:
+//   - Does NOT need a browser WebSocket connection
+//   - Uses the pending store's Create (not CreateWithBrowserConn) to register a pending
+//   - Returns the raw tunnel WebSocket connection wrapped in an ArthasSession
+//   - Only supports local agents (distributed proxy is a future enhancement)
+func (s *arthasURICompat) connectToAgentProgrammatic(ctx context.Context, agentID string, logger *zap.Logger) (*ArthasSession, error) {
+	logger.Info("[connectToAgent] Programmatic connect request",
+		zap.String("agent_id", agentID),
+	)
+
+	if agentID == "" {
+		return nil, fmt.Errorf("agent_id is required")
+	}
+
+	// Step 1: Find the agent locally
+	s.mu.Lock()
+	agent := s.agents[agentID]
+	s.mu.Unlock()
+
+	if agent == nil || agent.conn == nil {
+		// In distributed mode, the agent might be on another node.
+		// For now, only support local agents. Distributed support can be added later
+		// by implementing a similar proxy mechanism as proxyConnectArthas.
+		if s.distributed != nil {
+			nodeAddr, err := s.distributed.GetAgentNodeAddr(s.ctx, agentID)
+			if err == nil && nodeAddr != "" {
+				return nil, fmt.Errorf("agent '%s' is on another node (%s); programmatic cross-node connection is not yet supported", agentID, nodeAddr)
+			}
+		}
+		return nil, fmt.Errorf("agent '%s' is not connected to tunnel", agentID)
+	}
+
+	// Check if agent is healthy
+	if s.isAgentTimeout(agent) {
+		return nil, fmt.Errorf("agent '%s' tunnel connection is unhealthy (timed out)", agentID)
+	}
+
+	// Step 2: Generate IDs
+	sessionID := randomUpperAlphaNum(20)
+	clientConnID := randomUpperAlphaNum(20)
+
+	// Step 3: Register pending (without browser connection)
+	pendingInfo := &pending.PendingInfo{
+		ClientConnID: clientConnID,
+		SessionID:    sessionID,
+		AgentID:      agentID,
+		CreatedAt:    time.Now(),
+	}
+	if err := s.pendingStore.Create(s.ctx, pendingInfo); err != nil {
+		return nil, fmt.Errorf("failed to register pending connection: %w", err)
+	}
+
+	agent.incPending(time.Now().UnixMilli())
+
+	// Ensure cleanup on error
+	cleanedUp := false
+	defer func() {
+		if !cleanedUp {
+			agent.decPending(time.Now().UnixMilli())
+			_ = s.pendingStore.Delete(s.ctx, clientConnID)
+		}
+	}()
+
+	// Step 4: Send startTunnel to agent
+	vals := url.Values{}
+	vals.Set("method", string(methodStartTunnel))
+	vals.Set("id", agentID)
+	vals.Set("clientConnectionId", clientConnID)
+	startTunnelMsg := buildResponseFrame(vals)
+
+	logger.Info("[connectToAgent] Sending startTunnel to agent",
+		zap.String("agent_id", agentID),
+		zap.String("session_id", sessionID),
+		zap.String("client_connection_id", clientConnID),
+	)
+
+	if err := agent.safeWriteMessage(websocket.TextMessage, []byte(startTunnelMsg)); err != nil {
+		return nil, fmt.Errorf("failed to send startTunnel to agent: %w", err)
+	}
+
+	// Step 5: Wait for openTunnel with timeout
+	timeout := s.connectTimeout()
+	tunnelConn, err := s.pendingStore.WaitForTunnel(ctx, clientConnID, timeout)
+	if err != nil {
+		if err == context.DeadlineExceeded {
+			return nil, fmt.Errorf("timeout waiting for agent '%s' to establish tunnel (waited %v)", agentID, timeout)
+		}
+		return nil, fmt.Errorf("failed waiting for tunnel: %w", err)
+	}
+
+	// Success: mark cleanup as done, transfer ownership
+	cleanedUp = true
+	nowMillis := time.Now().UnixMilli()
+	agent.decPending(nowMillis)
+	_ = s.pendingStore.Delete(s.ctx, clientConnID)
+
+	logger.Info("[connectToAgent] Tunnel established successfully",
+		zap.String("agent_id", agentID),
+		zap.String("session_id", sessionID),
+		zap.String("tunnel_remote_addr", tunnelConn.RemoteAddr().String()),
+	)
+
+	// Step 6: Wrap in ArthasSession and return
+	session := newArthasSession(tunnelConn, agentID, sessionID, logger)
+	return session, nil
 }

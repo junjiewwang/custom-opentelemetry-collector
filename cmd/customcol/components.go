@@ -34,6 +34,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/adminext"
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
+	"go.opentelemetry.io/collector/custom/extension/mcpext"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/processor/tokenauthprocessor"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver"
@@ -52,6 +53,7 @@ func components() (otelcol.Factories, error) {
 		controlplaneext.NewFactory(),
 		arthastunnelext.NewFactory(),
 		adminext.NewFactory(),
+		mcpext.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

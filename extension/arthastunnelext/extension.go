@@ -291,6 +291,15 @@ func (e *Extension) GetInternalPathPrefix() string {
 	return e.config.Distributed.InternalPathPrefix
 }
 
+// ConnectToAgent establishes a programmatic Arthas session to a target agent.
+// This is the internal API used by mcpext to execute Arthas commands.
+func (e *Extension) ConnectToAgent(ctx context.Context, agentID string) (*ArthasSession, error) {
+	if e.compat == nil {
+		return nil, fmt.Errorf("arthas tunnel not started")
+	}
+	return e.compat.connectToAgentProgrammatic(ctx, agentID, e.logger)
+}
+
 // Dependencies implements extensioncapabilities.Dependent.
 // This ensures the storage extension is started before this extension
 // when distributed mode is enabled.

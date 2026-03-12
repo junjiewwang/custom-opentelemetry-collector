@@ -4,12 +4,13 @@
 package arthastunnelext
 
 import (
+	"context"
 	"net/http"
 	"time"
 )
 
 // ArthasTunnel defines the interface for Arthas tunnel service.
-// This interface is used by agentgatewayreceiver and adminext to interact with the tunnel.
+// This interface is used by agentgatewayreceiver, adminext, and mcpext to interact with the tunnel.
 type ArthasTunnel interface {
 	// HandleAgentWebSocket handles WebSocket connections from agents.
 	// This is called by agentgatewayreceiver when an agent connects to /v1/arthas/ws.
@@ -36,6 +37,21 @@ type ArthasTunnel interface {
 	// GetInternalPathPrefix returns the internal path prefix for cross-node proxy.
 	// This is used by adminext to mount the internal proxy handler.
 	GetInternalPathPrefix() string
+
+	// ConnectToAgent establishes a programmatic Arthas session to a target agent.
+	// This is the internal API used by mcpext to execute Arthas commands without
+	// going through the WebSocket HTTP endpoints.
+	//
+	// The returned ArthasSession encapsulates a Tunnel relay connection. The caller
+	// must call ArthasSession.Close() when done to release the underlying resources.
+	//
+	// This method follows the same flow as HandleBrowserWebSocket internally:
+	//   1. Find the agent (local or distributed)
+	//   2. Register a pending connection
+	//   3. Send startTunnel to the agent
+	//   4. Wait for the agent to open a tunnel (openTunnel)
+	//   5. Return the established tunnel as an ArthasSession
+	ConnectToAgent(ctx context.Context, agentID string) (*ArthasSession, error)
 }
 
 // ConnectedAgent represents an agent with an active tunnel connection.
