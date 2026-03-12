@@ -86,6 +86,11 @@ graph TB
     MCP -.->|"依赖"| ArthasTunnel
     TokenAuth -.->|"验证 Token"| ControlPlane
 
+    classDef user fill:#e1f5fe,stroke:#0288d1
+    classDef gateway fill:#fff3e0,stroke:#ef6c00
+    classDef ext fill:#e8f5e9,stroke:#388e3c
+    classDef external fill:#fce4ec,stroke:#c62828
+    classDef pipeline fill:#f3e5f5,stroke:#7b1fa2
 ```
 
 **一句话总结**：Java Agent 通过统一网关连进来，控制面管理它们的生死（注册/心跳/配置/任务），Arthas Tunnel 让你能远程"把脉"，MCP 让 AI 也能亲自上手"问诊"。
@@ -112,6 +117,11 @@ graph LR
     AT ==>|"硬依赖"| MCP
     CP -.->|"auto_detach"| AT
 
+    style Storage fill:#FFE0B2,stroke:#F57C00,stroke-width:2px
+    style CP fill:#C8E6C9,stroke:#388E3C,stroke-width:2px
+    style AT fill:#BBDEFB,stroke:#1976D2,stroke-width:2px
+    style Admin fill:#E1BEE7,stroke:#7B1FA2,stroke-width:2px
+    style MCP fill:#B2EBF2,stroke:#00838F,stroke-width:2px
 ```
 
 **启动顺序**：`Storage` → `ControlPlane` → `ArthasTunnel` → `Admin` / `MCP`
@@ -150,6 +160,8 @@ graph LR
     Storage -->|"GetRedis(name)"| Redis
     Storage -->|"GetNacosConfigClient()"| Nacos
     Storage -->|"GetBlobStore()"| Blob
+
+    style Storage fill:#FFE0B2,stroke:#F57C00,stroke-width:2px
 ```
 
 | 能力 | 说明 |
@@ -188,6 +200,8 @@ graph TB
 
     CK -->|"合并后持久化"| AM
     AM -->|"通知分析服务"| NT
+
+    style CP fill:#C8E6C9,stroke:#388E3C,stroke-width:2px
 ```
 
 | 子组件 | 功能 | 存储后端 |
@@ -256,6 +270,8 @@ graph LR
     Redis -->|"Agent 在 Node-A"| TunnelB
     TunnelB -->|"Internal WS Proxy<br/>(X-Internal-Token)"| TunnelA
     TunnelA -->|"relay"| AgentConn
+
+    style Redis fill:#FFCDD2,stroke:#C62828
 ```
 
 > Agent 在 Node-A，用户连到 Node-B？没关系。Redis 索引 + 内部代理自动搞定。
@@ -289,6 +305,8 @@ graph LR
     Browser --> Auth
     Auth --> APIs
     Auth --> WebUI
+
+    style Admin fill:#E1BEE7,stroke:#7B1FA2,stroke-width:2px
 ```
 
 **核心 API 一览：**
@@ -335,6 +353,8 @@ graph TB
     Query -->|"GetOnlineAgents()<br/>GetAgent()"| CP
     Lifecycle -->|"SubmitTaskForAgent()<br/>(arthas_attach/detach)"| CP
     Commands -->|"ConnectToAgent()<br/>→ Session.ExecCommand()"| AT
+
+    style MCP fill:#B2EBF2,stroke:#00838F,stroke-width:2px
 ```
 
 **AI 排查问题的真实流程：**
@@ -424,6 +444,8 @@ graph TB
     CP_H --> LongPoll
     ConfigPoll -.-> Nacos[("Nacos")]
     TaskPoll -.-> Redis[("Redis")]
+
+    style Receiver fill:#FFF3E0,stroke:#EF6C00,stroke-width:2px
 ```
 
 **统一长轮询（UnifiedPoll）**—— 一次请求，同时等配置和任务：
@@ -481,6 +503,8 @@ graph LR
     CP -->|"验证结果"| Cache
     TokenAuth -->|"✅ 合法 + 移除 Token 属性"| Next
     TokenAuth -->|"❌ 非法"| Drop
+
+    style TokenAuth fill:#FCE4EC,stroke:#C62828,stroke-width:2px
 ```
 
 ---
