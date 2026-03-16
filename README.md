@@ -390,6 +390,130 @@ sequenceDiagram
 
 ---
 
+### 5.1 🔧 MCP 配置指南
+
+#### Collector 侧配置
+
+在 `config.yaml` 的 `extensions` 中添加 `mcp` 配置段：
+
+```yaml
+extensions:
+  mcp:
+    # MCP Server 监听地址（独立端口，不与 Admin 复用）
+    endpoint: "0.0.0.0:8686"
+
+    # 认证配置
+    auth:
+      type: api_key          # 认证方式: "api_key" | "none"
+      api_keys:              # type 为 api_key 时，至少配一个
+        - "sk-your-secret-key-1"
+        - "sk-another-key-for-team"
+
+    # 依赖的其他 Extension（通常不需要改）
+    controlplane_extension: "controlplane"
+    arthas_tunnel_extension: "arthas_tunnel"
+
+    # 并发与超时
+    max_concurrent_sessions: 10   # 最大并发 AI 会话数
+    tool_timeout: 30              # 单个工具执行超时（秒）
+
+service:
+  extensions:
+    - storage
+    - controlplane
+    - arthas_tunnel
+    - admin
+    - mcp              # ← 加上这个
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `endpoint` | string | `0.0.0.0:8686` | 监听地址，独立端口 |
+| `auth.type` | string | `api_key` | 认证方式，`api_key` 或 `none`（开发环境可关闭） |
+| `auth.api_keys` | []string | - | API Key 列表，`api_key` 模式必填 |
+| `controlplane_extension` | string | `controlplane` | 依赖的 ControlPlane 扩展名 |
+| `arthas_tunnel_extension` | string | `arthas_tunnel` | 依赖的 Arthas Tunnel 扩展名 |
+| `max_concurrent_sessions` | int | `10` | 最大并发 MCP 会话数 |
+| `tool_timeout` | int | `30` | 工具执行超时（秒） |
+
+#### AI 客户端接入
+
+MCP 使用 **Streamable HTTP** 传输（JSON-RPC 2.0 over HTTP），端点为 `http://<host>:8686/mcp`。
+
+认证通过 HTTP Header 传递（二选一）：
+
+```
+Authorization: Bearer sk-your-secret-key-1
+```
+```
+X-API-Key: sk-your-secret-key-1
+```
+
+**Claude Desktop** — 编辑 `claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "otel-collector": {
+      "url": "http://your-collector-host:8686/mcp",
+      "headers": {
+        "Authorization": "Bearer sk-your-secret-key-1"
+      }
+    }
+  }
+}
+```
+
+**Cursor** — 编辑项目根目录下 `.cursor/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "otel-collector": {
+      "url": "http://your-collector-host:8686/mcp",
+      "headers": {
+        "Authorization": "Bearer sk-your-secret-key-1"
+      }
+    }
+  }
+}
+```
+
+**CodeBuddy / 其他 MCP 客户端** — 同理配置 `url` + `headers` 即可。
+
+> 💡 **健康检查**：`GET http://your-collector-host:8686/health` → `{"status":"ok"}`
+
+#### MCP Tools 参数速查
+
+**查询类**（无前提条件）：
+
+| Tool | 参数 | 说明 |
+|------|------|------|
+| `list_agents` | 无 | 列出所有在线 Java Agent |
+| `agent_info` | `agent_id` (**必填**) | 获取指定 Agent 的详细信息（JVM、OS、健康状态等） |
+| `arthas_status` | `agent_id` (**必填**) | 检查 Arthas 连接状态：`not_attached` / `tunnel_registered` |
+
+**生命周期类**（通过 ControlPlane 下发 Task）：
+
+| Tool | 参数 | 说明 |
+|------|------|------|
+| `arthas_attach` | `agent_id` (**必填**), `pid` (可选) | 启动 Arthas 并连接 Tunnel（60s 超时轮询等待） |
+| `arthas_detach` | `agent_id` (**必填**) | 停止 Arthas，释放 JVM 资源（30s 超时） |
+
+**诊断命令类**（前提：Arthas 已 attach 且已连接 Tunnel）：
+
+| Tool | 参数 | 典型用法 |
+|------|------|---------|
+| `arthas_exec` | `agent_id`, `command` | 通用命令，如 `dashboard`、`ognl`、`vmoption` |
+| `arthas_trace` | `agent_id`, `class_name`, `method_name`, `condition`?, `skip_jdk`? | 追踪方法调用链路与耗时，自动附加 `-n 1 --skipJDKMethod true` |
+| `arthas_watch` | `agent_id`, `class_name`, `method_name`, `express`?, `condition`? | 监控入参/返回值/异常，默认 `express='{params, returnObj, throwExp}'`，自动 `-n 1 -x 2` |
+| `arthas_jad` | `agent_id`, `class_name`, `method_name`? | 反编译查看运行时源码 |
+| `arthas_sc` | `agent_id`, `pattern`, `detail`? | 搜索已加载类，支持通配符如 `com.example.Order*` |
+| `arthas_thread` | `agent_id`, `thread_id`?, `top_n`?, `find_deadlock`? | 线程分析，`find_deadlock=true` 时使用 `-b` 检测死锁 |
+| `arthas_stack` | `agent_id`, `class_name`, `method_name`, `condition`? | 查看方法调用栈，自动 `-n 1` |
+
+---
+
 ### 6. 🚪 AgentGateway Receiver — 统一的"大门"
 
 > **角色**：一个 Receiver 扛起三份工作——OTLP 数据收集、控制面 API、Arthas WebSocket。Java Agent 只需要知道一个地址。
