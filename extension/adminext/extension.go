@@ -63,6 +63,9 @@ type Extension struct {
 	// WebSocket token manager for secure WS authentication
 	wsTokenMgr WSTokenManager
 
+	// Observability query proxy client (Jaeger + Prometheus)
+	obsClient *observabilityClient
+
 	// Notification components (from controlplane extension)
 	notificationStore notification.Store
 	artifactNotifier  notification.Notifier
@@ -123,6 +126,15 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 			e.logger.Warn("Failed to initialize Arthas tunnel extension", zap.Error(err))
 			// Don't fail startup, just log warning
 		}
+	}
+
+	// Initialize Observability query client if configured
+	if e.config.Observability.Jaeger.Endpoint != "" || e.config.Observability.Prometheus.Endpoint != "" {
+		e.obsClient = newObservabilityClient(e.logger, e.config.Observability)
+		e.logger.Info("Observability query proxy initialized",
+			zap.String("jaeger_endpoint", e.config.Observability.Jaeger.Endpoint),
+			zap.String("prometheus_endpoint", e.config.Observability.Prometheus.Endpoint),
+		)
 	}
 
 	// Initialize WebSocket token manager based on configuration
