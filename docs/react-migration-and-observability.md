@@ -287,11 +287,266 @@ graph LR
 - `jeager.http.devcloud` 是 OTLP Collector 写入端点（端口 55681），不提供 Query API
 - 已更新 `config/build/config.yaml` 中的 endpoint
 
+---
+
+## 🔄 旧版 WebUI (Alpine.js) → React 完整迁移计划
+
+> 目标：完全废弃旧版 Alpine.js 前端（webui/），将所有页面功能迁移到 React（webui-react/），最终移除 /legacy/ 路由和 iframe 嵌入机制。
+
+### 旧版页面功能盘点
+
+| 页面 | 复杂度 | 代码量 | 核心功能 | 特殊依赖 |
+|------|--------|--------|----------|----------|
+| **Dashboard** | ⭐ 低 | ~73行 HTML | 4个统计卡片 + Quick Actions | 无 |
+| **Applications** | ⭐⭐ 中 | ~72行 HTML + app.js | 表格 CRUD + Token 管理（创建/删除/Token生成/自定义设置） | 模态框×2 |
+| **Services** | ⭐ 低 | ~29行 HTML | 服务卡片列表 + 跳转实例页 | 无 |
+| **Instances** | ⭐⭐⭐⭐ 高 | ~419行 HTML + 295行 instances.js | 左侧树 + 右侧卡片列表 + 抽屉详情 + Arthas 终端 | xterm.js WebSocket 终端 |
+| **Tasks** | ⭐⭐⭐⭐⭐ 最高 | ~909行 HTML + 880行 tasks.js | 三级树 + 任务列表 + 抽屉详情 + 创建表单(SearchableSelect) + 动态表单 | 自定义 SearchableSelect |
+| **Configs** | ⭐⭐⭐ 中高 | ~185行 HTML + app.js | 左侧服务树 + JSON 编辑器 + 模板推荐 + 缺失字段补全 | JSON 编辑/校验 |
+
+### React 已有基础设施（可复用）
+
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| API 客户端 | `api/client.ts` | 已有全部 API 方法（Apps/Instances/Services/Tasks/Config/Arthas/Auth） |
+| 类型定义 | `types/api.ts` | 已有 App/Instance/Service/Task/Config/ArthasAgent 类型 |
+| 认证 | `contexts/AuthContext.tsx` | 登录/登出/API Key 持久化 |
+| Toast | `contexts/ToastContext.tsx` | 全局通知 |
+| 路由 | `App.tsx` | 路由框架已搭好 |
+| 侧边栏 | `layouts/Sidebar.tsx` | 导航菜单已有所有菜单项 |
+
+### 迁移阶段总览
+
+```mermaid
+gantt
+    title 旧版 WebUI → React 迁移甘特图
+    dateFormat YYYY-MM-DD
+    
+    section Phase 4 - 简单页面
+    Dashboard 页面           :done, p4a, 2026-03-17, 1d
+    Services 页面            :done, p4b, 2026-03-17, 1d
+    Applications 页面        :done, p4c, 2026-03-17, 1d
+    
+    section Phase 5 - 通用组件
+    SearchableSelect 组件    :p5a, 2026-03-18, 1d
+    ConfirmDialog 组件       :p5b, 2026-03-18, 0.5d
+    DetailDrawer 组件        :p5c, 2026-03-18, 0.5d
+    TreeNav 组件             :p5d, 2026-03-18, 0.5d
+    
+    section Phase 6 - 配置编辑器
+    ConfigsPage 迁移         :p6a, after p5a, 1.5d
+    
+    section Phase 7 - 实例管理
+    InstancesPage 迁移       :p7a, after p6a, 2d
+    
+    section Phase 8 - 任务管理
+    TasksPage 迁移           :p8a, after p7a, 2.5d
+    
+    section Phase 9 - 终端 + 清理
+    xterm.js React 封装      :p9a, after p8a, 2d
+    Arthas 终端集成          :p9b, after p9a, 1d
+    移除 Legacy 代码          :p9c, after p9b, 1d
+```
+
+### 迁移后架构
+
+```mermaid
+graph TB
+    subgraph "迁移完成后的架构"
+        Browser[浏览器] --> Router[Go 后端路由]
+        Router -->|/ui/*| React[React 前端<br/>唯一前端入口]
+        Router -->|/api/v2/*| API[REST API]
+        
+        subgraph "React 页面（全部原生）"
+            R1[DashboardPage ✅]
+            R2[AppsPage ✅]
+            R3[ServicesPage ✅]
+            R4[InstancesPage ⏳]
+            R5[TasksPage ⏳]
+            R6[ConfigsPage ⏳]
+            R7[TracesPage ✅]
+            R8[MetricsPage ✅]
+            R9[ServiceMapPage ✅]
+        end
+        
+        subgraph "可复用组件"
+            C1[SearchableSelect ⏳]
+            C2[ConfirmDialog ⏳]
+            C3[DetailDrawer ⏳]
+            C4[TreeNav ⏳]
+            C5[TerminalPanel ⏳]
+            C6[JsonEditor ⏳]
+        end
+    end
+    
+    style R1 fill:#22c55e,color:#fff
+    style R2 fill:#22c55e,color:#fff
+    style R3 fill:#22c55e,color:#fff
+    style R7 fill:#22c55e,color:#fff
+    style R8 fill:#22c55e,color:#fff
+    style R9 fill:#22c55e,color:#fff
+```
+
+---
+
+### Phase 4: 简单页面迁移（✅ 已完成 — 2026-03-17）
+
+将 Dashboard、Services、Applications 从 `<LegacyPage>` iframe 嵌入改为 React 原生实现。
+
+| 步骤 | 内容 | 状态 | 产物 |
+|------|------|------|------|
+| 4.1 | **DashboardPage** — 4个统计卡片 + Quick Actions + 30s 自动刷新 | ✅ 完成 | `DashboardPage.tsx` (6.20KB) |
+| 4.2 | **ServicesPage** — 服务卡片网格 + 点击跳转 Instances | ✅ 完成 | `ServicesPage.tsx` (3.95KB) |
+| 4.3 | **AppsPage** — 表格 CRUD + Token 管理（Create Modal + Token Modal） | ✅ 完成 | `AppsPage.tsx` (13.84KB) |
+| 4.4 | 更新 `App.tsx` 路由 — 3个页面从 `<LegacyPage>` 改为原生组件 | ✅ 完成 | — |
+| 4.5 | 编译验证 `go build ./...` | ✅ 通过 | — |
+| 4.6 | 生产部署模式测试（React 打包 + Go 后端） | ✅ 通过 | — |
+
+**当前 App.tsx 路由状态：**
+
+```tsx
+{/* 已迁移页面 - React 原生实现 */}
+<Route path="dashboard" element={<DashboardPage />} />
+<Route path="apps" element={<AppsPage />} />
+<Route path="services" element={<ServicesPage />} />
+
+{/* 旧页面 - 通过 Legacy iframe 嵌入（待迁移） */}
+<Route path="instances" element={<LegacyPage view="instances" />} />
+<Route path="tasks" element={<LegacyPage view="tasks" />} />
+<Route path="configs" element={<LegacyPage view="configs" />} />
+
+{/* 新页面 - React 原生实现 */}
+<Route path="traces" element={<TracesPage />} />
+<Route path="metrics" element={<MetricsPage />} />
+<Route path="service-map" element={<ServiceMapPage />} />
+```
+
+---
+
+### Phase 5: 通用组件开发（⏳ 待实施）
+
+开发后续页面所需的可复用组件。
+
+| 步骤 | 组件 | 说明 | 状态 |
+|------|------|------|------|
+| 5.1 | **SearchableSelect** | 支持分组、键盘导航、搜索高亮、懒加载、自定义输入（Tasks 页面核心依赖） | ⏳ 待开始 |
+| 5.2 | **ConfirmDialog** | 替代 `window.confirm()`，统一确认弹窗样式 | ⏳ 待开始 |
+| 5.3 | **DetailDrawer** | 可复用右侧抽屉（Instances/Tasks 详情） | ⏳ 待开始 |
+| 5.4 | **TreeNav** | 可复用左侧树导航（Instances/Tasks/Configs 都需要） | ⏳ 待开始 |
+
+### Phase 6: 配置编辑器迁移（⏳ 待实施）
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 6.1 | **ConfigsPage** — 左侧服务树(TreeNav) + 右侧 JSON 编辑器 | ⏳ 待开始 |
+| 6.2 | 模板推荐 + 缺失字段检测补全逻辑 | ⏳ 待开始 |
+| 6.3 | 可选优化：升级为 Monaco Editor（语法高亮 + 自动补全） | ⏳ 待开始 |
+
+### Phase 7: 实例管理迁移（⏳ 待实施）
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 7.1 | **InstancesPage** — 左侧 App/Service 树(TreeNav) + 右侧实例卡片列表 | ⏳ 待开始 |
+| 7.2 | 过滤统计 + 搜索 + 状态筛选 | ⏳ 待开始 |
+| 7.3 | 实例详情抽屉(DetailDrawer) — 基本信息/JVM Args/System Properties 等 | ⏳ 待开始 |
+
+### Phase 8: 任务管理迁移（⏳ 待实施）
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 8.1 | **TasksPage 主页** — 三级导航树(TreeNav) + 任务列表 + 状态统计筛选 | ⏳ 待开始 |
+| 8.2 | 任务详情抽屉(DetailDrawer) — 参数/输出/Artifact 下载/时间线 | ⏳ 待开始 |
+| 8.3 | 创建任务模态框 — SearchableSelect 选类型/目标 + 动态表单 | ⏳ 待开始 |
+
+### Phase 9: xterm.js 终端 + 清理收尾（⏳ 待实施）
+
+| 步骤 | 内容 | 状态 |
+|------|------|------|
+| 9.1 | **useTerminal Hook** — 封装 xterm.js 的 React Hook（创建/销毁/resize） | ⏳ 待开始 |
+| 9.2 | **TerminalPanel 组件** — 终端面板 UI（标签页多终端 + VSCode 搜索框） | ⏳ 待开始 |
+| 9.3 | Arthas 集成 — WebSocket 连接管理、Attach/Detach 流程 | ⏳ 待开始 |
+| 9.4 | 移除 `LegacyPage.tsx` — 删除 iframe 嵌入机制 | ⏳ 待开始 |
+| 9.5 | 移除 `webui/` 目录 — 删除 Alpine.js 所有文件 | ⏳ 待开始 |
+| 9.6 | 清理 Go 后端 — `webui.go` 移除 legacyUIFS、`router.go` 移除 `/legacy/*` 路由 | ⏳ 待开始 |
+| 9.7 | 更新 `App.tsx` — 所有页面改为 React 原生，移除 LegacyPage import | ⏳ 待开始 |
+| 9.8 | 全量构建验证 + 功能回归测试 | ⏳ 待开始 |
+
+### 迁移后目标文件结构
+
+```
+webui-react/src/
+├── api/
+│   └── client.ts                   # API 客户端（已有）
+├── components/
+│   ├── TimeSeriesChart.tsx          # ECharts 图表（已有）
+│   ├── TraceDetail.tsx              # Trace 详情（已有）
+│   ├── SearchableSelect.tsx         # 🆕 Phase 5
+│   ├── ConfirmDialog.tsx            # 🆕 Phase 5
+│   ├── DetailDrawer.tsx             # 🆕 Phase 5
+│   ├── TreeNav.tsx                  # 🆕 Phase 5
+│   ├── JsonEditor.tsx               # 🆕 Phase 6
+│   └── Terminal/
+│       ├── TerminalPanel.tsx        # 🆕 Phase 9
+│       └── useTerminal.ts           # 🆕 Phase 9
+├── contexts/
+│   ├── AuthContext.tsx              # 认证（已有）
+│   └── ToastContext.tsx             # 通知（已有）
+├── hooks/
+│   ├── useAutoRefresh.ts            # 🆕 自动刷新
+│   ├── useWebSocket.ts              # 🆕 WebSocket 管理
+│   └── useConfirm.ts                # 🆕 确认弹窗 Hook
+├── layouts/
+│   ├── MainLayout.tsx               # 已有
+│   └── Sidebar.tsx                  # 已有
+├── pages/
+│   ├── DashboardPage.tsx            # ✅ Phase 4
+│   ├── AppsPage.tsx                 # ✅ Phase 4
+│   ├── ServicesPage.tsx             # ✅ Phase 4
+│   ├── ConfigsPage.tsx              # 🆕 Phase 6
+│   ├── InstancesPage.tsx            # 🆕 Phase 7
+│   ├── TasksPage.tsx                # 🆕 Phase 8
+│   ├── TracesPage.tsx               # ✅ Phase 1
+│   ├── MetricsPage.tsx              # ✅ Phase 2
+│   ├── ServiceMapPage.tsx           # ✅ Phase 3
+│   └── LoginPage.tsx                # ✅ Phase 0
+├── types/
+│   ├── api.ts                       # 已有
+│   ├── trace.ts                     # 已有
+│   └── metric.ts                    # 已有
+└── utils/
+    ├── format.ts                    # 🆕 从旧版 utils.js 移植
+    ├── trace.ts                     # 已有
+    └── metric.ts                    # 已有
+```
+
+### 迁移风险与注意事项
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|----------|
+| xterm.js React 集成复杂 | 终端功能可能有 bug | 参考 terminal.js 的 fitAndNotify 逻辑，保留搜索功能 |
+| 任务创建表单逻辑复杂 | 动态表单（instrument/uninstrument/profiling 各有不同参数） | 逐一对照 tasks.js 中的 `buildInstrumentParams()` 等方法 |
+| CDN 依赖消除 | 旧版依赖 CDN（Tailwind/Alpine/xterm/FontAwesome） | React 版全部本地化 |
+| 双前端过渡期 | 迁移期间两套前端共存 | 逐页面迁移，每完成一个页面就更新 App.tsx 路由 |
+
+### 可选优化清单
+
+| 优化项 | 当前问题 | 建议 |
+|--------|----------|------|
+| JSON 编辑器 | textarea 无语法高亮 | 可选 Monaco Editor 或 CodeMirror |
+| 确认弹窗 | `window.confirm()` 原生样式 | React ConfirmDialog 组件 |
+| 表格排序/分页 | 无分页 | 添加前端分页 + 排序 |
+| 数据缓存 | 每次切页重新请求 | React Query 或 SWR 缓存 |
+| 错误边界 | 无错误处理 | React ErrorBoundary 组件 |
+| 响应式 | 部分移动端适配差 | Tailwind 响应式优化 |
+
+---
+
 ## 📝 遗留问题
 
 - [ ] Service Map 依赖数据为空，可能需要部署 Jaeger spark-dependencies job 来生成依赖关系
-- [ ] 旧页面迁移优先级待排序
-- [ ] xterm.js 终端组件的 React 封装方案待确认
+- [x] ~~旧页面迁移优先级待排序~~ → 已制定 Phase 4-9 完整计划
+- [ ] xterm.js 终端组件的 React 封装方案（Phase 9）
 - [ ] 生产构建的资源哈希策略待确认
 - [ ] Service Map 节点右键菜单（跳转 Metrics / Traces 快捷入口）
 - [ ] 自定义 Dashboard 面板保存功能
+- [ ] `index.html` 中 favicon 仍引用 `/vite.svg`，在生产部署时会 404（不影响功能）
