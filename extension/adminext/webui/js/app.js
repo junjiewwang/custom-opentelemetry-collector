@@ -69,6 +69,12 @@ export function adminApp() {
         MAX_TOKEN_LENGTH,
 
         // ============================================================================
+        // State - 嵌入模式 (iframe 嵌入到 React Shell 中)
+        // ============================================================================
+        embeddedMode: false,
+        embeddedView: '',
+
+        // ============================================================================
         // State - 认证
         // ============================================================================
         authenticated: false,
@@ -186,6 +192,60 @@ export function adminApp() {
         // Lifecycle
         // ============================================================================
         async init() {
+            // ================================================================
+            // 嵌入模式检测：当通过 iframe 嵌入 React Shell 时
+            // URL 参数: ?view=<viewName>&apiKey=<key>
+            // ================================================================
+            const urlParams = new URLSearchParams(window.location.search);
+            const embeddedView = urlParams.get('view');
+            const embeddedApiKey = urlParams.get('apiKey');
+
+            if (embeddedView && embeddedApiKey) {
+                console.log('[OTel Admin] Embedded mode detected, view:', embeddedView);
+                this.embeddedMode = true;
+                this.embeddedView = embeddedView;
+                this.currentView = embeddedView;
+
+                // 自动登录（使用 URL 参数中的 apiKey）
+                this.apiKeyInput = embeddedApiKey;
+                await this.login(true);
+
+                // 监听来自 React Shell 的 postMessage 导航事件
+                window.addEventListener('message', (event) => {
+                    if (event.data && event.data.type === 'OTEL_ADMIN_NAVIGATE') {
+                        const { view, apiKey } = event.data;
+                        if (view) {
+                            console.log('[OTel Admin] postMessage navigate to:', view);
+                            this.currentView = view;
+                        }
+                        if (apiKey && apiKey !== this.apiKey) {
+                            this.apiKeyInput = apiKey;
+                            ApiService.setApiKey(apiKey);
+                            this.apiKey = apiKey;
+                        }
+                    }
+                });
+
+                // 嵌入模式下添加 body class，供 CSS 隐藏侧边栏等
+                document.body.classList.add('embedded-mode');
+
+                // 监听视图变化自动加载数据
+                this.$watch('currentView', (view) => this.onViewChange(view));
+
+                // 自动刷新定时器
+                setInterval(() => this.autoRefresh(), AUTO_REFRESH_INTERVAL);
+
+                // 初始加载当前视图数据
+                if (this.authenticated && this.currentView) {
+                    this.onViewChange(this.currentView);
+                }
+                return; // 嵌入模式初始化完毕，跳过后续正常初始化
+            }
+
+            // ================================================================
+            // 正常模式（独立访问 /legacy/）
+            // ================================================================
+
             // 预加载任务模块模板（如果当前是任务视图或即将进入）
             if (this.currentView === 'tasks') {
                 await this.ensureTemplate('tasks');

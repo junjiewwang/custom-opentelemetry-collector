@@ -10,6 +10,16 @@
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <!-- Local Styles -->
     <link rel="stylesheet" href="css/styles.css">
+    <!-- 嵌入模式样式：当页面通过 iframe 嵌入 React Shell 时，隐藏侧边栏和登录页 -->
+    <style>
+        /* 嵌入模式下：隐藏侧边栏，主内容区域占满整个宽度 */
+        body.embedded-mode aside { display: none !important; }
+        body.embedded-mode main.ml-64 { margin-left: 0 !important; }
+        /* 嵌入模式下：隐藏登录页面（由 React Shell 管理认证） */
+        body.embedded-mode > div[x-show="!authenticated"] { display: none !important; }
+        /* 嵌入模式下：减少内边距，因为外层 React Shell 已有边距 */
+        body.embedded-mode main { padding: 1rem !important; }
+    </style>
     <!-- xterm.js Terminal -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.css">
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
@@ -25,9 +35,9 @@
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="adminApp()" x-init="init()">
     <!-- ========================================================================== -->
-    <!-- Login Screen -->
+    <!-- Login Screen (嵌入模式下由 CSS 隐藏) -->
     <!-- ========================================================================== -->
-    <div x-show="!authenticated" x-cloak class="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800">
+    <div x-show="!authenticated && !embeddedMode" x-cloak class="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 slide-in">
             <div class="text-center mb-8">
                 <div class="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -71,8 +81,8 @@
     <!-- Main App (shown after login) -->
     <!-- ========================================================================== -->
     <div x-show="authenticated" x-cloak>
-        <!-- Sidebar -->
-        <aside class="fixed left-0 top-0 h-full w-64 bg-gray-900 text-white shadow-xl z-50">
+        <!-- Sidebar (嵌入模式下由 CSS 隐藏) -->
+        <aside x-show="!embeddedMode" class="fixed left-0 top-0 h-full w-64 bg-gray-900 text-white shadow-xl z-50">
             <div class="p-6 border-b border-gray-700">
                 <h1 class="text-xl font-bold flex items-center gap-2">
                     <i class="fas fa-satellite-dish text-primary-400"></i>
@@ -105,8 +115,8 @@
             </div>
         </aside>
 
-        <!-- Main Content -->
-        <main class="ml-64 p-8">
+        <!-- Main Content (嵌入模式下 ml-64 由 CSS 覆盖为 0) -->
+        <main :class="embeddedMode ? 'p-4' : 'ml-64 p-8'">
             <!-- ================================================================== -->
             <!-- Dashboard View -->
             <!-- ================================================================== -->
