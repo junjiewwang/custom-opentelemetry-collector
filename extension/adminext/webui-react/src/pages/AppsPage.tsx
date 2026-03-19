@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
+import EmptyState from '@/components/EmptyState';
 import type { App } from '@/types/api';
 
 /** Token 最大长度（与后端 MaxTokenLength 保持一致） */
@@ -216,9 +217,21 @@ export default function AppsPage() {
             ))}
             {apps.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
-                  <i className="fas fa-inbox text-4xl mb-3 text-gray-300 block" />
-                  <p>No applications found</p>
+                <td colSpan={5} className="px-6 py-4">
+                  <EmptyState
+                    icon="fas fa-cube"
+                    title="No Applications Found"
+                    description="Create your first application to start managing services."
+                    size="lg"
+                    action={
+                      <button
+                        onClick={() => setShowCreateModal(true)}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm flex items-center gap-2"
+                      >
+                        <i className="fas fa-plus" /> Create App
+                      </button>
+                    }
+                  />
                 </td>
               </tr>
             )}

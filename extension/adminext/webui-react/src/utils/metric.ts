@@ -87,15 +87,15 @@ export function formatYAxisValue(value: number, unit?: string): string {
  * 时间范围预设选项。
  */
 export const TIME_RANGE_PRESETS: TimeRangePreset[] = [
-  { label: 'Last 15 min', value: '15m', seconds: 15 * 60 },
-  { label: 'Last 30 min', value: '30m', seconds: 30 * 60 },
-  { label: 'Last 1 hour', value: '1h', seconds: 3600 },
-  { label: 'Last 3 hours', value: '3h', seconds: 3 * 3600 },
-  { label: 'Last 6 hours', value: '6h', seconds: 6 * 3600 },
-  { label: 'Last 12 hours', value: '12h', seconds: 12 * 3600 },
-  { label: 'Last 24 hours', value: '24h', seconds: 24 * 3600 },
-  { label: 'Last 2 days', value: '2d', seconds: 2 * 86400 },
-  { label: 'Last 7 days', value: '7d', seconds: 7 * 86400 },
+  { label: '15m', value: '15m', seconds: 15 * 60 },
+  { label: '30m', value: '30m', seconds: 30 * 60 },
+  { label: '1h', value: '1h', seconds: 3600 },
+  { label: '3h', value: '3h', seconds: 3 * 3600 },
+  { label: '6h', value: '6h', seconds: 6 * 3600 },
+  { label: '12h', value: '12h', seconds: 12 * 3600 },
+  { label: '24h', value: '24h', seconds: 24 * 3600 },
+  { label: '2d', value: '2d', seconds: 2 * 86400 },
+  { label: '7d', value: '7d', seconds: 7 * 86400 },
 ];
 
 /**

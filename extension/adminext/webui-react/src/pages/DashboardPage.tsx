@@ -13,6 +13,16 @@ import type { DashboardOverview } from '@/types/api';
 /** 自动刷新间隔（毫秒） */
 const AUTO_REFRESH_INTERVAL = 30000;
 
+/** Quick Action 配置 */
+const QUICK_ACTIONS = [
+  { label: 'Applications', icon: 'fas fa-cube', path: '/apps', color: 'bg-blue-600 hover:bg-blue-700 text-white' },
+  { label: 'Instances', icon: 'fas fa-server', path: '/instances', color: 'bg-gray-100 text-gray-700 hover:bg-gray-200' },
+  { label: 'Tasks', icon: 'fas fa-tasks', path: '/tasks', color: 'bg-gray-100 text-gray-700 hover:bg-gray-200' },
+  { label: 'Traces', icon: 'fas fa-route', path: '/traces', color: 'bg-gray-100 text-gray-700 hover:bg-gray-200' },
+  { label: 'Metrics', icon: 'fas fa-chart-line', path: '/metrics', color: 'bg-gray-100 text-gray-700 hover:bg-gray-200' },
+  { label: 'Service Map', icon: 'fas fa-project-diagram', path: '/service-map', color: 'bg-gray-100 text-gray-700 hover:bg-gray-200' },
+];
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { showToast } = useToast();
@@ -51,7 +61,7 @@ export default function DashboardPage() {
       {/* 统计卡片 */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {/* Total Apps */}
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/apps')}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Total Apps</p>
@@ -66,7 +76,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Online Instances */}
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/instances')}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Online Instances</p>
@@ -88,8 +98,8 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Unhealthy */}
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+        {/* Total Services */}
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/services')}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Total Services</p>
@@ -104,7 +114,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Pending Tasks */}
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/tasks')}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Pending Tasks</p>
@@ -124,40 +134,159 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-        <h3 className="text-lg font-semibold text-gray-800 mb-4">Quick Actions</h3>
-        <div className="flex flex-wrap gap-3">
-          <button
-            onClick={() => navigate('/apps')}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2"
-          >
-            <i className="fas fa-cube" /> Applications
-          </button>
-          <button
-            onClick={() => navigate('/instances')}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2"
-          >
-            <i className="fas fa-server" /> Instances
-          </button>
-          <button
-            onClick={() => navigate('/tasks')}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2"
-          >
-            <i className="fas fa-tasks" /> Tasks
-          </button>
-          <button
-            onClick={() => navigate('/traces')}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2"
-          >
-            <i className="fas fa-route" /> Traces
-          </button>
-          <button
-            onClick={() => navigate('/metrics')}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2"
-          >
-            <i className="fas fa-chart-line" /> Metrics
-          </button>
+      {/* 下半部分：Quick Actions + 系统信息 */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Quick Actions — 占 2 列 */}
+        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+            <i className="fas fa-bolt text-yellow-500" />
+            Quick Actions
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {QUICK_ACTIONS.map((action) => (
+              <button
+                key={action.label}
+                onClick={() => navigate(action.path)}
+                className={`px-4 py-3 rounded-lg transition flex items-center gap-2.5 text-sm font-medium ${action.color}`}
+              >
+                <i className={action.icon} />
+                {action.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 系统信息 — 占 1 列 */}
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+            <i className="fas fa-info-circle text-blue-500" />
+            System Info
+          </h3>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">Status</span>
+              <span className="flex items-center gap-1.5 text-green-600 font-medium">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                Healthy
+              </span>
+            </div>
+            <div className="border-t border-gray-100" />
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">Apps</span>
+              <span className="text-gray-700 font-medium">{dashboard?.total_apps ?? 0}</span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">Instances</span>
+              <span className="text-gray-700 font-medium">
+                <span className="text-green-600">{dashboard?.online_instances ?? 0}</span>
+                <span className="text-gray-400 mx-1">/</span>
+                {dashboard?.total_instances ?? 0}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">Services</span>
+              <span className="text-gray-700 font-medium">{dashboard?.total_services ?? 0}</span>
+            </div>
+            <div className="border-t border-gray-100" />
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">Auto Refresh</span>
+              <span className="text-gray-700 font-medium">30s</span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">Version</span>
+              <span className="text-gray-400 font-mono text-xs">v1.0.0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 健康度概览 */}
+      <div className="mt-6 bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+        <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+          <i className="fas fa-heartbeat text-red-500" />
+          Health Overview
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Instance 健康度 */}
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-gray-700">Instance Health</span>
+              <span className="text-sm font-bold text-green-600">
+                {dashboard?.total_instances
+                  ? Math.round(((dashboard?.online_instances ?? 0) / dashboard.total_instances) * 100)
+                  : 0}%
+              </span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-2">
+              <div
+                className="bg-green-500 h-2 rounded-full transition-all duration-500"
+                style={{
+                  width: `${
+                    dashboard?.total_instances
+                      ? Math.round(((dashboard?.online_instances ?? 0) / dashboard.total_instances) * 100)
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+            <p className="text-xs text-gray-500 mt-1.5">
+              {dashboard?.online_instances ?? 0} online / {dashboard?.total_instances ?? 0} total
+            </p>
+          </div>
+
+          {/* Task 成功率 */}
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-gray-700">Task Queue</span>
+              <span className="text-sm font-bold text-yellow-600">
+                {dashboard?.pending_tasks ?? 0} pending
+              </span>
+            </div>
+            <div className="flex gap-2 mt-1">
+              {(dashboard?.running_tasks ?? 0) > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                  <i className="fas fa-spinner fa-spin text-[10px]" />
+                  {dashboard?.running_tasks} running
+                </span>
+              )}
+              {(dashboard?.pending_tasks ?? 0) > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded text-xs font-medium">
+                  <i className="fas fa-clock text-[10px]" />
+                  {dashboard?.pending_tasks} pending
+                </span>
+              )}
+              {(dashboard?.pending_tasks ?? 0) === 0 && (dashboard?.running_tasks ?? 0) === 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
+                  <i className="fas fa-check text-[10px]" />
+                  All clear
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Observability 状态 */}
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-gray-700">Observability</span>
+            </div>
+            <div className="space-y-1.5">
+              <button onClick={() => navigate('/traces')} className="w-full flex items-center gap-2 text-xs text-gray-600 hover:text-primary-600 transition-colors">
+                <i className="fas fa-route w-4 text-center" />
+                <span>Traces — Distributed Tracing</span>
+                <i className="fas fa-chevron-right text-[10px] ml-auto text-gray-400" />
+              </button>
+              <button onClick={() => navigate('/metrics')} className="w-full flex items-center gap-2 text-xs text-gray-600 hover:text-primary-600 transition-colors">
+                <i className="fas fa-chart-line w-4 text-center" />
+                <span>Metrics — RED Dashboard</span>
+                <i className="fas fa-chevron-right text-[10px] ml-auto text-gray-400" />
+              </button>
+              <button onClick={() => navigate('/service-map')} className="w-full flex items-center gap-2 text-xs text-gray-600 hover:text-primary-600 transition-colors">
+                <i className="fas fa-project-diagram w-4 text-center" />
+                <span>Service Map — Topology</span>
+                <i className="fas fa-chevron-right text-[10px] ml-auto text-gray-400" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

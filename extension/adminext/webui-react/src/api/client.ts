@@ -11,7 +11,7 @@ import type {
   Instance,
   InstanceStats,
   Service,
-  Task,
+  TaskInfoV2,
   CreateTaskRequest,
   AgentConfig,
   ArthasAgent,
@@ -85,7 +85,18 @@ class ApiClient {
   // ========================================================================
 
   getDashboard(): Promise<DashboardOverview> {
-    return this.request<DashboardOverview>('GET', '/dashboard/overview');
+    // 后端返回嵌套结构 { apps: { total }, instances: { total, online, offline, unhealthy }, tasks: { pending } }
+    // 前端需要扁平结构 DashboardOverview，在此做映射
+    return this.request<Record<string, Record<string, number>>>('GET', '/dashboard/overview')
+      .then(res => ({
+        total_apps: res.apps?.total ?? 0,
+        total_instances: res.instances?.total ?? 0,
+        online_instances: res.instances?.online ?? 0,
+        total_services: 0, // 后端 overview 未直接提供服务计数
+        total_tasks: 0,
+        pending_tasks: res.tasks?.pending ?? 0,
+        running_tasks: res.tasks?.running ?? 0,
+      }));
   }
 
   // ========================================================================
@@ -93,7 +104,8 @@ class ApiClient {
   // ========================================================================
 
   getApps(): Promise<App[]> {
-    return this.request<App[]>('GET', '/apps');
+    return this.request<{ apps: App[]; total: number }>('GET', '/apps')
+      .then(res => res.apps || []);
   }
 
   createApp(data: CreateAppRequest): Promise<App> {
@@ -117,7 +129,8 @@ class ApiClient {
   // ========================================================================
 
   getInstances(status: string = ''): Promise<Instance[]> {
-    return this.request<Instance[]>('GET', `/instances?status=${status}`);
+    return this.request<{ instances: Instance[]; total: number }>('GET', `/instances?status=${status}`)
+      .then(res => res.instances || []);
   }
 
   getInstanceStats(): Promise<InstanceStats> {
@@ -140,16 +153,17 @@ class ApiClient {
   // Tasks
   // ========================================================================
 
-  getTasks(): Promise<Task[]> {
-    return this.request<Task[]>('GET', '/tasks');
+  getTasks(): Promise<TaskInfoV2[]> {
+    return this.request<{ tasks: TaskInfoV2[]; total?: number }>('GET', '/tasks')
+      .then(res => res.tasks || []);
   }
 
-  getTask(id: string): Promise<Task> {
-    return this.request<Task>('GET', `/tasks/${id}`);
+  getTask(id: string): Promise<TaskInfoV2> {
+    return this.request<TaskInfoV2>('GET', `/tasks/${id}`);
   }
 
-  createTask(data: CreateTaskRequest): Promise<Task> {
-    return this.request<Task>('POST', '/tasks', data);
+  createTask(data: CreateTaskRequest): Promise<unknown> {
+    return this.request<unknown>('POST', '/tasks', data);
   }
 
   cancelTask(id: string): Promise<void> {
@@ -162,6 +176,30 @@ class ApiClient {
 
   getArthasAgents(): Promise<ArthasAgent[]> {
     return this.request<ArthasAgent[]>('GET', '/arthas/agents');
+  }
+
+  /**
+   * Attach Arthas 到指定实例（创建 arthas_attach 任务）
+   */
+  attachArthas(agentId: string): Promise<unknown> {
+    return this.createTask({
+      task_type_name: 'arthas_attach',
+      target_agent_id: agentId,
+      parameters_json: { action: 'attach' },
+      timeout_millis: 60000,
+    } as CreateTaskRequest);
+  }
+
+  /**
+   * Detach Arthas 从指定实例（创建 arthas_detach 任务）
+   */
+  detachArthas(agentId: string): Promise<unknown> {
+    return this.createTask({
+      task_type_name: 'arthas_detach',
+      target_agent_id: agentId,
+      parameters_json: { action: 'detach' },
+      timeout_millis: 60000,
+    } as CreateTaskRequest);
   }
 
   // ========================================================================

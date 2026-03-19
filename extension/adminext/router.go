@@ -43,10 +43,10 @@ func (e *Extension) newRouter() http.Handler {
 	}
 
 	// ============================================================================
-	// WebUI - React 新版前端 (/ui/) + Alpine.js 旧版前端 (/legacy/)
+	// WebUI - React 前端 (/ui/) — 唯一前端入口
 	// ============================================================================
 
-	// React 前端 (新版) - 挂载在 /ui/
+	// React 前端 - 挂载在 /ui/
 	reactUI, reactErr := newReactUIHandler()
 	if reactErr == nil {
 		serveReactIndex := func(w http.ResponseWriter, req *http.Request) {
@@ -67,24 +67,12 @@ func (e *Extension) newRouter() http.Handler {
 			req.URL.Path = stripped
 			reactUI.ServeHTTP(w, req)
 		})
-	}
-
-	// Legacy 前端 (旧版 Alpine.js) - 挂载在 /legacy/
-	legacyUI, legacyErr := newLegacyUIHandler()
-	if legacyErr == nil {
-		serveLegacyIndex := func(w http.ResponseWriter, req *http.Request) {
-			req.URL.Path = "/index.html"
-			legacyUI.ServeHTTP(w, req)
-		}
+		// Legacy redirect: /legacy/* → /ui/
 		r.Get("/legacy", func(w http.ResponseWriter, req *http.Request) {
-			http.Redirect(w, req, "/legacy/", http.StatusMovedPermanently)
+			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
 		})
-		r.Get("/legacy/", serveLegacyIndex)
 		r.Get("/legacy/*", func(w http.ResponseWriter, req *http.Request) {
-			// Strip /legacy prefix for file serving
-			stripped := strings.TrimPrefix(req.URL.Path, "/legacy")
-			req.URL.Path = stripped
-			legacyUI.ServeHTTP(w, req)
+			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
 		})
 	}
 

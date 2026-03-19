@@ -12,36 +12,20 @@ import (
 )
 
 // ============================================================================
-// React 前端（新版，挂载在 /ui/）
+// React 前端（唯一前端，挂载在 /ui/）
 // ============================================================================
 
 //go:embed webui-react/dist/*
 var reactUIFS embed.FS
 
-// ============================================================================
-// Alpine.js 前端（旧版，挂载在 /legacy/）
-// ============================================================================
-
-//go:embed webui/*
-var legacyUIFS embed.FS
-
-// webUIHandler serves the embedded WebUI files (supports both React and Legacy).
+// webUIHandler serves the embedded WebUI files.
 type webUIHandler struct {
 	fsys fs.FS
 }
 
-// newReactUIHandler creates a handler for the new React frontend.
+// newReactUIHandler creates a handler for the React frontend.
 func newReactUIHandler() (*webUIHandler, error) {
 	subFS, err := fs.Sub(reactUIFS, "webui-react/dist")
-	if err != nil {
-		return nil, err
-	}
-	return &webUIHandler{fsys: subFS}, nil
-}
-
-// newLegacyUIHandler creates a handler for the legacy Alpine.js frontend.
-func newLegacyUIHandler() (*webUIHandler, error) {
-	subFS, err := fs.Sub(legacyUIFS, "webui")
 	if err != nil {
 		return nil, err
 	}

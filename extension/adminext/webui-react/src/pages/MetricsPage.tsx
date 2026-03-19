@@ -287,17 +287,20 @@ export default function MetricsPage() {
           </div>
 
           {/* Time Range Selector (共用) */}
-          <div className="flex items-center gap-2 mb-6">
-            <span className="text-sm text-gray-500">Time Range:</span>
-            <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex items-center gap-3 mb-6">
+            <span className="text-sm text-gray-500 flex-shrink-0">
+              <i className="fas fa-clock mr-1" />
+              Range:
+            </span>
+            <div className="flex items-center gap-1">
               {TIME_RANGE_PRESETS.map(preset => (
                 <button
                   key={preset.value}
                   onClick={() => setTimeRange(preset.value)}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition ${
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition whitespace-nowrap ${
                     timeRange === preset.value
-                      ? 'bg-primary-100 text-primary-700'
-                      : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      ? 'bg-primary-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700'
                   }`}
                 >
                   {preset.label}

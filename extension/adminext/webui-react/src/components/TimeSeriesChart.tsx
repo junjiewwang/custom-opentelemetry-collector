@@ -23,6 +23,7 @@ import {
   DataZoomComponent,
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
+import EmptyState from '@/components/EmptyState';
 import type { ChartSeries } from '@/types/metric';
 import { formatYAxisValue, CHART_COLORS } from '@/utils/metric';
 
@@ -158,22 +159,26 @@ export default function TimeSeriesChart({
 
   if (loading) {
     return (
-      <div style={{ height }} className="flex items-center justify-center bg-gray-50 rounded-lg">
-        <div className="flex items-center gap-2 text-gray-400">
-          <i className="fas fa-spinner fa-spin" />
-          <span className="text-sm">加载中...</span>
-        </div>
+      <div style={{ height }} className="bg-gray-50 rounded-lg">
+        <EmptyState
+          icon="fas fa-spinner fa-spin"
+          iconColor="text-blue-300"
+          iconBg="bg-blue-50"
+          title="Loading..."
+          size="sm"
+        />
       </div>
     );
   }
 
   if (series.length === 0) {
     return (
-      <div style={{ height }} className="flex items-center justify-center bg-gray-50 rounded-lg">
-        <div className="text-center text-gray-400">
-          <i className="fas fa-chart-line text-2xl mb-2" />
-          <p className="text-sm">No data</p>
-        </div>
+      <div style={{ height }} className="bg-gray-50 rounded-lg">
+        <EmptyState
+          icon="fas fa-chart-line"
+          title="No data"
+          size="sm"
+        />
       </div>
     );
   }

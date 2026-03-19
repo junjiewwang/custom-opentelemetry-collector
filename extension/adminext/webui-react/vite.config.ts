@@ -27,6 +27,7 @@ export default defineConfig({
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
           'vendor-echarts': ['echarts', 'echarts-for-react'],
+          'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-search', '@xterm/addon-web-links'],
         },
       },
     },
@@ -45,11 +46,6 @@ export default defineConfig({
       '/api/v2/arthas/ws': {
         target: 'ws://localhost:8088',
         ws: true,
-      },
-      // 代理旧前端（Legacy）
-      '/legacy': {
-        target: 'http://localhost:8088',
-        changeOrigin: true,
       },
     },
   },

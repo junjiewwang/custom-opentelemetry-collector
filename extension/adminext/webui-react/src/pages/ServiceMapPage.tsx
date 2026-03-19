@@ -19,6 +19,7 @@ import {
   LegendComponent,
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
+import EmptyState from '@/components/EmptyState';
 import { apiClient } from '@/api/client';
 import type { JaegerDependencyLink } from '@/types/trace';
 import { getServiceColor } from '@/utils/trace';
@@ -216,7 +217,7 @@ export default function ServiceMapPage() {
           Service Map
         </h2>
         <p className="text-gray-500 mt-1">
-          基于 Trace 数据的服务依赖拓扑图
+          Service dependency topology based on Trace data
         </p>
       </div>
 
@@ -269,31 +270,42 @@ export default function ServiceMapPage() {
 
       {/* Graph Chart */}
       {loading && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-          <i className="fas fa-spinner fa-spin text-primary-400 text-2xl mb-4" />
-          <p className="text-gray-500">Loading service dependencies...</p>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+          <EmptyState
+            icon="fas fa-spinner fa-spin"
+            iconColor="text-blue-300"
+            iconBg="bg-blue-50"
+            title="Loading service dependencies..."
+            size="lg"
+          />
         </div>
       )}
 
       {!loading && available === false && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-          <div className="w-16 h-16 bg-yellow-50 rounded-full flex items-center justify-center mx-auto mb-4">
-            <i className="fas fa-exclamation-triangle text-yellow-500 text-xl" />
-          </div>
-          <h3 className="text-lg font-semibold text-gray-700 mb-2">Jaeger Backend Not Available</h3>
-          <p className="text-gray-500 text-sm max-w-md mx-auto">
-            请在 Collector 配置中设置 <code className="bg-gray-100 px-1 rounded">admin.observability.jaeger.endpoint</code> 以启用 Service Map 功能。
-          </p>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+          <EmptyState
+            icon="fas fa-exclamation-triangle"
+            iconColor="text-yellow-500"
+            iconBg="bg-yellow-50"
+            title="Jaeger Backend Not Available"
+            description={
+              <span>
+                Please configure <code className="bg-gray-100 px-1 rounded">admin.observability.jaeger.endpoint</code> in Collector settings to enable Service Map.
+              </span>
+            }
+            size="lg"
+          />
         </div>
       )}
 
       {!loading && available && dependencies.length === 0 && error && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
-          <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4">
-            <i className="fas fa-project-diagram text-gray-300 text-xl" />
-          </div>
-          <h3 className="text-lg font-semibold text-gray-600 mb-2">No Dependencies Found</h3>
-          <p className="text-gray-400 text-sm max-w-md mx-auto">{error}</p>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+          <EmptyState
+            icon="fas fa-project-diagram"
+            title="No Dependencies Found"
+            description={error}
+            size="lg"
+          />
         </div>
       )}
 

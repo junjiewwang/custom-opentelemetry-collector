@@ -48,18 +48,41 @@ export interface CreateAppRequest {
 // Instance (Agent)
 // ============================================================================
 
+/** Agent 状态（来自后端 AgentStatus） */
+export interface AgentStatus {
+  state: 'online' | 'offline' | 'unhealthy';
+  state_changed_at?: number;
+  health?: Record<string, unknown>;
+  current_task?: string;
+  config_version?: string;
+  metrics?: Record<string, unknown>;
+}
+
+/** 后端返回的 AgentInfo 结构 */
 export interface Instance {
   agent_id: string;
+  app_id: string;
   app_name: string;
   service_name: string;
   hostname: string;
   ip: string;
+  version: string;
   pid: number;
-  status: 'online' | 'offline';
-  last_heartbeat: string;
-  registered_at: string;
-  metadata: Record<string, string>;
-  arthas_tunnel_connected?: boolean;
+  start_time: number;           // Unix 毫秒时间戳
+  labels: Record<string, string>;
+  status: AgentStatus | null;
+  registered_at: number;         // Unix 毫秒时间戳
+  last_heartbeat: number;        // Unix 毫秒时间戳
+}
+
+/** 前端合并后的实例（包含 Arthas 状态） */
+export interface EnrichedInstance extends Instance {
+  arthasStatus: {
+    state: 'running' | 'stopped';
+    arthasVersion: string;
+    tunnelReady: boolean;
+    tunnelAgentId: string;
+  };
 }
 
 export interface InstanceStats {
@@ -85,27 +108,105 @@ export interface Service {
 // Task
 // ============================================================================
 
-export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'TIMEOUT' | 'CANCELLED';
+export type TaskStatus = 'unknown' | 'pending' | 'running' | 'success' | 'failed' | 'timeout' | 'cancelled';
 
+/** 后端 /api/v2/tasks 返回的 TaskInfoV2 结构 */
+export interface TaskInfoV2 {
+  task_id: string;
+  task?: {
+    task_id?: string;
+    task_type_name?: string;
+    task_type?: string;
+    target_agent_id?: string;
+    parameters_json?: Record<string, unknown> | string;
+    timeout_millis?: number;
+    priority_num?: number;
+    priority?: number;
+    created_at_millis?: number;
+  };
+  status: number;  // 0=unknown, 1=pending, 2=running, 3=success, 4=failed, 5=timeout, 6=cancelled, 7=failed
+  result?: TaskResultRaw | null;
+  agent_id?: string;
+  app_id?: string;
+  app_name?: string;
+  service_name?: string;
+  agent_state?: string;
+  task_type_name?: string;
+  task_type?: string;
+  target_agent_id?: string;
+  created_at_millis?: number;
+}
+
+/** 后端 TaskResult 原始结构 */
+export interface TaskResultRaw {
+  status?: number;
+  error_code?: string;
+  error_message?: string;
+  started_at_millis?: number;
+  completed_at_millis?: number;
+  execution_time_millis?: number;
+  result_json?: unknown;
+  result_data?: string;  // base64
+  result_data_type?: string;
+  compression?: string;
+  original_size?: number;
+  compressed_size?: number;
+  artifact_ref?: string;
+  artifact_size?: number;
+}
+
+/** 前端标准化后的 Task（在 loadTasks 中加工） */
 export interface Task {
-  id: string;
-  type: string;
+  task_id: string;
+  task_type: string;
   target_agent_id: string;
+  app_id: string;
   app_name: string;
   service_name: string;
+  agent_state: string;
   status: TaskStatus;
-  params: Record<string, unknown>;
-  result: Record<string, unknown> | null;
+  created_at_millis: number;
+  priority: number;
+  timeout_millis: number;
+  parameters: Record<string, unknown>;
+  _raw: TaskInfoV2;
+  _result: NormalizedTaskResult | null;
+  _detailLoading: boolean;
+  _detailError: string;
+}
+
+/** 标准化后的任务结果 */
+export interface NormalizedTaskResult {
+  status?: number;
+  error_code: string;
   error_message: string;
-  created_at: string;
-  updated_at: string;
-  completed_at: string | null;
+  started_at_millis: number;
+  completed_at_millis: number;
+  execution_time_millis: number;
+  has_execution_info: boolean;
+  result_json_obj: unknown;
+  result_json_pretty: string;
+  result_summary: { key: string; valueText: string }[];
+  result_data_base64: string;
+  result_data_text: string;
+  result_data_type: string;
+  artifact_ref: string;
+  artifact_size: number;
+  // 性能分析字段（async-profiler）
+  analysis_view_url: string;
+  analysis_status: string;
+  analysis_error: string;
+  analysis_mode: string;
+  analysis_summary: Record<string, unknown> | null;
+  _raw: TaskResultRaw;
 }
 
 export interface CreateTaskRequest {
-  type: string;
-  target_agent_ids: string[];
-  params?: Record<string, unknown>;
+  task_type_name: string;
+  target_agent_id?: string;
+  timeout_millis?: number;
+  priority_num?: number;
+  parameters_json?: Record<string, unknown>;
 }
 
 // ============================================================================

@@ -5,15 +5,19 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { ToastProvider } from '@/contexts/ToastContext';
+import { ConfirmProvider } from '@/components/ConfirmDialog';
+import { SidebarProvider } from '@/contexts/SidebarContext';
 import MainLayout from '@/layouts/MainLayout';
 import LoginPage from '@/pages/LoginPage';
-import LegacyPage from '@/pages/LegacyPage';
 import DashboardPage from '@/pages/DashboardPage';
 import AppsPage from '@/pages/AppsPage';
 import ServicesPage from '@/pages/ServicesPage';
 import TracesPage from '@/pages/TracesPage';
 import MetricsPage from '@/pages/MetricsPage';
 import ServiceMapPage from '@/pages/ServiceMapPage';
+import ConfigsPage from '@/pages/ConfigsPage';
+import InstancesPage from '@/pages/InstancesPage';
+import TasksPage from '@/pages/TasksPage';
 
 /**
  * 受保护路由 - 未认证时重定向到登录页
@@ -35,11 +39,9 @@ function ProtectedRoutes() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="apps" element={<AppsPage />} />
         <Route path="services" element={<ServicesPage />} />
-
-        {/* 旧页面 - 通过 Legacy iframe 嵌入（待迁移） */}
-        <Route path="instances" element={<LegacyPage view="instances" />} />
-        <Route path="tasks" element={<LegacyPage view="tasks" />} />
-        <Route path="configs" element={<LegacyPage view="configs" />} />
+        <Route path="instances" element={<InstancesPage />} />
+        <Route path="tasks" element={<TasksPage />} />
+        <Route path="configs" element={<ConfigsPage />} />
 
         {/* 新页面 - React 原生实现 */}
         <Route path="traces" element={<TracesPage />} />
@@ -58,7 +60,11 @@ export default function App() {
     <BrowserRouter basename="/ui">
       <AuthProvider>
         <ToastProvider>
-          <ProtectedRoutes />
+          <ConfirmProvider>
+            <SidebarProvider>
+              <ProtectedRoutes />
+            </SidebarProvider>
+          </ConfirmProvider>
         </ToastProvider>
       </AuthProvider>
     </BrowserRouter>

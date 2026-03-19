@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
+import EmptyState from '@/components/EmptyState';
 import type { Service } from '@/types/api';
 
 export default function ServicesPage() {
@@ -89,16 +90,25 @@ export default function ServicesPage() {
         ))}
 
         {services.length === 0 && !loading && (
-          <div className="col-span-full text-center py-12 text-gray-500">
-            <i className="fas fa-sitemap text-4xl mb-3 text-gray-300 block" />
-            <p>No services found</p>
+          <div className="col-span-full">
+            <EmptyState
+              icon="fas fa-sitemap"
+              title="No Services Found"
+              description="Services will appear here once instances start reporting."
+              size="lg"
+            />
           </div>
         )}
 
         {loading && services.length === 0 && (
-          <div className="col-span-full text-center py-12 text-gray-400">
-            <i className="fas fa-spinner fa-spin text-3xl mb-3 block" />
-            <p>Loading services...</p>
+          <div className="col-span-full">
+            <EmptyState
+              icon="fas fa-spinner fa-spin"
+              iconColor="text-blue-300"
+              iconBg="bg-blue-50"
+              title="Loading Services..."
+              size="md"
+            />
           </div>
         )}
       </div>

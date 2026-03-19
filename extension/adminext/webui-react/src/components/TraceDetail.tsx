@@ -73,7 +73,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
                   }
                 }}
                 className="px-3 py-1.5 text-xs bg-primary-50 text-primary-700 hover:bg-primary-100 rounded-lg transition flex items-center gap-1.5"
-                title="查看该 Service 的 RED 指标"
+                title="View RED metrics for this Service"
               >
                 <i className="fas fa-chart-line" />
                 View Metrics
@@ -88,7 +88,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
                 }
               }}
               className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-lg transition flex items-center gap-1.5"
-              title="搜索该 Service 的更多 Trace"
+              title="Search more Traces for this Service"
             >
               <i className="fas fa-search" />
               More Traces
