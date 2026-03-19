@@ -27,6 +27,10 @@ import (
 	// Contrib receivers
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver"
 
+	// Contrib processors
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/attributesprocessor"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor"
+
 	// Contrib connectors
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector"
 
@@ -88,6 +92,9 @@ func components() (otelcol.Factories, error) {
 	factories.Processors, err = processor.MakeFactoryMap(
 		batchprocessor.NewFactory(),
 		memorylimiterprocessor.NewFactory(),
+		// Contrib processors
+		attributesprocessor.NewFactory(),
+		resourceprocessor.NewFactory(),
 		// Custom token auth processor
 		tokenauthprocessor.NewFactory(),
 	)
