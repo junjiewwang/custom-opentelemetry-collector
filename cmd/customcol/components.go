@@ -42,6 +42,10 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/processor/tokenauthprocessor"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver"
+	"go.opentelemetry.io/collector/custom/receiver/testdatagenreceiver"
+
+	// 触发 scenarios 子包的 init() 注册
+	_ "go.opentelemetry.io/collector/custom/receiver/testdatagenreceiver/scenarios"
 )
 
 func components() (otelcol.Factories, error) {
@@ -71,6 +75,8 @@ func components() (otelcol.Factories, error) {
 		jaegerreceiver.NewFactory(),
 		// Custom agent gateway receiver (unified OTLP + ControlPlane + Arthas)
 		agentgatewayreceiver.NewFactory(),
+		// Custom test data generator receiver
+		testdatagenreceiver.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

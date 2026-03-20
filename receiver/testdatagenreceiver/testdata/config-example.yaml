@@ -1,0 +1,192 @@
+# TestDataGen Receiver 完整配置示例
+# 演示多后端鉴权 + 全部场景配置
+
+# ============================================================
+# Receivers
+# ============================================================
+receivers:
+  # TestDataGen Receiver - 生成测试数据
+  testdatagen:
+    interval: 10s
+    scenarios:
+      # ============ 基础场景 ============
+      - name: "basic_trace"
+        enabled: true
+        config:
+          service_name: "test-service"
+          span_count: 5
+
+      - name: "error_trace"
+        enabled: true
+        config:
+          service_name: "error-test-service"
+          span_count: 3
+          error_rate: 0.5
+
+      - name: "multi_service_trace"
+        enabled: true
+        config:
+          service_count: 3
+          depth: 3
+
+      - name: "basic_metric"
+        enabled: true
+        config:
+          service_name: "metric-test-service"
+          metric_count: 5
+          data_point_count: 3
+
+      # ============ 消息队列场景 ============
+      - name: "kafka_messaging"
+        enabled: true
+        config:
+          service_name: "order-service"
+          destination: "order-events"
+          consumer_group: "order-processor-group"
+          partition_count: 6
+          span_count: 5
+          error_rate: 0.1
+
+      - name: "rocketmq_messaging"
+        enabled: true
+        config:
+          service_name: "payment-service"
+          destination: "payment-topic"
+          client_group: "payment-consumer-group"
+          message_type: "transaction"
+          tag: "pay-success"
+          span_count: 3
+
+      - name: "rabbitmq_messaging"
+        enabled: false
+        config:
+          service_name: "notification-service"
+          destination: "notification-queue"
+          exchange: "notification-exchange"
+          routing_key: "email.send"
+
+      # ============ 数据库场景 ============
+      - name: "mysql_database"
+        enabled: true
+        config:
+          service_name: "user-service"
+          db_name: "user_db"
+          peer_name: "mysql-master.internal"
+          peer_port: 3306
+          table: "users"
+          span_count: 10
+          error_rate: 0.05
+
+      - name: "redis_database"
+        enabled: true
+        config:
+          service_name: "cache-service"
+          peer_name: "redis-cluster.internal"
+          peer_port: 6379
+          database_index: 0
+          span_count: 20
+          error_rate: 0.02
+
+      - name: "mongodb_database"
+        enabled: true
+        config:
+          service_name: "product-service"
+          db_name: "product_db"
+          peer_name: "mongo-rs.internal"
+          peer_port: 27017
+          collection: "products"
+          span_count: 8
+          error_rate: 0.03
+
+# ============================================================
+# Exporters - 多后端鉴权示例
+# ============================================================
+exporters:
+  # 后端 A：通过 OTLP gRPC 上报，使用 Bearer Token 鉴权
+  otlp/backend-a:
+    endpoint: ap-beijing.apm.example.com:4317
+    headers:
+      authorization: "Bearer YOUR_TOKEN_A"
+    tls:
+      insecure: true
+
+  # 后端 B：通过 OTLP HTTP 上报，使用自定义 Header 鉴权
+  otlphttp/backend-b:
+    endpoint: http://ap-guangzhou.apm.example.com:80/otlp
+    headers:
+      authorization: "Bearer YOUR_TOKEN_B"
+      "Content-Type": "application/json"
+    tls:
+      insecure: true
+    encoding: json
+
+  # Debug exporter 用于本地调试
+  debug:
+    verbosity: detailed
+
+# ============================================================
+# Processors
+# ============================================================
+processors:
+  batch: {}
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # 为后端 A 注入 token
+  resource/backend-a:
+    attributes:
+      - action: upsert
+        key: token
+        value: YOUR_TOKEN_A
+
+  # 为后端 B 注入 token
+  resource/backend-b:
+    attributes:
+      - action: upsert
+        key: token
+        value: YOUR_TOKEN_B
+
+# ============================================================
+# Service - 多 Pipeline 路由
+# ============================================================
+service:
+  pipelines:
+    # Traces → 后端 A
+    traces/backend-a:
+      receivers:
+        - testdatagen
+      processors:
+        - memory_limiter
+        - batch
+        - resource/backend-a
+      exporters:
+        - otlp/backend-a
+        - debug
+
+    # Traces → 后端 B
+    traces/backend-b:
+      receivers:
+        - testdatagen
+      processors:
+        - memory_limiter
+        - batch
+        - resource/backend-b
+      exporters:
+        - otlphttp/backend-b
+
+    # Metrics → 后端 A
+    metrics/backend-a:
+      receivers:
+        - testdatagen
+      processors:
+        - memory_limiter
+        - batch
+      exporters:
+        - otlp/backend-a
+        - debug
+
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
