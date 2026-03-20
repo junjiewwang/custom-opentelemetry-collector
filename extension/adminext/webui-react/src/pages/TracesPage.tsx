@@ -7,13 +7,37 @@
  * - 点击展开 Trace Detail 时间轴
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import ReactECharts from 'echarts-for-react';
 import { apiClient } from '@/api/client';
 import { traceToListItem, formatDuration, formatTimestamp, getServiceColor } from '@/utils/trace';
 import type { JaegerTrace, TraceListItem, TraceSearchParams } from '@/types/trace';
 import TraceDetail from '@/components/TraceDetail';
+import Modal from '@/components/Modal';
 import EmptyState from '@/components/EmptyState';
+
+// ============================================================================
+// 排序选项
+// ============================================================================
+
+type SortOrder = 'most-recent' | 'longest' | 'shortest' | 'most-spans' | 'least-spans';
+
+const SORT_OPTIONS: { value: SortOrder; label: string }[] = [
+  { value: 'most-recent', label: 'Most Recent' },
+  { value: 'longest', label: 'Longest First' },
+  { value: 'shortest', label: 'Shortest First' },
+  { value: 'most-spans', label: 'Most Spans' },
+  { value: 'least-spans', label: 'Least Spans' },
+];
+
+const SORT_COMPARATORS: Record<SortOrder, (a: TraceListItem, b: TraceListItem) => number> = {
+  'most-recent': (a, b) => b.startTime - a.startTime,
+  'longest': (a, b) => b.duration - a.duration,
+  'shortest': (a, b) => a.duration - b.duration,
+  'most-spans': (a, b) => b.spanCount - a.spanCount,
+  'least-spans': (a, b) => a.spanCount - b.spanCount,
+};
 
 export default function TracesPage() {
   // ========================================================================
@@ -51,6 +75,9 @@ export default function TracesPage() {
 
   // 详情
   const [selectedTraceID, setSelectedTraceID] = useState<string | null>(null);
+
+  // 排序
+  const [sortOrder, setSortOrder] = useState<SortOrder>('most-recent');
 
   // ========================================================================
   // 加载 Service 列表
@@ -205,6 +232,104 @@ export default function TracesPage() {
   }, [selectedService, selectedOperation, tagsInput, lookback, minDuration, maxDuration, limit]);
 
   // ========================================================================
+  // 排序后的 traces（根据 sortOrder 动态排序）
+  // ========================================================================
+
+  const sortedTraces = useMemo(
+    () => [...traces].sort(SORT_COMPARATORS[sortOrder]),
+    [traces, sortOrder],
+  );
+
+  // ========================================================================
+  // 散点图 ECharts 配置
+  // ========================================================================
+
+  const scatterOption = useMemo(() => {
+    if (traces.length === 0) return null;
+
+    const data = traces.map(t => ({
+      value: [
+        t.startTime / 1000, // 微秒 → 毫秒（ECharts 时间轴用毫秒）
+        t.duration / 1000,  // 微秒 → 毫秒显示
+        Math.log2(t.spanCount + 1) * 5,
+        t.hasError,
+        t.traceID,
+        t.rootServiceName,
+        t.spanCount,
+      ],
+    }));
+
+    return {
+      tooltip: {
+        trigger: 'item' as const,
+        formatter: (params: { value: [number, number, number, boolean, string, string, number] }) => {
+          const [, dur, , , traceID, svc, spans] = params.value;
+          return [
+            `<b>${traceID.substring(0, 8)}...</b>`,
+            `Service: ${svc}`,
+            `Duration: ${formatDuration(dur * 1000)}`,
+            `Spans: ${spans}`,
+          ].join('<br/>');
+        },
+      },
+      grid: { top: 20, right: 20, bottom: 40, left: 60 },
+      xAxis: {
+        type: 'time' as const,
+        axisLabel: { fontSize: 11, color: '#6b7280' },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: 'value' as const,
+        name: 'Duration (ms)',
+        nameTextStyle: { fontSize: 11, color: '#9ca3af' },
+        axisLabel: { fontSize: 11, color: '#6b7280' },
+        splitLine: { lineStyle: { color: '#f3f4f6' } },
+      },
+      series: [
+        {
+          type: 'scatter',
+          data,
+          symbolSize: (val: number[]) => Math.max(val[2] ?? 6, 6),
+          itemStyle: {
+            color: (params: { value: [number, number, number, boolean] }) =>
+              params.value[3] ? '#ef4444' : '#17B8BE',
+            opacity: 0.75,
+          },
+        },
+      ],
+    };
+  }, [traces]);
+
+  /** 散点图点击事件 → 选中对应 trace */
+  const onScatterClick = useCallback(
+    (params: { value?: [number, number, number, boolean, string] }) => {
+      if (params.value) {
+        const traceID = params.value[4];
+        setSelectedTraceID(prev => (prev === traceID ? null : traceID));
+      }
+    },
+    [],
+  );
+
+  // ========================================================================
+  // 下载 JSON
+  // ========================================================================
+
+  const downloadJSON = useCallback(() => {
+    if (rawTraces.length === 0) return;
+    const json = JSON.stringify({ data: rawTraces }, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `traces-${selectedService || 'all'}-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [rawTraces, selectedService]);
+
+  // ========================================================================
   // 获取选中的 Trace 原始数据
   // ========================================================================
 
@@ -349,12 +474,6 @@ export default function TracesPage() {
             {loading ? <i className="fas fa-spinner fa-spin" /> : <i className="fas fa-search" />}
             <span>{loading ? 'Searching...' : 'Find Traces'}</span>
           </button>
-
-          {traces.length > 0 && (
-            <span className="text-sm text-gray-500">
-              Found {traces.length} trace{traces.length !== 1 ? 's' : ''}
-            </span>
-          )}
         </div>
 
         {/* Error */}
@@ -366,20 +485,68 @@ export default function TracesPage() {
         )}
       </div>
 
-      {/* Trace Detail (展开时显示) */}
-      {selectedTrace && (
-        <div className="mb-6">
-          <TraceDetail
-            trace={selectedTrace}
-            onClose={() => setSelectedTraceID(null)}
+      {/* Scatter Plot（搜索到结果后显示） */}
+      {scatterOption && traces.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
+          <ReactECharts
+            option={scatterOption}
+            style={{ height: 200 }}
+            onEvents={{ click: onScatterClick }}
+            opts={{ renderer: 'canvas' }}
           />
         </div>
       )}
 
+      {/* Sort Toolbar */}
+      {traces.length > 0 && (
+        <div className="flex items-center justify-between mb-4">
+          <span className="text-sm font-medium text-gray-600">
+            Found {traces.length} trace{traces.length !== 1 ? 's' : ''}
+          </span>
+
+          <div className="flex items-center gap-3">
+            {/* Download JSON */}
+            <button
+              onClick={downloadJSON}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition"
+              title="Download traces as JSON"
+            >
+              <i className="fas fa-download text-xs" />
+              <span>JSON</span>
+            </button>
+
+            {/* Sort Dropdown */}
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+              className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            >
+              {SORT_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
+      {/* Trace Detail (Modal 弹窗) */}
+      <Modal
+        isOpen={selectedTrace !== null}
+        onClose={() => setSelectedTraceID(null)}
+        size="full"
+      >
+        {selectedTrace && (
+          <TraceDetail
+            trace={selectedTrace}
+            onClose={() => setSelectedTraceID(null)}
+          />
+        )}
+      </Modal>
+
       {/* Results List */}
       {traces.length > 0 && (
         <div className="space-y-3">
-          {traces.map((item) => (
+          {sortedTraces.map((item) => (
             <TraceListRow
               key={item.traceID}
               item={item}
