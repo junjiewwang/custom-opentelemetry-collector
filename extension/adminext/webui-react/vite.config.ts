@@ -26,7 +26,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-echarts': ['echarts', 'echarts-for-react'],
+          // echarts 不再手动分割，由 React.lazy 动态导入自动 code split
           'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-search', '@xterm/addon-web-links'],
         },
       },

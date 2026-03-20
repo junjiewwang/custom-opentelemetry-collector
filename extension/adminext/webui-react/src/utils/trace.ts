@@ -177,9 +177,10 @@ export function formatTimestamp(microseconds: number): string {
  * 为 Service 名称生成一个稳定的颜色。
  */
 const SERVICE_COLORS = [
-  '#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6',
-  '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1',
-  '#14b8a6', '#e11d48', '#0891b2', '#65a30d', '#7c3aed',
+  '#17B8BE', '#F8DCA1', '#B7885E', '#FFCB99', '#F89570',
+  '#829AE3', '#E79FD5', '#1E96BE', '#89DAC1', '#B3AD9E',
+  '#12939A', '#DDB27C', '#88572C', '#FF9833', '#EF5D28',
+  '#162A65', '#DA70BF', '#125C77', '#4DC19C', '#776E57',
 ];
 
 export function getServiceColor(serviceName: string): string {
