@@ -20,7 +20,7 @@
 
 ## 架构设计
 
-### 三层架构：SpanCase → Scenario/Flow → ExecuteFlow
+### 四层架构：SpanCase → 中间层 Case → Scenario/Flow → ExecuteFlow
 
 ```mermaid
 graph TD
@@ -33,87 +33,121 @@ graph TD
         INT["InternalCase"]
     end
 
-    subgraph ScenarioLayer["Layer 2：场景 & 业务流（组合 Case）"]
+    subgraph MiddleLayer["Layer 2：中间层 Case（模拟分层架构）"]
+        direction LR
+        MW["MiddlewareCase<br/>鉴权/限流"]
+        CTRL["ControllerCase<br/>Controller层"]
+        SVC["ServiceMethodCase<br/>Service业务层"]
+        REPO["RepositoryCase<br/>DAO层"]
+        MH["MessageHandlerCase<br/>消息处理器"]
+    end
+
+    subgraph ScenarioLayer["Layer 3：场景 & 业务流（组合 Case 构建深层树）"]
         direction TB
-        subgraph Scenarios["独立场景"]
-            BT["basic_trace<br/>HTTP→MySQL→Redis"]
-            ET["error_trace<br/>HTTP→gRPC(error)→MySQL"]
-            MST["multi_service_trace<br/>gateway→order→inventory+payment+notification"]
-            KM["kafka_messaging<br/>order→Kafka→payment"]
-            RMQ["rocketmq/rabbitmq<br/>类似消息队列模式"]
-            MYSQL["mysql_database<br/>HTTP→MySQL CRUD"]
-            REDIS["redis_database<br/>HTTP→Redis cache-aside"]
-            MONGO["mongodb_database<br/>HTTP→MongoDB→Redis"]
+        subgraph Scenarios["独立场景 (5-9层深)"]
+            BT["basic_trace 5层<br/>HTTP→middleware→ctrl→svc→repo→MySQL"]
+            ET["error_trace 7层<br/>HTTP→middleware→ctrl→svc→gRPC→chargeCard→HTTP"]
+            MST["multi_service_trace 9层<br/>gateway→middleware→gRPC→svc→repo→MySQL"]
         end
-        subgraph Flows["业务流"]
-            ECO["ecommerce_order<br/>完整电商下单"]
-            UL["user_login<br/>用户登录认证"]
+        subgraph Flows["业务流 (9-12层深)"]
+            ECO["ecommerce_order ~12层<br/>完整电商下单"]
+            UL["user_login ~9层<br/>用户登录认证"]
         end
     end
 
-    subgraph EngineLayer["Layer 3：ExecuteFlow 编排引擎"]
+    subgraph EngineLayer["Layer 4：ExecuteFlow 编排引擎"]
         Engine["ExecuteFlow()<br/>共享TraceID + parent-child + 时间线 + SpanLink"]
     end
 
-    CaseLayer --> ScenarioLayer
+    CaseLayer --> MiddleLayer
+    MiddleLayer --> ScenarioLayer
     ScenarioLayer --> EngineLayer
     EngineLayer --> |"ptrace.Traces"| Pipeline["OTel Collector Pipeline"]
 
     style CaseLayer fill:#e8f5e9,stroke:#4caf50
+    style MiddleLayer fill:#e1f5fe,stroke:#03a9f4
     style ScenarioLayer fill:#e3f2fd,stroke:#2196f3
     style EngineLayer fill:#fff3e0,stroke:#ff9800
 ```
 
-### 各独立场景模拟的业务流程
+### 各独立场景模拟的业务流程（Phase 4 加深后）
 
 ```mermaid
 graph LR
-    subgraph BT["basic_trace: 用户查询"]
-        BT1["HTTP GET /api/v1/users"] --> BT2["validateRequest"]
-        BT2 --> BT3["MySQL SELECT users"]
-        BT3 --> BT4["Redis SET cache"]
-        BT4 --> BT5["serializeResponse"]
+    subgraph BT["basic_trace: 用户查询 (5层)"]
+        BT1["L1: HTTP GET"] --> BT1a["L2: middleware.auth"]
+        BT1 --> BT2["L2: handleGetUser"]
+        BT2 --> BT2a["L3: validateRequest"]
+        BT2 --> BT3["L3: UserService.getUserById"]
+        BT3 --> BT4["L4: UserRepository.findById"]
+        BT4 --> BT5["L5: MySQL SELECT"]
+        BT3 --> BT6["L4: CacheService.setUserCache"]
+        BT6 --> BT7["L5: Redis SET"]
     end
 
-    subgraph ET["error_trace: 支付异常"]
-        ET1["HTTP POST /api/v1/payments"] --> ET2["riskCheck"]
-        ET2 --> ET3["gRPC PaymentGateway/Charge ❌"]
-        ET3 --> ET4["MySQL INSERT payment_attempts"]
+    subgraph ET["error_trace: 支付异常 (7层)"]
+        ET1["L1: HTTP POST"] --> ET1a["L2: middleware.auth"]
+        ET1 --> ET2["L2: handleCreatePayment"]
+        ET2 --> ET3["L3: PaymentService.processPayment"]
+        ET3 --> ET4["L4: RiskService.evaluate"]
+        ET3 --> ET5["L4: gRPC → PaymentGateway"]
+        ET5 --> ET6["L5: ChargeService.chargeCard ❌"]
+        ET6 --> ET7["L6: HTTP POST stripe.com"]
+        ET3 --> ET8["L4: PaymentRepository.saveAttempt"]
+        ET8 --> ET9["L5: MySQL INSERT"]
     end
 
-    subgraph KM["kafka_messaging: 订单→支付"]
-        KM1["HTTP POST /api/v1/orders"] --> KM2["MySQL INSERT orders"]
-        KM2 --> KM3["Kafka send order-events"]
-        KM3 -.->|SpanLink| KM4["Kafka receive"]
-        KM4 --> KM5["processPayment"]
-        KM5 --> KM6["MySQL INSERT payments"]
+    subgraph KM["kafka_messaging: 订单→支付 (8层)"]
+        KM1["L1: HTTP POST"] --> KM2["L2: handleCreateOrder"]
+        KM2 --> KM3["L3: OrderService.createOrder"]
+        KM3 --> KM4["L4: OrderRepository.save"]
+        KM4 --> KM5["L5: MySQL INSERT"]
+        KM3 --> KM6["L4: Kafka send"]
+        KM6 -.->|SpanLink| KM7["Kafka receive"]
+        KM7 --> KM8["PaymentMessageHandler.handle"]
+        KM8 --> KM9["PaymentService.processPayment"]
+        KM9 --> KM10["PaymentRepository.save"]
+        KM10 --> KM11["MySQL INSERT"]
     end
 
-    style ET3 fill:#ffcdd2
+    style ET6 fill:#ffcdd2
+    style ET7 fill:#ffcdd2
 ```
 
-### Business Flow 调用链示例（电商下单）
+### Business Flow 调用链示例（电商下单，Phase 4 加深后）
 
 ```mermaid
 graph TD
     U["用户请求<br/>POST /api/v1/orders"] --> GW["api-gateway<br/>HTTP Server"]
-    GW --> |"gRPC"| OS["order-service<br/>CreateOrder"]
-    OS --> R1["Redis GET<br/>校验session"]
-    OS --> M1["MySQL SELECT<br/>查库存"]
-    OS --> M2["MySQL INSERT<br/>创建订单"]
-    OS --> R2["Redis SET<br/>订单缓存"]
-    OS --> |"Kafka send"| K["order-events"]
-    K --> |"SpanLink"| PS["payment-service<br/>Kafka receive"]
-    PS --> P1["processPayment"]
-    P1 --> M3["MySQL INSERT<br/>记录支付"]
-    P1 --> M4["MySQL UPDATE<br/>更新订单状态"]
-    P1 --> |"gRPC"| NS["notification-service<br/>SendOrderConfirmation"]
-    NS --> R3["Redis GET<br/>查通知模板"]
-    NS --> E["sendEmail"]
+    GW --> GW_AUTH["middleware.auth"]
+    GW --> GW_RL["middleware.rateLimit"]
+    GW --> |"gRPC"| OS["order-service<br/>gRPC Server"]
+    OS --> OS_SVC["OrderService.createOrder"]
+    OS_SVC --> SS["SessionService.validate"]
+    SS --> R1["Redis GET session"]
+    OS_SVC --> IR["InventoryRepository.checkStock"]
+    IR --> M1["MySQL SELECT stock"]
+    OS_SVC --> OR["OrderRepository.save"]
+    OR --> M2["MySQL INSERT orders"]
+    OS_SVC --> CS["CacheService.setOrderCache"]
+    CS --> R2["Redis SET cache"]
+    OS_SVC --> |"Kafka send"| K["order-events"]
+    K --> |"SpanLink"| KR["Kafka receive"]
+    KR --> PMH["PaymentMessageHandler.handle"]
+    PMH --> PS["PaymentService.processPayment"]
+    PS --> PR["PaymentRepository.save"]
+    PR --> M3["MySQL INSERT payments"]
+    PS --> POR["OrderRepository.updateStatus"]
+    POR --> M4["MySQL UPDATE orders"]
+    PS --> |"gRPC"| NS["notification-service"]
+    NS --> NS_SVC["NotificationService.sendConfirmation"]
+    NS_SVC --> TR["TemplateRepository.getTemplate"]
+    TR --> R3["Redis GET template"]
+    NS_SVC --> E["sendEmail"]
 
     style GW fill:#e3f2fd
     style OS fill:#fff3e0
-    style PS fill:#e8f5e9
+    style KR fill:#e8f5e9
     style NS fill:#fce4ec
 ```
 
@@ -200,6 +234,27 @@ receiver/testdatagenreceiver/
 | 25 | 编译验证 | ✅ 完成 |
 | 26 | 更新 PROGRESS.md | ✅ 完成 |
 
+### Phase 4：深层 Span 层级改造（已完成）
+
+**目标**：将所有场景的 span 层级加深，模拟真实微服务的 Controller → Service → Repository 分层结构。
+
+| 序号 | 任务 | 改造前深度 | 改造后深度 | 状态 |
+|------|------|-----------|-----------|------|
+| 27 | span_cases.go - 新增 MiddlewareCase / ControllerCase / ServiceMethodCase / RepositoryCase / MessageHandlerCase | - | - | ✅ 完成 |
+| 28 | basic_trace.go - 加入 middleware → controller → service → repository 层 | 2层 | **5层** | ✅ 完成 |
+| 29 | error_trace.go - 加入 middleware → controller → service → gateway(chargeCard → HTTP) | 4层 | **7层** | ✅ 完成 |
+| 30 | mysql_database.go - 加入 middleware → controller → service → repository 层 | 2层 | **5层** | ✅ 完成 |
+| 31 | redis_database.go - 加入 controller → service(cache-aside) → repository 层 | 2层 | **5层** | ✅ 完成 |
+| 32 | mongodb_database.go - 加入 controller → service → repository 层 | 2层 | **5层** | ✅ 完成 |
+| 33 | kafka_messaging.go - 发送侧增加 controller → service → repo；消费侧增加 handler → service → repo | 4层 | **8层** | ✅ 完成 |
+| 34 | rocketmq_messaging.go - 同上模式 | 4层 | **7层** | ✅ 完成 |
+| 35 | rabbitmq_messaging.go - 同上模式 | 4层 | **8层** | ✅ 完成 |
+| 36 | multi_service_trace.go - 每个服务加入 service → repository 层 + gateway 加中间件 | 6层 | **9层** | ✅ 完成 |
+| 37 | flow_ecommerce_order.go - 所有服务加入中间层 | ~9层 | **~12层** | ✅ 完成 |
+| 38 | flow_user_login.go - 所有服务加入中间层 | ~6层 | **~9层** | ✅ 完成 |
+| 39 | 编译验证 | - | - | ✅ 完成 |
+| 40 | 更新 PROGRESS.md | - | - | ✅ 完成 |
+
 ## SpanCase 可复用原子操作库
 
 ### 可用的 Case 工厂函数
@@ -220,6 +275,11 @@ receiver/testdatagenreceiver/
 | `RabbitMQSendCase` | RabbitMQ 发送 (IsAsync) | Producer | io.opentelemetry.rabbitmq-1.28 |
 | `RabbitMQReceiveCase` | RabbitMQ 消费 | Consumer | io.opentelemetry.rabbitmq-1.28 |
 | `InternalCase` | 内部处理步骤 | Internal | io.opentelemetry.auto |
+| `MiddlewareCase` | 框架中间件（鉴权/限流/日志） | Internal | io.opentelemetry.auto |
+| `ControllerCase` | Controller 层方法 | Internal | io.opentelemetry.auto |
+| `ServiceMethodCase` | Service 层业务方法 | Internal | io.opentelemetry.auto |
+| `RepositoryCase` | Repository/DAO 层方法 | Internal | io.opentelemetry.auto |
+| `MessageHandlerCase` | 消息消费处理器方法 | Internal | io.opentelemetry.auto |
 
 ### Helper 函数
 
@@ -326,6 +386,76 @@ func PostgreSQLCase(service, db, operation, table, statement string) *FlowStep {
 - [OTel gRPC Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/rpc/grpc/)
 - [OTel Messaging Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/)
 - [OTel Database Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/db/database-spans/)
+
+## 四层架构（Phase 4 演进后）
+
+```mermaid
+graph TD
+    subgraph L1["Layer 1：SpanCase 原子操作库"]
+        direction LR
+        HTTP["HTTPServerCase / HTTPClientCase"]
+        GRPC["GRPCCallCase / GRPCServerCase"]
+        DB["MySQLCase / RedisCase / MongoDBCase"]
+        MQ["KafkaSendCase / RocketMQSendCase / RabbitMQSendCase"]
+        INT["InternalCase"]
+    end
+
+    subgraph L2["Layer 2：中间层 Case（模拟分层架构）"]
+        direction LR
+        MW["MiddlewareCase"]
+        CTRL["ControllerCase"]
+        SVC["ServiceMethodCase"]
+        REPO["RepositoryCase"]
+        MH["MessageHandlerCase"]
+    end
+
+    subgraph L3["Layer 3：场景 & 业务流（组合 Case 构建深层树）"]
+        direction TB
+        S1["独立场景（5-9层深）"]
+        S2["业务流（9-12层深）"]
+    end
+
+    subgraph L4["Layer 4：ExecuteFlow 编排引擎"]
+        Engine["ExecuteFlow()"]
+    end
+
+    L1 --> L2
+    L2 --> L3
+    L3 --> L4
+    L4 --> Pipeline["OTel Collector Pipeline"]
+
+    style L1 fill:#e8f5e9,stroke:#4caf50
+    style L2 fill:#e1f5fe,stroke:#03a9f4
+    style L3 fill:#e3f2fd,stroke:#2196f3
+    style L4 fill:#fff3e0,stroke:#ff9800
+```
+
+### 真实微服务分层模型
+
+每个服务内部的 span 层级遵循真实微服务分层架构：
+
+```mermaid
+graph TD
+    HTTP["HTTP Server / gRPC Server<br/>(框架入口)"] --> MW["middleware.auth / rateLimit<br/>(框架中间件层)"]
+    MW --> CTRL["handleXxx<br/>(Controller 层)"]
+    CTRL --> VALIDATE["validateXxx<br/>(参数校验)"]
+    CTRL --> SVC["XxxService.method<br/>(Service 业务逻辑层)"]
+    SVC --> REPO1["XxxRepository.find<br/>(DAO 层)"]
+    REPO1 --> DB1["MySQL SELECT / MongoDB find"]
+    SVC --> REPO2["XxxRepository.save<br/>(DAO 层)"]
+    REPO2 --> DB2["MySQL INSERT / MongoDB insert"]
+    SVC --> CACHE["CacheService.setXxx<br/>(缓存层)"]
+    CACHE --> REDIS["Redis SET"]
+    CTRL --> SERIALIZE["serializeResponse"]
+
+    style HTTP fill:#e3f2fd
+    style MW fill:#fce4ec
+    style CTRL fill:#f3e5f5
+    style SVC fill:#fff3e0
+    style REPO1 fill:#e8f5e9
+    style REPO2 fill:#e8f5e9
+    style CACHE fill:#e0f7fa
+```
 
 ## 遗留问题
 

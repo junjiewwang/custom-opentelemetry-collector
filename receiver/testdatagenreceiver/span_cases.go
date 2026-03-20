@@ -417,6 +417,101 @@ func InternalCase(service, name string, attrs map[string]string) *FlowStep {
 }
 
 // --------------------------------------------------------------------------
+// 中间层：模拟 Controller → Service → Repository 的分层结构
+// --------------------------------------------------------------------------
+
+// MiddlewareCase 创建一个中间件处理 span（SpanKind=Internal）
+// 模拟框架中间件层：如鉴权、限流、日志等
+func MiddlewareCase(service, name string, attrs map[string]string) *FlowStep {
+	step := &FlowStep{
+		ServiceName:   service,
+		SpanName:      fmt.Sprintf("middleware.%s", name),
+		Kind:          SpanKindInternal,
+		MinDurationMs: 1,
+		MaxDurationMs: 5,
+		ScopeName:     "io.opentelemetry.auto",
+		Attributes:    map[string]string{"middleware.type": name},
+	}
+	for k, v := range attrs {
+		step.Attributes[k] = v
+	}
+	return step
+}
+
+// ControllerCase 创建一个 Controller 层处理 span（SpanKind=Internal）
+// 模拟 Spring Controller / Go Handler 层：接收请求参数、调用 Service、返回响应
+func ControllerCase(service, handler string, attrs map[string]string) *FlowStep {
+	step := &FlowStep{
+		ServiceName:   service,
+		SpanName:      handler,
+		Kind:          SpanKindInternal,
+		MinDurationMs: 1,
+		MaxDurationMs: 10,
+		ScopeName:     "io.opentelemetry.auto",
+		Attributes:    map[string]string{"code.function": handler, "code.namespace": fmt.Sprintf("%s.controller", service)},
+	}
+	for k, v := range attrs {
+		step.Attributes[k] = v
+	}
+	return step
+}
+
+// ServiceMethodCase 创建一个 Service 层业务方法 span（SpanKind=Internal）
+// 模拟业务逻辑层的方法调用：如 UserService.getUserById, OrderService.createOrder
+func ServiceMethodCase(service, method string, attrs map[string]string) *FlowStep {
+	step := &FlowStep{
+		ServiceName:   service,
+		SpanName:      method,
+		Kind:          SpanKindInternal,
+		MinDurationMs: 2,
+		MaxDurationMs: 20,
+		ScopeName:     "io.opentelemetry.auto",
+		Attributes:    map[string]string{"code.function": method, "code.namespace": fmt.Sprintf("%s.service", service)},
+	}
+	for k, v := range attrs {
+		step.Attributes[k] = v
+	}
+	return step
+}
+
+// RepositoryCase 创建一个 Repository/DAO 层方法 span（SpanKind=Internal）
+// 模拟数据访问层的方法调用：如 UserRepository.findById, OrderRepository.save
+// 其 Children 通常是具体的 MySQL/Redis/MongoDB Case
+func RepositoryCase(service, method string, attrs map[string]string) *FlowStep {
+	step := &FlowStep{
+		ServiceName:   service,
+		SpanName:      method,
+		Kind:          SpanKindInternal,
+		MinDurationMs: 1,
+		MaxDurationMs: 8,
+		ScopeName:     "io.opentelemetry.auto",
+		Attributes:    map[string]string{"code.function": method, "code.namespace": fmt.Sprintf("%s.repository", service)},
+	}
+	for k, v := range attrs {
+		step.Attributes[k] = v
+	}
+	return step
+}
+
+// MessageHandlerCase 创建一个消息处理器 span（SpanKind=Internal）
+// 模拟消息消费者内部的消息处理方法：如 PaymentMessageHandler.handle
+func MessageHandlerCase(service, handler string, attrs map[string]string) *FlowStep {
+	step := &FlowStep{
+		ServiceName:   service,
+		SpanName:      handler,
+		Kind:          SpanKindInternal,
+		MinDurationMs: 2,
+		MaxDurationMs: 15,
+		ScopeName:     "io.opentelemetry.auto",
+		Attributes:    map[string]string{"code.function": handler, "code.namespace": fmt.Sprintf("%s.handler", service)},
+	}
+	for k, v := range attrs {
+		step.Attributes[k] = v
+	}
+	return step
+}
+
+// --------------------------------------------------------------------------
 // Helper: 设置额外属性到已创建的 FlowStep
 // --------------------------------------------------------------------------
 

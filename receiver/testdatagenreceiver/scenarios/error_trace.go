@@ -48,7 +48,7 @@ func (s *ErrorTraceScenario) GenerateTraces() (ptrace.Traces, error) {
 	paymentID := fmt.Sprintf("PAY-%d", 100000+r.Intn(900000))
 	orderID := fmt.Sprintf("ORD-%d", 100000+r.Intn(900000))
 
-	// 构建调用树：HTTP 入口 → gRPC 调用支付网关 → MySQL 记录 → 风控校验
+	// L1: HTTP 入口
 	root := tdg.WithAttributes(
 		tdg.HTTPServerCase(s.serviceName, "POST", "/api/v1/payments", 8080),
 		map[string]string{
@@ -57,40 +57,36 @@ func (s *ErrorTraceScenario) GenerateTraces() (ptrace.Traces, error) {
 		},
 	)
 
-	// gRPC 调用：payment-service → payment-gateway（外部支付网关）
-	grpcCall := tdg.GRPCCallCase(s.serviceName, "payment-gateway", "PaymentGateway", "Charge", 50055)
-	// 在 gateway server span 上加异常信息
-	gatewayServer := grpcCall.Children[0]
-	tdg.WithErrorRate(gatewayServer, s.errorRate)
-	tdg.WithErrorMessage(gatewayServer, "TimeoutException: upstream payment gateway timeout after 30s")
-	tdg.WithDuration(gatewayServer, 100, 500)
-	gatewayServer.Children = []*tdg.FlowStep{
-		tdg.WithErrorRate(
-			tdg.WithErrorMessage(
-				tdg.InternalCase("payment-gateway", "chargeCard", map[string]string{
-					"payment.method":   "credit_card",
-					"payment.provider": "stripe",
-				}),
-				"ConnectionRefused: payment provider unreachable",
-			),
-			s.errorRate,
-		),
-	}
+	// L2: 中间件层 - 鉴权 + 限流
+	authMiddleware := tdg.MiddlewareCase(s.serviceName, "auth", map[string]string{
+		"auth.type": "api_key",
+	})
+	rateLimitMiddleware := tdg.MiddlewareCase(s.serviceName, "rateLimit", map[string]string{
+		"rate_limit.bucket": "payment_api",
+	})
 
-	// MySQL 记录支付尝试
-	mysqlInsert := tdg.WithErrorRate(
-		tdg.WithErrorMessage(
-			tdg.MySQLCase(s.serviceName, "payment_db", "INSERT", "payment_attempts",
-				fmt.Sprintf("INSERT INTO payment_attempts (payment_id, order_id, status, error_msg) VALUES ('%s', '%s', 'FAILED', ?)", paymentID, orderID)),
-			"DeadlockException: lock wait timeout exceeded",
-		),
-		s.errorRate*0.3, // 数据库错误概率较低
-	)
+	// L2: Controller 层 - handleCreatePayment
+	controller := tdg.ControllerCase(s.serviceName, "handleCreatePayment", map[string]string{
+		"payment.id": paymentID,
+		"order.id":   orderID,
+	})
 
-	// 风控校验
+	// L3: 参数校验
+	validateStep := tdg.InternalCase(s.serviceName, "validatePaymentRequest", map[string]string{
+		"validation.type": "payment_params",
+	})
+
+	// L3: Service 层 - PaymentService.processPayment
+	paymentService := tdg.ServiceMethodCase(s.serviceName, "PaymentService.processPayment", map[string]string{
+		"payment.id": paymentID,
+		"order.id":   orderID,
+	})
+	tdg.WithDuration(paymentService, 10, 80)
+
+	// L4: 风控校验
 	riskCheck := tdg.WithErrorRate(
 		tdg.WithErrorMessage(
-			tdg.InternalCase(s.serviceName, "riskCheck", map[string]string{
+			tdg.ServiceMethodCase(s.serviceName, "RiskService.evaluate", map[string]string{
 				"risk.level":  "high",
 				"risk.reason": "abnormal_amount",
 			}),
@@ -99,13 +95,73 @@ func (s *ErrorTraceScenario) GenerateTraces() (ptrace.Traces, error) {
 		s.errorRate*0.2,
 	)
 
-	root.Children = []*tdg.FlowStep{
-		tdg.InternalCase(s.serviceName, "validatePaymentRequest", map[string]string{
-			"validation.type": "payment_params",
-		}),
+	// L4: gRPC 调用 payment-gateway（外部支付网关）
+	grpcCall := tdg.GRPCCallCase(s.serviceName, "payment-gateway", "PaymentGateway", "Charge", 50055)
+	gatewayServer := grpcCall.Children[0]
+	tdg.WithErrorRate(gatewayServer, s.errorRate)
+	tdg.WithErrorMessage(gatewayServer, "TimeoutException: upstream payment gateway timeout after 30s")
+	tdg.WithDuration(gatewayServer, 100, 500)
+
+	// L5 (gateway 内部): chargeCard
+	chargeCard := tdg.WithErrorRate(
+		tdg.WithErrorMessage(
+			tdg.ServiceMethodCase("payment-gateway", "ChargeService.chargeCard", map[string]string{
+				"payment.method":   "credit_card",
+				"payment.provider": "stripe",
+			}),
+			"ConnectionRefused: payment provider unreachable",
+		),
+		s.errorRate,
+	)
+	// L6 (gateway 内部): HTTP 调用外部支付接口
+	chargeCard.Children = []*tdg.FlowStep{
+		tdg.WithErrorRate(
+			tdg.WithErrorMessage(
+				tdg.HTTPClientCase("payment-gateway", "POST", "https://api.stripe.com/v1/charges", "api.stripe.com", 443),
+				"HTTP 502: Bad Gateway - upstream timeout",
+			),
+			s.errorRate,
+		),
+	}
+	gatewayServer.Children = []*tdg.FlowStep{chargeCard}
+
+	// L4: Repository 层 - PaymentRepository.saveAttempt → MySQL
+	repoSave := tdg.WithErrorRate(
+		tdg.WithErrorMessage(
+			tdg.RepositoryCase(s.serviceName, "PaymentRepository.saveAttempt", nil),
+			"DeadlockException: lock wait timeout exceeded",
+		),
+		s.errorRate*0.3,
+	)
+	repoSave.Children = []*tdg.FlowStep{
+		tdg.WithErrorRate(
+			tdg.WithErrorMessage(
+				tdg.MySQLCase(s.serviceName, "payment_db", "INSERT", "payment_attempts",
+					fmt.Sprintf("INSERT INTO payment_attempts (payment_id, order_id, status, error_msg) VALUES ('%s', '%s', 'FAILED', ?)", paymentID, orderID)),
+				"DeadlockException: lock wait timeout exceeded",
+			),
+			s.errorRate*0.3,
+		),
+	}
+
+	// 组装 Service 层子步骤
+	paymentService.Children = []*tdg.FlowStep{
 		riskCheck,
 		grpcCall,
-		mysqlInsert,
+		repoSave,
+	}
+
+	// 组装 Controller 层子步骤
+	controller.Children = []*tdg.FlowStep{
+		validateStep,
+		paymentService,
+	}
+
+	// 组装根节点
+	root.Children = []*tdg.FlowStep{
+		authMiddleware,
+		rateLimitMiddleware,
+		controller,
 	}
 
 	// 根 span 也有错误概率

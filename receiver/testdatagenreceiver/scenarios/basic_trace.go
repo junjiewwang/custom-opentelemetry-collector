@@ -45,20 +45,65 @@ func (s *BasicTraceScenario) GenerateTraces() (ptrace.Traces, error) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	userID := fmt.Sprintf("USR-%d", 10000+r.Intn(90000))
 
-	// 构建调用树：HTTP 入口 → 内部校验 → MySQL 查询 → Redis 缓存 → 序列化
+	// L1: HTTP 入口
 	root := tdg.HTTPServerCase(s.serviceName, "GET", "/api/v1/users", 8080)
-	root.Children = []*tdg.FlowStep{
+
+	// L2: 中间件层 - 鉴权
+	authMiddleware := tdg.MiddlewareCase(s.serviceName, "auth", map[string]string{
+		"auth.type": "bearer_token",
+	})
+
+	// L2: Controller 层 - handleGetUser
+	controller := tdg.ControllerCase(s.serviceName, "handleGetUser", map[string]string{
+		"user.id": userID,
+	})
+
+	// L3: Service 层 - UserService.getUserById
+	serviceMethod := tdg.ServiceMethodCase(s.serviceName, "UserService.getUserById", map[string]string{
+		"user.id": userID,
+	})
+
+	// L4: Repository 层 - UserRepository.findById → MySQL
+	repoFind := tdg.RepositoryCase(s.serviceName, "UserRepository.findById", nil)
+	repoFind.Children = []*tdg.FlowStep{
+		tdg.MySQLCase(s.serviceName, "user_db", "SELECT", "users",
+			fmt.Sprintf("SELECT id, name, email, avatar FROM users WHERE id = '%s'", userID)),
+	}
+
+	// L4: 缓存层 - CacheService.setUserCache → Redis
+	cacheSet := tdg.ServiceMethodCase(s.serviceName, "CacheService.setUserCache", map[string]string{
+		"cache.key": fmt.Sprintf("user:cache:%s", userID),
+	})
+	cacheSet.Children = []*tdg.FlowStep{
+		tdg.RedisCase(s.serviceName, "SET",
+			fmt.Sprintf("SET user:cache:%s {json} EX 300", userID)),
+	}
+
+	// 组装 Service 层子步骤
+	serviceMethod.Children = []*tdg.FlowStep{
+		repoFind,
+		cacheSet,
+	}
+
+	// L2: 序列化响应
+	serializeResp := tdg.InternalCase(s.serviceName, "serializeResponse", map[string]string{
+		"serializer": "json",
+		"user.id":    userID,
+	})
+
+	// 组装 Controller 层子步骤
+	controller.Children = []*tdg.FlowStep{
 		tdg.InternalCase(s.serviceName, "validateRequest", map[string]string{
 			"validation.type": "request_params",
 		}),
-		tdg.MySQLCase(s.serviceName, "user_db", "SELECT", "users",
-			fmt.Sprintf("SELECT id, name, email, avatar FROM users WHERE id = '%s'", userID)),
-		tdg.RedisCase(s.serviceName, "SET",
-			fmt.Sprintf("SET user:cache:%s {json} EX 300", userID)),
-		tdg.InternalCase(s.serviceName, "serializeResponse", map[string]string{
-			"serializer": "json",
-			"user.id":    userID,
-		}),
+		serviceMethod,
+		serializeResp,
+	}
+
+	// 组装根节点
+	root.Children = []*tdg.FlowStep{
+		authMiddleware,
+		controller,
 	}
 
 	td := tdg.ExecuteFlow([]*tdg.FlowStep{root}, s.errorRate)

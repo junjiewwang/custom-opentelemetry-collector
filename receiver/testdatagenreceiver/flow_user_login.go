@@ -57,7 +57,9 @@ func (f *UserLoginFlow) GenerateTraces() (ptrace.Traces, error) {
 		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
 	}
 
-	// 1. api-gateway HTTP 入口
+	// ================================================================
+	// L1: api-gateway HTTP 入口
+	// ================================================================
 	root := WithDuration(
 		WithAttributes(
 			HTTPServerCase("api-gateway", "POST", "/api/v1/auth/login", 443),
@@ -70,35 +72,67 @@ func (f *UserLoginFlow) GenerateTraces() (ptrace.Traces, error) {
 	)
 	WithResourceAttributes(root, map[string]string{"service.version": "2.3.1"})
 
-	// 2. gateway → auth-service（gRPC 调用对）
+	// L2: gateway 中间件
+	gatewayAuth := MiddlewareCase("api-gateway", "cors", map[string]string{
+		"cors.origin": "*",
+	})
+	gatewayRateLimit := MiddlewareCase("api-gateway", "rateLimit", map[string]string{
+		"rate_limit.bucket": "auth_api",
+	})
+
+	// L2: gRPC: gateway → auth-service
 	gatewayToAuth := GRPCCallCase("api-gateway", "auth-service", "AuthService", "Login", 50052)
 	authServer := gatewayToAuth.Children[0]
 	WithAttributes(authServer, map[string]string{"user.id": userID})
 	WithResourceAttributes(authServer, map[string]string{"service.version": "1.8.0"})
 	WithDuration(authServer, 15, 70)
 
-	// 3. auth-service 内部操作
-	authServer.Children = []*FlowStep{
-		// Redis: 查已有 session（防重复登录）
+	// ================================================================
+	// auth-service 内部分层
+	// ================================================================
+
+	// L4: Service 层 - AuthService.authenticate
+	authService := ServiceMethodCase("auth-service", "AuthService.authenticate", map[string]string{
+		"user.id": userID,
+	})
+	WithDuration(authService, 10, 50)
+
+	// L5: SessionRepository.findExisting → Redis（防重复登录）
+	sessionRepo := RepositoryCase("auth-service", "SessionRepository.findExisting", map[string]string{
+		"user.id": userID,
+	})
+	sessionRepo.Children = []*FlowStep{
 		RedisCase("auth-service", "GET", fmt.Sprintf("GET user:session:%s", userID)),
-		// MySQL: 查询用户信息
+	}
+
+	// L5: UserRepository.findById → MySQL
+	userRepo := RepositoryCase("auth-service", "UserRepository.findById", nil)
+	userRepo.Children = []*FlowStep{
 		MySQLCase("auth-service", "auth_db", "SELECT", "users",
 			fmt.Sprintf("SELECT id, username, password_hash, status FROM users WHERE id = '%s' AND status = 'active'", userID)),
-		// 密码验证
-		InternalCase("auth-service", "verifyPassword", map[string]string{
-			"auth.method": "bcrypt",
-		}),
-		// JWT Token 生成
-		InternalCase("auth-service", "generateToken", map[string]string{
-			"auth.token_type": "JWT",
-			"auth.expires_in": "3600",
-		}),
-		// Redis: 写入新 session
+	}
+
+	// L5: 密码验证
+	verifyPassword := InternalCase("auth-service", "verifyPassword", map[string]string{
+		"auth.method": "bcrypt",
+	})
+
+	// L5: TokenService.generateToken
+	tokenService := ServiceMethodCase("auth-service", "TokenService.generateToken", map[string]string{
+		"auth.token_type": "JWT",
+		"auth.expires_in": "3600",
+	})
+
+	// L5: SessionRepository.save → Redis
+	sessionSave := RepositoryCase("auth-service", "SessionRepository.save", nil)
+	sessionSave.Children = []*FlowStep{
 		RedisCase("auth-service", "SET",
 			fmt.Sprintf("SET user:session:%s %s EX 3600", userID, sessionID)),
 	}
 
-	// 4. auth-service → audit-service（gRPC 调用对）
+	// ================================================================
+	// L5: auth-service → audit-service（gRPC 调用对）
+	// ================================================================
 	authToAudit := GRPCCallCase("auth-service", "audit-service", "AuditService", "LogEvent", 50054)
 	auditServer := authToAudit.Children[0]
 	WithAttributes(auditServer, map[string]string{
@@ -108,16 +142,37 @@ func (f *UserLoginFlow) GenerateTraces() (ptrace.Traces, error) {
 	})
 	WithResourceAttributes(auditServer, map[string]string{"service.version": "1.1.0"})
 
-	// 5. audit-service: MongoDB 写入审计日志
-	auditServer.Children = []*FlowStep{
+	// audit-service 内部分层
+	auditService := ServiceMethodCase("audit-service", "AuditService.logLoginEvent", map[string]string{
+		"audit.event":   "user_login",
+		"audit.user_id": userID,
+	})
+
+	auditRepo := RepositoryCase("audit-service", "AuditRepository.save", nil)
+	auditRepo.Children = []*FlowStep{
 		MongoDBCase("audit-service", "audit_db", "login_events", "insert",
 			fmt.Sprintf(`{"insert": "login_events", "documents": [{"user_id": "%s", "ip": "%s", "action": "login"}]}`, userID, loginIP)),
 	}
+	auditService.Children = []*FlowStep{auditRepo}
+	auditServer.Children = []*FlowStep{auditService}
 
-	// 将 audit 调用加入 auth-service
-	authServer.Children = append(authServer.Children, authToAudit)
+	// 组装 auth-service Service 层
+	authService.Children = []*FlowStep{
+		sessionRepo,
+		userRepo,
+		verifyPassword,
+		tokenService,
+		sessionSave,
+		authToAudit,
+	}
 
-	root.Children = []*FlowStep{gatewayToAuth}
+	authServer.Children = []*FlowStep{authService}
+
+	root.Children = []*FlowStep{
+		gatewayAuth,
+		gatewayRateLimit,
+		gatewayToAuth,
+	}
 
 	td := ExecuteFlow([]*FlowStep{root}, f.errorRate)
 	return td, nil

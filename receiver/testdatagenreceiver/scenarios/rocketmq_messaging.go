@@ -53,41 +53,75 @@ func (s *RocketMQMessagingScenario) GenerateTraces() (ptrace.Traces, error) {
 	paymentID := fmt.Sprintf("PAY-%d", 200000+r.Intn(800000))
 	accountID := fmt.Sprintf("ACC-%d", 10000+r.Intn(90000))
 
-	// 构建调用树：payment-service 处理支付 → RocketMQ → account-service 更新余额
+	// === 发送侧：payment-service 处理支付 → RocketMQ ===
+
+	// L1: gRPC 入口
 	root := tdg.GRPCServerCase("payment-service", "PaymentService", "ProcessPayment")
-	tdg.WithAttributes(root, map[string]string{
+	tdg.WithAttributes(root, map[string]string{"payment.id": paymentID})
+
+	// L2: Service 层 - PaymentService.processPayment
+	paymentService := tdg.ServiceMethodCase("payment-service", "PaymentService.processPayment", map[string]string{
 		"payment.id": paymentID,
 	})
 
-	// RocketMQ 发送事务消息
+	// L3: 校验
+	validateStep := tdg.InternalCase("payment-service", "validatePayment", map[string]string{
+		"payment.id": paymentID,
+	})
+
+	// L3: Repository 层 - PaymentRepository.save → MySQL
+	repoSave := tdg.RepositoryCase("payment-service", "PaymentRepository.save", nil)
+	repoSave.Children = []*tdg.FlowStep{
+		tdg.MySQLCase("payment-service", "payment_db", "INSERT", "payments",
+			fmt.Sprintf("INSERT INTO payments (payment_id, status) VALUES ('%s', 'SUCCESS')", paymentID)),
+	}
+
+	// L3: RocketMQ 发送事务消息
 	rocketSend := tdg.RocketMQSendCase("payment-service", s.topic, s.clientGroup, s.messageType, s.tag)
 	tdg.WithAttributes(rocketSend, map[string]string{
 		"messaging.message.id": fmt.Sprintf("RMQID_%016X", r.Int63()),
 	})
 
-	// RocketMQ consumer 侧
+	// === 消费侧：account-service 消费并更新余额 ===
+
+	// RocketMQ consumer 入口
 	rocketReceive := tdg.RocketMQReceiveCase("account-service", s.topic, s.clientGroup)
-	rocketReceive.Children = []*tdg.FlowStep{
-		tdg.InternalCase("account-service", "updateBalance", map[string]string{
-			"account.id": accountID,
-			"payment.id": paymentID,
-		}),
+
+	// 消费侧 L1: MessageHandler - AccountMessageHandler.handle
+	msgHandler := tdg.MessageHandlerCase("account-service", "AccountMessageHandler.handle", map[string]string{
+		"account.id": accountID,
+		"payment.id": paymentID,
+	})
+
+	// 消费侧 L2: Service 层 - AccountService.updateBalance
+	accountService := tdg.ServiceMethodCase("account-service", "AccountService.updateBalance", map[string]string{
+		"account.id": accountID,
+		"payment.id": paymentID,
+	})
+
+	// 消费侧 L3: Repository 层 - AccountRepository.debit → MySQL
+	repoDebit := tdg.RepositoryCase("account-service", "AccountRepository.debit", nil)
+	repoDebit.Children = []*tdg.FlowStep{
 		tdg.MySQLCase("account-service", "account_db", "UPDATE", "accounts",
 			fmt.Sprintf("UPDATE accounts SET balance = balance - ? WHERE account_id = '%s'", accountID)),
+	}
+
+	// 消费侧 L3: Repository 层 - TransactionRepository.save → MySQL
+	repoTxn := tdg.RepositoryCase("account-service", "TransactionRepository.save", nil)
+	repoTxn.Children = []*tdg.FlowStep{
 		tdg.MySQLCase("account-service", "account_db", "INSERT", "transactions",
 			fmt.Sprintf("INSERT INTO transactions (account_id, payment_id, type, amount) VALUES ('%s', '%s', 'DEBIT', ?)", accountID, paymentID)),
 	}
 
+	// 组装消费侧
+	accountService.Children = []*tdg.FlowStep{repoDebit, repoTxn}
+	msgHandler.Children = []*tdg.FlowStep{accountService}
+	rocketReceive.Children = []*tdg.FlowStep{msgHandler}
 	rocketSend.Children = []*tdg.FlowStep{rocketReceive}
 
-	root.Children = []*tdg.FlowStep{
-		tdg.InternalCase("payment-service", "validatePayment", map[string]string{
-			"payment.id": paymentID,
-		}),
-		tdg.MySQLCase("payment-service", "payment_db", "INSERT", "payments",
-			fmt.Sprintf("INSERT INTO payments (payment_id, status) VALUES ('%s', 'SUCCESS')", paymentID)),
-		rocketSend,
-	}
+	// 组装发送侧
+	paymentService.Children = []*tdg.FlowStep{validateStep, repoSave, rocketSend}
+	root.Children = []*tdg.FlowStep{paymentService}
 
 	td := tdg.ExecuteFlow([]*tdg.FlowStep{root}, s.errorRate)
 	return td, nil
