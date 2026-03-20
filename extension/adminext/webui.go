@@ -11,25 +11,25 @@ import (
 	"strings"
 )
 
-//go:embed webui/*
-var webUIFS embed.FS
+// ============================================================================
+// React 前端（唯一前端，挂载在 /ui/）
+// ============================================================================
+
+//go:embed webui-react/dist/*
+var reactUIFS embed.FS
 
 // webUIHandler serves the embedded WebUI files.
 type webUIHandler struct {
 	fsys fs.FS
 }
 
-// newWebUIHandler creates a new WebUI handler.
-func newWebUIHandler() (*webUIHandler, error) {
-	// Get the webui subdirectory
-	subFS, err := fs.Sub(webUIFS, "webui")
+// newReactUIHandler creates a handler for the React frontend.
+func newReactUIHandler() (*webUIHandler, error) {
+	subFS, err := fs.Sub(reactUIFS, "webui-react/dist")
 	if err != nil {
 		return nil, err
 	}
-
-	return &webUIHandler{
-		fsys: subFS,
-	}, nil
+	return &webUIHandler{fsys: subFS}, nil
 }
 
 // ServeHTTP implements http.Handler.

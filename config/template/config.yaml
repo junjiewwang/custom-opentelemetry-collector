@@ -306,6 +306,24 @@ extensions:
       key_prefix: "otel:ws_token:"
       ttl: 30s  # Token time-to-live
     
+    # Observability query backend configuration
+    # Configure Jaeger and Prometheus endpoints to enable Trace/Metric/ServiceMap query features.
+    # When configured, the admin API will expose:
+    #   - GET /api/v2/observability/traces/*          - Trace search & detail (proxy to Jaeger Query API)
+    #   - GET /api/v2/observability/dependencies      - Service dependencies (proxy to Jaeger Dependencies API)
+    #   - GET /api/v2/observability/metrics/*          - Metric query (proxy to Prometheus HTTP API)
+    # These endpoints are used by the React WebUI for Traces, Metrics, and Service Map pages.
+    observability:
+      jaeger:
+        # Jaeger Query HTTP API base URL
+        # This is the Jaeger Query service endpoint (NOT the collector/agent endpoint)
+        # Example: "http://jaeger-query:16686"
+        endpoint: "[[ .Service.jaeger_query.url ]]"
+      prometheus:
+        # Prometheus HTTP API base URL
+        # Example: "http://prometheus:9090"
+        endpoint: "[[ .Service.prometheus_server.query_url ]]"
+    
     # NOTE: The following component configs are only used when controlplane_extension is NOT set.
     # When controlplane_extension is set, these are ignored and components are reused from controlplane.
     #

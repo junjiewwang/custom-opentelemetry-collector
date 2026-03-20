@@ -14,6 +14,29 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 )
 
+// ObservabilityConfig defines the configuration for observability query backends.
+type ObservabilityConfig struct {
+	// Jaeger query backend configuration.
+	Jaeger JaegerQueryConfig `mapstructure:"jaeger"`
+
+	// Prometheus query backend configuration.
+	Prometheus PrometheusQueryConfig `mapstructure:"prometheus"`
+}
+
+// JaegerQueryConfig defines Jaeger query API endpoint.
+type JaegerQueryConfig struct {
+	// Endpoint is the Jaeger Query HTTP API base URL.
+	// Example: "http://jaeger-query:16686"
+	Endpoint string `mapstructure:"endpoint"`
+}
+
+// PrometheusQueryConfig defines Prometheus query API endpoint.
+type PrometheusQueryConfig struct {
+	// Endpoint is the Prometheus HTTP API base URL.
+	// Example: "http://prometheus:9090"
+	Endpoint string `mapstructure:"endpoint"`
+}
+
 // Config defines the configuration for the admin extension.
 type Config struct {
 	// StorageExtension is the name of the storage extension to use.
@@ -42,6 +65,10 @@ type Config struct {
 	// WSToken configuration for WebSocket authentication tokens.
 	// In distributed mode (multiple collector replicas), use Redis to share tokens.
 	WSToken WSTokenConfig `mapstructure:"ws_token"`
+
+	// Observability query backend configuration.
+	// Configure Jaeger and Prometheus endpoints to enable Trace/Metric query features.
+	Observability ObservabilityConfig `mapstructure:"observability"`
 
 	// ConfigManager configuration.
 	ConfigManager configmanager.Config `mapstructure:"config_manager"`
@@ -242,6 +269,7 @@ func createDefaultConfig() *Config {
 			},
 		},
 		WSToken:       DefaultWSTokenConfig(),
+		Observability: ObservabilityConfig{},
 		ConfigManager: configmanager.DefaultConfig(),
 		TaskManager:   taskmanager.DefaultConfig(),
 		AgentRegistry: agentregistry.DefaultConfig(),

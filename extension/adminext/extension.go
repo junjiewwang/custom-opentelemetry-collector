@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/collector/extension/extensioncapabilities"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/extension/adminext/observability"
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
@@ -62,6 +63,10 @@ type Extension struct {
 
 	// WebSocket token manager for secure WS authentication
 	wsTokenMgr WSTokenManager
+
+	// Observability query interfaces (Trace + Metric)
+	traceReader  observability.TraceReader
+	metricReader observability.MetricReader
 
 	// Notification components (from controlplane extension)
 	notificationStore notification.Store
@@ -123,6 +128,20 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 			e.logger.Warn("Failed to initialize Arthas tunnel extension", zap.Error(err))
 			// Don't fail startup, just log warning
 		}
+	}
+
+	// Initialize Observability query readers if configured
+	if e.config.Observability.Jaeger.Endpoint != "" {
+		e.traceReader = observability.NewJaegerTraceReader(e.logger, e.config.Observability.Jaeger.Endpoint)
+		e.logger.Info("Trace reader initialized (Jaeger)",
+			zap.String("endpoint", e.config.Observability.Jaeger.Endpoint),
+		)
+	}
+	if e.config.Observability.Prometheus.Endpoint != "" {
+		e.metricReader = observability.NewPrometheusMetricReader(e.logger, e.config.Observability.Prometheus.Endpoint)
+		e.logger.Info("Metric reader initialized (Prometheus)",
+			zap.String("endpoint", e.config.Observability.Prometheus.Endpoint),
+		)
 	}
 
 	// Initialize WebSocket token manager based on configuration

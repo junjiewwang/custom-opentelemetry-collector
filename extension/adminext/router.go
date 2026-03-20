@@ -42,12 +42,16 @@ func (e *Extension) newRouter() http.Handler {
 		r.Mount(internalPrefix, http.HandlerFunc(e.arthasTunnel.HandleInternalProxy))
 	}
 
-	// WebUI - serve embedded static files (no auth required for UI assets)
-	webUI, err := newWebUIHandler()
-	if err == nil {
-		serveIndex := func(w http.ResponseWriter, req *http.Request) {
+	// ============================================================================
+	// WebUI - React 前端 (/ui/) — 唯一前端入口
+	// ============================================================================
+
+	// React 前端 - 挂载在 /ui/
+	reactUI, reactErr := newReactUIHandler()
+	if reactErr == nil {
+		serveReactIndex := func(w http.ResponseWriter, req *http.Request) {
 			req.URL.Path = "/index.html"
-			webUI.ServeHTTP(w, req)
+			reactUI.ServeHTTP(w, req)
 		}
 		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
 			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
@@ -56,11 +60,19 @@ func (e *Extension) newRouter() http.Handler {
 			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
 		})
 		// Handle /ui/ explicitly (chi's /* doesn't match trailing slash)
-		r.Get("/ui/", serveIndex)
+		r.Get("/ui/", serveReactIndex)
 		r.Get("/ui/*", func(w http.ResponseWriter, req *http.Request) {
 			// Strip /ui prefix for file serving
-			req.URL.Path = strings.TrimPrefix(req.URL.Path, "/ui")
-			webUI.ServeHTTP(w, req)
+			stripped := strings.TrimPrefix(req.URL.Path, "/ui")
+			req.URL.Path = stripped
+			reactUI.ServeHTTP(w, req)
+		})
+		// Legacy redirect: /legacy/* → /ui/
+		r.Get("/legacy", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
+		})
+		r.Get("/legacy/*", func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/ui/", http.StatusMovedPermanently)
 		})
 	}
 
@@ -158,6 +170,48 @@ func (e *Extension) newRouter() http.Handler {
 			r.Get("/{id}", e.getNotification)
 			r.Post("/{id}/retry", e.retryNotification)
 		})
+
+		// ============================================================================
+		// Observability Query Proxy (Trace + Metric)
+		// ============================================================================
+		if e.traceReader != nil || e.metricReader != nil {
+			r.Route("/observability", func(r chi.Router) {
+				// --- Trace 查询 (via TraceReader) ---
+				if e.traceReader != nil {
+					r.Route("/traces", func(r chi.Router) {
+						// 搜索 Traces
+						r.Get("/", e.handleSearchTraces)
+						// 获取所有 Service 列表
+						r.Get("/services", e.handleGetTraceServices)
+						// 获取指定 Service 的 Operations
+						r.Get("/services/{service}/operations", e.handleGetTraceOperations)
+						// 获取单个 Trace 详情
+						r.Get("/{traceID}", e.handleGetTrace)
+					})
+
+					// --- 服务依赖关系 (Dependencies，用于 Service Map) ---
+					r.Get("/dependencies", e.handleGetDependencies)
+				}
+
+				// --- Metric 查询 (via MetricReader) ---
+				if e.metricReader != nil {
+					r.Route("/metrics", func(r chi.Router) {
+						// Instant query
+						r.Get("/query", e.handleMetricQuery)
+						// Range query
+						r.Get("/query_range", e.handleMetricQueryRange)
+						// Label 名称列表
+						r.Get("/labels", e.handleMetricLabels)
+						// Label 值列表
+						r.Get("/labels/{labelName}/values", e.handleMetricLabelValues)
+						// Series 元数据
+						r.Get("/series", e.handleMetricSeries)
+						// Metric 元数据
+						r.Get("/metadata", e.handleMetricMetadata)
+					})
+				}
+			})
+		}
 
 		// ============================================================================
 		// Arthas Tunnel (if enabled)
