@@ -2,6 +2,7 @@
 bin/
 dist/
 config/build/
+customcol
 
 # Go
 *.exe
@@ -36,6 +37,9 @@ __debug_bin*
 
 # CodeBuddy
 .codebuddy/
+
+#playwright
+.playwright-mcp
 
 # >>> svcgen generated - DO NOT EDIT >>>
 # Generated files (only service.yaml needs to be tracked)
