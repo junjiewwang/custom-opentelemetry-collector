@@ -4,70 +4,52 @@
 package adminext
 
 import (
-	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
+
+	"go.opentelemetry.io/collector/custom/extension/adminext/observability"
 )
 
 // ============================================================================
-// Observability Query Proxy
+// Observability Query Handlers
 //
-// 作为 Query Proxy 将前端请求透传到 Jaeger Query API 和 Prometheus HTTP API。
-// 设计原则：
-//   - 前端不直接访问 Jaeger/Prometheus，统一走 Admin API 鉴权
-//   - Jaeger Query API: https://www.jaegertracing.io/docs/apis/#http-json
-//   - Prometheus HTTP API: https://prometheus.io/docs/prometheus/latest/querying/api/
+// Uses TraceReader and MetricReader abstraction interfaces to query backends.
+// Design principles:
+//   - Frontend does not access Jaeger/Prometheus directly; all queries go through Admin API auth
+//   - TraceReader: abstracts Jaeger Query API (https://www.jaegertracing.io/docs/apis/#http-json)
+//   - MetricReader: abstracts Prometheus HTTP API (https://prometheus.io/docs/prometheus/latest/querying/api/)
 // ============================================================================
 
-// observabilityClient 封装 Jaeger 和 Prometheus 的 HTTP 查询客户端。
-type observabilityClient struct {
-	jaegerEndpoint     string
-	prometheusEndpoint string
-	httpClient         *http.Client
-	logger             *zap.Logger
-}
-
-// newObservabilityClient 创建可观测性查询客户端。
-func newObservabilityClient(logger *zap.Logger, cfg ObservabilityConfig) *observabilityClient {
-	return &observabilityClient{
-		jaegerEndpoint:     strings.TrimRight(cfg.Jaeger.Endpoint, "/"),
-		prometheusEndpoint: strings.TrimRight(cfg.Prometheus.Endpoint, "/"),
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		logger: logger,
-	}
-}
-
 // ============================================================================
-// Trace 查询 API Handlers（代理 Jaeger Query API）
+// Trace Query API Handlers (via TraceReader interface)
 // ============================================================================
 
-// handleGetTraceServices 获取 Jaeger 中所有可用的 Service 列表。
+// handleGetTraceServices returns all available service names.
 // GET /api/v2/observability/traces/services
-// → Jaeger API: GET /api/services
 func (e *Extension) handleGetTraceServices(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.jaegerEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Jaeger query backend not configured")
+	if e.traceReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Trace query backend not configured")
 		return
 	}
 
-	targetURL := fmt.Sprintf("%s/api/services", e.obsClient.jaegerEndpoint)
-	e.proxyGET(w, r, targetURL)
+	result, err := e.traceReader.GetServices(r.Context())
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	e.writeRawJSON(w, result.StatusCode, result.RawBody)
 }
 
-// handleGetTraceOperations 获取指定 Service 的所有 Operation。
+// handleGetTraceOperations returns all operations for the specified service.
 // GET /api/v2/observability/traces/services/{service}/operations
-// → Jaeger API: GET /api/services/{service}/operations
 func (e *Extension) handleGetTraceOperations(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.jaegerEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Jaeger query backend not configured")
+	if e.traceReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Trace query backend not configured")
 		return
 	}
 
@@ -77,30 +59,41 @@ func (e *Extension) handleGetTraceOperations(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	targetURL := fmt.Sprintf("%s/api/services/%s/operations", e.obsClient.jaegerEndpoint, url.PathEscape(service))
-	e.proxyGET(w, r, targetURL)
-}
-
-// handleSearchTraces 搜索 Traces。
-// GET /api/v2/observability/traces?service=xxx&operation=xxx&tags=xxx&limit=20&start=xxx&end=xxx&minDuration=xxx&maxDuration=xxx
-// → Jaeger API: GET /api/traces?service=xxx&...
-func (e *Extension) handleSearchTraces(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.jaegerEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Jaeger query backend not configured")
+	result, err := e.traceReader.GetOperations(r.Context(), service)
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
-	// 透传前端的查询参数到 Jaeger
-	targetURL := fmt.Sprintf("%s/api/traces?%s", e.obsClient.jaegerEndpoint, r.URL.RawQuery)
-	e.proxyGET(w, r, targetURL)
+	e.writeRawJSON(w, result.StatusCode, result.RawBody)
 }
 
-// handleGetTrace 获取单个 Trace 的详细信息。
+// handleSearchTraces searches for traces matching query parameters.
+// GET /api/v2/observability/traces?service=xxx&operation=xxx&tags=xxx&limit=20&start=xxx&end=xxx&minDuration=xxx&maxDuration=xxx
+func (e *Extension) handleSearchTraces(w http.ResponseWriter, r *http.Request) {
+	if e.traceReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Trace query backend not configured")
+		return
+	}
+
+	query := observability.TraceSearchQuery{
+		RawQuery: r.URL.RawQuery,
+	}
+
+	result, err := e.traceReader.SearchTraces(r.Context(), query)
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	e.writeRawJSON(w, result.StatusCode, result.RawBody)
+}
+
+// handleGetTrace retrieves a single trace by its trace ID.
 // GET /api/v2/observability/traces/{traceID}
-// → Jaeger API: GET /api/traces/{traceID}
 func (e *Extension) handleGetTrace(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.jaegerEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Jaeger query backend not configured")
+	if e.traceReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Trace query backend not configured")
 		return
 	}
 
@@ -110,47 +103,77 @@ func (e *Extension) handleGetTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetURL := fmt.Sprintf("%s/api/traces/%s", e.obsClient.jaegerEndpoint, url.PathEscape(traceID))
-	e.proxyGET(w, r, targetURL)
+	result, err := e.traceReader.GetTrace(r.Context(), traceID)
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	e.writeRawJSON(w, result.StatusCode, result.RawBody)
 }
 
-// handleGetDependencies 获取服务间依赖关系（用于 Service Map）。
+// handleGetDependencies returns service dependency links for the Service Map.
 // GET /api/v2/observability/dependencies?endTs=xxx&lookback=xxx
-// → Jaeger API: GET /api/dependencies?endTs=xxx&lookback=xxx
-// endTs: 结束时间（Unix 毫秒），lookback: 回溯时长（毫秒）
+// endTs: end timestamp (Unix milliseconds), lookback: lookback duration (milliseconds)
 func (e *Extension) handleGetDependencies(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.jaegerEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Jaeger query backend not configured")
+	if e.traceReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Trace query backend not configured")
 		return
 	}
 
-	targetURL := fmt.Sprintf("%s/api/dependencies?%s", e.obsClient.jaegerEndpoint, r.URL.RawQuery)
-	e.proxyGET(w, r, targetURL)
+	// Parse endTs (Unix milliseconds) and lookback (milliseconds) from query params
+	endTsStr := r.URL.Query().Get("endTs")
+	lookbackStr := r.URL.Query().Get("lookback")
+
+	endTsMs, err := strconv.ParseInt(endTsStr, 10, 64)
+	if err != nil || endTsMs <= 0 {
+		// Default to current time if not provided or invalid
+		endTsMs = time.Now().UnixMilli()
+	}
+	endTs := time.UnixMilli(endTsMs)
+
+	lookbackMs, err := strconv.ParseInt(lookbackStr, 10, 64)
+	if err != nil || lookbackMs <= 0 {
+		// Default to 24 hours
+		lookbackMs = 24 * 60 * 60 * 1000
+	}
+	lookback := time.Duration(lookbackMs) * time.Millisecond
+
+	result, err := e.traceReader.GetDependencies(r.Context(), endTs, lookback)
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	e.writeRawJSON(w, result.StatusCode, result.RawBody)
 }
 
 // ============================================================================
-// Metric 查询 API Handlers（代理 Prometheus HTTP API）
+// Metric Query API Handlers (via MetricReader interface)
 // ============================================================================
 
-// handleMetricLabels 获取 Prometheus 中所有可用的 label 名称。
+// handleMetricLabels returns all available label names.
 // GET /api/v2/observability/metrics/labels
-// → Prometheus API: GET /api/v1/labels
 func (e *Extension) handleMetricLabels(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.prometheusEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Prometheus query backend not configured")
+	if e.metricReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Metric query backend not configured")
 		return
 	}
 
-	targetURL := fmt.Sprintf("%s/api/v1/labels", e.obsClient.prometheusEndpoint)
-	e.proxyGET(w, r, targetURL)
+	body, err := e.metricReader.GetLabels(r.Context())
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	e.writeRawJSONBytes(w, body)
 }
 
-// handleMetricLabelValues 获取指定 label 的所有值。
+// handleMetricLabelValues returns all values for the specified label name.
 // GET /api/v2/observability/metrics/labels/{labelName}/values
-// → Prometheus API: GET /api/v1/label/{labelName}/values
 func (e *Extension) handleMetricLabelValues(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.prometheusEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Prometheus query backend not configured")
+	if e.metricReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Metric query backend not configured")
 		return
 	}
 
@@ -160,96 +183,103 @@ func (e *Extension) handleMetricLabelValues(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	targetURL := fmt.Sprintf("%s/api/v1/label/%s/values", e.obsClient.prometheusEndpoint, url.PathEscape(labelName))
-	e.proxyGET(w, r, targetURL)
-}
-
-// handleMetricQuery 执行 Prometheus instant query。
-// GET /api/v2/observability/metrics/query?query=xxx&time=xxx
-// → Prometheus API: GET /api/v1/query?query=xxx&time=xxx
-func (e *Extension) handleMetricQuery(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.prometheusEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Prometheus query backend not configured")
-		return
-	}
-
-	targetURL := fmt.Sprintf("%s/api/v1/query?%s", e.obsClient.prometheusEndpoint, r.URL.RawQuery)
-	e.proxyGET(w, r, targetURL)
-}
-
-// handleMetricQueryRange 执行 Prometheus range query。
-// GET /api/v2/observability/metrics/query_range?query=xxx&start=xxx&end=xxx&step=xxx
-// → Prometheus API: GET /api/v1/query_range?query=xxx&...
-func (e *Extension) handleMetricQueryRange(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.prometheusEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Prometheus query backend not configured")
-		return
-	}
-
-	targetURL := fmt.Sprintf("%s/api/v1/query_range?%s", e.obsClient.prometheusEndpoint, r.URL.RawQuery)
-	e.proxyGET(w, r, targetURL)
-}
-
-// handleMetricSeries 查询 Prometheus series 元数据。
-// GET /api/v2/observability/metrics/series?match[]=xxx
-// → Prometheus API: GET /api/v1/series?match[]=xxx
-func (e *Extension) handleMetricSeries(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.prometheusEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Prometheus query backend not configured")
-		return
-	}
-
-	targetURL := fmt.Sprintf("%s/api/v1/series?%s", e.obsClient.prometheusEndpoint, r.URL.RawQuery)
-	e.proxyGET(w, r, targetURL)
-}
-
-// handleMetricMetadata 查询 Prometheus metric 元数据。
-// GET /api/v2/observability/metrics/metadata?metric=xxx
-// → Prometheus API: GET /api/v1/metadata?metric=xxx
-func (e *Extension) handleMetricMetadata(w http.ResponseWriter, r *http.Request) {
-	if e.obsClient == nil || e.obsClient.prometheusEndpoint == "" {
-		e.writeError(w, http.StatusServiceUnavailable, "Prometheus query backend not configured")
-		return
-	}
-
-	targetURL := fmt.Sprintf("%s/api/v1/metadata?%s", e.obsClient.prometheusEndpoint, r.URL.RawQuery)
-	e.proxyGET(w, r, targetURL)
-}
-
-// ============================================================================
-// 通用代理方法
-// ============================================================================
-
-// proxyGET 将 GET 请求代理到目标 URL，将响应透传给客户端。
-func (e *Extension) proxyGET(w http.ResponseWriter, _ *http.Request, targetURL string) {
-	resp, err := e.obsClient.httpClient.Get(targetURL)
+	body, err := e.metricReader.GetLabelValues(r.Context(), labelName)
 	if err != nil {
-		e.logger.Warn("Observability proxy request failed",
-			zap.String("url", targetURL),
-			zap.Error(err),
-		)
-		e.writeError(w, http.StatusBadGateway, fmt.Sprintf("Backend request failed: %v", err))
+		e.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	defer resp.Body.Close()
 
-	// 透传响应头
-	for key, values := range resp.Header {
-		for _, v := range values {
-			w.Header().Add(key, v)
-		}
+	e.writeRawJSONBytes(w, body)
+}
+
+// handleMetricQuery executes a Prometheus instant query.
+// GET /api/v2/observability/metrics/query?query=xxx&time=xxx
+func (e *Extension) handleMetricQuery(w http.ResponseWriter, r *http.Request) {
+	if e.metricReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Metric query backend not configured")
+		return
 	}
 
-	// 确保 Content-Type 为 JSON
-	if ct := w.Header().Get("Content-Type"); ct == "" {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	body, err := e.metricReader.QueryInstant(r.Context(), r.URL.RawQuery)
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
 	}
 
-	w.WriteHeader(resp.StatusCode)
+	e.writeRawJSONBytes(w, body)
+}
 
-	// 限制读取大小防止 OOM（最大 50MB）
-	limited := io.LimitReader(resp.Body, 50*1024*1024)
-	if _, err := io.Copy(w, limited); err != nil {
-		e.logger.Warn("Error copying proxy response", zap.Error(err))
+// handleMetricQueryRange executes a Prometheus range query.
+// GET /api/v2/observability/metrics/query_range?query=xxx&start=xxx&end=xxx&step=xxx
+func (e *Extension) handleMetricQueryRange(w http.ResponseWriter, r *http.Request) {
+	if e.metricReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Metric query backend not configured")
+		return
+	}
+
+	body, err := e.metricReader.QueryRange(r.Context(), r.URL.RawQuery)
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	e.writeRawJSONBytes(w, body)
+}
+
+// handleMetricSeries queries Prometheus series metadata.
+// GET /api/v2/observability/metrics/series?match[]=xxx
+func (e *Extension) handleMetricSeries(w http.ResponseWriter, r *http.Request) {
+	if e.metricReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Metric query backend not configured")
+		return
+	}
+
+	body, err := e.metricReader.GetSeries(r.Context(), r.URL.RawQuery)
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	e.writeRawJSONBytes(w, body)
+}
+
+// handleMetricMetadata queries Prometheus metric metadata.
+// GET /api/v2/observability/metrics/metadata?metric=xxx
+func (e *Extension) handleMetricMetadata(w http.ResponseWriter, r *http.Request) {
+	if e.metricReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Metric query backend not configured")
+		return
+	}
+
+	body, err := e.metricReader.GetMetadata(r.Context(), r.URL.RawQuery)
+	if err != nil {
+		e.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	e.writeRawJSONBytes(w, body)
+}
+
+// ============================================================================
+// Response Helpers
+// ============================================================================
+
+// writeRawJSON writes a raw JSON response with the given status code and body.
+// This preserves the original backend response format for transparent proxying.
+func (e *Extension) writeRawJSON(w http.ResponseWriter, statusCode int, body []byte) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if statusCode > 0 {
+		w.WriteHeader(statusCode)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	if _, err := w.Write(body); err != nil {
+		e.logger.Warn("Error writing response", zap.String("error", err.Error()))
 	}
 }
+
+// writeRawJSONBytes writes raw JSON bytes as a 200 OK response.
+func (e *Extension) writeRawJSONBytes(w http.ResponseWriter, body []byte) {
+	e.writeRawJSON(w, http.StatusOK, body)
+}
+

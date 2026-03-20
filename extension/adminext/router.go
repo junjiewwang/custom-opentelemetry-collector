@@ -174,38 +174,42 @@ func (e *Extension) newRouter() http.Handler {
 		// ============================================================================
 		// Observability Query Proxy (Trace + Metric)
 		// ============================================================================
-		if e.obsClient != nil {
+		if e.traceReader != nil || e.metricReader != nil {
 			r.Route("/observability", func(r chi.Router) {
-				// --- Trace 查询 (Jaeger) ---
-				r.Route("/traces", func(r chi.Router) {
-					// 搜索 Traces
-					r.Get("/", e.handleSearchTraces)
-					// 获取所有 Service 列表
-					r.Get("/services", e.handleGetTraceServices)
-					// 获取指定 Service 的 Operations
-					r.Get("/services/{service}/operations", e.handleGetTraceOperations)
-					// 获取单个 Trace 详情
-					r.Get("/{traceID}", e.handleGetTrace)
-				})
+				// --- Trace 查询 (via TraceReader) ---
+				if e.traceReader != nil {
+					r.Route("/traces", func(r chi.Router) {
+						// 搜索 Traces
+						r.Get("/", e.handleSearchTraces)
+						// 获取所有 Service 列表
+						r.Get("/services", e.handleGetTraceServices)
+						// 获取指定 Service 的 Operations
+						r.Get("/services/{service}/operations", e.handleGetTraceOperations)
+						// 获取单个 Trace 详情
+						r.Get("/{traceID}", e.handleGetTrace)
+					})
 
-				// --- 服务依赖关系 (Jaeger Dependencies，用于 Service Map) ---
-				r.Get("/dependencies", e.handleGetDependencies)
+					// --- 服务依赖关系 (Dependencies，用于 Service Map) ---
+					r.Get("/dependencies", e.handleGetDependencies)
+				}
 
-				// --- Metric 查询 (Prometheus) ---
-				r.Route("/metrics", func(r chi.Router) {
-					// Instant query
-					r.Get("/query", e.handleMetricQuery)
-					// Range query
-					r.Get("/query_range", e.handleMetricQueryRange)
-					// Label 名称列表
-					r.Get("/labels", e.handleMetricLabels)
-					// Label 值列表
-					r.Get("/labels/{labelName}/values", e.handleMetricLabelValues)
-					// Series 元数据
-					r.Get("/series", e.handleMetricSeries)
-					// Metric 元数据
-					r.Get("/metadata", e.handleMetricMetadata)
-				})
+				// --- Metric 查询 (via MetricReader) ---
+				if e.metricReader != nil {
+					r.Route("/metrics", func(r chi.Router) {
+						// Instant query
+						r.Get("/query", e.handleMetricQuery)
+						// Range query
+						r.Get("/query_range", e.handleMetricQueryRange)
+						// Label 名称列表
+						r.Get("/labels", e.handleMetricLabels)
+						// Label 值列表
+						r.Get("/labels/{labelName}/values", e.handleMetricLabelValues)
+						// Series 元数据
+						r.Get("/series", e.handleMetricSeries)
+						// Metric 元数据
+						r.Get("/metadata", e.handleMetricMetadata)
+					})
+				}
 			})
 		}
 
