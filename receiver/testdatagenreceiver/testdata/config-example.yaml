@@ -9,25 +9,23 @@ receivers:
   testdatagen:
     interval: 10s
     scenarios:
-      # ============ 基础场景 ============
+      # ============ 基础场景（使用 Case + ExecuteFlow 引擎）============
       - name: "basic_trace"
         enabled: true
         config:
-          service_name: "test-service"
-          span_count: 5
+          service_name: "user-service"
+          error_rate: 0.0
 
       - name: "error_trace"
         enabled: true
         config:
-          service_name: "error-test-service"
-          span_count: 3
+          service_name: "payment-service"
           error_rate: 0.5
 
       - name: "multi_service_trace"
         enabled: true
         config:
-          service_count: 3
-          depth: 3
+          error_rate: 0.0
 
       - name: "basic_metric"
         enabled: true
@@ -40,30 +38,26 @@ receivers:
       - name: "kafka_messaging"
         enabled: true
         config:
-          service_name: "order-service"
-          destination: "order-events"
-          consumer_group: "order-processor-group"
-          partition_count: 6
-          span_count: 5
-          error_rate: 0.1
+          topic: "order-events"
+          consumer_group: "payment-processor-group"
+          error_rate: 0.05
 
       - name: "rocketmq_messaging"
         enabled: true
         config:
-          service_name: "payment-service"
-          destination: "payment-topic"
-          client_group: "payment-consumer-group"
+          topic: "payment-topic"
+          client_group: "account-consumer-group"
           message_type: "transaction"
           tag: "pay-success"
-          span_count: 3
+          error_rate: 0.05
 
       - name: "rabbitmq_messaging"
         enabled: false
         config:
-          service_name: "notification-service"
-          destination: "notification-queue"
           exchange: "notification-exchange"
           routing_key: "email.send"
+          queue: "email-queue"
+          error_rate: 0.05
 
       # ============ 数据库场景 ============
       - name: "mysql_database"
@@ -71,31 +65,34 @@ receivers:
         config:
           service_name: "user-service"
           db_name: "user_db"
-          peer_name: "mysql-master.internal"
-          peer_port: 3306
           table: "users"
-          span_count: 10
           error_rate: 0.05
 
       - name: "redis_database"
         enabled: true
         config:
-          service_name: "cache-service"
-          peer_name: "redis-cluster.internal"
-          peer_port: 6379
-          database_index: 0
-          span_count: 20
+          service_name: "product-service"
           error_rate: 0.02
 
       - name: "mongodb_database"
         enabled: true
         config:
-          service_name: "product-service"
-          db_name: "product_db"
-          peer_name: "mongo-rs.internal"
-          peer_port: 27017
-          collection: "products"
-          span_count: 8
+          service_name: "content-service"
+          db_name: "content_db"
+          collection: "articles"
+          error_rate: 0.03
+
+    # ============ 业务流（Business Flow）============
+    # 模拟真实微服务调用链，一条 Trace 跨越多个服务
+    flows:
+      - name: "ecommerce_order"
+        enabled: true
+        config:
+          error_rate: 0.05
+
+      - name: "user_login"
+        enabled: true
+        config:
           error_rate: 0.03
 
 # ============================================================
