@@ -48,6 +48,12 @@ service:
     expose: true
     description: "Admin API port"
 
+  - name: http
+    port: 8686
+    protocol: TCP
+    expose: true
+    description: "MCP API port"
+
   - name: jeager-udp
     port: 6831
     protocol: UDP

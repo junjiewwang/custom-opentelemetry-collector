@@ -1391,7 +1391,7 @@ func writeClose(conn *websocket.Conn, code int, reason string) error {
 //   - Does NOT need a browser WebSocket connection
 //   - Uses the pending store's Create (not CreateWithBrowserConn) to register a pending
 //   - Returns the raw tunnel WebSocket connection wrapped in an ArthasSession
-//   - Only supports local agents (distributed proxy is a future enhancement)
+//   - Supports both local and cross-node agents (via Internal WS Proxy)
 func (s *arthasURICompat) connectToAgentProgrammatic(ctx context.Context, agentID string, logger *zap.Logger) (*ArthasSession, error) {
 	logger.Info("[connectToAgent] Programmatic connect request",
 		zap.String("agent_id", agentID),
@@ -1408,12 +1408,15 @@ func (s *arthasURICompat) connectToAgentProgrammatic(ctx context.Context, agentI
 
 	if agent == nil || agent.conn == nil {
 		// In distributed mode, the agent might be on another node.
-		// For now, only support local agents. Distributed support can be added later
-		// by implementing a similar proxy mechanism as proxyConnectArthas.
+		// Use cross-node proxy to connect via Internal WS Proxy.
 		if s.distributed != nil {
 			nodeAddr, err := s.distributed.GetAgentNodeAddr(s.ctx, agentID)
 			if err == nil && nodeAddr != "" {
-				return nil, fmt.Errorf("agent '%s' is on another node (%s); programmatic cross-node connection is not yet supported", agentID, nodeAddr)
+				logger.Info("[connectToAgent] Agent is on another node, using cross-node proxy",
+					zap.String("agent_id", agentID),
+					zap.String("target_node", nodeAddr),
+				)
+				return s.connectToAgentCrossNode(ctx, agentID, nodeAddr, logger)
 			}
 		}
 		return nil, fmt.Errorf("agent '%s' is not connected to tunnel", agentID)
@@ -1492,4 +1495,155 @@ func (s *arthasURICompat) connectToAgentProgrammatic(ctx context.Context, agentI
 	// Step 6: Wrap in ArthasSession and return
 	session := newArthasSession(tunnelConn, agentID, sessionID, logger)
 	return session, nil
+}
+
+// connectToAgentCrossNode establishes a programmatic Arthas session to an agent on a remote node.
+//
+// It connects to the target node via Internal WS Proxy (the same mechanism used by
+// proxyConnectArthas for browser WebSocket connections). The target node executes the
+// full handleConnectArthas flow (pending → startTunnel → openTunnel → relay).
+//
+// After dialing, this method reads and discards the terminal status messages sent by
+// the target node's handleConnectArthas until it receives a READY status (indicated by
+// the "[+]" prefix). The established WebSocket connection is then wrapped in an
+// ArthasSession for the caller to use.
+//
+// Architecture:
+//
+//	MCP Extension → connectToAgentCrossNode()
+//	  → WS Dial to target node: ws://<node>/internal/v1/arthas/proxy/connect?id=<agentID>
+//	  → Target node: handleConnectArthas() full flow
+//	  → Read & discard status messages until READY
+//	  → Return *ArthasSession wrapping the WS connection
+func (s *arthasURICompat) connectToAgentCrossNode(ctx context.Context, agentID, targetNodeAddr string, logger *zap.Logger) (*ArthasSession, error) {
+	if s.distributed == nil || s.distributed.Proxy() == nil {
+		return nil, fmt.Errorf("distributed proxy not available")
+	}
+
+	prx := s.distributed.Proxy()
+	proxyConfig := prx.Config()
+
+	// Build target URL (same as WSProxy.buildInternalURL for "connect" action)
+	targetURL := prx.BuildInternalURL(targetNodeAddr, "connect", map[string]string{
+		"id": agentID,
+	})
+
+	logger.Info("[connectToAgent] Dialing cross-node proxy",
+		zap.String("agent_id", agentID),
+		zap.String("target_node", targetNodeAddr),
+		zap.String("target_url", targetURL),
+	)
+
+	// Dial to target node with internal auth token
+	header := http.Header{}
+	header.Set(proxyConfig.InternalTokenHeader, proxyConfig.InternalToken)
+
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: s.connectTimeout(),
+	}
+
+	targetConn, resp, err := dialer.DialContext(ctx, targetURL, header)
+	if err != nil {
+		if resp != nil {
+			logger.Error("[connectToAgent] Failed to dial target node",
+				zap.String("target_node", targetNodeAddr),
+				zap.Int("status_code", resp.StatusCode),
+				zap.Error(err),
+			)
+		}
+		return nil, fmt.Errorf("failed to dial target node %s: %w", targetNodeAddr, err)
+	}
+
+	// Read and discard status messages until READY or ERROR.
+	// The target node's handleConnectArthas sends terminal-formatted status messages:
+	//   "\033[36m[*] Connecting to agent...\033[0m\r\n"     (CONNECTING)
+	//   "\033[36m[*] Waiting for agent...\033[0m\r\n"       (WAITING_TUNNEL)
+	//   "\033[32m[+] Connected successfully...\033[0m\r\n"  (READY)
+	//   "\033[31m[-] Error message...\033[0m\r\n"           (ERROR)
+	//   "\033[33m[!] Timeout message...\033[0m\r\n"         (TIMEOUT)
+	timeout := s.connectTimeout()
+	deadline := time.Now().Add(timeout)
+
+	for {
+		if time.Now().After(deadline) {
+			_ = targetConn.Close()
+			return nil, fmt.Errorf("timeout waiting for cross-node tunnel to agent '%s' (waited %v)", agentID, timeout)
+		}
+
+		_ = targetConn.SetReadDeadline(deadline)
+		_, msg, err := targetConn.ReadMessage()
+		if err != nil {
+			_ = targetConn.Close()
+			return nil, fmt.Errorf("failed reading status from target node: %w", err)
+		}
+
+		msgStr := string(msg)
+		logger.Debug("[connectToAgent] Received cross-node status message",
+			zap.String("agent_id", agentID),
+			zap.String("message", strings.TrimSpace(msgStr)),
+		)
+
+		// Check for READY status: contains "[+]" (ansiGreen + "[+]")
+		if strings.Contains(msgStr, "[+]") {
+			logger.Info("[connectToAgent] Cross-node tunnel ready",
+				zap.String("agent_id", agentID),
+				zap.String("target_node", targetNodeAddr),
+			)
+			break
+		}
+
+		// Check for ERROR status: contains "[-]" (ansiRed + "[-]")
+		if strings.Contains(msgStr, "[-]") {
+			_ = targetConn.Close()
+			// Extract error message by stripping ANSI codes
+			errMsg := stripANSI(msgStr)
+			return nil, fmt.Errorf("cross-node connection failed: %s", strings.TrimSpace(errMsg))
+		}
+
+		// Check for TIMEOUT status: contains "[!]" (ansiYellow + "[!]")
+		if strings.Contains(msgStr, "[!]") {
+			_ = targetConn.Close()
+			errMsg := stripANSI(msgStr)
+			return nil, fmt.Errorf("cross-node connection timeout: %s", strings.TrimSpace(errMsg))
+		}
+
+		// Other status messages (CONNECTING, WAITING_TUNNEL) are informational, continue waiting
+	}
+
+	// Clear read deadline for normal operation
+	_ = targetConn.SetReadDeadline(time.Time{})
+
+	// Generate a session ID for this cross-node session
+	sessionID := randomUpperAlphaNum(20)
+
+	logger.Info("[connectToAgent] Cross-node session established",
+		zap.String("agent_id", agentID),
+		zap.String("session_id", sessionID),
+		zap.String("target_node", targetNodeAddr),
+	)
+
+	// Wrap in ArthasSession and return
+	session := newArthasSession(targetConn, agentID, sessionID, logger)
+	return session, nil
+}
+
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	result := strings.Builder{}
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' {
+			// Skip until 'm' (end of ANSI escape sequence)
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			if i < len(s) {
+				i++ // skip 'm'
+			}
+		} else {
+			result.WriteByte(s[i])
+			i++
+		}
+	}
+	return result.String()
 }

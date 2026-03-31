@@ -76,7 +76,7 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	}
 
 	e.logger.Info("Starting MCP extension",
-		zap.String("endpoint", e.config.Endpoint.Endpoint),
+	zap.String("endpoint", e.config.Endpoint),
 		zap.String("auth_type", e.config.Auth.Type),
 		zap.Int("max_concurrent_sessions", e.config.MaxConcurrentSessions),
 	)
@@ -200,9 +200,9 @@ func (e *Extension) startHTTPServer() error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	listener, err := net.Listen("tcp", e.config.Endpoint.Endpoint)
+	listener, err := net.Listen("tcp", e.config.Endpoint)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", e.config.Endpoint.Endpoint, err)
+		return fmt.Errorf("failed to listen on %s: %w", e.config.Endpoint, err)
 	}
 	e.listener = listener
 

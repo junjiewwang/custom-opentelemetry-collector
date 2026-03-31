@@ -79,7 +79,7 @@ func (p *WSProxy) ProxyConnectArthas(ctx context.Context, targetNodeAddr string,
 	defer atomic.AddInt64(&p.activeSessions, -1)
 
 	// Build target URL
-	targetURL := p.buildInternalURL(targetNodeAddr, "connect", map[string]string{
+	targetURL := p.BuildInternalURL(targetNodeAddr, "connect", map[string]string{
 		"id": agentID,
 	})
 
@@ -129,7 +129,7 @@ func (p *WSProxy) ProxyOpenTunnel(ctx context.Context, targetNodeAddr string, ag
 	defer atomic.AddInt64(&p.activeSessions, -1)
 
 	// Build target URL
-	targetURL := p.buildInternalURL(targetNodeAddr, "opentunnel", map[string]string{
+	targetURL := p.BuildInternalURL(targetNodeAddr, "opentunnel", map[string]string{
 		"clientConnectionId": clientConnID,
 	})
 
@@ -203,8 +203,13 @@ func (p *WSProxy) HandleInternalOpenTunnel(w http.ResponseWriter, r *http.Reques
 	// Connection ownership transferred to the pending handler
 }
 
-// buildInternalURL builds the internal proxy URL.
-func (p *WSProxy) buildInternalURL(nodeAddr, action string, params map[string]string) string {
+// Config returns the proxy configuration.
+func (p *WSProxy) Config() *ProxyConfig {
+	return p.config
+}
+
+// BuildInternalURL builds the internal proxy URL for cross-node communication.
+func (p *WSProxy) BuildInternalURL(nodeAddr, action string, params map[string]string) string {
 	// Ensure nodeAddr has scheme
 	if !strings.HasPrefix(nodeAddr, "ws://") && !strings.HasPrefix(nodeAddr, "wss://") {
 		nodeAddr = "ws://" + nodeAddr

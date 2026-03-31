@@ -6,15 +6,14 @@ package mcpext
 import (
 	"errors"
 	"fmt"
-
-	"go.opentelemetry.io/collector/config/confignet"
 )
 
 // Config defines the configuration for the MCP extension.
 type Config struct {
 	// Endpoint is the address to listen on for MCP Streamable HTTP connections.
+	// Format: "host:port"
 	// Default: "0.0.0.0:8686"
-	Endpoint confignet.AddrConfig `mapstructure:"endpoint"`
+	Endpoint string `mapstructure:"endpoint"`
 
 	// Auth configures the authentication for MCP connections.
 	Auth AuthConfig `mapstructure:"auth"`
@@ -49,9 +48,7 @@ type AuthConfig struct {
 // createDefaultConfig returns the default configuration for the MCP extension.
 func createDefaultConfig() *Config {
 	return &Config{
-		Endpoint: confignet.AddrConfig{
-			Endpoint: "0.0.0.0:8686",
-		},
+		Endpoint: "0.0.0.0:8686",
 		Auth: AuthConfig{
 			Type: "api_key",
 		},
@@ -64,7 +61,7 @@ func createDefaultConfig() *Config {
 
 // Validate validates the configuration.
 func (c *Config) Validate() error {
-	if c.Endpoint.Endpoint == "" {
+	if c.Endpoint == "" {
 		return errors.New("endpoint must not be empty")
 	}
 
