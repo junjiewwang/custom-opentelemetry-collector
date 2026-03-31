@@ -513,6 +513,55 @@ extensions:
     # Output flush interval
     output_flush_interval: 50ms
 
+  # MCP extension - Model Context Protocol server for AI Agent interaction
+  # Provides MCP Streamable HTTP transport for AI agents (e.g., Claude, Cursor)
+  # to interact with the collector's capabilities via standardized tool calls.
+  #
+  # Available MCP Tools:
+  #   Agent Management:
+  #     - list_agents       - List all online Java agents
+  #     - agent_info        - Get detailed agent information (JVM, OS, app info)
+  #     - arthas_status     - Check Arthas tunnel connection status
+  #   Arthas Lifecycle:
+  #     - arthas_attach     - Start Arthas on target agent and connect to tunnel
+  #     - arthas_detach     - Stop Arthas and release resources
+  #   Arthas Commands:
+  #     - arthas_exec       - Execute arbitrary Arthas command
+  #     - arthas_trace      - Method call path tracing with timing
+  #     - arthas_watch      - Monitor method params/return/exceptions
+  #     - arthas_jad        - Decompile class to view runtime source code
+  #     - arthas_sc         - Search loaded classes
+  #     - arthas_thread     - View JVM thread info, detect deadlocks
+  #     - arthas_stack      - Output method call stack
+  #
+  # Dependencies: controlplane, arthas_tunnel
+  # Architecture:
+  #   AI Agent <--MCP Streamable HTTP--> mcpext <---> controlplaneext + arthastunnelext
+  mcp:
+    # HTTP endpoint for MCP Streamable HTTP connections
+    # MCP clients connect to http://<endpoint>/mcp
+    endpoint: 0.0.0.0:8686
+
+    # Authentication configuration
+    auth:
+      type: api_key  # "api_key" or "none"
+      # API keys for authenticating MCP clients
+      # Supports Authorization: Bearer <key> or X-API-Key: <key> headers
+      api_keys:
+        - "your-mcp-api-key-1"
+
+    # Reference to control plane extension (for agent management and task execution)
+    controlplane_extension: controlplane
+
+    # Reference to Arthas tunnel extension (for remote Java debugging)
+    arthas_tunnel_extension: arthas_tunnel
+
+    # Maximum number of concurrent MCP sessions
+    max_concurrent_sessions: 10
+
+    # Default timeout for tool execution (seconds)
+    tool_timeout: 30
+
   # Memory limiter extension
   memory_limiter:
     check_interval: 1s
@@ -613,7 +662,7 @@ exporters:
 service:
   # Extensions load order: storage must be first (dependency for others)
   # arthas_tunnel must be before admin (admin depends on it)
-  extensions: [storage, controlplane, arthas_tunnel, admin, memory_limiter, zpages]
+  extensions: [storage, controlplane, arthas_tunnel, admin, mcp, memory_limiter, zpages]
   
   pipelines:
     traces:
