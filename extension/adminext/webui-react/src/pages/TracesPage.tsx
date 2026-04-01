@@ -14,7 +14,7 @@ import { apiClient } from '@/api/client';
 import { traceToListItem, formatDuration, formatTimestamp, getServiceColor } from '@/utils/trace';
 import type { JaegerTrace, TraceListItem, TraceSearchParams } from '@/types/trace';
 import TraceDetail from '@/components/TraceDetail';
-import Modal from '@/components/Modal';
+import DetailDrawer from '@/components/DetailDrawer';
 import EmptyState from '@/components/EmptyState';
 
 // ============================================================================
@@ -529,11 +529,11 @@ export default function TracesPage() {
         </div>
       )}
 
-      {/* Trace Detail (Modal 弹窗) */}
-      <Modal
-        isOpen={selectedTrace !== null}
+      {/* Trace Detail (右侧抽屉) */}
+      <DetailDrawer
+        open={selectedTrace !== null}
         onClose={() => setSelectedTraceID(null)}
-        size="full"
+        width="full"
       >
         {selectedTrace && (
           <TraceDetail
@@ -541,7 +541,7 @@ export default function TracesPage() {
             onClose={() => setSelectedTraceID(null)}
           />
         )}
-      </Modal>
+      </DetailDrawer>
 
       {/* Results List */}
       {traces.length > 0 && (

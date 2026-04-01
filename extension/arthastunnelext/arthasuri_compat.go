@@ -432,7 +432,7 @@ func (s *arthasURICompat) submitAutoDetachTask(probeAgentID string, a *compatAge
 
 	t := &model.Task{
 		ID:              uuid.NewString(),
-		TypeName:        "arthas_detach",
+		TypeName:        model.ArthasTaskTypeDetach,
 		TargetAgentID:   probeAgentID,
 		TimeoutMillis:   int64(s.cfg.AutoDetach.TaskTimeout / time.Millisecond),
 		CreatedAtMillis: nowMillis,

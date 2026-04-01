@@ -15,10 +15,11 @@ import (
 
 // mcpServerWrapper wraps mcp-go's MCPServer and manages tool registration.
 type mcpServerWrapper struct {
-	ext       *Extension
-	mcpServer *server.MCPServer
-	httpSrv   *server.StreamableHTTPServer
-	logger    *zap.Logger
+	ext          *Extension
+	mcpServer    *server.MCPServer
+	httpSrv      *server.StreamableHTTPServer
+	logger       *zap.Logger
+	orchestrator *ArthasOrchestrator
 }
 
 // newMCPServerWrapper creates a new MCP server wrapper with all tools registered.
@@ -29,10 +30,18 @@ func newMCPServerWrapper(ext *Extension) (*mcpServerWrapper, error) {
 		server.WithToolCapabilities(true),
 	)
 
+	// 创建 Arthas Orchestrator
+	orchConfig := DefaultOrchestratorConfig()
+	if ext.config.ToolTimeout > 0 {
+		orchConfig.DefaultExecTimeoutMs = int64(ext.config.ToolTimeout) * 1000
+	}
+	orch := NewArthasOrchestrator(ext.controlPlane, ext.logger, orchConfig)
+
 	wrapper := &mcpServerWrapper{
-		ext:       ext,
-		mcpServer: s,
-		logger:    ext.logger.Named("mcp-server"),
+		ext:          ext,
+		mcpServer:    s,
+		logger:       ext.logger.Named("mcp-server"),
+		orchestrator: orch,
 	}
 
 	// Register all tools

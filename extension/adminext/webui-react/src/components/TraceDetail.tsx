@@ -4,13 +4,13 @@
  * 功能：
  * - 展示完整的 Span 树形结构（虚拟滚动）
  * - 时间轴 bar 可视化每个 Span 的相对起始时间和持续时长
- * - 展开/收起 Span 详情（Accordion：Attributes / Events / Process / References / Warnings）
+ * - 展开/收起 Span 详情（参考 Jaeger UI 设计的 Accordion 面板）
  * - 颜色按 Service 区分
  * - Span 搜索过滤（operationName、serviceName、tags）
  * - 视图 Tab 切换预留（Timeline / Statistics / Table / Flamegraph / Graph）
  */
 
-import { useState, useMemo, useRef, useCallback } from 'react';
+import { useState, useMemo, useRef, useCallback, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { buildSpanTree, formatDuration, formatTimestamp, getServiceColor } from '@/utils/trace';
@@ -558,10 +558,10 @@ function VirtualSpanRow({
         </div>
       </div>
 
-      {/* Expanded Detail (Accordion) */}
+      {/* Expanded Detail (Jaeger 风格内联展开) */}
       {isDetailExpanded && (
-        <div className="border-b border-gray-100 bg-gray-50 px-6 py-3">
-          <SpanDetail span={span} process={process} />
+        <div className="border-b border-gray-100 bg-gray-50/50 px-6 py-3">
+          <SpanDetail span={span} process={process} traceStartTime={traceStartTime} />
         </div>
       )}
     </>
@@ -569,7 +569,199 @@ function VirtualSpanRow({
 }
 
 // ============================================================================
-// AccordionSection 组件 - 可折叠的内容区域
+// SpanDetail 组件 - Jaeger 风格的 Span 详情面板（内联展开）
+// ============================================================================
+
+interface SpanDetailProps {
+  span: SpanTreeNode['span'];
+  process: SpanTreeNode['process'];
+  traceStartTime: number;
+}
+
+function SpanDetail({ span, process, traceStartTime }: SpanDetailProps) {
+  const serviceColor = getServiceColor(process.serviceName);
+  const hasReferences = span.references.length > 0;
+  const hasWarnings = span.warnings && span.warnings.length > 0;
+  const hasEvents = span.logs.length > 0;
+  const hasProcessTags = process.tags.length > 0;
+  const relativeStartTime = span.startTime - traceStartTime;
+
+  // 复制到剪贴板
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* 顶部颜色条 + Overview */}
+      <div
+        className="rounded-lg border border-gray-200 overflow-hidden"
+        style={{ borderTopWidth: '3px', borderTopColor: serviceColor }}
+      >
+        <div className="px-4 py-3 bg-white">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2">
+            <OverviewItem label="Service" value={process.serviceName} />
+            <OverviewItem label="Duration" value={formatDuration(span.duration)} bold />
+            <OverviewItem label="Start Time" value={formatDuration(relativeStartTime)} />
+            <OverviewItem label="Absolute Time" value={formatTimestamp(span.startTime)} small />
+          </div>
+        </div>
+      </div>
+
+      {/* Accordion 区域 */}
+      <div className="space-y-2">
+        {/* Attributes (Tags) — 默认展开 */}
+        {span.tags.length > 0 && (
+          <AccordionSection
+            title="Attributes"
+            icon="fa-tags"
+            count={span.tags.length}
+            defaultOpen={true}
+            summary={<TagsSummary tags={span.tags} />}
+          >
+            <KeyValueTable items={span.tags} />
+          </AccordionSection>
+        )}
+
+        {/* Events (Logs) */}
+        {hasEvents && (
+          <AccordionSection
+            title="Events"
+            icon="fa-list-ol"
+            count={span.logs.length}
+            defaultOpen={false}
+          >
+            <EventsList events={span.logs} traceStartTime={traceStartTime} />
+          </AccordionSection>
+        )}
+
+        {/* Process / Resource */}
+        {hasProcessTags && (
+          <AccordionSection
+            title="Resource"
+            icon="fa-server"
+            count={process.tags.length}
+            defaultOpen={false}
+            summary={<TagsSummary tags={process.tags} maxItems={3} />}
+          >
+            <KeyValueTable items={process.tags} />
+          </AccordionSection>
+        )}
+
+        {/* References / Links */}
+        {hasReferences && (
+          <AccordionSection
+            title="References"
+            icon="fa-link"
+            count={span.references.length}
+            defaultOpen={false}
+          >
+            <div className="space-y-1.5">
+              {span.references.map((ref, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs py-1">
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                      ref.refType === 'CHILD_OF'
+                        ? 'bg-blue-50 text-blue-600 border border-blue-200'
+                        : 'bg-purple-50 text-purple-600 border border-purple-200'
+                    }`}
+                  >
+                    {ref.refType}
+                  </span>
+                  <span className="font-mono text-gray-500 truncate" title={ref.spanID}>
+                    {ref.spanID}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </AccordionSection>
+        )}
+
+        {/* Warnings */}
+        {hasWarnings && (
+          <AccordionSection
+            title="Warnings"
+            icon="fa-exclamation-triangle"
+            count={span.warnings!.length}
+            defaultOpen={true}
+            variant="warning"
+          >
+            <div className="space-y-1.5">
+              {span.warnings!.map((warning, i) => (
+                <div key={i} className="text-xs text-amber-700 flex items-start gap-2 py-1">
+                  <i className="fas fa-exclamation-circle text-amber-500 mt-0.5 flex-shrink-0 text-[10px]" />
+                  <span>{warning}</span>
+                </div>
+              ))}
+            </div>
+          </AccordionSection>
+        )}
+      </div>
+
+      {/* Footer - Debug Info（参考 Jaeger） */}
+      <div className="flex items-center justify-between px-1 pt-1">
+        <div className="text-xs text-gray-400 flex items-center gap-1.5 min-w-0">
+          <span className="text-gray-500 font-medium flex-shrink-0">SpanID:</span>
+          <span className="font-mono truncate" title={span.spanID}>{span.spanID}</span>
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0 ml-3">
+          <button
+            onClick={(e) => { e.stopPropagation(); copyToClipboard(span.spanID); }}
+            className="px-2.5 py-1 text-[11px] text-gray-500 hover:text-gray-700 bg-white border border-gray-200 hover:border-gray-300 rounded-md transition flex items-center gap-1.5"
+            title="Copy Span ID"
+          >
+            <i className="fas fa-copy text-[10px]" />
+            Copy ID
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const deepLink = `${window.location.origin}${window.location.pathname}?uiFind=${span.spanID}`;
+              copyToClipboard(deepLink);
+            }}
+            className="px-2.5 py-1 text-[11px] text-gray-500 hover:text-gray-700 bg-white border border-gray-200 hover:border-gray-300 rounded-md transition flex items-center gap-1.5"
+            title="Copy deep link to this span"
+          >
+            <i className="fas fa-link text-[10px]" />
+            Deep Link
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// OverviewItem - Overview 区域的单个信息项
+// ============================================================================
+
+function OverviewItem({
+  label,
+  value,
+  bold = false,
+  small = false,
+}: {
+  label: string;
+  value: string;
+  bold?: boolean;
+  small?: boolean;
+}) {
+  return (
+    <div>
+      <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-0.5">{label}</div>
+      <div
+        className={`${small ? 'text-xs' : 'text-sm'} ${
+          bold ? 'font-bold text-gray-800' : 'text-gray-600'
+        } font-mono`}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// AccordionSection - 可折叠的内容区域（Jaeger 风格）
 // ============================================================================
 
 interface AccordionSectionProps {
@@ -577,8 +769,10 @@ interface AccordionSectionProps {
   icon: string;
   count?: number;
   defaultOpen?: boolean;
-  variant?: 'default' | 'danger';
-  children: React.ReactNode;
+  variant?: 'default' | 'warning';
+  /** 折叠时显示的摘要内容 */
+  summary?: ReactNode;
+  children: ReactNode;
 }
 
 function AccordionSection({
@@ -587,204 +781,137 @@ function AccordionSection({
   count,
   defaultOpen = false,
   variant = 'default',
+  summary,
   children,
 }: AccordionSectionProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
-  const headerColor = variant === 'danger'
-    ? 'text-red-600 hover:bg-red-50'
-    : 'text-gray-700 hover:bg-gray-100';
+  const isWarning = variant === 'warning';
+  const borderColor = isWarning ? 'border-amber-200' : 'border-gray-200';
+  const headerBg = isWarning
+    ? 'bg-amber-50/80 hover:bg-amber-50'
+    : 'bg-gray-50/50 hover:bg-gray-100/60';
+  const iconColor = isWarning ? 'text-amber-500' : 'text-gray-400';
+  const titleColor = isWarning ? 'text-amber-700' : 'text-gray-700';
 
   return (
-    <div className={`border rounded-lg overflow-hidden ${
-      variant === 'danger' ? 'border-red-200' : 'border-gray-200'
-    }`}>
+    <div className={`border rounded-lg overflow-hidden ${borderColor}`}>
       {/* Header */}
       <button
-        onClick={() => setIsOpen(!isOpen)}
-        className={`w-full flex items-center justify-between px-3 py-2 text-xs font-medium transition-colors ${headerColor} bg-white`}
+        onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
+        className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium transition-colors ${headerBg}`}
       >
-        <div className="flex items-center gap-2">
-          <i className={`fas ${icon} text-[10px] ${
-            variant === 'danger' ? 'text-red-500' : 'text-gray-400'
-          }`} />
-          <span>{title}</span>
-          {count !== undefined && count > 0 && (
-            <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
-              variant === 'danger'
-                ? 'bg-red-100 text-red-600'
+        <i
+          className={`fas fa-chevron-right text-[9px] text-gray-400 transition-transform duration-150 ${
+            isOpen ? 'rotate-90' : ''
+          }`}
+        />
+        <i className={`fas ${icon} text-[10px] ${iconColor}`} />
+        <span className={titleColor}>{title}</span>
+        {count !== undefined && count > 0 && (
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
+              isWarning
+                ? 'bg-amber-100 text-amber-600'
                 : 'bg-gray-100 text-gray-500'
-            }`}>
-              {count}
-            </span>
-          )}
-        </div>
-        <i className={`fas fa-chevron-${isOpen ? 'up' : 'down'} text-[10px] text-gray-400 transition-transform`} />
+            }`}
+          >
+            {count}
+          </span>
+        )}
       </button>
 
-      {/* Content with transition */}
-      <div
-        className={`transition-all duration-200 ease-in-out overflow-hidden ${
-          isOpen ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0'
-        }`}
-      >
-        <div className="px-3 py-2 border-t border-gray-100 bg-white">
+      {/* 折叠时的摘要 */}
+      {!isOpen && summary && (
+        <div className="px-3 py-1.5 border-t border-gray-100 bg-white">
+          {summary}
+        </div>
+      )}
+
+      {/* 展开内容 */}
+      {isOpen && (
+        <div className="px-3 py-2.5 border-t border-gray-100 bg-white">
           {children}
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
 // ============================================================================
-// SpanDetail 组件 - Accordion 结构的 Span 详情面板
+// TagsSummary - 折叠时的 Tags 摘要（参考 Jaeger 的 AttributesSummary）
 // ============================================================================
 
-interface SpanDetailProps {
-  span: SpanTreeNode['span'];
-  process: SpanTreeNode['process'];
-}
-
-function SpanDetail({ span, process }: SpanDetailProps) {
-  const hasReferences = span.references.length > 0;
-  const hasWarnings = span.warnings && span.warnings.length > 0;
+function TagsSummary({
+  tags,
+  maxItems = 5,
+}: {
+  tags: JaegerKeyValue[];
+  maxItems?: number;
+}) {
+  const displayTags = tags.slice(0, maxItems);
+  const remaining = tags.length - maxItems;
 
   return (
-    <div className="space-y-2 text-sm">
-      {/* Basic Info (always visible) */}
-      <div className="grid grid-cols-2 gap-2 text-xs mb-2">
-        <div>
-          <span className="text-gray-400">Span ID:</span>{' '}
-          <span className="font-mono text-gray-600">{span.spanID}</span>
-        </div>
-        <div>
-          <span className="text-gray-400">Start Time:</span>{' '}
-          <span className="text-gray-600">{formatTimestamp(span.startTime)}</span>
-        </div>
-        <div>
-          <span className="text-gray-400">Duration:</span>{' '}
-          <span className="font-semibold text-gray-700">{formatDuration(span.duration)}</span>
-        </div>
-        <div>
-          <span className="text-gray-400">Service:</span>{' '}
-          <span className="text-gray-600">{process.serviceName}</span>
-        </div>
-      </div>
-
-      {/* Accordion: Attributes (span.tags) — 默认展开 */}
-      {span.tags.length > 0 && (
-        <AccordionSection
-          title="Attributes"
-          icon="fa-tags"
-          count={span.tags.length}
-          defaultOpen={true}
+    <div className="flex flex-wrap gap-1">
+      {displayTags.map((tag, i) => (
+        <span
+          key={i}
+          className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-gray-100 text-gray-600 font-mono max-w-[200px] truncate"
+          title={`${tag.key}=${String(tag.value)}`}
         >
-          <KeyValueTable items={span.tags} />
-        </AccordionSection>
-      )}
-
-      {/* Accordion: Events (span.logs) — 默认折叠 */}
-      {span.logs.length > 0 && (
-        <AccordionSection
-          title="Events"
-          icon="fa-list-ol"
-          count={span.logs.length}
-          defaultOpen={false}
-        >
-          <div className="space-y-1.5">
-            {span.logs.map((log, i) => (
-              <div key={i} className="rounded border border-gray-200 px-3 py-2 bg-gray-50">
-                <div className="text-[10px] text-gray-400 mb-1">
-                  {formatTimestamp(log.timestamp)}
-                </div>
-                {log.fields.map((field, j) => (
-                  <div key={j} className="text-xs">
-                    <span className="font-mono text-gray-500">{field.key}:</span>{' '}
-                    <span className="text-gray-700">{String(field.value)}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        </AccordionSection>
-      )}
-
-      {/* Accordion: Process / Resource (process.tags) — 默认折叠 */}
-      {process.tags.length > 0 && (
-        <AccordionSection
-          title="Process / Resource"
-          icon="fa-server"
-          count={process.tags.length}
-          defaultOpen={false}
-        >
-          <KeyValueTable items={process.tags} />
-        </AccordionSection>
-      )}
-
-      {/* Accordion: References / Links — 默认折叠（如果有） */}
-      {hasReferences && (
-        <AccordionSection
-          title="References / Links"
-          icon="fa-link"
-          count={span.references.length}
-          defaultOpen={false}
-        >
-          <div className="space-y-1">
-            {span.references.map((ref, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs">
-                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                  ref.refType === 'CHILD_OF'
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'bg-purple-100 text-purple-700'
-                }`}>
-                  {ref.refType}
-                </span>
-                <span className="font-mono text-gray-500" title={`Trace: ${ref.traceID}`}>
-                  Span: {ref.spanID}
-                </span>
-              </div>
-            ))}
-          </div>
-        </AccordionSection>
-      )}
-
-      {/* Accordion: Warnings — 默认折叠（如果有，红色高亮） */}
-      {hasWarnings && (
-        <AccordionSection
-          title="Warnings"
-          icon="fa-exclamation-triangle"
-          count={span.warnings!.length}
-          defaultOpen={false}
-          variant="danger"
-        >
-          <div className="space-y-1">
-            {span.warnings!.map((warning, i) => (
-              <div key={i} className="text-xs text-red-600 flex items-start gap-1.5">
-                <i className="fas fa-exclamation-circle text-red-400 mt-0.5 flex-shrink-0" />
-                <span>{warning}</span>
-              </div>
-            ))}
-          </div>
-        </AccordionSection>
+          <span className="text-gray-400">{tag.key}</span>
+          <span className="text-gray-300 mx-0.5">=</span>
+          <span className="truncate">{String(tag.value)}</span>
+        </span>
+      ))}
+      {remaining > 0 && (
+        <span className="text-[10px] text-gray-400 self-center">
+          +{remaining} more
+        </span>
       )}
     </div>
   );
 }
 
 // ============================================================================
-// KeyValueTable 组件 - 通用 key-value 表格
+// KeyValueTable - 通用 key-value 表格（带 hover 复制按钮）
 // ============================================================================
 
 function KeyValueTable({ items }: { items: JaegerKeyValue[] }) {
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  const handleCopy = useCallback((value: string, index: number) => {
+    navigator.clipboard.writeText(value);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 1500);
+  }, []);
+
   return (
     <div className="rounded border border-gray-200 overflow-hidden">
       <table className="w-full text-xs">
         <tbody>
           {items.map((tag, i) => (
-            <tr key={i} className={i % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
-              <td className="px-3 py-1 font-mono text-gray-600 w-1/3">{tag.key}</td>
-              <td className="px-3 py-1 text-gray-800">
-                <TagValue tag={tag} />
+            <tr
+              key={i}
+              className={`group ${i % 2 === 0 ? 'bg-gray-50/50' : 'bg-white'} hover:bg-blue-50/30 transition-colors`}
+            >
+              <td className="px-2.5 py-1.5 font-mono text-gray-500 w-2/5 align-top">
+                {tag.key}
+              </td>
+              <td className="px-2.5 py-1.5 text-gray-800 align-top">
+                <div className="flex items-start justify-between gap-1">
+                  <span className="break-all">
+                    <TagValue tag={tag} />
+                  </span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleCopy(String(tag.value), i); }}
+                    className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-300 hover:text-gray-500 transition flex-shrink-0"
+                    title="Copy value"
+                  >
+                    <i className={`fas ${copiedIndex === i ? 'fa-check text-green-500' : 'fa-copy'} text-[9px]`} />
+                  </button>
+                </div>
               </td>
             </tr>
           ))}
@@ -795,7 +922,7 @@ function KeyValueTable({ items }: { items: JaegerKeyValue[] }) {
 }
 
 // ============================================================================
-// TagValue 组件 - 格式化 Tag 值显示
+// TagValue - 格式化 Tag 值显示
 // ============================================================================
 
 function TagValue({ tag }: { tag: JaegerKeyValue }) {
@@ -824,5 +951,121 @@ function TagValue({ tag }: { tag: JaegerKeyValue }) {
     return <span className={tag.value ? 'text-green-600' : 'text-gray-400'}>{val}</span>;
   }
 
+  // 长文本（如 JSON）尝试格式化
+  if (typeof tag.value === 'string' && tag.value.length > 100) {
+    return <LongValueDisplay value={tag.value} />;
+  }
+
   return <span className="break-all">{val}</span>;
+}
+
+// ============================================================================
+// LongValueDisplay - 长文本值展示（可展开/折叠）
+// ============================================================================
+
+function LongValueDisplay({ value }: { value: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const displayValue = expanded ? value : value.substring(0, 100) + '...';
+
+  return (
+    <div>
+      <span className="break-all">{displayValue}</span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setExpanded(!expanded);
+        }}
+        className="ml-1 text-primary-500 hover:text-primary-700 text-[10px] font-medium"
+      >
+        {expanded ? 'Show less' : 'Show more'}
+      </button>
+    </div>
+  );
+}
+
+// ============================================================================
+// EventsList - Events/Logs 列表
+// ============================================================================
+
+function EventsList({
+  events,
+  traceStartTime,
+}: {
+  events: SpanTreeNode['span']['logs'];
+  traceStartTime: number;
+}) {
+  const [expandedEvents, setExpandedEvents] = useState<Set<number>>(new Set());
+
+  const toggleEvent = useCallback((index: number) => {
+    setExpandedEvents(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }, []);
+
+  return (
+    <div className="space-y-1.5">
+      {events.map((log, i) => {
+        const isExpanded = expandedEvents.has(i);
+        const relativeTime = log.timestamp - traceStartTime;
+
+        return (
+          <div
+            key={i}
+            className="rounded border border-gray-200 overflow-hidden"
+          >
+            {/* Event Header */}
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleEvent(i); }}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs bg-gray-50/50 hover:bg-gray-100/60 transition-colors"
+            >
+              <i
+                className={`fas fa-chevron-right text-[8px] text-gray-400 transition-transform duration-150 ${
+                  isExpanded ? 'rotate-90' : ''
+                }`}
+              />
+              <span className="font-mono text-gray-500">
+                {formatDuration(relativeTime)}
+              </span>
+              {/* 显示第一个 field 作为摘要 */}
+              {log.fields.length > 0 && log.fields[0] && (
+                <span className="text-gray-400 truncate">
+                  {log.fields[0].key}: {String(log.fields[0].value).substring(0, 50)}
+                  {String(log.fields[0].value).length > 50 ? '...' : ''}
+                </span>
+              )}
+              <span className="ml-auto text-[10px] text-gray-300 flex-shrink-0">
+                {log.fields.length} field{log.fields.length !== 1 ? 's' : ''}
+              </span>
+            </button>
+
+            {/* Event Fields */}
+            {isExpanded && (
+              <div className="border-t border-gray-100 bg-white">
+                <table className="w-full text-xs">
+                  <tbody>
+                    {log.fields.map((field, j) => (
+                      <tr key={j} className={j % 2 === 0 ? 'bg-gray-50/30' : ''}>
+                        <td className="px-2.5 py-1 font-mono text-gray-500 w-1/3 align-top">
+                          {field.key}
+                        </td>
+                        <td className="px-2.5 py-1 text-gray-700 break-all align-top">
+                          {String(field.value)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }

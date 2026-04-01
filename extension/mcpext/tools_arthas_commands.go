@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"go.uber.org/zap"
@@ -20,7 +19,9 @@ func (w *mcpServerWrapper) registerArthasExecTool() {
 		mcp.WithDescription(
 			"在目标 Agent 上执行任意 Arthas 命令。这是一个通用的 Arthas 命令执行工具，"+
 				"适用于不在专用工具列表中的命令（如 ognl、classloader、vmoption 等）。\n\n"+
-				"前提条件：Arthas 必须已经 attach 到目标 Agent（使用 arthas_attach）并已连接 Tunnel（使用 arthas_status 检查）。"),
+				"前提条件：Arthas 必须已经 attach 到目标 Agent（使用 arthas_attach）。\n\n"+
+				"执行方式：通过 Control Plane 任务链路下发 arthas_exec_sync 任务到 Agent，"+
+				"Agent 通过结构化命令桥接执行并返回 JSON 结果。"),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
@@ -45,7 +46,7 @@ func (w *mcpServerWrapper) handleArthasExec(ctx context.Context, request mcp.Cal
 		return mcp.NewToolResultError("参数 command 不能为空"), nil
 	}
 
-	return w.executeArthasCommand(ctx, agentID, command)
+	return w.executeArthasCommandViaOrchestrator(ctx, agentID, command)
 }
 
 // ========== Tool: arthas_trace ==========
@@ -55,7 +56,7 @@ func (w *mcpServerWrapper) registerArthasTraceTool() {
 		mcp.WithDescription(
 			"方法内部调用路径追踪，显示每个方法的调用耗时。"+
 				"用于定位慢方法的具体瓶颈点。返回方法调用树和每个节点的耗时。\n\n"+
-				"前提条件：Arthas 必须已 attach 并连接 Tunnel。"),
+				"前提条件：Arthas 必须已 attach。"),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -102,7 +103,7 @@ func (w *mcpServerWrapper) handleArthasTrace(ctx context.Context, request mcp.Ca
 	}
 	cmd += " -n 1" // Capture only 1 invocation by default
 
-	return w.executeArthasCommand(ctx, agentID, cmd)
+	return w.executeArthasCommandViaOrchestrator(ctx, agentID, cmd)
 }
 
 // ========== Tool: arthas_watch ==========
@@ -112,7 +113,7 @@ func (w *mcpServerWrapper) registerArthasWatchTool() {
 		mcp.WithDescription(
 			"监控方法调用，输出方法的入参、返回值和异常信息。"+
 				"用于在运行时查看方法的实际传入参数和返回结果。\n\n"+
-				"前提条件：Arthas 必须已 attach 并连接 Tunnel。"),
+				"前提条件：Arthas 必须已 attach。"),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -161,7 +162,7 @@ func (w *mcpServerWrapper) handleArthasWatch(ctx context.Context, request mcp.Ca
 	}
 	cmd += " -n 1 -x 2" // 1 invocation, expand depth 2
 
-	return w.executeArthasCommand(ctx, agentID, cmd)
+	return w.executeArthasCommandViaOrchestrator(ctx, agentID, cmd)
 }
 
 // ========== Tool: arthas_jad ==========
@@ -171,7 +172,7 @@ func (w *mcpServerWrapper) registerArthasJadTool() {
 		mcp.WithDescription(
 			"反编译类查看运行时代码。用于查看类的实际运行版本源码，"+
 				"确认代码是否为预期版本，排查类加载问题。\n\n"+
-				"前提条件：Arthas 必须已 attach 并连接 Tunnel。"),
+				"前提条件：Arthas 必须已 attach。"),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -202,7 +203,7 @@ func (w *mcpServerWrapper) handleArthasJad(ctx context.Context, request mcp.Call
 		cmd += " " + methodName
 	}
 
-	return w.executeArthasCommand(ctx, agentID, cmd)
+	return w.executeArthasCommandViaOrchestrator(ctx, agentID, cmd)
 }
 
 // ========== Tool: arthas_sc ==========
@@ -212,7 +213,7 @@ func (w *mcpServerWrapper) registerArthasScTool() {
 		mcp.WithDescription(
 			"搜索已加载的类。用于查找类是否存在、被哪个 ClassLoader 加载、"+
 				"以及类的详细信息（接口、父类、注解等）。\n\n"+
-				"前提条件：Arthas 必须已 attach 并连接 Tunnel。"),
+				"前提条件：Arthas 必须已 attach。"),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -243,7 +244,7 @@ func (w *mcpServerWrapper) handleArthasSc(ctx context.Context, request mcp.CallT
 		cmd += " -d"
 	}
 
-	return w.executeArthasCommand(ctx, agentID, cmd)
+	return w.executeArthasCommandViaOrchestrator(ctx, agentID, cmd)
 }
 
 // ========== Tool: arthas_thread ==========
@@ -252,7 +253,7 @@ func (w *mcpServerWrapper) registerArthasThreadTool() {
 	tool := mcp.NewTool("arthas_thread",
 		mcp.WithDescription(
 			"查看 JVM 线程信息。用于排查死锁、查看线程状态、找出 CPU 占用最高的线程。\n\n"+
-				"前提条件：Arthas 必须已 attach 并连接 Tunnel。"),
+				"前提条件：Arthas 必须已 attach。"),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -290,7 +291,7 @@ func (w *mcpServerWrapper) handleArthasThread(ctx context.Context, request mcp.C
 		cmd += fmt.Sprintf(" -n %d", int(topN))
 	}
 
-	return w.executeArthasCommand(ctx, agentID, cmd)
+	return w.executeArthasCommandViaOrchestrator(ctx, agentID, cmd)
 }
 
 // ========== Tool: arthas_stack ==========
@@ -300,7 +301,7 @@ func (w *mcpServerWrapper) registerArthasStackTool() {
 		mcp.WithDescription(
 			"输出方法的调用栈。用于查看一个方法是从哪里被调用的，"+
 				"帮助理解代码执行路径。\n\n"+
-				"前提条件：Arthas 必须已 attach 并连接 Tunnel。"),
+				"前提条件：Arthas 必须已 attach。"),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -337,46 +338,27 @@ func (w *mcpServerWrapper) handleArthasStack(ctx context.Context, request mcp.Ca
 	}
 	cmd += " -n 1" // 1 invocation
 
-	return w.executeArthasCommand(ctx, agentID, cmd)
+	return w.executeArthasCommandViaOrchestrator(ctx, agentID, cmd)
 }
 
-// ========== Common: executeArthasCommand ==========
+// ========== Common: executeArthasCommandViaOrchestrator ==========
 
-// executeArthasCommand is the shared logic for all Arthas command tools.
-// It establishes a tunnel session, executes the command, and returns the formatted result.
-func (w *mcpServerWrapper) executeArthasCommand(ctx context.Context, agentID, command string) (*mcp.CallToolResult, error) {
-	w.logger.Info("[arthas_cmd] Executing command",
+// executeArthasCommandViaOrchestrator 通过 Orchestrator 执行 Arthas 命令。
+// 使用 Control Plane 任务链路（arthas_exec_sync），而非 WebSocket Tunnel。
+func (w *mcpServerWrapper) executeArthasCommandViaOrchestrator(ctx context.Context, agentID, command string) (*mcp.CallToolResult, error) {
+	w.logger.Info("[arthas_cmd] 通过 Orchestrator 执行命令",
 		zap.String("agent_id", agentID),
 		zap.String("command", command),
 	)
 
-	// Step 1: Verify Arthas is connected
-	if !w.ext.arthasTunnel.IsAgentConnected(agentID) {
-		return mcp.NewToolResultError(fmt.Sprintf(
-			"Agent '%s' 的 Arthas 尚未连接到 Tunnel。请先调用 arthas_attach 启动 Arthas。", agentID,
-		)), nil
-	}
-
-	// Step 2: Establish tunnel session
-	session, err := w.ext.arthasTunnel.ConnectToAgent(ctx, agentID)
+	resp, err := w.orchestrator.ExecSync(ctx, &ExecSyncRequest{
+		AgentID:            agentID,
+		Command:            command,
+		AutoAttach:         true,
+		RequireTunnelReady: false, // exec_sync 不依赖 tunnel
+	})
 	if err != nil {
-		w.logger.Error("[arthas_cmd] Failed to connect to agent",
-			zap.String("agent_id", agentID),
-			zap.Error(err),
-		)
-		return mcp.NewToolResultError("连接 Agent Tunnel 失败: " + err.Error()), nil
-	}
-	defer session.Close()
-
-	// Step 3: Execute command
-	timeout := w.toolTimeout()
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-
-	result, err := session.ExecCommand(ctx, command, timeout)
-	if err != nil {
-		w.logger.Error("[arthas_cmd] Command execution failed",
+		w.logger.Error("[arthas_cmd] Orchestrator 执行失败",
 			zap.String("agent_id", agentID),
 			zap.String("command", command),
 			zap.Error(err),
@@ -384,13 +366,23 @@ func (w *mcpServerWrapper) executeArthasCommand(ctx context.Context, agentID, co
 		return mcp.NewToolResultError("执行 Arthas 命令失败: " + err.Error()), nil
 	}
 
-	// Step 4: Format and return result
-	formatted := formatArthasExecResult(agentID, command, result)
+	// 格式化结果
+	formatted := FormatExecSyncForMCP(resp)
 
-	w.logger.Info("[arthas_cmd] Command completed",
+	if resp.Parsed != nil && !resp.Parsed.Success {
+		w.logger.Warn("[arthas_cmd] 命令执行失败",
+			zap.String("agent_id", agentID),
+			zap.String("command", command),
+			zap.String("error_code", resp.Parsed.ErrorCode),
+			zap.String("error_message", resp.Parsed.ErrorMessage),
+		)
+		return mcp.NewToolResultError(formatted), nil
+	}
+
+	w.logger.Info("[arthas_cmd] 命令执行完成",
 		zap.String("agent_id", agentID),
 		zap.String("command", command),
-		zap.String("state", result.State),
+		zap.String("task_id", resp.TaskID),
 	)
 
 	return mcp.NewToolResultText(formatted), nil
