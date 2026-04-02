@@ -43,7 +43,7 @@ type ControlPlane interface {
 	// Task management
 	SubmitTask(ctx context.Context, task *model.Task) error
 	SubmitTaskForAgent(ctx context.Context, agentID string, task *model.Task) error
-	GetTaskResult(taskID string) (*model.TaskResult, bool)
+	GetTaskResult(taskID string) (*model.TaskResult, bool, error)
 	GetPendingTasks() []*model.Task
 	GetPendingTasksForAgent(ctx context.Context, agentID string) ([]*model.Task, error)
 	ReportTaskResult(ctx context.Context, result *model.TaskResult) error
@@ -329,9 +329,8 @@ func (e *Extension) SubmitTaskForAgent(ctx context.Context, agentID string, task
 }
 
 // GetTaskResult implements ControlPlane.
-func (e *Extension) GetTaskResult(taskID string) (*model.TaskResult, bool) {
-	result, found, _ := e.taskMgr.GetTaskResult(context.Background(), taskID)
-	return result, found
+func (e *Extension) GetTaskResult(taskID string) (*model.TaskResult, bool, error) {
+	return e.taskMgr.GetTaskResult(context.Background(), taskID)
 }
 
 // GetPendingTasks implements ControlPlane.
@@ -521,7 +520,7 @@ func (e *Extension) SubmitTaskForAgentV2(ctx context.Context, agentID string, ta
 }
 
 // GetTaskResultV2 is deprecated. Use GetTaskResult instead.
-func (e *Extension) GetTaskResultV2(taskID string) (*model.TaskResult, bool) {
+func (e *Extension) GetTaskResultV2(taskID string) (*model.TaskResult, bool, error) {
 	return e.GetTaskResult(taskID)
 }
 

@@ -310,3 +310,330 @@ func (r *ParsedArthasResult) FormatError() string {
 	}
 	return msg
 }
+
+// ========== Session 相关结果解析 ==========
+
+// ArthasSessionOpenResult 是 arthas_session_open 任务的结构化结果 envelope。
+type ArthasSessionOpenResult struct {
+	Success        bool                   `json:"success"`
+	TaskType       string                 `json:"taskType"`
+	SessionID      string                 `json:"sessionId,omitempty"`
+	ConsumerID     string                 `json:"consumerId,omitempty"`
+	State          string                 `json:"state,omitempty"`
+	ErrorCode      string                 `json:"errorCode,omitempty"`
+	ErrorMessage   string                 `json:"errorMessage,omitempty"`
+	Meta           map[string]interface{} `json:"meta,omitempty"`
+}
+
+// ArthasSessionExecResult 是 arthas_session_exec 任务的结构化结果 envelope。
+type ArthasSessionExecResult struct {
+	Success      bool                   `json:"success"`
+	TaskType     string                 `json:"taskType"`
+	SessionID    string                 `json:"sessionId,omitempty"`
+	Command      string                 `json:"command,omitempty"`
+	ErrorCode    string                 `json:"errorCode,omitempty"`
+	ErrorMessage string                 `json:"errorMessage,omitempty"`
+	Meta         map[string]interface{} `json:"meta,omitempty"`
+}
+
+// ArthasSessionPullResult 是 arthas_session_pull 任务的结构化结果 envelope。
+type ArthasSessionPullResult struct {
+	Success      bool                   `json:"success"`
+	TaskType     string                 `json:"taskType"`
+	SessionID    string                 `json:"sessionId,omitempty"`
+	Delta        *SessionDelta          `json:"delta,omitempty"`
+	ErrorCode    string                 `json:"errorCode,omitempty"`
+	ErrorMessage string                 `json:"errorMessage,omitempty"`
+	Meta         map[string]interface{} `json:"meta,omitempty"`
+}
+
+// ArthasSessionInterruptResult 是 arthas_session_interrupt 任务的结构化结果 envelope。
+type ArthasSessionInterruptResult struct {
+	Success      bool                   `json:"success"`
+	TaskType     string                 `json:"taskType"`
+	SessionID    string                 `json:"sessionId,omitempty"`
+	Interrupted  bool                   `json:"interrupted"`
+	ErrorCode    string                 `json:"errorCode,omitempty"`
+	ErrorMessage string                 `json:"errorMessage,omitempty"`
+	Meta         map[string]interface{} `json:"meta,omitempty"`
+}
+
+// ArthasSessionCloseResult 是 arthas_session_close 任务的结构化结果 envelope。
+type ArthasSessionCloseResult struct {
+	Success      bool                   `json:"success"`
+	TaskType     string                 `json:"taskType"`
+	SessionID    string                 `json:"sessionId,omitempty"`
+	Closed       bool                   `json:"closed"`
+	ErrorCode    string                 `json:"errorCode,omitempty"`
+	ErrorMessage string                 `json:"errorMessage,omitempty"`
+	Meta         map[string]interface{} `json:"meta,omitempty"`
+}
+
+// ParsedSessionResult 是 Session 相关任务的统一解析结果。
+type ParsedSessionResult struct {
+	Success        bool
+	ErrorCode      string
+	ErrorMessage   string
+	TaskType       string
+	AgentSessionID string
+	ConsumerID     string
+	State          string
+	Delta          *SessionDelta
+	Interrupted    bool
+	Closed         bool
+	Meta           map[string]interface{}
+	RawResultJSON  json.RawMessage
+}
+
+// IsRetryable 判断 Session 错误是否建议重试。
+func (r *ParsedSessionResult) IsRetryable() bool {
+	switch r.ErrorCode {
+	case model.ArthasErrNotRunning,
+		model.ArthasErrNotReady,
+		model.ArthasErrTunnelNotReady,
+		model.ArthasErrPullResultFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// parseSessionTaskResult 通用的 Session 任务结果解析前置处理。
+func parseSessionTaskResult(taskResult *model.TaskResult, taskType string) *ParsedSessionResult {
+	parsed := &ParsedSessionResult{
+		TaskType:      taskType,
+		RawResultJSON: taskResult.ResultJSON,
+	}
+
+	switch taskResult.Status {
+	case model.TaskStatusTimeout:
+		parsed.ErrorCode = model.ArthasErrCommandTimeout
+		parsed.ErrorMessage = "任务执行超时"
+		if taskResult.ErrorMessage != "" {
+			parsed.ErrorMessage = taskResult.ErrorMessage
+		}
+		return parsed
+	case model.TaskStatusCancelled:
+		parsed.ErrorCode = model.ArthasErrInterrupted
+		parsed.ErrorMessage = "任务已取消"
+		if taskResult.ErrorMessage != "" {
+			parsed.ErrorMessage = taskResult.ErrorMessage
+		}
+		return parsed
+	case model.TaskStatusFailed:
+		if len(taskResult.ResultJSON) == 0 {
+			parsed.ErrorCode = taskResult.ErrorCode
+			parsed.ErrorMessage = taskResult.ErrorMessage
+			if parsed.ErrorCode == "" {
+				parsed.ErrorCode = model.ArthasErrCommandExecutionFailed
+			}
+			if parsed.ErrorMessage == "" {
+				parsed.ErrorMessage = "任务执行失败"
+			}
+			return parsed
+		}
+		// 继续解析 ResultJSON
+	case model.TaskStatusSuccess:
+		// 继续解析 ResultJSON
+	default:
+		parsed.ErrorCode = model.ArthasErrCommandExecutionFailed
+		parsed.ErrorMessage = fmt.Sprintf("意外的任务状态: %d", taskResult.Status)
+		return parsed
+	}
+
+	return nil // 返回 nil 表示需要继续解析 ResultJSON
+}
+
+// ParseSessionOpenResult 解析 arthas_session_open 的 TaskResult。
+func ParseSessionOpenResult(taskResult *model.TaskResult) *ParsedSessionResult {
+	if pre := parseSessionTaskResult(taskResult, model.ArthasTaskTypeSessionOpen); pre != nil {
+		return pre
+	}
+
+	parsed := &ParsedSessionResult{
+		TaskType:      model.ArthasTaskTypeSessionOpen,
+		RawResultJSON: taskResult.ResultJSON,
+	}
+
+	if len(taskResult.ResultJSON) == 0 {
+		if taskResult.Status == model.TaskStatusSuccess {
+			parsed.Success = true
+		}
+		return parsed
+	}
+
+	var result ArthasSessionOpenResult
+	if err := json.Unmarshal(taskResult.ResultJSON, &result); err != nil {
+		parsed.ErrorCode = model.ArthasErrJSONParseFailed
+		parsed.ErrorMessage = fmt.Sprintf("解析 session_open result_json 失败: %v", err)
+		return parsed
+	}
+
+	parsed.Success = result.Success
+	parsed.ErrorCode = result.ErrorCode
+	parsed.ErrorMessage = result.ErrorMessage
+	parsed.AgentSessionID = result.SessionID
+	parsed.ConsumerID = result.ConsumerID
+	parsed.State = result.State
+	parsed.Meta = result.Meta
+
+	return parsed
+}
+
+// ParseSessionExecResult 解析 arthas_session_exec 的 TaskResult。
+// 注意：SUCCESS 表示"受理成功"，不表示结果流结束。
+func ParseSessionExecResult(taskResult *model.TaskResult) *ParsedSessionResult {
+	if pre := parseSessionTaskResult(taskResult, model.ArthasTaskTypeSessionExec); pre != nil {
+		return pre
+	}
+
+	parsed := &ParsedSessionResult{
+		TaskType:      model.ArthasTaskTypeSessionExec,
+		RawResultJSON: taskResult.ResultJSON,
+	}
+
+	if len(taskResult.ResultJSON) == 0 {
+		if taskResult.Status == model.TaskStatusSuccess {
+			parsed.Success = true
+		}
+		return parsed
+	}
+
+	var result ArthasSessionExecResult
+	if err := json.Unmarshal(taskResult.ResultJSON, &result); err != nil {
+		parsed.ErrorCode = model.ArthasErrJSONParseFailed
+		parsed.ErrorMessage = fmt.Sprintf("解析 session_exec result_json 失败: %v", err)
+		return parsed
+	}
+
+	parsed.Success = result.Success
+	parsed.ErrorCode = result.ErrorCode
+	parsed.ErrorMessage = result.ErrorMessage
+	parsed.AgentSessionID = result.SessionID
+	parsed.Meta = result.Meta
+
+	return parsed
+}
+
+// ParseSessionPullResult 解析 arthas_session_pull 的 TaskResult。
+// 每次 pull 都是一个独立任务，delta.endOfStream=true 才表示命令完成。
+func ParseSessionPullResult(taskResult *model.TaskResult) *ParsedSessionResult {
+	if pre := parseSessionTaskResult(taskResult, model.ArthasTaskTypeSessionPull); pre != nil {
+		return pre
+	}
+
+	parsed := &ParsedSessionResult{
+		TaskType:      model.ArthasTaskTypeSessionPull,
+		RawResultJSON: taskResult.ResultJSON,
+	}
+
+	if len(taskResult.ResultJSON) == 0 {
+		if taskResult.Status == model.TaskStatusSuccess {
+			parsed.Success = true
+			// 空轮询：返回空 delta
+			parsed.Delta = &SessionDelta{
+				HasMore:     false,
+				EndOfStream: false,
+				TotalItems:  0,
+			}
+		}
+		return parsed
+	}
+
+	var result ArthasSessionPullResult
+	if err := json.Unmarshal(taskResult.ResultJSON, &result); err != nil {
+		parsed.ErrorCode = model.ArthasErrJSONParseFailed
+		parsed.ErrorMessage = fmt.Sprintf("解析 session_pull result_json 失败: %v", err)
+		return parsed
+	}
+
+	parsed.Success = result.Success
+	parsed.ErrorCode = result.ErrorCode
+	parsed.ErrorMessage = result.ErrorMessage
+	parsed.AgentSessionID = result.SessionID
+	parsed.Delta = result.Delta
+	parsed.Meta = result.Meta
+
+	// 空轮询不视为失败
+	if parsed.Success && parsed.Delta == nil {
+		parsed.Delta = &SessionDelta{
+			HasMore:     false,
+			EndOfStream: false,
+			TotalItems:  0,
+		}
+	}
+
+	return parsed
+}
+
+// ParseSessionInterruptResult 解析 arthas_session_interrupt 的 TaskResult。
+func ParseSessionInterruptResult(taskResult *model.TaskResult) *ParsedSessionResult {
+	if pre := parseSessionTaskResult(taskResult, model.ArthasTaskTypeSessionInterrupt); pre != nil {
+		return pre
+	}
+
+	parsed := &ParsedSessionResult{
+		TaskType:      model.ArthasTaskTypeSessionInterrupt,
+		RawResultJSON: taskResult.ResultJSON,
+	}
+
+	if len(taskResult.ResultJSON) == 0 {
+		if taskResult.Status == model.TaskStatusSuccess {
+			parsed.Success = true
+			parsed.Interrupted = true
+		}
+		return parsed
+	}
+
+	var result ArthasSessionInterruptResult
+	if err := json.Unmarshal(taskResult.ResultJSON, &result); err != nil {
+		parsed.ErrorCode = model.ArthasErrJSONParseFailed
+		parsed.ErrorMessage = fmt.Sprintf("解析 session_interrupt result_json 失败: %v", err)
+		return parsed
+	}
+
+	parsed.Success = result.Success
+	parsed.ErrorCode = result.ErrorCode
+	parsed.ErrorMessage = result.ErrorMessage
+	parsed.Interrupted = result.Interrupted
+	parsed.AgentSessionID = result.SessionID
+	parsed.Meta = result.Meta
+
+	return parsed
+}
+
+// ParseSessionCloseResult 解析 arthas_session_close 的 TaskResult。
+func ParseSessionCloseResult(taskResult *model.TaskResult) *ParsedSessionResult {
+	if pre := parseSessionTaskResult(taskResult, model.ArthasTaskTypeSessionClose); pre != nil {
+		return pre
+	}
+
+	parsed := &ParsedSessionResult{
+		TaskType:      model.ArthasTaskTypeSessionClose,
+		RawResultJSON: taskResult.ResultJSON,
+	}
+
+	if len(taskResult.ResultJSON) == 0 {
+		if taskResult.Status == model.TaskStatusSuccess {
+			parsed.Success = true
+			parsed.Closed = true
+		}
+		return parsed
+	}
+
+	var result ArthasSessionCloseResult
+	if err := json.Unmarshal(taskResult.ResultJSON, &result); err != nil {
+		parsed.ErrorCode = model.ArthasErrJSONParseFailed
+		parsed.ErrorMessage = fmt.Sprintf("解析 session_close result_json 失败: %v", err)
+		return parsed
+	}
+
+	parsed.Success = result.Success
+	parsed.ErrorCode = result.ErrorCode
+	parsed.ErrorMessage = result.ErrorMessage
+	parsed.Closed = result.Closed
+	parsed.AgentSessionID = result.SessionID
+	parsed.Meta = result.Meta
+
+	return parsed
+}

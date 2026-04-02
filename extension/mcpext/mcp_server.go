@@ -15,11 +15,13 @@ import (
 
 // mcpServerWrapper wraps mcp-go's MCPServer and manages tool registration.
 type mcpServerWrapper struct {
-	ext          *Extension
-	mcpServer    *server.MCPServer
-	httpSrv      *server.StreamableHTTPServer
-	logger       *zap.Logger
-	orchestrator *ArthasOrchestrator
+	ext                  *Extension
+	mcpServer            *server.MCPServer
+	httpSrv              *server.StreamableHTTPServer
+	logger               *zap.Logger
+	orchestrator         *ArthasOrchestrator
+	sessionManager       *SessionManager
+	sessionOrchestrator  *SessionOrchestrator
 }
 
 // newMCPServerWrapper creates a new MCP server wrapper with all tools registered.
@@ -37,11 +39,22 @@ func newMCPServerWrapper(ext *Extension) (*mcpServerWrapper, error) {
 	}
 	orch := NewArthasOrchestrator(ext.controlPlane, ext.logger, orchConfig)
 
+	// 创建 Session Manager
+	smConfig := DefaultSessionManagerConfig()
+	sm := NewSessionManager(ext.logger, smConfig)
+	sm.Start()
+
+	// 创建 Session Orchestrator
+	soConfig := DefaultSessionOrchestratorConfig()
+	so := NewSessionOrchestrator(ext.controlPlane, sm, ext.logger, soConfig)
+
 	wrapper := &mcpServerWrapper{
-		ext:          ext,
-		mcpServer:    s,
-		logger:       ext.logger.Named("mcp-server"),
-		orchestrator: orch,
+		ext:                  ext,
+		mcpServer:            s,
+		logger:               ext.logger.Named("mcp-server"),
+		orchestrator:         orch,
+		sessionManager:       sm,
+		sessionOrchestrator:  so,
 	}
 
 	// Register all tools
@@ -77,6 +90,13 @@ func (w *mcpServerWrapper) registerTools() {
 	w.registerArthasScTool()
 	w.registerArthasThreadTool()
 	w.registerArthasStackTool()
+
+	// ========== Arthas Session Tools ==========
+	w.registerArthasSessionOpenTool()
+	w.registerArthasSessionExecTool()
+	w.registerArthasSessionPullTool()
+	w.registerArthasSessionInterruptTool()
+	w.registerArthasSessionCloseTool()
 }
 
 // ========== Tool: list_agents ==========
