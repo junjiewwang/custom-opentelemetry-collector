@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -158,6 +159,183 @@ func TestMemoryTaskStore_ListTaskInfos(t *testing.T) {
 	tasks, err := store.ListTaskInfos(ctx)
 	require.NoError(t, err)
 	assert.Len(t, tasks, 3)
+}
+
+func TestMemoryTaskStore_ListTaskInfosPage_FilterAndPaginate(t *testing.T) {
+	store := newTestMemoryStore(t)
+	ctx := context.Background()
+
+	tasks := []*TaskInfo{
+		{
+			Task: &model.Task{ID: "task-a", TypeName: "collect"},
+			Status:          model.TaskStatusPending,
+			AppID:           "app-1",
+			ServiceName:     "svc-1",
+			AgentID:         "agent-1",
+			CreatedAtMillis: 100,
+		},
+		{
+			Task: &model.Task{ID: "task-b", TypeName: "collect"},
+			Status:          model.TaskStatusRunning,
+			AppID:           "app-1",
+			ServiceName:     "svc-1",
+			AgentID:         "agent-1",
+			CreatedAtMillis: 300,
+		},
+		{
+			Task: &model.Task{ID: "task-c", TypeName: "deploy"},
+			Status:          model.TaskStatusRunning,
+			AppID:           "app-2",
+			ServiceName:     "svc-2",
+			AgentID:         "agent-2",
+			CreatedAtMillis: 200,
+		},
+	}
+
+	for _, info := range tasks {
+		require.NoError(t, store.SaveTaskInfo(ctx, info, true))
+	}
+
+	filteredPage, err := store.ListTaskInfosPage(ctx, TaskListQuery{
+		Statuses: []model.TaskStatus{model.TaskStatusRunning},
+		AppID:    "app-1",
+		TaskType: "collect",
+		Limit:    1,
+	})
+	require.NoError(t, err)
+	require.Len(t, filteredPage.Items, 1)
+	assert.Equal(t, "task-b", filteredPage.Items[0].Task.ID)
+	assert.False(t, filteredPage.HasMore)
+	assert.Empty(t, filteredPage.NextCursor)
+
+	page, err := store.ListTaskInfosPage(ctx, TaskListQuery{Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "task-b", page.Items[0].Task.ID)
+	assert.True(t, page.HasMore)
+	assert.NotEmpty(t, page.NextCursor) // seek cursor 格式
+
+	nextPage, err := store.ListTaskInfosPage(ctx, TaskListQuery{
+		Limit:  1,
+		Cursor: page.NextCursor,
+	})
+	require.NoError(t, err)
+	require.Len(t, nextPage.Items, 1)
+	assert.Equal(t, "task-c", nextPage.Items[0].Task.ID)
+	assert.True(t, nextPage.HasMore)
+	assert.NotEmpty(t, nextPage.NextCursor)
+	assert.Greater(t, nextPage.Items[0].CreatedAtMillis, int64(0))
+
+	finalPage, err := store.ListTaskInfosPage(ctx, TaskListQuery{
+		Limit:  1,
+		Cursor: nextPage.NextCursor,
+	})
+	require.NoError(t, err)
+	require.Len(t, finalPage.Items, 1)
+	assert.Equal(t, "task-a", finalPage.Items[0].Task.ID)
+	assert.False(t, finalPage.HasMore)
+	assert.Empty(t, finalPage.NextCursor)
+	assert.Equal(t, int64(100), finalPage.Items[0].CreatedAtMillis)
+	assert.Equal(t, "app-1", finalPage.Items[0].AppID)
+	assert.Equal(t, "svc-1", finalPage.Items[0].ServiceName)
+	assert.Equal(t, "agent-1", finalPage.Items[0].AgentID)
+	assert.Equal(t, "collect", finalPage.Items[0].Task.TypeName)
+	assert.Equal(t, model.TaskStatusPending, finalPage.Items[0].Status)
+	assert.NotSame(t, tasks[0], finalPage.Items[0])
+	assert.NotSame(t, tasks[0].Task, finalPage.Items[0].Task)
+	assert.Equal(t, tasks[0].Task.ID, finalPage.Items[0].Task.ID)
+
+	page.Items[0].Status = model.TaskStatusFailed
+	retrieved, err := store.GetTaskInfo(ctx, "task-b")
+	require.NoError(t, err)
+	assert.Equal(t, model.TaskStatusRunning, retrieved.Status)
+
+}
+
+func TestMemoryTaskStore_ListTaskInfosPage_InvalidCursor(t *testing.T) {
+	store := newTestMemoryStore(t)
+	_, err := store.ListTaskInfosPage(context.Background(), TaskListQuery{Cursor: "bad-cursor"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid cursor")
+}
+
+// TestMemoryTaskStore_ListTaskInfosPage_SeekCursor 验证 seek cursor 翻页链路。
+func TestMemoryTaskStore_ListTaskInfosPage_SeekCursor(t *testing.T) {
+	store := newTestMemoryStore(t)
+	ctx := context.Background()
+
+	// 创建 5 个 task，created_at 分别为 100, 200, 300, 400, 500
+	for i := 1; i <= 5; i++ {
+		info := &TaskInfo{
+			Task:            &model.Task{ID: fmt.Sprintf("task-%d", i), TypeName: "test"},
+			Status:          model.TaskStatusPending,
+			CreatedAtMillis: int64(i * 100),
+		}
+		require.NoError(t, store.SaveTaskInfo(ctx, info, true))
+	}
+
+	// 第一页：limit=2，无 cursor
+	page1, err := store.ListTaskInfosPage(ctx, TaskListQuery{Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, page1.Items, 2)
+	assert.Equal(t, "task-5", page1.Items[0].Task.ID) // 最新的在前
+	assert.Equal(t, "task-4", page1.Items[1].Task.ID)
+	assert.True(t, page1.HasMore)
+	assert.NotEmpty(t, page1.NextCursor)
+
+	// 第二页：使用 seek cursor
+	page2, err := store.ListTaskInfosPage(ctx, TaskListQuery{Limit: 2, Cursor: page1.NextCursor})
+	require.NoError(t, err)
+	require.Len(t, page2.Items, 2)
+	assert.Equal(t, "task-3", page2.Items[0].Task.ID)
+	assert.Equal(t, "task-2", page2.Items[1].Task.ID)
+	assert.True(t, page2.HasMore)
+	assert.NotEmpty(t, page2.NextCursor)
+
+	// 第三页：最后一条
+	page3, err := store.ListTaskInfosPage(ctx, TaskListQuery{Limit: 2, Cursor: page2.NextCursor})
+	require.NoError(t, err)
+	require.Len(t, page3.Items, 1)
+	assert.Equal(t, "task-1", page3.Items[0].Task.ID)
+	assert.False(t, page3.HasMore)
+	assert.Empty(t, page3.NextCursor)
+}
+
+// TestMemoryTaskStore_ListTaskInfosPage_SeekCursor_SameScore 验证同分值下 seek cursor 的去重。
+func TestMemoryTaskStore_ListTaskInfosPage_SeekCursor_SameScore(t *testing.T) {
+	store := newTestMemoryStore(t)
+	ctx := context.Background()
+
+	// 创建 3 个 task，created_at 都是 100（同分值）
+	for _, id := range []string{"task-c", "task-b", "task-a"} {
+		info := &TaskInfo{
+			Task:            &model.Task{ID: id, TypeName: "test"},
+			Status:          model.TaskStatusPending,
+			CreatedAtMillis: 100,
+		}
+		require.NoError(t, store.SaveTaskInfo(ctx, info, true))
+	}
+
+	// 第一页
+	page1, err := store.ListTaskInfosPage(ctx, TaskListQuery{Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, page1.Items, 1)
+	assert.Equal(t, "task-c", page1.Items[0].Task.ID) // 同分值按 ID desc
+	assert.True(t, page1.HasMore)
+
+	// 第二页
+	page2, err := store.ListTaskInfosPage(ctx, TaskListQuery{Limit: 1, Cursor: page1.NextCursor})
+	require.NoError(t, err)
+	require.Len(t, page2.Items, 1)
+	assert.Equal(t, "task-b", page2.Items[0].Task.ID)
+	assert.True(t, page2.HasMore)
+
+	// 第三页
+	page3, err := store.ListTaskInfosPage(ctx, TaskListQuery{Limit: 1, Cursor: page2.NextCursor})
+	require.NoError(t, err)
+	require.Len(t, page3.Items, 1)
+	assert.Equal(t, "task-a", page3.Items[0].Task.ID)
+	assert.False(t, page3.HasMore)
 }
 
 func TestMemoryTaskStore_EnqueueDequeue(t *testing.T) {
@@ -343,6 +521,46 @@ func TestMemoryTaskStore_RunningState(t *testing.T) {
 	assert.Empty(t, agentID)
 }
 
+func TestMemoryTaskStore_ListRunningTaskInfos(t *testing.T) {
+	store := newTestMemoryStore(t)
+	ctx := context.Background()
+
+	runningInfo := &TaskInfo{
+		Task: &model.Task{
+			ID:       "task-running",
+			TypeName: "test",
+		},
+		Status: model.TaskStatusRunning,
+	}
+	pendingInfo := &TaskInfo{
+		Task: &model.Task{
+			ID:       "task-pending",
+			TypeName: "test",
+		},
+		Status: model.TaskStatusPending,
+	}
+
+	require.NoError(t, store.SaveTaskInfo(ctx, runningInfo, true))
+	require.NoError(t, store.SaveTaskInfo(ctx, pendingInfo, true))
+	require.NoError(t, store.SetRunning(ctx, "task-running", "agent-1"))
+	require.NoError(t, store.SetRunning(ctx, "task-pending", "agent-2"))
+	require.NoError(t, store.SetRunning(ctx, "task-missing", "agent-3"))
+
+	infos, err := store.ListRunningTaskInfos(ctx)
+	require.NoError(t, err)
+	require.Len(t, infos, 1)
+	assert.Equal(t, "task-running", infos[0].Task.ID)
+	assert.Equal(t, "agent-1", infos[0].AgentID)
+
+	agentID, err := store.GetRunning(ctx, "task-pending")
+	require.NoError(t, err)
+	assert.Empty(t, agentID)
+
+	agentID, err = store.GetRunning(ctx, "task-missing")
+	require.NoError(t, err)
+	assert.Empty(t, agentID)
+}
+
 func TestMemoryTaskStore_PublishEvent(t *testing.T) {
 	store := newTestMemoryStore(t)
 	ctx := context.Background()
@@ -403,4 +621,82 @@ func TestMemoryTaskStore_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		<-done
 	}
+}
+
+func TestMemoryTaskStore_ApplyTaskResult_UsesSharedStateMachine(t *testing.T) {
+	store := newTestMemoryStore(t)
+	ctx := context.Background()
+
+	info := &TaskInfo{
+		Task: &model.Task{
+			ID:       "task-apply-result",
+			TypeName: "test",
+		},
+		Status: model.TaskStatusPending,
+	}
+	require.NoError(t, store.SaveTaskInfo(ctx, info, true))
+
+	res, err := store.ApplyTaskResult(ctx, info.Task.ID, &model.TaskResult{
+		TaskID:  info.Task.ID,
+		Status:  model.TaskStatusRunning,
+		AgentID: "agent-1",
+	}, 123)
+	require.NoError(t, err)
+	assert.Equal(t, ApplyTaskUpdated, res.Code)
+
+	retrieved, err := store.GetTaskInfo(ctx, info.Task.ID)
+	require.NoError(t, err)
+	require.NotNil(t, retrieved)
+	assert.Equal(t, model.TaskStatusRunning, retrieved.Status)
+	assert.Equal(t, "agent-1", retrieved.AgentID)
+	assert.Equal(t, int64(123), retrieved.StartedAtMillis)
+}
+
+func TestMemoryTaskStore_ApplyCancel_RejectsTerminal(t *testing.T) {
+	store := newTestMemoryStore(t)
+	ctx := context.Background()
+
+	info := &TaskInfo{
+		Task: &model.Task{
+			ID:       "task-cancel-terminal",
+			TypeName: "test",
+		},
+		Status: model.TaskStatusSuccess,
+	}
+	require.NoError(t, store.SaveTaskInfo(ctx, info, true))
+
+	res, err := store.ApplyCancel(ctx, info.Task.ID, 456)
+	require.NoError(t, err)
+	assert.Equal(t, ApplyTaskRejected, res.Code)
+
+	retrieved, err := store.GetTaskInfo(ctx, info.Task.ID)
+	require.NoError(t, err)
+	require.NotNil(t, retrieved)
+	assert.Equal(t, model.TaskStatusSuccess, retrieved.Status)
+}
+
+func TestMemoryTaskStore_ApplySetRunning_Idempotent(t *testing.T) {
+	store := newTestMemoryStore(t)
+	ctx := context.Background()
+
+	info := &TaskInfo{
+		Task: &model.Task{
+			ID:       "task-running-idempotent",
+			TypeName: "test",
+		},
+		Status:          model.TaskStatusRunning,
+		AgentID:         "agent-1",
+		StartedAtMillis: 100,
+	}
+	require.NoError(t, store.SaveTaskInfo(ctx, info, true))
+
+	res, err := store.ApplySetRunning(ctx, info.Task.ID, "agent-2", 789)
+	require.NoError(t, err)
+	assert.Equal(t, ApplyTaskNoop, res.Code)
+
+	retrieved, err := store.GetTaskInfo(ctx, info.Task.ID)
+	require.NoError(t, err)
+	require.NotNil(t, retrieved)
+	assert.Equal(t, "agent-1", retrieved.AgentID)
+	assert.Equal(t, int64(100), retrieved.StartedAtMillis)
 }

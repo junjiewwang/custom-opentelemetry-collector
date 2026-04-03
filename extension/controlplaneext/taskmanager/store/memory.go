@@ -114,10 +114,6 @@ func (s *MemoryTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upd
 // ===== Atomic State Machine Operations (Authoritative) =====
 
 func (s *MemoryTaskStore) ApplyTaskResult(ctx context.Context, taskID string, result *model.TaskResult, nowMillis int64) (ApplyTaskUpdateResult, error) {
-	if result == nil {
-		return ApplyTaskUpdateResult{}, errors.New("result cannot be nil")
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -126,39 +122,7 @@ func (s *MemoryTaskStore) ApplyTaskResult(ctx context.Context, taskID string, re
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
 	}
 
-	cur := info.Status
-	newStatus := result.Status
-
-	// Once terminal, everything is a no-op (first terminal wins).
-	if IsTerminalStatus(cur) {
-		return ApplyTaskUpdateResult{Code: ApplyTaskNoop, Status: cur, AgentID: info.AgentID}, nil
-	}
-
-	// Idempotent.
-	if cur == newStatus {
-		return ApplyTaskUpdateResult{Code: ApplyTaskNoop, Status: cur, AgentID: info.AgentID}, nil
-	}
-
-	// Reject rollback RUNNING -> PENDING.
-	if cur == model.TaskStatusRunning && newStatus == model.TaskStatusPending {
-		return ApplyTaskUpdateResult{Code: ApplyTaskRejected, Status: cur, AgentID: info.AgentID}, nil
-	}
-
-	// Apply update.
-	info.Status = newStatus
-	info.Result = result
-	info.LastUpdatedAtMillis = nowMillis
-	info.Version++
-
-	if result.AgentID != "" && info.AgentID == "" {
-		info.AgentID = result.AgentID
-	}
-
-	if newStatus == model.TaskStatusRunning && info.StartedAtMillis == 0 {
-		info.StartedAtMillis = nowMillis
-	}
-
-	return ApplyTaskUpdateResult{Code: ApplyTaskUpdated, Status: info.Status, AgentID: info.AgentID}, nil
+	return applyTaskResultUpdate(info, result, nowMillis)
 }
 
 func (s *MemoryTaskStore) ApplyCancel(ctx context.Context, taskID string, nowMillis int64) (ApplyTaskUpdateResult, error) {
@@ -170,21 +134,7 @@ func (s *MemoryTaskStore) ApplyCancel(ctx context.Context, taskID string, nowMil
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
 	}
 
-	cur := info.Status
-	if cur == model.TaskStatusCancelled {
-		return ApplyTaskUpdateResult{Code: ApplyTaskNoop, Status: cur, AgentID: info.AgentID}, nil
-	}
-
-	// Reject cancelling a non-cancelled terminal task.
-	if IsTerminalStatus(cur) {
-		return ApplyTaskUpdateResult{Code: ApplyTaskRejected, Status: cur, AgentID: info.AgentID}, nil
-	}
-
-	info.Status = model.TaskStatusCancelled
-	info.LastUpdatedAtMillis = nowMillis
-	info.Version++
-
-	return ApplyTaskUpdateResult{Code: ApplyTaskUpdated, Status: info.Status, AgentID: info.AgentID}, nil
+	return applyCancelUpdate(info, nowMillis)
 }
 
 func (s *MemoryTaskStore) ApplySetRunning(ctx context.Context, taskID string, agentID string, nowMillis int64) (ApplyTaskUpdateResult, error) {
@@ -196,24 +146,7 @@ func (s *MemoryTaskStore) ApplySetRunning(ctx context.Context, taskID string, ag
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
 	}
 
-	cur := info.Status
-	if cur == model.TaskStatusRunning {
-		return ApplyTaskUpdateResult{Code: ApplyTaskNoop, Status: cur, AgentID: info.AgentID}, nil
-	}
-
-	if IsTerminalStatus(cur) {
-		return ApplyTaskUpdateResult{Code: ApplyTaskRejected, Status: cur, AgentID: info.AgentID}, nil
-	}
-
-	info.Status = model.TaskStatusRunning
-	info.AgentID = agentID
-	if info.StartedAtMillis == 0 {
-		info.StartedAtMillis = nowMillis
-	}
-	info.LastUpdatedAtMillis = nowMillis
-	info.Version++
-
-	return ApplyTaskUpdateResult{Code: ApplyTaskUpdated, Status: info.Status, AgentID: info.AgentID}, nil
+	return applySetRunningUpdate(info, agentID, nowMillis)
 }
 
 // ListTaskInfos implements TaskStore.
@@ -223,10 +156,30 @@ func (s *MemoryTaskStore) ListTaskInfos(ctx context.Context) ([]*TaskInfo, error
 
 	result := make([]*TaskInfo, 0, len(s.taskInfos))
 	for _, info := range s.taskInfos {
-		copied := *info
-		result = append(result, &copied)
+		result = append(result, cloneTaskInfo(info))
 	}
 	return result, nil
+}
+
+// ListTaskInfosPage implements TaskStore.
+func (s *MemoryTaskStore) ListTaskInfosPage(ctx context.Context, query TaskListQuery) (TaskListPage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query = normalizeTaskListQuery(query)
+
+	// 验证 cursor 格式
+	if _, _, err := parseSeekCursor(query.Cursor); err != nil {
+		return TaskListPage{}, err
+	}
+
+	infos := make([]*TaskInfo, 0, len(s.taskInfos))
+	for _, info := range s.taskInfos {
+		infos = append(infos, info)
+	}
+
+	filtered := filterAndSortTaskInfos(infos, query)
+	return buildTaskListPage(filtered, query.Cursor, query.Limit), nil
 }
 
 // DeleteTaskInfo implements TaskStore.
@@ -461,6 +414,29 @@ func (s *MemoryTaskStore) GetRunning(ctx context.Context, taskID string) (string
 	defer s.mu.RUnlock()
 
 	return s.runningTasks[taskID], nil
+}
+
+// ListRunningTaskInfos implements TaskStore.
+func (s *MemoryTaskStore) ListRunningTaskInfos(ctx context.Context) ([]*TaskInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make([]*TaskInfo, 0, len(s.runningTasks))
+	for taskID, agentID := range s.runningTasks {
+		info, ok := s.taskInfos[taskID]
+		if !ok || info == nil || info.Task == nil || info.Status != model.TaskStatusRunning {
+			delete(s.runningTasks, taskID)
+			continue
+		}
+
+		copied := *info
+		if copied.AgentID == "" {
+			copied.AgentID = agentID
+		}
+		result = append(result, &copied)
+	}
+
+	return result, nil
 }
 
 // ClearRunning implements TaskStore.
