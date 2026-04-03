@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -38,13 +41,38 @@ func (e *Extension) listApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enrich with instance count
-	for _, app := range apps {
-		instances, _ := e.agentReg.GetAgentsByToken(r.Context(), app.Token)
-		app.AgentCount = len(instances)
+	type appWithStats struct {
+		ID           string            `json:"id"`
+		Name         string            `json:"name"`
+		Description  string            `json:"description,omitempty"`
+		Token        string            `json:"token"`
+		Status       string            `json:"status,omitempty"`
+		CreatedAt    time.Time         `json:"created_at"`
+		UpdatedAt    time.Time         `json:"updated_at"`
+		Metadata     map[string]string `json:"metadata,omitempty"`
+		AgentCount   int               `json:"agent_count"`
+		ServiceCount int               `json:"service_count"`
 	}
 
-	e.writeJSON(w, http.StatusOK, listResponse("apps", apps, len(apps)))
+	result := make([]appWithStats, 0, len(apps))
+	for _, app := range apps {
+		instances, _ := e.agentReg.GetAgentsByToken(r.Context(), app.Token)
+		services, _ := e.agentReg.GetServicesByApp(r.Context(), app.ID)
+		result = append(result, appWithStats{
+			ID:           app.ID,
+			Name:         app.Name,
+			Description:  app.Description,
+			Token:        app.Token,
+			Status:       app.Status,
+			CreatedAt:    app.CreatedAt,
+			UpdatedAt:    app.UpdatedAt,
+			Metadata:     app.Metadata,
+			AgentCount:   len(instances),
+			ServiceCount: len(services),
+		})
+	}
+
+	e.writeJSON(w, http.StatusOK, listResponse("apps", result, len(result)))
 }
 
 func (e *Extension) createApp(w http.ResponseWriter, r *http.Request) {
@@ -285,10 +313,24 @@ func (e *Extension) listAppServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	services, err := e.agentReg.GetServicesByApp(r.Context(), app.ID)
+	serviceNames, err := e.agentReg.GetServicesByApp(r.Context(), app.ID)
 	if err != nil {
 		e.handleError(w, err)
 		return
+	}
+
+	type serviceWithStats struct {
+		ServiceName   string `json:"service_name"`
+		InstanceCount int    `json:"instance_count"`
+	}
+
+	services := make([]serviceWithStats, 0, len(serviceNames))
+	for _, svcName := range serviceNames {
+		instances, _ := e.agentReg.GetInstancesByService(r.Context(), app.ID, svcName)
+		services = append(services, serviceWithStats{
+			ServiceName:   svcName,
+			InstanceCount: len(instances),
+		})
 	}
 
 	e.writeJSON(w, http.StatusOK, map[string]any{
@@ -413,6 +455,7 @@ func (e *Extension) listAllServices(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	appID := r.URL.Query().Get("app_id")
+	serviceName := r.URL.Query().Get("service_name")
 	sortBy := r.URL.Query().Get("sort_by")
 	sortOrder := r.URL.Query().Get("sort_order")
 
@@ -425,7 +468,19 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 
 	var instances []*agentregistry.AgentInfo
 
-	if appID != "" {
+	if appID != "" && serviceName != "" {
+		// Filter by specific app + service (most specific)
+		app, err := e.tokenMgr.GetApp(r.Context(), appID)
+		if err != nil {
+			e.handleError(w, errNotFound("app not found: "+err.Error()))
+			return
+		}
+		instances, err = e.agentReg.GetInstancesByService(r.Context(), app.ID, serviceName)
+		if err != nil {
+			e.handleError(w, err)
+			return
+		}
+	} else if appID != "" {
 		// Filter by specific app
 		app, err := e.tokenMgr.GetApp(r.Context(), appID)
 		if err != nil {
@@ -544,7 +599,13 @@ func toTaskInfoV2(info *taskmanager.TaskInfo) *taskInfoV2 {
 }
 
 func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
-	tasks, err := e.taskMgr.GetAllTasks(r.Context())
+	query, err := parseListTasksQuery(r)
+	if err != nil {
+		e.handleError(w, errBadRequest(err.Error()))
+		return
+	}
+
+	page, err := e.taskMgr.ListTasks(r.Context(), query)
 	if err != nil {
 		e.handleError(w, err)
 		return
@@ -558,29 +619,55 @@ func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build agentID→metadata map to backfill offline agent info and agent state
+	// Build agentID→metadata map to backfill offline agent info and agent state.
+	// Optimization: when filter conditions are present, only look up agents that
+	// appear in the result set instead of loading ALL agents.
 	type agentMeta struct {
 		AppID       string
 		ServiceName string
 		State       string
 	}
 	agentMetaMap := make(map[string]agentMeta)
-	if agents, err := e.agentReg.GetAllAgents(r.Context()); err == nil {
-		for _, agent := range agents {
-			state := ""
-			if agent.Status != nil {
-				state = string(agent.Status.State)
+
+	hasFilter := query.AppID != "" || query.ServiceName != "" || query.AgentID != "" || query.TaskType != ""
+	if hasFilter {
+		// Targeted lookup: only resolve agents referenced in the result page
+		for _, t := range page.Items {
+			agentID := t.AgentID
+			if agentID == "" || agentMetaMap[agentID] != (agentMeta{}) {
+				continue
 			}
-			agentMetaMap[agent.AgentID] = agentMeta{
-				AppID:       agent.AppID,
-				ServiceName: agent.ServiceName,
-				State:       state,
+			if agent, err := e.agentReg.GetAgent(r.Context(), agentID); err == nil && agent != nil {
+				state := ""
+				if agent.Status != nil {
+					state = string(agent.Status.State)
+				}
+				agentMetaMap[agentID] = agentMeta{
+					AppID:       agent.AppID,
+					ServiceName: agent.ServiceName,
+					State:       state,
+				}
+			}
+		}
+	} else {
+		// No filter: load all agents (original behavior)
+		if agents, err := e.agentReg.GetAllAgents(r.Context()); err == nil {
+			for _, agent := range agents {
+				state := ""
+				if agent.Status != nil {
+					state = string(agent.Status.State)
+				}
+				agentMetaMap[agent.AgentID] = agentMeta{
+					AppID:       agent.AppID,
+					ServiceName: agent.ServiceName,
+					State:       state,
+				}
 			}
 		}
 	}
 
-	out := make([]*taskInfoV2, 0, len(tasks))
-	for _, t := range tasks {
+	out := make([]*taskInfoV2, 0, len(page.Items))
+	for _, t := range page.Items {
 		info := toTaskInfoV2(t)
 		if info == nil {
 			continue
@@ -607,7 +694,75 @@ func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
 		out = append(out, info)
 	}
 
-	e.writeJSON(w, http.StatusOK, listResponse("tasks", out, len(out)))
+	e.writeJSON(w, http.StatusOK, map[string]any{
+		"tasks":       out,
+		"total":       len(out),
+		"next_cursor": page.NextCursor,
+		"has_more":    page.HasMore,
+	})
+}
+
+func parseListTasksQuery(r *http.Request) (taskmanager.ListTasksQuery, error) {
+	query := taskmanager.ListTasksQuery{
+		AppID:       strings.TrimSpace(r.URL.Query().Get("app_id")),
+		ServiceName: strings.TrimSpace(r.URL.Query().Get("service_name")),
+		AgentID:     strings.TrimSpace(r.URL.Query().Get("agent_id")),
+		TaskType:    strings.TrimSpace(r.URL.Query().Get("task_type")),
+		Cursor:      strings.TrimSpace(r.URL.Query().Get("cursor")),
+	}
+
+	if limitStr := strings.TrimSpace(r.URL.Query().Get("limit")); limitStr != "" {
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil || limit < 0 {
+			return taskmanager.ListTasksQuery{}, errors.New("invalid limit")
+		}
+		query.Limit = limit
+	}
+
+	statusValues := r.URL.Query()["status"]
+	if len(statusValues) == 0 {
+		if statusCSV := strings.TrimSpace(r.URL.Query().Get("statuses")); statusCSV != "" {
+			statusValues = strings.Split(statusCSV, ",")
+		}
+	}
+
+	for _, raw := range statusValues {
+		status, ok, err := parseTaskStatus(raw)
+		if err != nil {
+			return taskmanager.ListTasksQuery{}, err
+		}
+		if ok {
+			query.Statuses = append(query.Statuses, status)
+		}
+	}
+
+	return query, nil
+}
+
+func parseTaskStatus(raw string) (model.TaskStatus, bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "all":
+		return 0, false, nil
+	case "unknown":
+		return model.TaskStatusUnspecified, true, nil
+
+	case "pending":
+		return model.TaskStatusPending, true, nil
+	case "running":
+		return model.TaskStatusRunning, true, nil
+	case "success":
+		return model.TaskStatusSuccess, true, nil
+	case "failed":
+		return model.TaskStatusFailed, true, nil
+	case "timeout":
+		return model.TaskStatusTimeout, true, nil
+	case "cancelled":
+		return model.TaskStatusCancelled, true, nil
+	case "result_too_large":
+		return model.TaskStatusResultTooLarge, true, nil
+	default:
+		return 0, false, errors.New("invalid status filter: " + raw)
+	}
 }
 
 func (e *Extension) createTaskV2(w http.ResponseWriter, r *http.Request) {
