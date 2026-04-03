@@ -118,6 +118,16 @@ type ExecSyncResponse struct {
 	TaskID string
 	// AgentID 目标 Agent ID
 	AgentID string
+	// Accepted 是否已提交并被 Collector 受理
+	Accepted bool
+	// Pending 是否仍需后续确认
+	Pending bool
+	// State 当前状态，如 PENDING_CONFIRMATION
+	State string
+	// ConfirmationMode 后续确认方式
+	ConfirmationMode string
+	// ConfirmationHint 后续确认提示
+	ConfirmationHint string
 }
 
 // ========== 核心编排方法 ==========
@@ -233,75 +243,33 @@ func (o *ArthasOrchestrator) Attach(ctx context.Context, agentID string) (*ExecS
 		return nil, fmt.Errorf("Agent '%s' 不存在或已离线", agentID)
 	}
 
-	var lastResult *ParsedArthasResult
-	maxRetries := o.maxAttachRetries
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			o.logger.Info("[attach] 重试",
-				zap.String("agent_id", agentID),
-				zap.Int("attempt", attempt),
-			)
-			// 重试前等待一小段时间
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(2 * time.Second):
-			}
-		}
-
-		task := o.buildAttachTask(agentID)
-
-		if err := o.controlPlane.SubmitTaskForAgent(ctx, agentID, task); err != nil {
-			o.logger.Error("[attach] 提交任务失败",
-				zap.String("agent_id", agentID),
-				zap.String("task_id", task.ID),
-				zap.Int("attempt", attempt),
-				zap.Error(err),
-			)
-			lastResult = &ParsedArthasResult{
+	task := o.buildAttachTask(agentID)
+	if err := o.controlPlane.SubmitTaskForAgent(ctx, agentID, task); err != nil {
+		o.logger.Error("[attach] 提交任务失败",
+			zap.String("agent_id", agentID),
+			zap.String("task_id", task.ID),
+			zap.Error(err),
+		)
+		return &ExecSyncResponse{
+			AgentID: agentID,
+			Parsed: &ParsedArthasResult{
 				TaskType:     model.ArthasTaskTypeAttach,
 				ErrorCode:    model.ArthasErrAttachError,
 				ErrorMessage: fmt.Sprintf("提交 attach 任务失败: %v", err),
-			}
-			continue
-		}
-
-		waitTimeout := time.Duration(o.attachTimeoutMs)*time.Millisecond + 10*time.Second
-		taskResult, err := o.waitForTaskResult(ctx, task.ID, waitTimeout)
-		if err != nil {
-			lastResult = &ParsedArthasResult{
-				TaskType:     model.ArthasTaskTypeAttach,
-				Timeout:      true,
-				ErrorCode:    model.ArthasErrStartFailed,
-				ErrorMessage: fmt.Sprintf("等待 attach 结果超时: %v", err),
-			}
-			continue
-		}
-
-		parsed := ParseAttachResult(taskResult)
-		if parsed.Success {
-			return &ExecSyncResponse{
-				Parsed:  parsed,
-				TaskID:  task.ID,
-				AgentID: agentID,
-			}, nil
-		}
-
-		lastResult = parsed
-		o.logger.Warn("[attach] 执行失败",
-			zap.String("agent_id", agentID),
-			zap.String("task_id", task.ID),
-			zap.String("error_code", parsed.ErrorCode),
-			zap.String("error_message", parsed.ErrorMessage),
-			zap.Int("attempt", attempt),
-		)
+			},
+		}, nil
 	}
 
-	// 所有重试都失败
+	go o.confirmAttach(task.ID, agentID)
+
 	return &ExecSyncResponse{
-		Parsed:  lastResult,
-		AgentID: agentID,
+		TaskID:            task.ID,
+		AgentID:           agentID,
+		Accepted:          true,
+		Pending:           true,
+		State:             "PENDING_CONFIRMATION",
+		ConfirmationMode:  "arthas_status",
+		ConfirmationHint:  "attach 任务已提交，请稍后调用 arthas_status，直到状态变为 tunnel_registered",
 	}, nil
 }
 
@@ -436,7 +404,10 @@ func (o *ArthasOrchestrator) waitForTaskResult(ctx context.Context, taskID strin
 		case <-deadline:
 			return nil, fmt.Errorf("timeout after %v", timeout)
 		case <-ticker.C:
-			result, found := o.controlPlane.GetTaskResult(taskID)
+			result, found, err := o.controlPlane.GetTaskResult(taskID)
+			if err != nil {
+				return nil, fmt.Errorf("get task result for %s: %w", taskID, err)
+			}
 			if !found {
 				continue
 			}
@@ -450,6 +421,39 @@ func (o *ArthasOrchestrator) waitForTaskResult(ctx context.Context, taskID strin
 			}
 		}
 	}
+}
+
+func (o *ArthasOrchestrator) confirmAttach(taskID, agentID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(o.attachTimeoutMs)*time.Millisecond+10*time.Second)
+	defer cancel()
+
+	taskResult, err := o.waitForTaskResult(ctx, taskID, time.Duration(o.attachTimeoutMs)*time.Millisecond+10*time.Second)
+	if err != nil {
+		o.logger.Warn("[attach] 后台确认超时",
+			zap.String("agent_id", agentID),
+			zap.String("task_id", taskID),
+			zap.Error(err),
+		)
+		return
+	}
+
+	parsed := ParseAttachResult(taskResult)
+	if parsed.Success {
+		o.logger.Info("[attach] 后台确认成功",
+			zap.String("agent_id", agentID),
+			zap.String("task_id", taskID),
+			zap.String("arthas_state", parsed.ArthasState),
+			zap.Bool("tunnel_ready", parsed.TunnelReady),
+		)
+		return
+	}
+
+	o.logger.Warn("[attach] 后台确认失败",
+		zap.String("agent_id", agentID),
+		zap.String("task_id", taskID),
+		zap.String("error_code", parsed.ErrorCode),
+		zap.String("error_message", parsed.ErrorMessage),
+	)
 }
 
 // ========== 结构化结果格式化（面向 MCP 工具层） ==========

@@ -30,6 +30,9 @@ type TaskManager interface {
 	// GetAllTasks returns all tasks (from detail storage, including all statuses).
 	GetAllTasks(ctx context.Context) ([]*TaskInfo, error)
 
+	// ListTasks returns a filtered and paged task list for admin read queries.
+	ListTasks(ctx context.Context, query ListTasksQuery) (ListTasksPage, error)
+
 	// CancelTask cancels a task by ID.
 	CancelTask(ctx context.Context, taskID string) error
 
@@ -65,6 +68,24 @@ type TaskInfo struct {
 	CreatedAtMillis int64             `json:"created_at_millis"`
 	StartedAtMillis int64             `json:"started_at_millis,omitempty"`
 	Result          *model.TaskResult `json:"result,omitempty"`
+}
+
+// ListTasksQuery defines the public admin task-list query model.
+type ListTasksQuery struct {
+	Statuses    []model.TaskStatus
+	AppID       string
+	ServiceName string
+	AgentID     string
+	TaskType    string
+	Limit       int
+	Cursor      string
+}
+
+// ListTasksPage represents one page of task list results.
+type ListTasksPage struct {
+	Items      []*TaskInfo `json:"tasks"`
+	NextCursor string      `json:"next_cursor,omitempty"`
+	HasMore    bool        `json:"has_more"`
 }
 
 // Config holds the configuration for TaskManager.

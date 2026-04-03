@@ -78,9 +78,15 @@ func IsTerminalStatus(status model.TaskStatus) bool {
 	}
 }
 
-// TaskStore defines low-level storage operations for task management.
-// Implementations should focus on data persistence only, without business logic.
+// TaskStore defines the authoritative storage boundary for task management.
+//
+// It is more than a CRUD repository: implementations are responsible for
+// persistence, backend-specific atomicity, and applying shared task state
+// machine semantics consistently. Business orchestration (for example reaping,
+// retries, event policy, and workflow decisions) still belongs in upper layers
+// such as `TaskService` and `StaleTaskReaper`.
 type TaskStore interface {
+
 	// ===== Task Detail Operations =====
 
 	// SaveTaskInfo persists a TaskInfo.
@@ -114,6 +120,9 @@ type TaskStore interface {
 
 	// ListTaskInfos returns all TaskInfos.
 	ListTaskInfos(ctx context.Context) ([]*TaskInfo, error)
+
+	// ListTaskInfosPage returns a filtered and paged task list for read-model queries.
+	ListTaskInfosPage(ctx context.Context, query TaskListQuery) (TaskListPage, error)
 
 	// DeleteTaskInfo removes a TaskInfo.
 	DeleteTaskInfo(ctx context.Context, taskID string) error
@@ -165,6 +174,11 @@ type TaskStore interface {
 
 	// GetRunning returns the agentID running a task, or "" if not running.
 	GetRunning(ctx context.Context, taskID string) (string, error)
+
+	// ListRunningTaskInfos returns task details for tasks currently tracked as RUNNING.
+	// Implementations may best-effort clean stale running markers whose detail is missing
+	// or no longer in RUNNING state.
+	ListRunningTaskInfos(ctx context.Context) ([]*TaskInfo, error)
 
 	// ClearRunning removes the running marker for a task.
 	ClearRunning(ctx context.Context, taskID string) error

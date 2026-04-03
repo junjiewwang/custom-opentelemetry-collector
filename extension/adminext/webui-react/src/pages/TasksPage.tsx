@@ -23,7 +23,7 @@ import DetailDrawer, { DrawerSection } from '@/components/DetailDrawer';
 import SearchableSelect, { type SelectOption } from '@/components/SearchableSelect';
 import type {
   TaskInfoV2, TaskResultRaw, Task, TaskStatus, NormalizedTaskResult,
-  Instance, ApiError,
+  Instance, App, AppService, ApiError,
 } from '@/types/api';
 
 // ── 常量 ──────────────────────────────────────────────
@@ -238,6 +238,16 @@ export default function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [selectedTreeNodeId, setSelectedTreeNodeId] = useState<string | undefined>();
 
+  // 级联查询：树数据
+  const [apps, setApps] = useState<App[]>([]);
+  const [appServicesMap, setAppServicesMap] = useState<Record<string, AppService[]>>({});
+  const [expandedAppIds, setExpandedAppIds] = useState<Set<string>>(new Set());
+  const [treeLoading, setTreeLoading] = useState(false);
+
+  // 当前选中的过滤条件
+  const [filterAppId, setFilterAppId] = useState<string | undefined>();
+  const [filterServiceName, setFilterServiceName] = useState<string | undefined>();
+
   // 详情抽屉
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -272,14 +282,44 @@ export default function TasksPage() {
   const [uninstrMethodName, setUninstrMethodName] = useState('');
   const [uninstrType, setUninstrType] = useState('');
 
-  // ── 加载任务 ──────────────────────────────────────
+  // ── 加载 Apps 列表（树第一级） ──────────────────────
 
-  const loadTasks = useCallback(async () => {
+  const loadApps = useCallback(async () => {
+    setTreeLoading(true);
+    try {
+      const appsList = await apiClient.getApps();
+      setApps(appsList);
+    } catch (e) {
+      showToast(`Failed to load apps: ${(e as ApiError).message}`, 'error');
+    } finally {
+      setTreeLoading(false);
+    }
+  }, [showToast]);
+
+  // ── 加载 App 下的 Services（树第二级，按需加载） ──
+
+  const loadAppServices = useCallback(async (appId: string) => {
+    if (appServicesMap[appId]) return;
+    try {
+      const services = await apiClient.getAppServices(appId);
+      setAppServicesMap(prev => ({ ...prev, [appId]: services }));
+    } catch (e) {
+      showToast(`Failed to load services: ${(e as ApiError).message}`, 'error');
+    }
+  }, [appServicesMap, showToast]);
+
+  // ── 加载任务（带过滤参数） ──────────────────────────
+
+  const loadTasks = useCallback(async (appId?: string, serviceName?: string) => {
     if (loading) return;
     setLoading(true);
     try {
-      const rawInfos = await apiClient.getTasks();
-      setTasks(parseTasks(rawInfos));
+      const res = await apiClient.getTasks({
+        app_id: appId,
+        service_name: serviceName,
+        limit: 200,
+      });
+      setTasks(parseTasks(res.tasks || []));
     } catch (e) {
       showToast(`Failed to load tasks: ${(e as ApiError).message}`, 'error');
     } finally {
@@ -287,7 +327,11 @@ export default function TasksPage() {
     }
   }, [loading, showToast]);
 
-  useEffect(() => { loadTasks(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => {
+    loadApps();
+    loadTasks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── 懒加载 Agent 选项 ──────────────────────────────
 
@@ -335,148 +379,100 @@ export default function TasksPage() {
         (t.task_type || '').toLowerCase().includes(q),
       );
     }
-    if (selectedTreeNodeId) {
-      list = list.filter(t => {
-        const appId = t.app_id || '_uncategorized_';
-        const svcName = t.service_name || '_unknown_service_';
-        const instId = t.target_agent_id || '_global_';
-        return `inst-${appId}-${svcName}-${instId}` === selectedTreeNodeId;
-      });
-    }
     return list;
-  }, [tasks, statusFilter, search, selectedTreeNodeId]);
+  }, [tasks, statusFilter, search]);
 
-  // ── 构建三级树 ──────────────────────────────────────
+  // ── 构建两级树（从 Apps API 数据构建） ──────────────
 
   const treeData = useMemo((): TreeNode[] => {
-    let list = tasks;
-    if (statusFilter !== 'all') list = list.filter(t => t.status === statusFilter);
-    const q = search.toLowerCase().trim();
-    if (q) {
-      list = list.filter(t =>
-        t.task_id.toLowerCase().includes(q) ||
-        t.app_id.toLowerCase().includes(q) ||
-        (t.app_name || '').toLowerCase().includes(q) ||
-        (t.service_name || '').toLowerCase().includes(q) ||
-        (t.target_agent_id || '').toLowerCase().includes(q) ||
-        (t.task_type || '').toLowerCase().includes(q),
-      );
-    }
-
-    const appMap = new Map<string, {
-      id: string; name: string; count: number; lastTime: number; hasFailed: boolean;
-      services: Map<string, {
-        id: string; name: string; count: number; lastTime: number; hasFailed: boolean;
-        instances: Map<string, {
-          id: string; name: string; count: number; lastTime: number; hasFailed: boolean;
-          agentState: string;
-        }>;
-      }>;
-    }>();
-
-    for (const t of list) {
-      const appId = t.app_id || '_uncategorized_';
-      const svcName = t.service_name || '_unknown_service_';
-      const instId = t.target_agent_id || '_global_';
-
-      if (!appMap.has(appId)) {
-        let displayName = appId === '_uncategorized_' ? 'Uncategorized' : appId;
-        if (t.app_name) displayName = t.app_name + ' (' + appId.substring(0, 8) + ')';
-        appMap.set(appId, { id: `app-${appId}`, name: displayName, count: 0, lastTime: 0, hasFailed: false, services: new Map() });
-      }
-      const appNode = appMap.get(appId)!;
-      appNode.count++;
-      if (t.created_at_millis > appNode.lastTime) appNode.lastTime = t.created_at_millis;
-      if (t.status === 'failed' || t.status === 'timeout') appNode.hasFailed = true;
-
-      if (!appNode.services.has(svcName)) {
-        appNode.services.set(svcName, {
-          id: `svc-${appId}-${svcName}`,
-          name: svcName === '_unknown_service_' ? 'Unknown Service' : svcName,
-          count: 0, lastTime: 0, hasFailed: false, instances: new Map(),
-        });
-      }
-      const svcNode = appNode.services.get(svcName)!;
-      svcNode.count++;
-      if (t.created_at_millis > svcNode.lastTime) svcNode.lastTime = t.created_at_millis;
-      if (t.status === 'failed' || t.status === 'timeout') svcNode.hasFailed = true;
-
-      if (!svcNode.instances.has(instId)) {
-        svcNode.instances.set(instId, {
-          id: `inst-${appId}-${svcName}-${instId}`,
-          name: instId === '_global_' ? 'Global Tasks' : instId,
-          count: 0, lastTime: 0, hasFailed: false, agentState: t.agent_state || '',
-        });
-      }
-      const instNode = svcNode.instances.get(instId)!;
-      instNode.count++;
-      if (t.created_at_millis > instNode.lastTime) instNode.lastTime = t.created_at_millis;
-      if (t.status === 'failed' || t.status === 'timeout') instNode.hasFailed = true;
-    }
-
-    const sortByTime = <T extends { lastTime: number; hasFailed: boolean }>(a: T, b: T) => {
-      const td = b.lastTime - a.lastTime;
-      if (td !== 0) return td;
-      return (b.hasFailed ? 1 : 0) - (a.hasFailed ? 1 : 0);
-    };
-
     const result: TreeNode[] = [];
-    const sortedApps = [...appMap.values()].sort(sortByTime);
-    for (const app of sortedApps) {
+    for (const app of apps) {
       const svcChildren: TreeNode[] = [];
-      const sortedSvcs = [...app.services.values()].sort(sortByTime);
-      for (const svc of sortedSvcs) {
-        const instChildren: TreeNode[] = [];
-        const sortedInsts = [...svc.instances.values()].sort(sortByTime);
-        for (const inst of sortedInsts) {
-          instChildren.push({
-            id: inst.id,
-            name: inst.name === 'Global Tasks' ? inst.name : formatShortId(inst.name),
-            icon: inst.name === 'Global Tasks' ? 'fas fa-globe' : 'fas fa-server',
-            iconColor: inst.agentState === 'online' ? 'text-green-500' : 'text-gray-400',
-            badge: inst.count,
-            badgeColor: inst.hasFailed ? 'bg-red-50 text-red-500' : 'bg-gray-100 text-gray-500',
-          });
-        }
+      const services = appServicesMap[app.id] || [];
+      for (const svc of services) {
         svcChildren.push({
-          id: svc.id,
-          name: svc.name,
+          id: `svc-${app.id}-${svc.service_name}`,
+          name: svc.service_name === '_unknown_service_' ? 'Unknown Service' : svc.service_name,
           icon: 'fas fa-sitemap',
           iconColor: 'text-purple-400',
-          badge: svc.count,
-          badgeColor: svc.hasFailed ? 'bg-red-50 text-red-500' : 'bg-gray-100 text-gray-500',
-          defaultExpanded: svc.hasFailed,
-          children: instChildren,
+          badge: svc.instance_count,
+          badgeColor: 'bg-gray-100 text-gray-500',
         });
       }
+      svcChildren.sort((a, b) => ((b.badge as number) || 0) - ((a.badge as number) || 0));
+
       result.push({
-        id: app.id,
-        name: app.name,
+        id: `app-${app.id}`,
+        name: app.name || app.id,
         icon: 'fas fa-cube',
         iconColor: 'text-blue-500',
-        badge: app.count,
-        badgeColor: app.hasFailed ? 'bg-red-50 text-red-500' : 'bg-gray-100 text-gray-500',
-        defaultExpanded: app.hasFailed,
-        children: svcChildren,
+        badge: app.agent_count ?? 0,
+        badgeColor: 'bg-gray-100 text-gray-500',
+        defaultExpanded: expandedAppIds.has(app.id),
+        children: svcChildren.length > 0 ? svcChildren : undefined,
+        ...(app.service_count && app.service_count > 0 && svcChildren.length === 0
+          ? { badge: `${app.agent_count ?? 0} (${app.service_count} svc)` }
+          : {}),
       });
     }
+    result.sort((a, b) => {
+      const aCount = typeof a.badge === 'number' ? a.badge : 0;
+      const bCount = typeof b.badge === 'number' ? b.badge : 0;
+      return bCount - aCount;
+    });
     return result;
-  }, [tasks, statusFilter, search]);
+  }, [apps, appServicesMap, expandedAppIds]);
 
   // ── 树节点选中 ──────────────────────────────────────
 
   const handleTreeSelect = useCallback((node: TreeNode | null) => {
-    if (!node) { setSelectedTreeNodeId(undefined); return; }
-    if (node.id.startsWith('inst-')) { setSelectedTreeNodeId(node.id); }
-  }, []);
+    if (!node) {
+      setSelectedTreeNodeId(undefined);
+      setFilterAppId(undefined);
+      setFilterServiceName(undefined);
+      loadTasks();
+      return;
+    }
+
+    // App 节点被点击：展开并加载 services，过滤该 App 下的任务
+    if (node.id.startsWith('app-')) {
+      const appId = node.id.replace('app-', '');
+      setExpandedAppIds(prev => {
+        const next = new Set(prev);
+        if (next.has(appId)) next.delete(appId);
+        else next.add(appId);
+        return next;
+      });
+      loadAppServices(appId);
+      setSelectedTreeNodeId(node.id);
+      setFilterAppId(appId);
+      setFilterServiceName(undefined);
+      loadTasks(appId);
+      return;
+    }
+
+    // Service 节点被点击：过滤该 Service 下的任务
+    if (node.id.startsWith('svc-')) {
+      setSelectedTreeNodeId(node.id);
+      const parts = node.id.replace('svc-', '').split('-');
+      const appId = parts[0];
+      const serviceName = parts.slice(1).join('-');
+      setFilterAppId(appId);
+      setFilterServiceName(serviceName);
+      loadTasks(appId, serviceName);
+    }
+  }, [loadAppServices, loadTasks]);
 
   const selectedTreeLabel = useMemo(() => {
     if (!selectedTreeNodeId) return '';
+    if (selectedTreeNodeId.startsWith('app-')) {
+      for (const app of treeData) {
+        if (app.id === selectedTreeNodeId) return app.name;
+      }
+    }
     for (const app of treeData) {
       for (const svc of (app.children || [])) {
-        for (const inst of (svc.children || [])) {
-          if (inst.id === selectedTreeNodeId) return `${app.name} / ${svc.name} / ${inst.name}`;
-        }
+        if (svc.id === selectedTreeNodeId) return `${app.name} / ${svc.name}`;
       }
     }
     return '';
@@ -542,11 +538,11 @@ export default function TasksPage() {
       await apiClient.cancelTask(task.task_id);
       showToast('Task cancelled successfully', 'success');
       setDrawerOpen(false);
-      loadTasks();
+      loadTasks(filterAppId, filterServiceName);
     } catch (e) {
       showToast(`Failed to cancel task: ${(e as ApiError).message}`, 'error');
     }
-  }, [confirm, showToast, loadTasks]);
+  }, [confirm, showToast, loadTasks, filterAppId, filterServiceName]);
 
   // ── 创建任务提交 ──────────────────────────────────
 
@@ -600,7 +596,7 @@ export default function TasksPage() {
       showToast('Task created successfully', 'success');
       setShowCreateModal(false);
       resetCreateForm();
-      loadTasks();
+      loadTasks(filterAppId, filterServiceName);
     } catch (e) {
       showToast(`Failed to create task: ${(e as ApiError).message}`, 'error');
     }
@@ -609,7 +605,7 @@ export default function TasksPage() {
       instrParamTypes, instrCaptureArgs, instrCaptureReturn, instrCaptureMaxLen,
       instrForce, instrMethodDesc,
       uninstrMode, uninstrRuleId, uninstrClassName, uninstrMethodName, uninstrType,
-      showToast, loadTasks]);
+      showToast, loadTasks, filterAppId, filterServiceName]);
 
   const resetCreateForm = useCallback(() => {
     setTaskType('arthas_attach');
@@ -648,7 +644,7 @@ export default function TasksPage() {
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2 shadow-sm text-sm">
             <i className="fas fa-plus" /> Create Task
           </button>
-          <button onClick={loadTasks} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
+          <button onClick={() => { loadApps(); loadTasks(filterAppId, filterServiceName); }} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
             <i className={`fas fa-sync ${loading ? 'fa-spin' : ''}`} />
           </button>
         </div>
@@ -675,9 +671,14 @@ export default function TasksPage() {
         <div className="w-72 flex-shrink-0">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden sticky top-4 flex flex-col" style={{ maxHeight: 'calc(100vh - 320px)' }}>
             <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex-shrink-0">
-              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest">App / Service / Instance</h3>
+              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest">App / Service</h3>
             </div>
-            <button onClick={() => setSelectedTreeNodeId(undefined)}
+            <button onClick={() => {
+                setSelectedTreeNodeId(undefined);
+                setFilterAppId(undefined);
+                setFilterServiceName(undefined);
+                loadTasks();
+              }}
               className={`w-full flex items-center gap-2 px-4 py-2.5 text-left transition select-none border-b border-gray-50 ${
                 !selectedTreeNodeId ? 'bg-blue-50 border-l-2 border-l-blue-500' : 'border-l-2 border-l-transparent hover:bg-gray-50'}`}>
               <i className="fas fa-globe text-blue-500 text-xs" />
@@ -685,7 +686,7 @@ export default function TasksPage() {
               <span className="text-[9px] font-bold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded ml-auto">{tasks.length}</span>
             </button>
             <TreeNav data={treeData} selectedId={selectedTreeNodeId} onSelect={handleTreeSelect}
-              allowSelectParent={false} emptyText={loading ? 'Loading...' : 'No tasks found'} />
+              allowSelectParent={true} emptyText={treeLoading ? 'Loading...' : 'No apps found'} />
           </div>
         </div>
 
@@ -696,7 +697,12 @@ export default function TasksPage() {
               <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 flex items-center gap-2">
                 <i className="fas fa-server text-blue-500 text-xs" />
                 <span className="text-xs font-bold text-blue-700">{selectedTreeLabel}</span>
-                <button onClick={() => setSelectedTreeNodeId(undefined)} className="text-blue-400 hover:text-blue-600 transition ml-1">
+                <button onClick={() => {
+                    setSelectedTreeNodeId(undefined);
+                    setFilterAppId(undefined);
+                    setFilterServiceName(undefined);
+                    loadTasks();
+                  }} className="text-blue-400 hover:text-blue-600 transition ml-1">
                   <i className="fas fa-times text-[10px]" />
                 </button>
               </div>

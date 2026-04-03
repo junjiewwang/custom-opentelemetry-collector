@@ -19,7 +19,7 @@ import { useToast } from '@/contexts/ToastContext';
 import { useConfirm } from '@/components/ConfirmDialog';
 import TreeNav, { type TreeNode } from '@/components/TreeNav';
 import DetailDrawer, { DrawerSection } from '@/components/DetailDrawer';
-import type { Instance, EnrichedInstance, ArthasAgent, ApiError } from '@/types/api';
+import type { Instance, EnrichedInstance, ArthasAgent, App, AppService, ApiError } from '@/types/api';
 
 // 懒加载终端面板（包含 xterm.js，约 200KB）
 const TerminalPanel = lazy(() => import('@/components/Terminal/TerminalPanel'));
@@ -111,17 +111,59 @@ export default function InstancesPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedInstance, setSelectedInstance] = useState<EnrichedInstance | null>(null);
 
+  // 级联查询：树数据
+  const [apps, setApps] = useState<App[]>([]);
+  const [appServicesMap, setAppServicesMap] = useState<Record<string, AppService[]>>({});
+  const [expandedAppIds, setExpandedAppIds] = useState<Set<string>>(new Set());
+  const [treeLoading, setTreeLoading] = useState(false);
+
+  // 当前选中的过滤条件
+  const [filterAppId, setFilterAppId] = useState<string | undefined>();
+  const [filterServiceName, setFilterServiceName] = useState<string | undefined>();
+
   // 终端面板
   const [terminalInstance, setTerminalInstance] = useState<EnrichedInstance | null>(null);
 
-  // ── 加载实例 ──────────────────────────────────────
+  // ── 加载 Apps 列表（树第一级） ──────────────────
 
-  const loadInstances = useCallback(async () => {
+  const loadApps = useCallback(async () => {
+    setTreeLoading(true);
+    try {
+      const appsList = await apiClient.getApps();
+      setApps(appsList);
+    } catch (e) {
+      const err = e as ApiError;
+      showToast(`Failed to load apps: ${err.message}`, 'error');
+    } finally {
+      setTreeLoading(false);
+    }
+  }, [showToast]);
+
+  // ── 加载 App 下的 Services（树第二级，按需加载） ──
+
+  const loadAppServices = useCallback(async (appId: string) => {
+    if (appServicesMap[appId]) return; // 已加载过
+    try {
+      const services = await apiClient.getAppServices(appId);
+      setAppServicesMap(prev => ({ ...prev, [appId]: services }));
+    } catch (e) {
+      const err = e as ApiError;
+      showToast(`Failed to load services: ${err.message}`, 'error');
+    }
+  }, [appServicesMap, showToast]);
+
+  // ── 加载实例（带过滤参数） ──────────────────────
+
+  const loadInstances = useCallback(async (appId?: string, serviceName?: string) => {
     if (loading) return;
     setLoading(true);
     try {
       const [instancesRes, arthasRes] = await Promise.allSettled([
-        apiClient.getInstances('all'),
+        apiClient.getInstances('', {
+          status: 'all',
+          app_id: appId,
+          service_name: serviceName,
+        }),
         apiClient.getArthasAgents(),
       ]);
 
@@ -137,7 +179,9 @@ export default function InstancesPage() {
     }
   }, [loading, showToast]);
 
+  // 初始加载
   useEffect(() => {
+    loadApps();
     loadInstances();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -161,7 +205,7 @@ export default function InstancesPage() {
     return result;
   }, [instances]);
 
-  // ── 过滤逻辑 ──────────────────────────────────────
+  // ── 过滤逻辑（前端本地过滤：状态 + 搜索） ──────
 
   const filteredInstances = useMemo(() => {
     let list = instances;
@@ -189,132 +233,106 @@ export default function InstancesPage() {
       );
     }
 
-    // 树节点联动
-    if (selectedTreeNodeId) {
-      list = list.filter(inst => {
-        const appId = inst.app_id || '_global_';
-        const svcName = inst.service_name || '_unknown_';
-        return `svc-${appId}-${svcName}` === selectedTreeNodeId;
-      });
-    }
-
     return list;
-  }, [instances, statusFilter, search, selectedTreeNodeId]);
+  }, [instances, statusFilter, search]);
 
-  // ── 构建左侧树 ──────────────────────────────────
+  // ── 构建左侧树（从 Apps API 数据构建） ──────────
 
   const treeData = useMemo((): TreeNode[] => {
-    // 使用已过滤的实例（按状态 + 搜索过滤后），但不按树节点过滤
-    let list = instances;
-
-    if (statusFilter === 'online') {
-      list = list.filter(i => i.status?.state === 'online');
-    } else if (statusFilter === 'offline') {
-      list = list.filter(i => i.status?.state !== 'online');
-    } else if (statusFilter === 'arthas_ready') {
-      list = list.filter(i => i.arthasStatus.tunnelReady);
-    } else if (statusFilter === 'arthas_not_ready') {
-      list = list.filter(i => !i.arthasStatus.tunnelReady);
-    }
-
-    const q = search.toLowerCase().trim();
-    if (q) {
-      list = list.filter(i =>
-        i.agent_id.toLowerCase().includes(q) ||
-        (i.hostname || '').toLowerCase().includes(q) ||
-        (i.service_name || '').toLowerCase().includes(q) ||
-        (i.ip || '').includes(q) ||
-        (i.app_id || '').toLowerCase().includes(q),
-      );
-    }
-
-    const appMap = new Map<string, {
-      id: string;
-      name: string;
-      count: number;
-      services: Map<string, { id: string; name: string; count: number; onlineCount: number; offlineCount: number }>;
-    }>();
-
-    for (const inst of list) {
-      const appId = inst.app_id || '_global_';
-      const svcName = inst.service_name || '_unknown_';
-
-      if (!appMap.has(appId)) {
-        appMap.set(appId, {
-          id: `app-${appId}`,
-          name: appId === '_global_' ? 'Global' : appId,
-          count: 0,
-          services: new Map(),
-        });
-      }
-      const appNode = appMap.get(appId)!;
-      appNode.count++;
-
-      if (!appNode.services.has(svcName)) {
-        appNode.services.set(svcName, {
-          id: `svc-${appId}-${svcName}`,
-          name: svcName === '_unknown_' ? 'Unknown Service' : svcName,
-          count: 0,
-          onlineCount: 0,
-          offlineCount: 0,
-        });
-      }
-      const svcNode = appNode.services.get(svcName)!;
-      svcNode.count++;
-      if (inst.status?.state === 'online') svcNode.onlineCount++;
-      else svcNode.offlineCount++;
-    }
-
-    // 转为 TreeNode[]
     const result: TreeNode[] = [];
-    for (const [, appNode] of appMap) {
+    for (const app of apps) {
       const svcChildren: TreeNode[] = [];
-      for (const [, svc] of appNode.services) {
+      const services = appServicesMap[app.id] || [];
+      for (const svc of services) {
         svcChildren.push({
-          id: svc.id,
-          name: svc.name,
+          id: `svc-${app.id}-${svc.service_name}`,
+          name: svc.service_name === '_unknown_' ? 'Unknown Service' : svc.service_name,
           icon: 'fas fa-sitemap',
           iconColor: 'text-purple-400',
-          badge: svc.count,
+          badge: svc.instance_count,
           badgeColor: 'bg-gray-100 text-gray-500',
         });
       }
-      // 按 count 降序
+      // 按 instance_count 降序
       svcChildren.sort((a, b) => ((b.badge as number) || 0) - ((a.badge as number) || 0));
 
       result.push({
-        id: appNode.id,
-        name: appNode.name,
+        id: `app-${app.id}`,
+        name: app.name || app.id,
         icon: 'fas fa-cube',
         iconColor: 'text-blue-500',
-        badge: appNode.count,
+        badge: app.agent_count ?? 0,
         badgeColor: 'bg-gray-100 text-gray-500',
-        defaultExpanded: true,
-        children: svcChildren,
+        defaultExpanded: expandedAppIds.has(app.id),
+        children: svcChildren.length > 0 ? svcChildren : undefined,
+        // 显示 service_count 提示用户可以展开
+        ...(app.service_count && app.service_count > 0 && svcChildren.length === 0
+          ? { badge: `${app.agent_count ?? 0} (${app.service_count} svc)` }
+          : {}),
       });
     }
-    // 按 count 降序
-    result.sort((a, b) => ((b.badge as number) || 0) - ((a.badge as number) || 0));
+    // 按 agent_count 降序
+    result.sort((a, b) => {
+      const aCount = typeof a.badge === 'number' ? a.badge : 0;
+      const bCount = typeof b.badge === 'number' ? b.badge : 0;
+      return bCount - aCount;
+    });
     return result;
-  }, [instances, statusFilter, search]);
+  }, [apps, appServicesMap, expandedAppIds]);
 
   // ── 树节点选中 ──────────────────────────────────
 
   const handleTreeSelect = useCallback((node: TreeNode | null) => {
     if (!node) {
       setSelectedTreeNodeId(undefined);
+      setFilterAppId(undefined);
+      setFilterServiceName(undefined);
+      loadInstances();
       return;
     }
-    // 只允许选中 Service 节点（id 以 svc- 开头）
+
+    // App 节点被点击：展开并加载 services
+    if (node.id.startsWith('app-')) {
+      const appId = node.id.replace('app-', '');
+      setExpandedAppIds(prev => {
+        const next = new Set(prev);
+        if (next.has(appId)) next.delete(appId);
+        else next.add(appId);
+        return next;
+      });
+      loadAppServices(appId);
+      // 选中 App 节点：过滤该 App 下的所有实例
+      setSelectedTreeNodeId(node.id);
+      setFilterAppId(appId);
+      setFilterServiceName(undefined);
+      loadInstances(appId);
+      return;
+    }
+
+    // Service 节点被点击：过滤该 Service 下的实例
     if (node.id.startsWith('svc-')) {
       setSelectedTreeNodeId(node.id);
+      // 解析 appId 和 serviceName: svc-{appId}-{serviceName}
+      const parts = node.id.replace('svc-', '').split('-');
+      const appId = parts[0];
+      const serviceName = parts.slice(1).join('-');
+      setFilterAppId(appId);
+      setFilterServiceName(serviceName);
+      loadInstances(appId, serviceName);
     }
-  }, []);
+  }, [loadAppServices, loadInstances]);
 
   // ── 选中树节点的标签 ──────────────────────────────
 
   const selectedTreeLabel = useMemo(() => {
     if (!selectedTreeNodeId) return '';
+    // App 节点
+    if (selectedTreeNodeId.startsWith('app-')) {
+      for (const app of treeData) {
+        if (app.id === selectedTreeNodeId) return app.name;
+      }
+    }
+    // Service 节点
     for (const app of treeData) {
       for (const svc of (app.children || [])) {
         if (svc.id === selectedTreeNodeId) {
@@ -347,7 +365,7 @@ export default function InstancesPage() {
       await apiClient.unregisterAgent(inst.agent_id);
       showToast('Instance removed successfully', 'success');
       setDrawerOpen(false);
-      loadInstances();
+      loadInstances(filterAppId, filterServiceName);
     } catch (e) {
       const err = e as ApiError;
       showToast(`Failed to remove instance: ${err.message}`, 'error');
@@ -384,7 +402,10 @@ export default function InstancesPage() {
             <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           </div>
           <button
-            onClick={loadInstances}
+            onClick={() => {
+              loadApps();
+              loadInstances(filterAppId, filterServiceName);
+            }}
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm"
           >
             <i className={`fas fa-sync ${loading ? 'fa-spin' : ''}`} />
@@ -424,7 +445,12 @@ export default function InstancesPage() {
 
             {/* "全部实例" 节点 */}
             <button
-              onClick={() => setSelectedTreeNodeId(undefined)}
+              onClick={() => {
+                setSelectedTreeNodeId(undefined);
+                setFilterAppId(undefined);
+                setFilterServiceName(undefined);
+                loadInstances();
+              }}
               className={`w-full flex items-center gap-2 px-4 py-2.5 text-left transition select-none border-b border-gray-50 ${
                 !selectedTreeNodeId
                   ? 'bg-blue-50 border-l-2 border-l-blue-500'
@@ -444,8 +470,8 @@ export default function InstancesPage() {
               data={treeData}
               selectedId={selectedTreeNodeId}
               onSelect={handleTreeSelect}
-              allowSelectParent={false}
-              emptyText={loading ? 'Loading...' : 'No services found'}
+              allowSelectParent={true}
+              emptyText={treeLoading ? 'Loading...' : 'No apps found'}
             />
           </div>
         </div>
@@ -459,7 +485,12 @@ export default function InstancesPage() {
                 <i className="fas fa-sitemap text-blue-500 text-xs" />
                 <span className="text-xs font-bold text-blue-700">{selectedTreeLabel}</span>
                 <button
-                  onClick={() => setSelectedTreeNodeId(undefined)}
+                  onClick={() => {
+                    setSelectedTreeNodeId(undefined);
+                    setFilterAppId(undefined);
+                    setFilterServiceName(undefined);
+                    loadInstances();
+                  }}
                   className="text-blue-400 hover:text-blue-600 transition ml-1"
                 >
                   <i className="fas fa-times text-[10px]" />

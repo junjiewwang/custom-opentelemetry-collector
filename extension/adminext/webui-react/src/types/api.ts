@@ -37,11 +37,19 @@ export interface App {
   token: string;
   created_at: string;
   updated_at: string;
+  agent_count?: number;
+  service_count?: number;
 }
 
 export interface CreateAppRequest {
   name: string;
   description?: string;
+}
+
+/** App 的 Service 信息（带统计） */
+export interface AppService {
+  service_name: string;
+  instance_count: number;
 }
 
 // ============================================================================
@@ -102,6 +110,26 @@ export interface Service {
   service_name: string;
   instance_count: number;
   online_count: number;
+}
+
+/** 任务列表查询参数 */
+export interface TaskListParams {
+  app_id?: string;
+  service_name?: string;
+  agent_id?: string;
+  task_type?: string;
+  status?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+/** 实例列表查询参数 */
+export interface InstanceListParams {
+  status?: string;
+  app_id?: string;
+  service_name?: string;
+  sort_by?: string;
+  sort_order?: string;
 }
 
 // ============================================================================

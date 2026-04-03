@@ -6,7 +6,6 @@ package mcpext
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"go.uber.org/zap"
@@ -19,9 +18,8 @@ func (w *mcpServerWrapper) registerArthasAttachTool() {
 		mcp.WithDescription(
 			"在目标 Agent 上启动 Arthas 并连接到 Collector 的 Tunnel Server。"+
 				"这是执行任何 Arthas 命令的前提条件。调用后会通过 ControlPlane 下发 arthas_attach 任务到目标 Java Agent，"+
-				"Java Agent 会启动 Arthas 进程并将其连接到 Tunnel。"+
-				"操作完成后，可以通过 arthas_status 验证 Arthas 是否已成功连接。\n\n"+
-				"支持自动重试（最多 2 次），适用于 Arthas 启动失败的场景。"),
+				"Java Agent 会启动 Arthas 进程并将其连接到 Tunnel。\n\n"+
+				"调用成功后会先返回任务已受理，后续请通过 arthas_status 检查是否已经连接到 Tunnel。"),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
@@ -65,34 +63,24 @@ func (w *mcpServerWrapper) handleArthasAttach(ctx context.Context, request mcp.C
 		return mcp.NewToolResultError("Arthas attach 失败: " + err.Error()), nil
 	}
 
-	parsed := resp.Parsed
-	if parsed.Success {
-		// 等待 Tunnel 连接
-		time.Sleep(2 * time.Second)
-		connected := w.ext.arthasTunnel.IsAgentConnected(agentID)
-
-		var tunnelStatus string
-		if connected {
-			tunnelStatus = "已连接 ✅"
-		} else {
-			tunnelStatus = "等待连接中 ⏳（Arthas 可能仍在启动中，请稍后通过 arthas_status 检查）"
-		}
-
-		return mcp.NewToolResultText(fmt.Sprintf(
-			"## Arthas Attach 结果\n\n"+
-				"- **Agent**: %s\n"+
-				"- **任务状态**: 成功 ✅\n"+
-				"- **Tunnel 状态**: %s\n"+
-				"- **任务 ID**: %s\n\n"+
-				"如果 Tunnel 尚未连接，请等待几秒后调用 `arthas_status` 检查。",
-			agentID, tunnelStatus, resp.TaskID,
+	if resp.Parsed != nil && !resp.Parsed.Success {
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"Arthas attach 失败:\n- Agent: %s\n- 错误码: %s\n- 错误: %s",
+			agentID, resp.Parsed.ErrorCode, resp.Parsed.ErrorMessage,
 		)), nil
 	}
 
-	// 失败
-	return mcp.NewToolResultError(fmt.Sprintf(
-		"Arthas attach 失败:\n- Agent: %s\n- 错误码: %s\n- 错误: %s",
-		agentID, parsed.ErrorCode, parsed.ErrorMessage,
+	return mcp.NewToolResultText(fmt.Sprintf(
+		"## Arthas Attach 请求已受理\n\n"+
+			"- **Agent**: %s\n"+
+			"- **accepted**: `%v`\n"+
+			"- **pending**: `%v`\n"+
+			"- **状态**: %s ⏳\n"+
+			"- **任务 ID**: %s\n"+
+			"- **确认方式**: %s\n\n"+
+			"%s\n\n"+
+			"> 请稍后调用 `arthas_status`，直到状态变为 `tunnel_registered`。",
+		agentID, resp.Accepted, resp.Pending, resp.State, resp.TaskID, resp.ConfirmationMode, resp.ConfirmationHint,
 	)), nil
 }
 

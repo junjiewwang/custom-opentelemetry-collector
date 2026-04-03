@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,15 +22,24 @@ import (
 
 // Redis key patterns
 const (
-	keyPendingGlobal  = "%s:pending:global"        // List: global pending tasks
-	keyPendingAgent   = "%s:pending:%s"            // List: agent-specific pending tasks
-	keyTaskDetail     = "%s:detail:%s"             // String: task details JSON
-	keyCancelled      = "%s:cancelled"             // Set: cancelled task IDs
-	keyResult         = "%s:result:%s"             // String: task result JSON
-	keyRunning        = "%s:running"               // Hash: taskID -> agentID
-	keyEventSubmitted = "%s:events:task:submitted" // Pub/Sub channel
-	keyEventCompleted = "%s:events:task:completed" // Pub/Sub channel
-	keyEventCancelled = "%s:events:task:cancelled" // Pub/Sub channel
+	keyPendingGlobal      = "%s:pending:global"        // List: global pending tasks
+	keyPendingAgent       = "%s:pending:%s"            // List: agent-specific pending tasks
+	keyTaskDetail         = "%s:detail:%s"             // String: task details JSON
+	keyCancelled          = "%s:cancelled"             // Set: cancelled task IDs
+	keyResult             = "%s:result:%s"             // String: task result JSON
+	keyRunning            = "%s:running"               // Hash: taskID -> agentID
+	keyRunningByStartedAt = "%s:running:by_started_at"  // ZSET: taskID scored by started_at_millis
+	keyEventSubmitted     = "%s:events:task:submitted" // Pub/Sub channel
+	keyEventCompleted     = "%s:events:task:completed" // Pub/Sub channel
+	keyEventCancelled     = "%s:events:task:cancelled" // Pub/Sub channel
+	keyTaskIndexCreatedAt = "%s:idx:tasks:created_at"  // ZSET: taskID scored by created_at_millis
+	keyTaskIndexStatus    = "%s:idx:tasks:status:%d"   // ZSET: taskID scored by created_at_millis
+	keyTaskIndexApp       = "%s:idx:tasks:app:%s"      // ZSET: taskID scored by created_at_millis
+	keyTaskIndexService   = "%s:idx:tasks:service:%s"  // ZSET: taskID scored by created_at_millis
+	keyTaskIndexAgent     = "%s:idx:tasks:agent:%s"    // ZSET: taskID scored by created_at_millis
+	keyTaskIndexType      = "%s:idx:tasks:type:%s"     // ZSET: taskID scored by created_at_millis
+	keyTaskIndexMembers   = "%s:idx:tasks:members:%s"  // Set: taskID -> index keys
+	keyTaskQueryTemp      = "%s:idx:tasks:query:%d:%d" // ZSET: temporary query index
 )
 
 // RedisTaskStore implements TaskStore using Redis as backend.
@@ -87,6 +97,42 @@ func (s *RedisTaskStore) runningKey() string {
 	return fmt.Sprintf(keyRunning, s.keyPrefix)
 }
 
+func (s *RedisTaskStore) runningByStartedAtKey() string {
+	return fmt.Sprintf(keyRunningByStartedAt, s.keyPrefix)
+}
+
+func (s *RedisTaskStore) taskCreatedAtIndexKey() string {
+	return fmt.Sprintf(keyTaskIndexCreatedAt, s.keyPrefix)
+}
+
+func (s *RedisTaskStore) taskStatusIndexKey(status model.TaskStatus) string {
+	return fmt.Sprintf(keyTaskIndexStatus, s.keyPrefix, int(status))
+}
+
+func (s *RedisTaskStore) taskAppIndexKey(appID string) string {
+	return fmt.Sprintf(keyTaskIndexApp, s.keyPrefix, appID)
+}
+
+func (s *RedisTaskStore) taskServiceIndexKey(serviceName string) string {
+	return fmt.Sprintf(keyTaskIndexService, s.keyPrefix, serviceName)
+}
+
+func (s *RedisTaskStore) taskAgentIndexKey(agentID string) string {
+	return fmt.Sprintf(keyTaskIndexAgent, s.keyPrefix, agentID)
+}
+
+func (s *RedisTaskStore) taskTypeIndexKey(taskType string) string {
+	return fmt.Sprintf(keyTaskIndexType, s.keyPrefix, taskType)
+}
+
+func (s *RedisTaskStore) taskIndexMembersKey(taskID string) string {
+	return fmt.Sprintf(keyTaskIndexMembers, s.keyPrefix, taskID)
+}
+
+func (s *RedisTaskStore) taskQueryTempKey() string {
+	return fmt.Sprintf(keyTaskQueryTemp, s.keyPrefix, time.Now().UnixNano(), rand.Int63())
+}
+
 func (s *RedisTaskStore) eventKey(eventType string) string {
 	switch eventType {
 	case "submitted":
@@ -109,6 +155,155 @@ func (s *RedisTaskStore) getClient() (redis.UniversalClient, error) {
 		return nil, errors.New("redis client not initialized")
 	}
 	return client, nil
+}
+
+func (s *RedisTaskStore) taskIndexScore(info *TaskInfo) float64 {
+	if info == nil {
+		return 0
+	}
+	return float64(info.CreatedAtMillis)
+}
+
+func (s *RedisTaskStore) taskInfoIndexKeys(info *TaskInfo) []string {
+	if info == nil || info.Task == nil || info.Task.ID == "" {
+		return nil
+	}
+
+	keys := []string{
+		s.taskCreatedAtIndexKey(),
+		s.taskStatusIndexKey(info.Status),
+	}
+	if info.AppID != "" {
+		keys = append(keys, s.taskAppIndexKey(info.AppID))
+	}
+	if info.ServiceName != "" {
+		keys = append(keys, s.taskServiceIndexKey(info.ServiceName))
+	}
+	if info.AgentID != "" {
+		keys = append(keys, s.taskAgentIndexKey(info.AgentID))
+	}
+	if info.Task.TypeName != "" {
+		keys = append(keys, s.taskTypeIndexKey(info.Task.TypeName))
+	}
+	return uniqueSortedStrings(keys)
+}
+
+func uniqueSortedStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+
+	sort.Strings(result)
+	return result
+}
+
+func stringSliceToAny(values []string) []any {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make([]any, 0, len(values))
+	for _, value := range values {
+		result = append(result, value)
+	}
+	return result
+}
+
+func (s *RedisTaskStore) taskIndexMemberKeys(ctx context.Context, client redis.UniversalClient, taskID string) ([]string, error) {
+	keys, err := client.SMembers(ctx, s.taskIndexMembersKey(taskID)).Result()
+	if err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("list task index members: %w", err)
+	}
+	return uniqueSortedStrings(keys), nil
+}
+
+func (s *RedisTaskStore) rebuildTaskIndexesForTask(ctx context.Context, client redis.UniversalClient, info *TaskInfo) error {
+	if info == nil || info.Task == nil || info.Task.ID == "" {
+		return errors.New("task info/task is nil")
+	}
+
+	taskID := info.Task.ID
+	oldKeys, err := s.taskIndexMemberKeys(ctx, client, taskID)
+	if err != nil {
+		return err
+	}
+	newKeys := s.taskInfoIndexKeys(info)
+
+	pipe := client.TxPipeline()
+	for _, key := range oldKeys {
+		pipe.ZRem(ctx, key, taskID)
+	}
+	for _, key := range newKeys {
+		pipe.ZAdd(ctx, key, redis.Z{Score: s.taskIndexScore(info), Member: taskID})
+	}
+	pipe.Del(ctx, s.taskIndexMembersKey(taskID))
+	if len(newKeys) > 0 {
+		pipe.SAdd(ctx, s.taskIndexMembersKey(taskID), stringSliceToAny(newKeys)...)
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("rebuild task indexes: %w", err)
+	}
+	return nil
+}
+
+func (s *RedisTaskStore) cleanupMissingTaskArtifacts(ctx context.Context, client redis.UniversalClient, taskIDs []string) {
+	for _, taskID := range uniqueSortedStrings(taskIDs) {
+		memberKeys, err := s.taskIndexMemberKeys(ctx, client, taskID)
+		if err != nil {
+			s.logger.Warn("Failed to load task index members for cleanup", zap.String("task_id", taskID), zap.Error(err))
+			continue
+		}
+
+		pipe := client.TxPipeline()
+		for _, key := range memberKeys {
+			pipe.ZRem(ctx, key, taskID)
+		}
+		pipe.Del(ctx, s.taskIndexMembersKey(taskID))
+		pipe.Del(ctx, s.resultKey(taskID))
+		pipe.SRem(ctx, s.cancelledKey(), taskID)
+		pipe.HDel(ctx, s.runningKey(), taskID)
+
+		if _, err := pipe.Exec(ctx); err != nil {
+			s.logger.Warn("Failed to cleanup stale task artifacts", zap.String("task_id", taskID), zap.Error(err))
+		}
+	}
+}
+
+func (s *RedisTaskStore) removeTaskIDsFromSortedSet(ctx context.Context, client redis.UniversalClient, key string, taskIDs []string) {
+	if key == "" || len(taskIDs) == 0 {
+		return
+	}
+
+	if err := client.ZRem(ctx, key, stringSliceToAny(uniqueSortedStrings(taskIDs))...).Err(); err != nil {
+		s.logger.Debug("Failed to cleanup task IDs from sorted set", zap.String("key", key), zap.Int("task_count", len(taskIDs)), zap.Error(err))
+	}
+}
+
+func (s *RedisTaskStore) cleanupTempKeys(ctx context.Context, client redis.UniversalClient, keys []string) {
+	keys = uniqueSortedStrings(keys)
+	if len(keys) == 0 {
+		return
+	}
+	if err := client.Del(ctx, keys...).Err(); err != nil {
+		s.logger.Debug("Failed to cleanup temporary task query keys", zap.Int("key_count", len(keys)), zap.Error(err))
+	}
 }
 
 // ===== Task Detail Operations =====
@@ -138,10 +333,16 @@ func (s *RedisTaskStore) SaveTaskInfo(ctx context.Context, info *TaskInfo, isNew
 		if !ok {
 			return errors.New("task already exists: " + info.Task.ID)
 		}
-		return nil
+	} else {
+		if err := client.Set(ctx, key, data, s.ttl).Err(); err != nil {
+			return fmt.Errorf("save task info: %w", err)
+		}
 	}
 
-	return client.Set(ctx, key, data, s.ttl).Err()
+	if err := s.rebuildTaskIndexesForTask(ctx, client, info); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetTaskInfo implements TaskStore.
@@ -268,7 +469,7 @@ func (s *RedisTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upda
 
 		switch result {
 		case 1: // Success
-			return nil
+			return s.rebuildTaskIndexesForTask(ctx, client, &info)
 		case 0: // Version mismatch - retry with fresh data
 			s.logger.Debug("Version mismatch, retrying with backoff",
 				zap.String("task_id", taskID),
@@ -305,10 +506,7 @@ func (s *RedisTaskStore) UpdateTaskInfo(ctx context.Context, taskID string, upda
 // Return: {code, agent_id, status}
 // code:  1=updated, 2=noop, -1=not found, -2=rejected
 // status: task's current status snapshot (after update for code=1, otherwise current)
-//
-// model.TaskStatus numeric values:
-// pending=1 running=2 success=3 failed=4 timeout=5 cancelled=6 result_too_large=7
-var applyTaskResultScript = redis.NewScript(`
+var applyTaskResultScript = redis.NewScript(fmt.Sprintf(`
 local current = redis.call('GET', KEYS[1])
 if not current then
     return {-1, '', 0}
@@ -323,7 +521,7 @@ local result_json = ARGV[4]
 local ttl = tonumber(ARGV[5])
 
 local function is_terminal(s)
-    return s == 3 or s == 4 or s == 5 or s == 6 or s == 7
+    return %s
 end
 
 local existing_agent = info.agent_id
@@ -340,7 +538,7 @@ if cur == new then
 end
 
 -- Reject rollback RUNNING -> PENDING.
-if cur == 2 and new == 1 then
+if cur == %d and new == %d then
     return {-2, existing_agent, cur}
 end
 
@@ -356,7 +554,7 @@ if agent and agent ~= '' then
     end
 end
 
-if new == 2 then
+if new == %d then
     local started = tonumber(info.started_at_millis) or 0
     if started == 0 then
         info.started_at_millis = now
@@ -377,11 +575,11 @@ end
 local after_agent = info.agent_id
 if not after_agent then after_agent = '' end
 return {1, after_agent, new}
-`)
+`, luaTerminalStatusExpr("s"), taskStatusRunningCode, taskStatusPendingCode, taskStatusRunningCode))
 
 // applyCancelScript atomically cancels a task in the task detail record.
 // Return: {code, agent_id, status}
-var applyCancelScript = redis.NewScript(`
+var applyCancelScript = redis.NewScript(fmt.Sprintf(`
 local current = redis.call('GET', KEYS[1])
 if not current then
     return {-1, '', 0}
@@ -393,14 +591,14 @@ local now = tonumber(ARGV[1])
 local ttl = tonumber(ARGV[2])
 
 local function is_terminal(s)
-    return s == 3 or s == 4 or s == 5 or s == 6 or s == 7
+    return %s
 end
 
 local existing_agent = info.agent_id
 if not existing_agent then existing_agent = '' end
 
 -- Idempotent: already cancelled.
-if cur == 6 then
+if cur == %d then
     return {2, existing_agent, cur}
 end
 
@@ -409,7 +607,7 @@ if is_terminal(cur) then
     return {-2, existing_agent, cur}
 end
 
-info.status = 6
+info.status = %d
 info.last_updated_at_millis = now
 info.version = (tonumber(info.version) or 0) + 1
 
@@ -422,12 +620,12 @@ end
 
 local after_agent = info.agent_id
 if not after_agent then after_agent = '' end
-return {1, after_agent, 6}
-`)
+return {1, after_agent, %d}
+`, luaTerminalStatusExpr("s"), taskStatusCancelledCode, taskStatusCancelledCode, taskStatusCancelledCode))
 
 // applySetRunningScript atomically sets a task to RUNNING in the task detail record.
 // Return: {code, agent_id, status}
-var applySetRunningScript = redis.NewScript(`
+var applySetRunningScript = redis.NewScript(fmt.Sprintf(`
 local current = redis.call('GET', KEYS[1])
 if not current then
     return {-1, '', 0}
@@ -440,14 +638,14 @@ local agent = ARGV[2]
 local ttl = tonumber(ARGV[3])
 
 local function is_terminal(s)
-    return s == 3 or s == 4 or s == 5 or s == 6 or s == 7
+    return %s
 end
 
 local existing_agent = info.agent_id
 if not existing_agent then existing_agent = '' end
 
 -- Idempotent.
-if cur == 2 then
+if cur == %d then
     return {2, existing_agent, cur}
 end
 
@@ -456,7 +654,7 @@ if is_terminal(cur) then
     return {-2, existing_agent, cur}
 end
 
-info.status = 2
+info.status = %d
 info.last_updated_at_millis = now
 info.version = (tonumber(info.version) or 0) + 1
 
@@ -478,8 +676,8 @@ end
 
 local after_agent = info.agent_id
 if not after_agent then after_agent = '' end
-return {1, after_agent, 2}
-`)
+return {1, after_agent, %d}
+`, luaTerminalStatusExpr("s"), taskStatusRunningCode, taskStatusRunningCode, taskStatusRunningCode))
 
 func parseApplyReply(reply []any) (ApplyTaskUpdateResult, error) {
 	if len(reply) != 3 {
@@ -549,6 +747,17 @@ func (s *RedisTaskStore) ApplyTaskResult(ctx context.Context, taskID string, res
 	if res.Code == -1 {
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
 	}
+	if res.Code == ApplyTaskUpdated {
+		info, err := s.GetTaskInfo(ctx, taskID)
+		if err != nil {
+			return ApplyTaskUpdateResult{}, err
+		}
+		if info != nil {
+			if err := s.rebuildTaskIndexesForTask(ctx, client, info); err != nil {
+				return ApplyTaskUpdateResult{}, err
+			}
+		}
+	}
 
 	return res, nil
 }
@@ -573,6 +782,17 @@ func (s *RedisTaskStore) ApplyCancel(ctx context.Context, taskID string, nowMill
 	}
 	if res.Code == -1 {
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
+	}
+	if res.Code == ApplyTaskUpdated {
+		info, err := s.GetTaskInfo(ctx, taskID)
+		if err != nil {
+			return ApplyTaskUpdateResult{}, err
+		}
+		if info != nil {
+			if err := s.rebuildTaskIndexesForTask(ctx, client, info); err != nil {
+				return ApplyTaskUpdateResult{}, err
+			}
+		}
 	}
 
 	return res, nil
@@ -599,63 +819,353 @@ func (s *RedisTaskStore) ApplySetRunning(ctx context.Context, taskID string, age
 	if res.Code == -1 {
 		return ApplyTaskUpdateResult{}, TaskNotFound(taskID)
 	}
+	if res.Code == ApplyTaskUpdated {
+		info, err := s.GetTaskInfo(ctx, taskID)
+		if err != nil {
+			return ApplyTaskUpdateResult{}, err
+		}
+		if info != nil {
+			if err := s.rebuildTaskIndexesForTask(ctx, client, info); err != nil {
+				return ApplyTaskUpdateResult{}, err
+			}
+		}
+	}
 
 	return res, nil
 }
 
 // ListTaskInfos implements TaskStore.
-// Uses batched SCAN + MGET for efficiency.
 func (s *RedisTaskStore) ListTaskInfos(ctx context.Context) ([]*TaskInfo, error) {
 	client, err := s.getClient()
 	if err != nil {
 		return nil, err
 	}
 
-	const batchSize = 200
-
-	pattern := fmt.Sprintf("%s:detail:*", s.keyPrefix)
-	result := make([]*TaskInfo, 0, 256)
-
-	var keyBatch []string
-	iter := client.Scan(ctx, 0, pattern, 100).Iterator()
-	for iter.Next(ctx) {
-		keyBatch = append(keyBatch, iter.Val())
-		if len(keyBatch) >= batchSize {
-			result = s.appendTaskBatch(ctx, client, keyBatch, result)
-			keyBatch = keyBatch[:0]
-		}
-	}
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("scan task keys: %w", err)
-	}
-
-	if len(keyBatch) > 0 {
-		result = s.appendTaskBatch(ctx, client, keyBatch, result)
-	}
-
-	return result, nil
+	return s.collectTaskInfosFromIndex(ctx, client, s.taskCreatedAtIndexKey(), TaskListQuery{}, 0, 0)
 }
 
-func (s *RedisTaskStore) appendTaskBatch(ctx context.Context, client redis.UniversalClient, keys []string, result []*TaskInfo) []*TaskInfo {
-	batch := s.fetchTaskBatch(ctx, client, keys)
-	for _, info := range batch {
-		if info == nil || info.Task == nil {
+// ListTaskInfosPage implements TaskStore.
+func (s *RedisTaskStore) ListTaskInfosPage(ctx context.Context, query TaskListQuery) (TaskListPage, error) {
+	client, err := s.getClient()
+	if err != nil {
+		return TaskListPage{}, err
+	}
+
+	query = normalizeTaskListQuery(query)
+	sc, legacyOffset, err := parseSeekCursor(query.Cursor)
+	if err != nil {
+		return TaskListPage{}, err
+	}
+
+	sourceKey, tempKeys, err := s.buildTaskQuerySource(ctx, client, query)
+	if err != nil {
+		return TaskListPage{}, err
+	}
+	defer s.cleanupTempKeys(ctx, client, tempKeys)
+
+	if query.Limit <= 0 {
+		items, err := s.collectTaskInfosFromIndex(ctx, client, sourceKey, query, 0, 0)
+		if err != nil {
+			return TaskListPage{}, err
+		}
+		return TaskListPage{Items: items}, nil
+	}
+
+	// seek cursor 模式：从 (LastScore, LastID) 之后继续取
+	if sc != nil {
+		return s.seekPageFromIndex(ctx, client, sourceKey, query, sc)
+	}
+
+	// 向后兼容：旧 offset cursor 模式
+	items, err := s.collectTaskInfosFromIndex(ctx, client, sourceKey, query, legacyOffset, query.Limit+1)
+	if err != nil {
+		return TaskListPage{}, err
+	}
+
+	page := TaskListPage{Items: items}
+	if len(items) > query.Limit {
+		page.Items = items[:query.Limit]
+		page.HasMore = true
+		lastItem := page.Items[len(page.Items)-1]
+		if lastItem != nil && lastItem.Task != nil {
+			page.NextCursor = encodeSeekCursor(&seekCursor{
+				LastScore: lastItem.CreatedAtMillis,
+				LastID:    lastItem.Task.ID,
+			})
+		}
+	}
+	return page, nil
+}
+
+// seekPageFromIndex 基于 seek cursor 从 ZSET 索引中取下一页数据。
+// 使用 ZREVRANGEBYSCORE 从 LastScore 开始向前取，跳过 LastID 及之前的记录。
+func (s *RedisTaskStore) seekPageFromIndex(ctx context.Context, client redis.UniversalClient, sourceKey string, query TaskListQuery, sc *seekCursor) (TaskListPage, error) {
+	targetCount := query.Limit + 1
+	collected := make([]*TaskInfo, 0, targetCount)
+	currentMaxScore := fmt.Sprintf("%d", sc.LastScore)
+	passedLastID := false
+
+	for len(collected) < targetCount {
+		// 多取一些以应对脏索引和同分值跳过
+		fetchCount := int64((targetCount - len(collected)) * 3)
+		if fetchCount < 20 {
+			fetchCount = 20
+		}
+		if fetchCount > 200 {
+			fetchCount = 200
+		}
+
+		ids, err := client.ZRevRangeByScore(ctx, sourceKey, &redis.ZRangeBy{
+			Min:    "-inf",
+			Max:    currentMaxScore,
+			Offset: 0,
+			Count:  fetchCount,
+		}).Result()
+		if err != nil {
+			return TaskListPage{}, fmt.Errorf("seek query task index: %w", err)
+		}
+		if len(ids) == 0 {
+			break
+		}
+
+		// 过滤掉 cursor 之前（含）的记录
+		filteredIDs := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if !passedLastID {
+				// 还没跳过 LastID，需要检查
+				score, err := client.ZScore(ctx, sourceKey, id).Result()
+				if err != nil {
+					continue
+				}
+				scoreInt := int64(score)
+				if scoreInt > sc.LastScore {
+					// 分值更大，跳过（不应该出现在 ZREVRANGEBYSCORE 结果中，但防御性处理）
+					continue
+				}
+				if scoreInt == sc.LastScore && id >= sc.LastID {
+					// 同分值且 ID >= LastID，跳过
+					continue
+				}
+				passedLastID = true
+			}
+			filteredIDs = append(filteredIDs, id)
+		}
+
+		if len(filteredIDs) > 0 {
+			infos, invalidIDs, err := s.loadTaskInfosByIDs(ctx, client, filteredIDs, query)
+			if err != nil {
+				return TaskListPage{}, err
+			}
+			if len(invalidIDs) > 0 {
+				s.removeTaskIDsFromSortedSet(ctx, client, sourceKey, invalidIDs)
+			}
+			collected = append(collected, infos...)
+		}
+
+		// 更新下一轮的 max score 为本批最后一个 ID 的分值
+		lastID := ids[len(ids)-1]
+		lastScore, err := client.ZScore(ctx, sourceKey, lastID).Result()
+		if err == nil {
+			nextMax := int64(lastScore)
+			currentMaxScore = fmt.Sprintf("%d", nextMax)
+		}
+
+		if int64(len(ids)) < fetchCount {
+			break
+		}
+	}
+
+	page := TaskListPage{Items: collected}
+	if len(collected) > query.Limit {
+		page.Items = collected[:query.Limit]
+		page.HasMore = true
+		lastItem := page.Items[len(page.Items)-1]
+		if lastItem != nil && lastItem.Task != nil {
+			page.NextCursor = encodeSeekCursor(&seekCursor{
+				LastScore: lastItem.CreatedAtMillis,
+				LastID:    lastItem.Task.ID,
+			})
+		}
+	}
+	return page, nil
+}
+
+func (s *RedisTaskStore) buildTaskQuerySource(ctx context.Context, client redis.UniversalClient, query TaskListQuery) (string, []string, error) {
+	filterKeys := make([]string, 0, 5)
+	tempKeys := make([]string, 0, 2)
+
+	statusKeys := make([]string, 0, len(query.Statuses))
+	statusSeen := make(map[model.TaskStatus]struct{}, len(query.Statuses))
+	for _, status := range query.Statuses {
+		if _, ok := statusSeen[status]; ok {
 			continue
 		}
-		result = append(result, info)
+		statusSeen[status] = struct{}{}
+		statusKeys = append(statusKeys, s.taskStatusIndexKey(status))
 	}
-	return result
+	if len(statusKeys) == 1 {
+		filterKeys = append(filterKeys, statusKeys[0])
+	} else if len(statusKeys) > 1 {
+		unionKey := s.taskQueryTempKey()
+		if _, err := client.ZUnionStore(ctx, unionKey, &redis.ZStore{Keys: statusKeys, Aggregate: "MAX"}).Result(); err != nil {
+			return "", nil, fmt.Errorf("build status query index: %w", err)
+		}
+		if err := client.Expire(ctx, unionKey, 15*time.Second).Err(); err != nil {
+			return "", nil, fmt.Errorf("expire status query index: %w", err)
+		}
+		filterKeys = append(filterKeys, unionKey)
+		tempKeys = append(tempKeys, unionKey)
+	}
+
+	if query.AppID != "" {
+		filterKeys = append(filterKeys, s.taskAppIndexKey(query.AppID))
+	}
+	if query.ServiceName != "" {
+		filterKeys = append(filterKeys, s.taskServiceIndexKey(query.ServiceName))
+	}
+	if query.AgentID != "" {
+		filterKeys = append(filterKeys, s.taskAgentIndexKey(query.AgentID))
+	}
+	if query.TaskType != "" {
+		filterKeys = append(filterKeys, s.taskTypeIndexKey(query.TaskType))
+	}
+
+	if len(filterKeys) == 0 {
+		return s.taskCreatedAtIndexKey(), tempKeys, nil
+	}
+	if len(filterKeys) == 1 {
+		return filterKeys[0], tempKeys, nil
+	}
+
+	intersectionKey := s.taskQueryTempKey()
+	if _, err := client.ZInterStore(ctx, intersectionKey, &redis.ZStore{Keys: filterKeys, Aggregate: "MAX"}).Result(); err != nil {
+		return "", nil, fmt.Errorf("build filtered task query index: %w", err)
+	}
+	if err := client.Expire(ctx, intersectionKey, 15*time.Second).Err(); err != nil {
+		return "", nil, fmt.Errorf("expire filtered task query index: %w", err)
+	}
+	tempKeys = append(tempKeys, intersectionKey)
+	return intersectionKey, tempKeys, nil
 }
 
-func (s *RedisTaskStore) fetchTaskBatch(ctx context.Context, client redis.UniversalClient, keys []string) []*TaskInfo {
+func (s *RedisTaskStore) collectTaskInfosFromIndex(ctx context.Context, client redis.UniversalClient, sourceKey string, query TaskListQuery, offset int, targetCount int) ([]*TaskInfo, error) {
+	collected := make([]*TaskInfo, 0)
+	currentOffset := offset
+	batchSize := 200
+	if targetCount > 0 {
+		batchSize = targetCount * 2
+		if batchSize < 20 {
+			batchSize = 20
+		}
+		if batchSize > 200 {
+			batchSize = 200
+		}
+	}
+
+	for {
+		if targetCount > 0 && len(collected) >= targetCount {
+			break
+		}
+
+		ids, err := client.ZRevRange(ctx, sourceKey, int64(currentOffset), int64(currentOffset+batchSize-1)).Result()
+		if err != nil {
+			return nil, fmt.Errorf("query task index: %w", err)
+		}
+		if len(ids) == 0 {
+			break
+		}
+
+		infos, invalidIDs, err := s.loadTaskInfosByIDs(ctx, client, ids, query)
+		if err != nil {
+			return nil, err
+		}
+		if len(invalidIDs) > 0 {
+			s.removeTaskIDsFromSortedSet(ctx, client, sourceKey, invalidIDs)
+		}
+		if len(infos) == 0 && len(invalidIDs) == 0 {
+			break
+		}
+
+		collected = append(collected, infos...)
+		currentOffset = offset + len(collected)
+		if len(ids) < batchSize {
+			break
+		}
+	}
+
+	return collected, nil
+}
+
+func (s *RedisTaskStore) loadTaskInfosByIDs(ctx context.Context, client redis.UniversalClient, taskIDs []string, query TaskListQuery) ([]*TaskInfo, []string, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil, nil
+	}
+
+	detailKeys := make([]string, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		detailKeys = append(detailKeys, s.detailKey(taskID))
+	}
+
+	results, err := client.MGet(ctx, detailKeys...).Result()
+	if err != nil {
+		return nil, nil, fmt.Errorf("mget task details: %w", err)
+	}
+
+	infos := make([]*TaskInfo, 0, len(results))
+	invalidIDs := make([]string, 0)
+	staleIDs := make([]string, 0)
+	for i, data := range results {
+		taskID := taskIDs[i]
+		if data == nil {
+			invalidIDs = append(invalidIDs, taskID)
+			staleIDs = append(staleIDs, taskID)
+			continue
+		}
+
+		dataStr, ok := data.(string)
+		if !ok {
+			invalidIDs = append(invalidIDs, taskID)
+			staleIDs = append(staleIDs, taskID)
+			continue
+		}
+
+		var info TaskInfo
+		if err := json.Unmarshal([]byte(dataStr), &info); err != nil {
+			s.logger.Warn("Failed to unmarshal task info", zap.String("task_id", taskID), zap.Error(err))
+			invalidIDs = append(invalidIDs, taskID)
+			staleIDs = append(staleIDs, taskID)
+			continue
+		}
+		if info.Task == nil || info.Task.ID == "" || info.Task.ID != taskID {
+			invalidIDs = append(invalidIDs, taskID)
+			staleIDs = append(staleIDs, taskID)
+			continue
+		}
+		if !taskInfoMatchesQuery(&info, query) {
+			if err := s.rebuildTaskIndexesForTask(ctx, client, &info); err != nil {
+				return nil, nil, err
+			}
+			invalidIDs = append(invalidIDs, taskID)
+			continue
+		}
+
+		infos = append(infos, cloneTaskInfo(&info))
+	}
+
+	if len(staleIDs) > 0 {
+		s.cleanupMissingTaskArtifacts(ctx, client, staleIDs)
+	}
+	return infos, invalidIDs, nil
+}
+
+func (s *RedisTaskStore) loadTaskInfosByDetailKeys(ctx context.Context, client redis.UniversalClient, keys []string) ([]*TaskInfo, error) {
 	if len(keys) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	results, err := client.MGet(ctx, keys...).Result()
 	if err != nil {
-		s.logger.Warn("Failed to MGET task details", zap.Int("key_count", len(keys)), zap.Error(err))
-		return nil
+		return nil, fmt.Errorf("mget task detail keys: %w", err)
 	}
 
 	tasks := make([]*TaskInfo, 0, len(results))
@@ -674,10 +1184,68 @@ func (s *RedisTaskStore) fetchTaskBatch(ctx context.Context, client redis.Univer
 			s.logger.Warn("Failed to unmarshal task info", zap.String("key", keys[i]), zap.Error(err))
 			continue
 		}
+		if info.Task == nil || info.Task.ID == "" {
+			continue
+		}
 		tasks = append(tasks, &info)
 	}
 
-	return tasks
+	return tasks, nil
+}
+
+func (s *RedisTaskStore) backfillTaskIndexes(ctx context.Context, client redis.UniversalClient) error {
+	// 检查全局索引是否已存在，如果已有数据则跳过回填
+	count, err := client.ZCard(ctx, s.taskCreatedAtIndexKey()).Result()
+	if err == nil && count > 0 {
+		s.logger.Info("Task indexes already exist, skipping backfill",
+			zap.Int64("index_count", count))
+		return nil
+	}
+
+	const batchSize = 200
+
+	pattern := fmt.Sprintf("%s:detail:*", s.keyPrefix)
+	iter := client.Scan(ctx, 0, pattern, 100).Iterator()
+	keyBatch := make([]string, 0, batchSize)
+	indexed := 0
+
+	flushBatch := func() error {
+		if len(keyBatch) == 0 {
+			return nil
+		}
+		infos, err := s.loadTaskInfosByDetailKeys(ctx, client, keyBatch)
+		if err != nil {
+			return err
+		}
+		for _, info := range infos {
+			if err := s.rebuildTaskIndexesForTask(ctx, client, info); err != nil {
+				return err
+			}
+			indexed++
+		}
+		keyBatch = keyBatch[:0]
+		return nil
+	}
+
+	for iter.Next(ctx) {
+		keyBatch = append(keyBatch, iter.Val())
+		if len(keyBatch) >= batchSize {
+			if err := flushBatch(); err != nil {
+				return fmt.Errorf("backfill task indexes: %w", err)
+			}
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("scan task detail keys for index backfill: %w", err)
+	}
+	if err := flushBatch(); err != nil {
+		return fmt.Errorf("backfill task indexes: %w", err)
+	}
+
+	if indexed > 0 {
+		s.logger.Info("Backfilled Redis task list indexes", zap.Int("task_count", indexed))
+	}
+	return nil
 }
 
 // DeleteTaskInfo implements TaskStore.
@@ -687,11 +1255,20 @@ func (s *RedisTaskStore) DeleteTaskInfo(ctx context.Context, taskID string) erro
 		return err
 	}
 
+	memberKeys, err := s.taskIndexMemberKeys(ctx, client, taskID)
+	if err != nil {
+		return err
+	}
+
 	pipe := client.TxPipeline()
 	pipe.Del(ctx, s.detailKey(taskID))
 	pipe.Del(ctx, s.resultKey(taskID))
 	pipe.SRem(ctx, s.cancelledKey(), taskID)
 	pipe.HDel(ctx, s.runningKey(), taskID)
+	for _, key := range memberKeys {
+		pipe.ZRem(ctx, key, taskID)
+	}
+	pipe.Del(ctx, s.taskIndexMembersKey(taskID))
 
 	_, err = pipe.Exec(ctx)
 	return err
@@ -912,13 +1489,31 @@ func (s *RedisTaskStore) IsCancelled(ctx context.Context, taskID string) (bool, 
 // ===== Running State Operations =====
 
 // SetRunning implements TaskStore.
+// 双写模式：同时写入 Hash（精确查询）和 ZSET（时间扫描）。
 func (s *RedisTaskStore) SetRunning(ctx context.Context, taskID string, agentID string) error {
 	client, err := s.getClient()
 	if err != nil {
 		return err
 	}
 
-	return client.HSet(ctx, s.runningKey(), taskID, agentID).Err()
+	// 获取 started_at_millis 作为 ZSET score
+	var startedAtMillis int64
+	info, err := s.GetTaskInfo(ctx, taskID)
+	if err == nil && info != nil {
+		startedAtMillis = info.StartedAtMillis
+	}
+	if startedAtMillis == 0 {
+		startedAtMillis = time.Now().UnixMilli()
+	}
+
+	pipe := client.TxPipeline()
+	pipe.HSet(ctx, s.runningKey(), taskID, agentID)
+	pipe.ZAdd(ctx, s.runningByStartedAtKey(), redis.Z{
+		Score:  float64(startedAtMillis),
+		Member: taskID,
+	})
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
 // GetRunning implements TaskStore.
@@ -935,14 +1530,139 @@ func (s *RedisTaskStore) GetRunning(ctx context.Context, taskID string) (string,
 	return result, err
 }
 
+// ListRunningTaskInfos implements TaskStore.
+// 优先从 ZSET 时间索引读取（支持按 started_at 排序），回退到 Hash。
+func (s *RedisTaskStore) ListRunningTaskInfos(ctx context.Context) ([]*TaskInfo, error) {
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	// 优先从 ZSET 读取（按 started_at 正序，最老的在前）
+	zsetTaskIDs, err := client.ZRange(ctx, s.runningByStartedAtKey(), 0, -1).Result()
+	if err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("list running tasks from zset: %w", err)
+	}
+
+	// 同时读取 Hash 用于补全 agentID
+	runningEntries, err := client.HGetAll(ctx, s.runningKey()).Result()
+	if err != nil {
+		return nil, fmt.Errorf("list running tasks: %w", err)
+	}
+
+	// 合并两个来源的 taskID（ZSET 优先，Hash 补充）
+	taskIDSet := make(map[string]struct{}, len(zsetTaskIDs)+len(runningEntries))
+	for _, id := range zsetTaskIDs {
+		taskIDSet[id] = struct{}{}
+	}
+	for id := range runningEntries {
+		taskIDSet[id] = struct{}{}
+	}
+	if len(taskIDSet) == 0 {
+		return nil, nil
+	}
+
+	const batchSize = 200
+
+	taskIDs := make([]string, 0, len(taskIDSet))
+	for id := range taskIDSet {
+		taskIDs = append(taskIDs, id)
+	}
+
+	result := make([]*TaskInfo, 0, len(taskIDs))
+	for start := 0; start < len(taskIDs); start += batchSize {
+		end := start + batchSize
+		if end > len(taskIDs) {
+			end = len(taskIDs)
+		}
+
+		batch, staleTaskIDs := s.fetchRunningTaskBatch(ctx, client, taskIDs[start:end], runningEntries)
+		result = append(result, batch...)
+		s.cleanupStaleRunningEntries(ctx, client, staleTaskIDs)
+	}
+
+	return result, nil
+}
+
+func (s *RedisTaskStore) fetchRunningTaskBatch(ctx context.Context, client redis.UniversalClient, taskIDs []string, runningEntries map[string]string) ([]*TaskInfo, []string) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+
+	detailKeys := make([]string, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		detailKeys = append(detailKeys, s.detailKey(taskID))
+	}
+
+	results, err := client.MGet(ctx, detailKeys...).Result()
+	if err != nil {
+		s.logger.Warn("Failed to MGET running task details", zap.Int("key_count", len(detailKeys)), zap.Error(err))
+		return nil, nil
+	}
+
+	infos := make([]*TaskInfo, 0, len(results))
+	staleTaskIDs := make([]string, 0)
+	for i, data := range results {
+		taskID := taskIDs[i]
+		if data == nil {
+			staleTaskIDs = append(staleTaskIDs, taskID)
+			continue
+		}
+
+		dataStr, ok := data.(string)
+		if !ok {
+			staleTaskIDs = append(staleTaskIDs, taskID)
+			continue
+		}
+
+		var info TaskInfo
+		if err := json.Unmarshal([]byte(dataStr), &info); err != nil {
+			s.logger.Warn("Failed to unmarshal running task info", zap.String("task_id", taskID), zap.Error(err))
+			staleTaskIDs = append(staleTaskIDs, taskID)
+			continue
+		}
+		if info.Task == nil || info.Task.ID == "" || info.Status != model.TaskStatusRunning {
+			staleTaskIDs = append(staleTaskIDs, taskID)
+			continue
+		}
+		if info.AgentID == "" {
+			info.AgentID = runningEntries[taskID]
+		}
+		infos = append(infos, &info)
+	}
+
+	return infos, staleTaskIDs
+}
+
+func (s *RedisTaskStore) cleanupStaleRunningEntries(ctx context.Context, client redis.UniversalClient, taskIDs []string) {
+	if len(taskIDs) == 0 {
+		return
+	}
+
+	pipe := client.TxPipeline()
+	pipe.HDel(ctx, s.runningKey(), taskIDs...)
+	pipe.ZRem(ctx, s.runningByStartedAtKey(), stringSliceToAny(taskIDs)...)
+	if _, err := pipe.Exec(ctx); err != nil {
+		s.logger.Debug("Failed to cleanup stale running task markers", zap.Int("task_count", len(taskIDs)), zap.Error(err))
+		return
+	}
+
+	s.logger.Debug("Cleaned stale running task markers", zap.Int("task_count", len(taskIDs)))
+}
+
 // ClearRunning implements TaskStore.
+// 双删模式：同时从 Hash 和 ZSET 中移除。
 func (s *RedisTaskStore) ClearRunning(ctx context.Context, taskID string) error {
 	client, err := s.getClient()
 	if err != nil {
 		return err
 	}
 
-	return client.HDel(ctx, s.runningKey(), taskID).Err()
+	pipe := client.TxPipeline()
+	pipe.HDel(ctx, s.runningKey(), taskID)
+	pipe.ZRem(ctx, s.runningByStartedAtKey(), taskID)
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
 // ===== Event Operations =====
@@ -976,6 +1696,16 @@ func (s *RedisTaskStore) Start(ctx context.Context) error {
 	if err := s.client.Ping(ctx).Err(); err != nil {
 		return fmt.Errorf("failed to connect to Redis: %w", err)
 	}
+
+	// 异步执行索引回填，不阻塞启动
+	client := s.client
+	go func() {
+		backfillCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := s.backfillTaskIndexes(backfillCtx, client); err != nil {
+			s.logger.Error("Failed to backfill redis task list indexes", zap.Error(err))
+		}
+	}()
 
 	s.logger.Info("Starting Redis task store", zap.String("key_prefix", s.keyPrefix))
 	s.started = true

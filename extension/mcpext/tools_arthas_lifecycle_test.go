@@ -28,11 +28,11 @@ func newTaskResultProvider() *taskResultProvider {
 	}
 }
 
-func (p *taskResultProvider) GetTaskResult(taskID string) (*model.TaskResult, bool) {
+func (p *taskResultProvider) GetTaskResult(taskID string) (*model.TaskResult, bool, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	r, ok := p.results[taskID]
-	return r, ok
+	return r, ok, nil
 }
 
 func (p *taskResultProvider) setResult(taskID string, result *model.TaskResult) {
@@ -67,7 +67,10 @@ func waitForTaskResultDirect(ctx context.Context, provider *taskResultProvider, 
 		case <-deadline:
 			return nil, context.DeadlineExceeded
 		case <-ticker.C:
-			result, found := provider.GetTaskResult(taskID)
+			result, found, err := provider.GetTaskResult(taskID)
+			if err != nil {
+				return nil, err
+			}
 			if !found {
 				continue
 			}

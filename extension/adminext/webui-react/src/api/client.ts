@@ -6,12 +6,15 @@
 
 import type {
   App,
+  AppService,
   CreateAppRequest,
   DashboardOverview,
   Instance,
   InstanceStats,
+  InstanceListParams,
   Service,
   TaskInfoV2,
+  TaskListParams,
   CreateTaskRequest,
   AgentConfig,
   ArthasAgent,
@@ -108,6 +111,12 @@ class ApiClient {
       .then(res => res.apps || []);
   }
 
+  /** 获取指定 App 下的 Service 列表（带实例计数） */
+  getAppServices(appId: string): Promise<AppService[]> {
+    return this.request<{ app_id: string; services: AppService[]; total: number }>('GET', `/apps/${appId}/services`)
+      .then(res => res.services || []);
+  }
+
   createApp(data: CreateAppRequest): Promise<App> {
     return this.request<App>('POST', '/apps', data);
   }
@@ -128,8 +137,15 @@ class ApiClient {
   // Instances
   // ========================================================================
 
-  getInstances(status: string = ''): Promise<Instance[]> {
-    return this.request<{ instances: Instance[]; total: number }>('GET', `/instances?status=${status}`)
+  getInstances(status: string = '', params?: InstanceListParams): Promise<Instance[]> {
+    const query = new URLSearchParams();
+    if (params?.status) query.set('status', params.status);
+    else if (status) query.set('status', status);
+    if (params?.app_id) query.set('app_id', params.app_id);
+    if (params?.service_name) query.set('service_name', params.service_name);
+    if (params?.sort_by) query.set('sort_by', params.sort_by);
+    if (params?.sort_order) query.set('sort_order', params.sort_order);
+    return this.request<{ instances: Instance[]; total: number }>('GET', `/instances?${query.toString()}`)
       .then(res => res.instances || []);
   }
 
@@ -153,9 +169,17 @@ class ApiClient {
   // Tasks
   // ========================================================================
 
-  getTasks(): Promise<TaskInfoV2[]> {
-    return this.request<{ tasks: TaskInfoV2[]; total?: number }>('GET', '/tasks')
-      .then(res => res.tasks || []);
+  getTasks(params?: TaskListParams): Promise<{ tasks: TaskInfoV2[]; total?: number; next_cursor?: string; has_more?: boolean }> {
+    const query = new URLSearchParams();
+    if (params?.app_id) query.set('app_id', params.app_id);
+    if (params?.service_name) query.set('service_name', params.service_name);
+    if (params?.agent_id) query.set('agent_id', params.agent_id);
+    if (params?.task_type) query.set('task_type', params.task_type);
+    if (params?.status) query.set('status', params.status);
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.cursor) query.set('cursor', params.cursor);
+    const qs = query.toString();
+    return this.request<{ tasks: TaskInfoV2[]; total?: number; next_cursor?: string; has_more?: boolean }>('GET', `/tasks${qs ? '?' + qs : ''}`);
   }
 
   getTask(id: string): Promise<TaskInfoV2> {

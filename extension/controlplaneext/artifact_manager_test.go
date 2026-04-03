@@ -50,6 +50,9 @@ func (m *mockTaskManager) GetGlobalPendingTasks(_ context.Context) ([]*model.Tas
 func (m *mockTaskManager) GetAllTasks(_ context.Context) ([]*taskmanager.TaskInfo, error) {
 	return nil, nil
 }
+func (m *mockTaskManager) ListTasks(_ context.Context, _ taskmanager.ListTasksQuery) (taskmanager.ListTasksPage, error) {
+	return taskmanager.ListTasksPage{}, nil
+}
 func (m *mockTaskManager) CancelTask(_ context.Context, _ string) error    { return nil }
 func (m *mockTaskManager) IsTaskCancelled(_ context.Context, _ string) (bool, error) {
 	return false, nil
