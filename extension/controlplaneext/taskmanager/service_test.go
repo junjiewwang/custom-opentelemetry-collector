@@ -291,6 +291,88 @@ func TestTaskService_GetAllTasks(t *testing.T) {
 	assert.Len(t, tasks, 3)
 }
 
+func TestTaskService_ListTasks(t *testing.T) {
+	service := newTestTaskService(t)
+	ctx := context.Background()
+
+	require.NoError(t, service.SubmitTaskForAgent(ctx, &AgentMeta{
+		AgentID:     "agent-1",
+		AppID:       "app-1",
+		ServiceName: "svc-1",
+	}, &model.Task{
+		ID:             "list-task-a",
+		TypeName:       "collect",
+		CreatedAtMillis: 100,
+	}))
+
+	require.NoError(t, service.SubmitTaskForAgent(ctx, &AgentMeta{
+		AgentID:     "agent-1",
+		AppID:       "app-1",
+		ServiceName: "svc-1",
+	}, &model.Task{
+		ID:             "list-task-b",
+		TypeName:       "collect",
+		CreatedAtMillis: 300,
+	}))
+
+	require.NoError(t, service.SubmitTaskForAgent(ctx, &AgentMeta{
+		AgentID:     "agent-2",
+		AppID:       "app-2",
+		ServiceName: "svc-2",
+	}, &model.Task{
+		ID:             "list-task-c",
+		TypeName:       "deploy",
+		CreatedAtMillis: 200,
+	}))
+
+	require.NoError(t, service.SetTaskRunning(ctx, "list-task-b", "agent-1"))
+	require.NoError(t, service.SetTaskRunning(ctx, "list-task-c", "agent-2"))
+
+	filteredPage, err := service.ListTasks(ctx, ListTasksQuery{
+		Statuses: []model.TaskStatus{model.TaskStatusRunning},
+		AppID:    "app-1",
+		TaskType: "collect",
+		Limit:    1,
+	})
+	require.NoError(t, err)
+	require.Len(t, filteredPage.Items, 1)
+	assert.Equal(t, "list-task-b", filteredPage.Items[0].Task.ID)
+	assert.False(t, filteredPage.HasMore)
+	assert.Empty(t, filteredPage.NextCursor)
+
+	page, err := service.ListTasks(ctx, ListTasksQuery{Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "list-task-c", page.Items[0].Task.ID)
+	assert.True(t, page.HasMore)
+	assert.NotEmpty(t, page.NextCursor) // seek cursor 格式
+
+	nextPage, err := service.ListTasks(ctx, ListTasksQuery{
+		Limit:  1,
+		Cursor: page.NextCursor,
+	})
+	require.NoError(t, err)
+	require.Len(t, nextPage.Items, 1)
+	assert.Equal(t, "list-task-b", nextPage.Items[0].Task.ID)
+	assert.True(t, nextPage.HasMore)
+	assert.NotEmpty(t, nextPage.NextCursor)
+
+	finalPage, err := service.ListTasks(ctx, ListTasksQuery{
+		Limit:  1,
+		Cursor: nextPage.NextCursor,
+	})
+	require.NoError(t, err)
+	require.Len(t, finalPage.Items, 1)
+	assert.Equal(t, "list-task-a", finalPage.Items[0].Task.ID)
+
+	assert.False(t, finalPage.HasMore)
+	assert.Empty(t, finalPage.NextCursor)
+	assert.Equal(t, "app-1", finalPage.Items[0].AppID)
+	assert.Equal(t, "svc-1", finalPage.Items[0].ServiceName)
+	assert.Equal(t, "agent-1", finalPage.Items[0].AgentID)
+
+}
+
 func TestTaskService_SetTaskRunning(t *testing.T) {
 	service := newTestTaskService(t)
 	ctx := context.Background()

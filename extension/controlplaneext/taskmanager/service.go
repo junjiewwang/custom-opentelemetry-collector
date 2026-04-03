@@ -250,6 +250,24 @@ func (s *TaskService) GetAllTasks(ctx context.Context) ([]*TaskInfo, error) {
 	return result, nil
 }
 
+// ListTasks returns a filtered and paged task list from detail storage.
+func (s *TaskService) ListTasks(ctx context.Context, query ListTasksQuery) (ListTasksPage, error) {
+	storePage, err := s.store.ListTaskInfosPage(ctx, store.TaskListQuery{
+		Statuses:    query.Statuses,
+		AppID:       query.AppID,
+		ServiceName: query.ServiceName,
+		AgentID:     query.AgentID,
+		TaskType:    query.TaskType,
+		Limit:       query.Limit,
+		Cursor:      query.Cursor,
+	})
+	if err != nil {
+		return ListTasksPage{}, err
+	}
+
+	return fromStoreTaskListPage(storePage), nil
+}
+
 // ===== Task Cancellation =====
 
 // CancelTask cancels a task by ID.
@@ -471,5 +489,18 @@ func fromStoreTaskInfo(info *store.TaskInfo) *TaskInfo {
 		CreatedAtMillis: info.CreatedAtMillis,
 		StartedAtMillis: info.StartedAtMillis,
 		Result:          info.Result,
+	}
+}
+
+func fromStoreTaskListPage(page store.TaskListPage) ListTasksPage {
+	items := make([]*TaskInfo, 0, len(page.Items))
+	for _, info := range page.Items {
+		items = append(items, fromStoreTaskInfo(info))
+	}
+
+	return ListTasksPage{
+		Items:      items,
+		NextCursor: page.NextCursor,
+		HasMore:    page.HasMore,
 	}
 }

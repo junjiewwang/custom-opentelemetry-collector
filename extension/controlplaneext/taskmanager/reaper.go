@@ -5,6 +5,7 @@ package taskmanager
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -45,9 +46,12 @@ type StaleTaskReaper struct {
 	logger *zap.Logger
 	config StaleTaskReaperConfig
 	store  store.TaskStore
+	mu     sync.Mutex
 
 	stopChan chan struct{}
 	doneChan chan struct{}
+	started  bool
+	stopped  bool
 }
 
 // NewStaleTaskReaper creates a new StaleTaskReaper.
@@ -63,9 +67,18 @@ func NewStaleTaskReaper(logger *zap.Logger, config StaleTaskReaperConfig, taskSt
 
 // Start begins the periodic scan loop.
 func (r *StaleTaskReaper) Start(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.started {
+		return nil
+	}
+
 	if !r.config.Enabled {
 		r.logger.Info("Stale task reaper is disabled")
 		close(r.doneChan)
+		r.started = true
+		r.stopped = true
 		return nil
 	}
 
@@ -74,14 +87,25 @@ func (r *StaleTaskReaper) Start(ctx context.Context) error {
 		zap.Duration("running_timeout", r.config.RunningTimeout),
 	)
 
+	r.started = true
 	go r.run()
 	return nil
 }
 
 // Stop stops the reaper gracefully.
 func (r *StaleTaskReaper) Stop() {
-	close(r.stopChan)
-	<-r.doneChan
+	r.mu.Lock()
+	if !r.started || r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	stopChan := r.stopChan
+	doneChan := r.doneChan
+	r.stopped = true
+	r.mu.Unlock()
+
+	close(stopChan)
+	<-doneChan
 }
 
 func (r *StaleTaskReaper) run() {
@@ -105,9 +129,9 @@ func (r *StaleTaskReaper) scan() {
 	ctx, cancel := context.WithTimeout(context.Background(), r.config.ScanInterval)
 	defer cancel()
 
-	infos, err := r.store.ListTaskInfos(ctx)
+	infos, err := r.store.ListRunningTaskInfos(ctx)
 	if err != nil {
-		r.logger.Warn("Stale task reaper: failed to list tasks", zap.Error(err))
+		r.logger.Warn("Stale task reaper: failed to list running tasks", zap.Error(err))
 		return
 	}
 
