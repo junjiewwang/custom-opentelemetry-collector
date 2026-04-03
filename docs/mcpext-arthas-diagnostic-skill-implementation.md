@@ -10,12 +10,14 @@
 - 以 `mcpext` 当前已实现的工具能力为准，不脱离真实实现
 - 后续可继续补充 Arthas 官方命令知识，但要映射到当前 MCP 支持范围
 - 让模型优先学会“如何在 `mcpext` 约束下正确使用 Arthas”
+- 生成一个可被 Skill 导入器正确识别的安装包
 
 ### 当前实施范围
 
 - 创建仓库内 skill source 目录：`docs/ai-skills/mcpext-arthas-diagnostic/`
 - 建立 `SKILL.md` 与维护 `README.md`
 - 建立基于当前实现的参考文档：工具速查、映射、工作流、命令卡片、失败恢复、安全边界
+- 生成并修正可安装的 skill 压缩包结构
 
 ### 当前进展
 
@@ -24,7 +26,9 @@
 - [x] 创建 `SKILL.md`
 - [x] 创建 `README.md`
 - [x] 创建参考文档集合
-- [x] 执行编译验证
+- [x] 生成可安装的 skill 压缩包：`docs/ai-skills/mcpext-arthas-diagnostic.zip`
+- [x] 修复安装包目录层级，使 `SKILL.md` 位于 zip 根目录
+- [x] 执行编译验证（`go build ./...`）
 - [ ] 根据未来新增 MCP tool 持续演进文档
 
 ### 关键事实来源
@@ -52,6 +56,18 @@ flowchart TD
     E --> L[references/arthas-failure-recovery.md]
 ```
 
+### 打包产物
+
+- 安装包路径：`docs/ai-skills/mcpext-arthas-diagnostic.zip`
+- 当前发行结构：zip 根目录直接包含 `SKILL.md`、`README.md` 和 `references/`
+- 打包说明：已过滤 macOS 额外元数据，适合作为分发安装包
+
+### 本次修复说明
+
+- 初版安装包将仓库路径 `docs/ai-skills/mcpext-arthas-diagnostic/` 一并打进 zip，导致导入器无法在压缩包根目录直接找到 `SKILL.md`
+- 导入器报错“压缩包中未找到 `SKILL.md` 文件”并非文件缺失，而是目录层级不符合其识别约定
+- 本次已将打包方式修正为在 skill 目录内执行打包，确保导入器解压后可直接在根目录看到 `SKILL.md`
+
 ### 未完成任务
 
 - 后续视需要补充 Arthas 官方命令知识的版本化来源与更多命令卡片
@@ -61,3 +77,4 @@ flowchart TD
 
 - 当前 `sm`、`monitor`、`tt`、`ognl` 等尚未有专用 MCP tool，技能中只能明确为 fallback 范围
 - 还没有自动化校验脚本来对比 `registerTools()` 和文档是否漂移
+- 后续如需重复发布安装包，建议补一个固定打包脚本，避免再次出现目录层级错误
