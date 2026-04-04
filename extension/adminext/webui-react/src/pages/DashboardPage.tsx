@@ -60,8 +60,25 @@ export default function DashboardPage() {
 
       {/* 统计卡片 */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        {!dashboard ? (
+          /* 骨架屏占位 */
+          <>
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-3 flex-1">
+                    <div className="h-3.5 skeleton-shimmer rounded w-24" />
+                    <div className="h-8 skeleton-shimmer rounded w-16" />
+                  </div>
+                  <div className="w-12 h-12 rounded-lg skeleton-shimmer flex-shrink-0" />
+                </div>
+              </div>
+            ))}
+          </>
+        ) : (
+        <>
         {/* Total Apps */}
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/apps')}>
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer content-fade-in" onClick={() => navigate('/apps')}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Total Apps</p>
@@ -76,7 +93,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Online Instances */}
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/instances')}>
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer content-fade-in" onClick={() => navigate('/instances')}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Online Instances</p>
@@ -99,7 +116,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Total Services */}
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/services')}>
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer content-fade-in" onClick={() => navigate('/services')}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Total Services</p>
@@ -114,7 +131,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Pending Tasks */}
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/tasks')}>
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer content-fade-in" onClick={() => navigate('/tasks')}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Pending Tasks</p>
@@ -132,6 +149,8 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
 
       {/* 下半部分：Quick Actions + 系统信息 */}

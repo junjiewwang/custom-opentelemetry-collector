@@ -70,3 +70,42 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-gray-400;
 }
+
+/* ========================================================================== */
+/* 骨架屏加载动画 */
+/* ========================================================================== */
+
+/* 骨架屏闪光条 — 用于 loading 占位 */
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    theme('colors.gray.100') 25%,
+    theme('colors.gray.200') 37%,
+    theme('colors.gray.100') 63%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* 骨架屏圆形闪光 */
+.skeleton-circle {
+  @apply rounded-full;
+  background: linear-gradient(
+    90deg,
+    theme('colors.gray.100') 25%,
+    theme('colors.gray.200') 37%,
+    theme('colors.gray.100') 63%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* 内容渐入 */
+.content-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
