@@ -25,21 +25,40 @@ flowchart TD
         B5["listTasksV2 enrichment 优化 → 有过滤条件时不全量加载 agents"]
     end
 
-    subgraph "实例页面级联查询"
-        I1["页面加载"] --> I2["GET /apps → 构建树第一级"]
-        I2 --> I3["展开 App 节点"]
-        I3 --> I4["GET /apps/{id}/services → 展开树第二级"]
-        I4 --> I5["点击 Service 节点"]
-        I5 --> I6["GET /apps/{id}/services/{svc}/instances → 右侧显示实例"]
+    subgraph "实例页面（左右两栏布局）"
+        I1["页面加载"] --> I2["GET /apps → 级联下拉第一级"]
+        I2 --> I3["选择 App"]
+        I3 --> I4["GET /apps/{id}/services → 级联下拉第二级"]
+        I4 --> I5["选择 Service"]
+        I5 --> I6["GET /instances?app_id=x&service_name=y → 左侧实例列表"]
+        I6 --> I7["选中实例 → 右侧 Tab 面板"]
+        I7 --> I8["Overview Tab: 基本信息/Arthas/元数据/生命周期"]
+        I7 --> I9["Tasks Tab: GET /tasks?agent_id=z → 关联任务列表"]
     end
+```
 
-    subgraph "任务页面级联查询"
-        T1["页面加载"] --> T2["GET /apps → 构建树第一级"]
-        T2 --> T3["GET /tasks?limit=50 → 默认显示最近任务"]
-        T3 --> T4["展开 App 节点"]
-        T4 --> T5["GET /apps/{id}/services → 展开树第二级"]
-        T5 --> T6["点击 Service 节点"]
-        T6 --> T7["GET /tasks?app_id=x&service_name=y&limit=50"]
+## 方案 B：合并任务页面到实例页面（已实施）
+
+任务管理页面与实例管理页面高度重合，任务本质上绑定到具体实例（agent_id）。
+将任务功能合并到实例页面的 Tasks Tab 中，删除独立的任务管理页面。
+
+```mermaid
+graph TB
+    subgraph "合并后的 Instance Management 页面"
+        A["顶部：App → Service 级联搜索下拉"]
+        B["左侧：实例列表面板"]
+        C["右侧：实例详情面板（Tab 切换）"]
+        
+        A --> B
+        B --> C
+        
+        subgraph "右侧 Tab 面板"
+            C1["📋 Overview - 基本信息/Arthas状态/元数据/生命周期"]
+            C2["📝 Tasks - 关联任务列表（创建/取消/详情）"]
+        end
+        
+        C --> C1
+        C --> C2
     end
 ```
 
@@ -59,8 +78,12 @@ flowchart TD
 | # | 文件 | 改动 | 状态 |
 |---|------|------|------|
 | 5 | `api.ts` + `client.ts` | 新增 `AppService`, `TaskListParams`, `InstanceListParams` 类型 + 带参数的 API 方法 | ✅ |
-| 6 | `InstancesPage.tsx` | 改造为级联查询模式：树从 Apps API 构建，点击节点触发带参数的实例查询 | ✅ |
-| 7 | `TasksPage.tsx` | 改造为级联查询模式：树从 Apps API 构建，点击节点触发带参数的任务查询 | ✅ |
+| 6 | `InstancesPage.tsx` | 重构为左右两栏布局：左侧实例列表 + 右侧 Tab 面板（Overview + Tasks） | ✅ |
+| 7 | `InstanceTasksTab.tsx` | 新建独立组件：实例关联任务列表（创建/取消/详情） | ✅ |
+| 8 | `TasksPage.tsx` | 已删除，功能合并到 InstancesPage 的 Tasks Tab | ✅ |
+| 9 | `App.tsx` | 移除 TasksPage 路由 | ✅ |
+| 10 | `Sidebar.tsx` | 移除 Tasks 导航入口 | ✅ |
+| 11 | App/Service 下拉 | 改为 SearchableSelect 可搜索下拉，去除 "All" 选项 | ✅ |
 
 ### 验证
 
@@ -77,11 +100,15 @@ flowchart TD
 ### 前端
 - `extension/adminext/webui-react/src/types/api.ts` — 新增 AppService, TaskListParams, InstanceListParams 类型
 - `extension/adminext/webui-react/src/api/client.ts` — 新增 getAppServices, 增强 getInstances/getTasks 带参数
-- `extension/adminext/webui-react/src/pages/InstancesPage.tsx` — 级联查询改造
-- `extension/adminext/webui-react/src/pages/TasksPage.tsx` — 级联查询改造
+- `extension/adminext/webui-react/src/pages/InstancesPage.tsx` — 重构为左右两栏布局（Overview Tab + Tasks Tab）
+- `extension/adminext/webui-react/src/components/InstanceTasksTab.tsx` — 新建：实例关联任务列表组件
+- `extension/adminext/webui-react/src/pages/TasksPage.tsx` — 已删除
+- `extension/adminext/webui-react/src/App.tsx` — 移除 TasksPage 路由
+- `extension/adminext/webui-react/src/layouts/Sidebar.tsx` — 移除 Tasks 导航入口
 
 ## 遗留问题
 
-- [ ] 树节点展开状态在刷新后会丢失（可考虑持久化到 localStorage）
-- [ ] 任务页面默认 limit=200，后续可考虑加载更多/无限滚动
+- [ ] 右侧 Tab 面板后续可扩展更多 Tab（如 Logs、Metrics 等）
+- [ ] 任务列表默认 limit=100，后续可考虑加载更多/无限滚动
 - [ ] App 和 Service 的统计数据（service_count, instance_count）在实例上下线时不会自动刷新，需要手动刷新
+- [ ] 左侧实例列表可考虑虚拟滚动优化（当实例数量 > 1000 时）
