@@ -348,6 +348,7 @@ export default function SearchableSelect({
           onClick={toggle}
           disabled={disabled}
           onKeyDown={handleKeyDown}
+          title={selectedLabel || undefined}
           className={`w-full flex items-center justify-between px-4 py-2.5 border rounded-lg transition text-left text-sm ${
             disabled
               ? 'bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200'
@@ -356,7 +357,7 @@ export default function SearchableSelect({
                 : 'border-gray-200 bg-white hover:border-gray-300'
           }`}
         >
-          <span className={selectedLabel ? 'text-gray-800' : 'text-gray-400'}>
+          <span className={`truncate ${selectedLabel ? 'text-gray-800' : 'text-gray-400'}`}>
             {selectedLabel || placeholder}
           </span>
           <div className="flex items-center gap-1">
@@ -370,7 +371,7 @@ export default function SearchableSelect({
 
       {/* 下拉面板 */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden fade-in">
+        <div className="absolute z-50 mt-1 min-w-full w-max max-w-[360px] bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden fade-in">
           {/* 搜索框 */}
           <div className="p-2 border-b border-gray-100">
             <div className="relative">
