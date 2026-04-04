@@ -106,6 +106,45 @@ graph TB
 - `extension/adminext/webui-react/src/App.tsx` — 移除 TasksPage 路由
 - `extension/adminext/webui-react/src/layouts/Sidebar.tsx` — 移除 Tasks 导航入口
 
+## Bug 修复记录
+
+### BUG-001：关闭 Arthas 弹窗后左侧实例列表加载全部数据
+
+**现象**：关闭 Arthas 终端弹窗后，页面左侧探针列表加载了全部实例数据，而非当前选中 App/Service 下的实例。
+
+**根因**：`TerminalPanel` 的 `onStatusChange` 回调直接绑定了 `loadInstances` 函数引用，但 `TerminalPanel` 内部调用 `onStatusChange?.()` 时不传参数，导致 `appId` 和 `serviceName` 都是 `undefined`，API 请求变成无过滤的全量查询。
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Terminal as TerminalPanel
+    participant Page as InstancesPage
+    participant API as 后端 API
+
+    User->>Terminal: 关闭 Arthas 弹窗
+    Terminal->>Terminal: handleClose() → ws.close()
+    Terminal->>Terminal: ws.onclose 触发
+    Terminal->>Page: onStatusChange() (无参数)
+    Page->>Page: loadInstances(undefined, undefined)
+    Page->>API: GET /instances?status=all (无过滤！)
+    API-->>Page: 返回全部实例
+    Note over Page: ❌ 左侧列表显示了所有实例
+```
+
+**修复**：将 `onStatusChange={loadInstances}` 改为闭包形式，自动携带当前选中的 `selectedAppId` 和 `selectedServiceName`：
+
+```tsx
+// 修复前
+onStatusChange={loadInstances}
+
+// 修复后
+onStatusChange={() => loadInstances(selectedAppId || undefined, selectedServiceName || undefined)}
+```
+
+**状态**：✅ 已修复 | **文件**：`InstancesPage.tsx`
+
+---
+
 ## 遗留问题
 
 - [ ] 右侧 Tab 面板后续可扩展更多 Tab（如 Logs、Metrics 等）

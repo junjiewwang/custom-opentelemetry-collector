@@ -52,6 +52,9 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
   const historyIdxRef = useRef(-1);
   const currentLineRef = useRef('');
 
+  // 标记 relay 是否已就绪（后端发送 [+] ready 状态后为 true）
+  const relayReadyRef = useRef(false);
+
   const serviceName = instance.service_name || 'unknown';
   const ip = instance.ip || instance.hostname || '';
   const tunnelAgentId = instance.arthasStatus?.tunnelAgentId || '';
@@ -224,29 +227,51 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       ws.onopen = () => {
         setConnected(true);
         setConnecting(false);
-        terminal.write('\x1b[32m[System] Connected! Type "help" for available commands.\x1b[0m\r\n\r\n');
-
-        // 发送初始尺寸
-        const dims = terminal.getProposedDimensions();
-        if (dims) {
-          sendWS({ action: 'resize', cols: dims.cols, rows: dims.rows });
-        }
-
+        relayReadyRef.current = false;
+        // 注意：此时后端还在执行 connectArthas 流程（查找 agent → startTunnel → 等待 openTunnel），
+        // 尚未进入 relay 模式，所以不能在这里发送 resize，否则 Arthas 收不到。
+        // resize 会在检测到后端 ready 状态消息后发送。
         terminal.focus();
         onStatusChange?.();
       };
 
       ws.onmessage = (event) => {
+        let text = '';
         if (event.data instanceof ArrayBuffer) {
-          const text = new TextDecoder('utf-8').decode(new Uint8Array(event.data));
-          terminal.write(text);
+          text = new TextDecoder('utf-8').decode(new Uint8Array(event.data));
         } else if (typeof event.data === 'string') {
-          terminal.write(event.data);
+          text = event.data;
         } else if (event.data instanceof Blob) {
           event.data.arrayBuffer().then(buf => {
-            const text = new TextDecoder('utf-8').decode(new Uint8Array(buf));
-            terminal.write(text);
+            const decoded = new TextDecoder('utf-8').decode(new Uint8Array(buf));
+            terminal.write(decoded);
+            // Blob 类型也需要检测 ready 状态
+            if (!relayReadyRef.current && decoded.includes('[+]')) {
+              relayReadyRef.current = true;
+              setTimeout(() => {
+                const dims = terminal.getProposedDimensions();
+                if (dims) {
+                  sendWS({ action: 'resize', cols: dims.cols, rows: dims.rows });
+                }
+              }, 100);
+            }
           });
+          return;
+        }
+
+        terminal.write(text);
+
+        // 检测后端发送的 ready 状态消息（"[+] Connected successfully, terminal is ready"）
+        // 此时后端已进入 relayWebSocketPair 模式，可以安全发送 resize 触发 Arthas banner
+        if (!relayReadyRef.current && text.includes('[+]')) {
+          relayReadyRef.current = true;
+          // 短暂延迟确保 relay 完全就绪
+          setTimeout(() => {
+            const dims = terminal.getProposedDimensions();
+            if (dims) {
+              sendWS({ action: 'resize', cols: dims.cols, rows: dims.rows });
+            }
+          }, 100);
         }
       };
 

@@ -720,7 +720,7 @@ export default function InstancesPage() {
           <TerminalPanel
             instance={terminalInstance}
             onClose={() => setTerminalInstance(null)}
-            onStatusChange={loadInstances}
+            onStatusChange={() => loadInstances(selectedAppId || undefined, selectedServiceName || undefined)}
           />
         </Suspense>
       )}
