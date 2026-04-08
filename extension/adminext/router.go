@@ -119,6 +119,9 @@ func (e *Extension) newRouter() http.Handler {
 
 				// Services under app
 				r.Get("/services", e.listAppServices)
+				r.Get("/services/{serviceName}", e.getService)
+				r.Put("/services/{serviceName}", e.updateServiceMetadata)
+				r.Delete("/services/{serviceName}", e.deleteService)
 				r.Get("/services/{serviceName}/instances", e.listServiceInstances)
 
 				// Instances under app

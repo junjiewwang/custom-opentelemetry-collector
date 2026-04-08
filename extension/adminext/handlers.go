@@ -6,6 +6,7 @@ package adminext
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 )
@@ -307,37 +309,117 @@ func (e *Extension) deleteAppServiceConfigV2(w http.ResponseWriter, r *http.Requ
 func (e *Extension) listAppServices(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
-	app, err := e.tokenMgr.GetApp(r.Context(), appID)
-	if err != nil {
+	// Validate app exists
+	if _, err := e.tokenMgr.GetApp(r.Context(), appID); err != nil {
 		e.handleError(w, errNotFound("app not found: "+err.Error()))
 		return
 	}
 
-	serviceNames, err := e.agentReg.GetServicesByApp(r.Context(), app.ID)
+	// Query from ServiceManager
+	query := servicemanager.ListServicesQuery{
+		NamePattern:    r.URL.Query().Get("name"),
+		IncludeRuntime: true,
+	}
+	services, err := e.serviceMgr.ListServicesByApp(r.Context(), appID, query)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
-	type serviceWithStats struct {
-		ServiceName   string `json:"service_name"`
-		InstanceCount int    `json:"instance_count"`
-	}
-
-	services := make([]serviceWithStats, 0, len(serviceNames))
-	for _, svcName := range serviceNames {
-		instances, _ := e.agentReg.GetInstancesByService(r.Context(), app.ID, svcName)
-		services = append(services, serviceWithStats{
-			ServiceName:   svcName,
-			InstanceCount: len(instances),
-		})
-	}
+	// Enrich with runtime stats from AgentRegistry
+	e.enrichServicesRuntime(r, services)
 
 	e.writeJSON(w, http.StatusOK, map[string]any{
 		"app_id":   appID,
 		"services": services,
 		"total":    len(services),
 	})
+}
+
+func (e *Extension) getService(w http.ResponseWriter, r *http.Request) {
+	appID := chi.URLParam(r, "appID")
+	serviceName := chi.URLParam(r, "serviceName")
+
+	svc, err := e.serviceMgr.GetService(r.Context(), appID, serviceName)
+	if err != nil {
+		e.handleError(w, errNotFound("service not found: "+err.Error()))
+		return
+	}
+
+	// Enrich with runtime stats
+	e.enrichServicesRuntime(r, []*servicemanager.ServiceInfo{svc})
+
+	e.writeJSON(w, http.StatusOK, svc)
+}
+
+func (e *Extension) updateServiceMetadata(w http.ResponseWriter, r *http.Request) {
+	appID := chi.URLParam(r, "appID")
+	serviceName := chi.URLParam(r, "serviceName")
+
+	req, err := decodeJSON[servicemanager.UpdateServiceRequest](r)
+	if err != nil {
+		e.handleError(w, errBadRequest(err.Error()))
+		return
+	}
+
+	svc, err := e.serviceMgr.UpdateServiceMetadata(r.Context(), appID, serviceName, req)
+	if err != nil {
+		e.handleError(w, err)
+		return
+	}
+
+	e.writeJSON(w, http.StatusOK, svc)
+}
+
+func (e *Extension) deleteService(w http.ResponseWriter, r *http.Request) {
+	appID := chi.URLParam(r, "appID")
+	serviceName := chi.URLParam(r, "serviceName")
+
+	// Precondition: instance_count == 0
+	instances, err := e.agentReg.GetInstancesByService(r.Context(), appID, serviceName)
+	if err != nil {
+		e.handleError(w, errInternal("failed to check instance count: "+err.Error()))
+		return
+	}
+	if len(instances) > 0 {
+		e.handleError(w, errConflict(
+			fmt.Sprintf("cannot delete service with %d active instance(s); remove all instances first", len(instances)),
+		))
+		return
+	}
+
+	if err := e.serviceMgr.DeleteService(r.Context(), appID, serviceName); err != nil {
+		e.handleError(w, err)
+		return
+	}
+
+	e.logger.Info("Service deleted via API",
+		zap.String("app_id", appID),
+		zap.String("service_name", serviceName),
+	)
+	e.writeJSON(w, http.StatusOK, successResponse("service deleted", map[string]any{
+		"app_id":       appID,
+		"service_name": serviceName,
+	}))
+}
+
+// enrichServicesRuntime populates runtime aggregated fields (InstanceCount, OnlineCount)
+// on the given ServiceInfo slice by querying AgentRegistry.
+func (e *Extension) enrichServicesRuntime(r *http.Request, services []*servicemanager.ServiceInfo) {
+	for _, svc := range services {
+		instances, err := e.agentReg.GetInstancesByService(r.Context(), svc.AppID, svc.ServiceName)
+		if err != nil {
+			continue
+		}
+		svc.InstanceCount = len(instances)
+		online := 0
+		for _, inst := range instances {
+			if inst.Status != nil && inst.Status.State == agentregistry.AgentStateOnline {
+				online++
+			}
+		}
+		svc.OnlineCount = online
+	}
 }
 
 func (e *Extension) listServiceInstances(w http.ResponseWriter, r *http.Request) {
@@ -414,38 +496,43 @@ func (e *Extension) kickAppInstance(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 func (e *Extension) listAllServices(w http.ResponseWriter, r *http.Request) {
-	apps, err := e.tokenMgr.ListApps(r.Context())
+	query := servicemanager.ListServicesQuery{
+		NamePattern:    r.URL.Query().Get("name"),
+		IncludeRuntime: true,
+	}
+
+	services, err := e.serviceMgr.ListAllServices(r.Context(), query)
 	if err != nil {
 		e.handleError(w, err)
 		return
 	}
 
-	type ServiceInfo struct {
-		AppID         string `json:"app_id"`
-		AppName       string `json:"app_name"`
-		ServiceName   string `json:"service_name"`
-		InstanceCount int    `json:"instance_count"`
-	}
+	// Enrich with runtime stats from AgentRegistry
+	e.enrichServicesRuntime(r, services)
 
-	var services []ServiceInfo
-	for _, app := range apps {
-		serviceNames, err := e.agentReg.GetServicesByApp(r.Context(), app.ID)
-		if err != nil {
-			continue
-		}
-
-		for _, svcName := range serviceNames {
-			instances, _ := e.agentReg.GetInstancesByService(r.Context(), app.ID, svcName)
-			services = append(services, ServiceInfo{
-				AppID:         app.ID,
-				AppName:       app.Name,
-				ServiceName:   svcName,
-				InstanceCount: len(instances),
-			})
+	// Build appID→appName map for display enrichment
+	appNameMap := make(map[string]string)
+	if apps, err := e.tokenMgr.ListApps(r.Context()); err == nil {
+		for _, app := range apps {
+			appNameMap[app.ID] = app.Name
 		}
 	}
 
-	e.writeJSON(w, http.StatusOK, listResponse("services", services, len(services)))
+	// Build enriched response with app_name
+	type serviceWithAppName struct {
+		*servicemanager.ServiceInfo
+		AppName string `json:"app_name"`
+	}
+
+	result := make([]serviceWithAppName, 0, len(services))
+	for _, svc := range services {
+		result = append(result, serviceWithAppName{
+			ServiceInfo: svc,
+			AppName:     appNameMap[svc.AppID],
+		})
+	}
+
+	e.writeJSON(w, http.StatusOK, listResponse("services", result, len(result)))
 }
 
 // ============================================================================

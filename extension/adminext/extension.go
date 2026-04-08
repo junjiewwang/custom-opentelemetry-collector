@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
@@ -53,10 +54,11 @@ type Extension struct {
 	blobStore blobstore.BlobStore
 
 	// Core components (either created locally or reused from controlplane)
-	configMgr configmanager.ConfigManager
-	taskMgr   taskmanager.TaskManager
-	agentReg  agentregistry.AgentRegistry
-	tokenMgr  tokenmanager.TokenManager
+	configMgr  configmanager.ConfigManager
+	taskMgr    taskmanager.TaskManager
+	agentReg   agentregistry.AgentRegistry
+	tokenMgr   tokenmanager.TokenManager
+	serviceMgr servicemanager.ServiceManager
 
 	// On-demand config manager (if enabled)
 	onDemandConfigMgr configmanager.OnDemandConfigManager
@@ -191,6 +193,7 @@ func (e *Extension) initFromControlPlane(host component.Host) error {
 	e.taskMgr = cpExt.GetTaskManager()
 	e.agentReg = cpExt.GetAgentRegistry()
 	e.tokenMgr = cpExt.GetTokenManager()
+	e.serviceMgr = cpExt.GetServiceManager()
 	e.blobStore = cpExt.GetBlobStore()
 	e.notificationStore = cpExt.GetNotificationStore()
 	e.artifactNotifier = cpExt.GetArtifactNotifier()

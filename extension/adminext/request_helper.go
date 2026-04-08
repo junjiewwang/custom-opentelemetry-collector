@@ -42,6 +42,10 @@ func errNotImplemented(msg string) *APIError {
 	return &APIError{Status: http.StatusNotImplemented, Message: msg}
 }
 
+func errConflict(msg string) *APIError {
+	return &APIError{Status: http.StatusConflict, Message: msg}
+}
+
 // ============================================================================
 // JSON Request/Response Helpers
 // ============================================================================
