@@ -974,46 +974,276 @@ GET     /api/v2/services                               # 全局服务列表
 
 ---
 
-### Phase 6：Config 语义统一（高风险）
+### Phase 6：Config 语义统一（高风险 → 经分析降级为中风险）
 
-**目标**：统一 Admin、ConfigManager、Receiver long-poll 对配置 Group 语义的理解。
+**目标**：统一 Admin、ConfigManager、Receiver long-poll 对配置 Group 语义的理解，消除两套 Nacos 访问路径。
 
-**这不是简单字段改名，而是完整迁移工程。**
+#### 现状分析（代码审计结论）
 
-**前置依赖项（来自 Phase 2）**：
-- **FromConfig backfill**：当前 `OnDemandConfigManager`（`NacosOnDemandConfigManager`）的 `configCache` 是 `sync.Map`，仅缓存被主动访问的配置，不具备"枚举所有已配置的 app 下的 serviceName"能力。该阶段需新增 ConfigManager 枚举 API（可基于 Nacos `SearchConfig`/`ListGroup`），实现后即可补全 Phase 2 的 FromConfig backfill 能力。
+经过完整代码审计，**三条配置访问路径实际传入 Nacos Group 的值已经一致**（都是 `app.ID`），不存在 Nacos 数据迁移问题：
 
-**涉及范围**：
+| 调用方 | 接口参数名 | 实际传入值 | Nacos Group | Nacos DataId |
+|--------|-----------|-----------|-------------|-------------|
+| Admin handlers (`handlers.go:224`) | `token` | `app.ID`（UUID） | `app.ID` | `serviceName` |
+| ConfigPollHandler (`config_handler.go:364`) | `group` / `state.token` | `appID`（来自 context，=UUID） | `appID` | `serviceName` |
+| OnDemandConfigManager (`on_demand.go:534`) | `token` | 上游传的 `app.ID` | `token`（=`app.ID`） | `serviceName` |
 
-| 范围 | 说明 |
-|------|------|
-| `extension/controlplaneext/configmanager/interface.go` | 参数语义统一 |
-| `extension/controlplaneext/configmanager/on_demand.go` | Group 读写统一 |
-| `receiver/agentgatewayreceiver/longpoll/*` | 监听与拉取逻辑统一 |
-| Nacos 数据 | 迁移策略 / 回滚策略 |
-| Admin handlers | 与统一后的接口保持一致 |
+**真正的问题是代码可读性和架构层面的**：
+1. **参数命名混乱**：`OnDemandConfigManager` 接口参数叫 `token`，实际接收的是 `appID`
+2. **两套 Nacos 客户端**：`ConfigPollHandler` 绕过 `OnDemandConfigManager`，直接持有独立的 `nacosClient`
+3. **缺少配置枚举能力**：`OnDemandConfigManager` 无法枚举某个 app 下所有已配置的 serviceName
 
-**推荐策略**：
+#### 推荐策略：方案 A 细分实施（推荐）
 
-优先评估以下两种方案：
+由于 Nacos 数据层面已一致，方案 A 的最大风险源（数据迁移）消失。细分为 4 个子步骤，每步可独立验证和回滚。
 
-#### 方案 A：一次性迁移
-- 优点：实现简单、长期状态干净
-- 缺点：风险高、回滚成本高
+**方案 B（双读/单写过渡）**不再推荐，因为不存在数据迁移需求，双读逻辑反而增加复杂度。
 
-#### 方案 B：双读 / 单写过渡（推荐）
-- 新写入只写新语义
-- 读取阶段同时支持旧 Group 和新 Group
-- 长轮询逐步切换到新语义
-- 完成验证后清理旧数据
+#### Step 6.1：纯重命名 — 接口参数 `token` → `appID`（零风险）
+
+**目标**：消除命名歧义，不改变任何运行时行为。
+
+| 文件 | 改动类型 | 说明 |
+|------|---------|------|
+| `configmanager/interface.go` | 参数重命名 | 所有 `OnDemandConfigManager` 方法签名：`token` → `appID` |
+| `configmanager/on_demand.go` | 参数重命名 + 日志 | 函数体 `token` → `appID`，`zap.String("token",...)` → `zap.String("app_id",...)` |
+| `adminext/handlers.go` | 无改动 | 已传 `app.ID`，仅参数名跟随接口变化 |
+
+**验证**：`go build ./...` 编译通过 + 全量单元测试通过（行为无变化）。无 Nacos 数据影响。
+
+**回滚**：纯代码 revert，零数据风险。
+
+#### Step 6.2：ConfigPollHandler 收敛到 OnDemandConfigManager（拆为 6.2a + 6.2b）
+
+**目标**：消除 `ConfigPollHandler` 直接持有 Nacos client 的问题，所有配置读取走统一的 `OnDemandConfigManager`。
+
+**当前架构**：
+```
+Admin API       → OnDemandConfigManager → Nacos
+Agent LongPoll  → ConfigPollHandler → [自己的 nacosClient] → Nacos  ← 问题！
+```
+
+**目标架构**：
+```
+Admin API       → OnDemandConfigManager → Nacos
+Agent LongPoll  → ConfigPollHandler → OnDemandConfigManager → Nacos  ← 统一！
+```
+
+**拆分依据**：`ConfigPollHandler` 对 Nacos 的调用有两个独立维度——**读取**（`GetConfig`）和 **监听**（`ListenConfig`/`CancelListenConfig`）。读取可以先行收敛（行为几乎等价），监听需要新增接口（有设计决策）。
+
+##### Step 6.2a：配置读取路径收敛（低风险）
+
+**目标**：`ConfigPollHandler` 的配置读取从直接调 Nacos 改为走 `OnDemandConfigManager.GetServiceConfig()`，**保留** `nacosClient` 字段仅用于 Watch。
+
+**当前 ConfigPollHandler 读取链**：
+```
+CheckImmediate() → loadConfigFromNacos() → loadConfigAny()
+                                              ↓
+                              nacosClient.GetConfig(Group, DataId)
+```
+
+**改造后**：
+```
+CheckImmediate() → loadConfigFromNacos() → configMgr.GetServiceConfig(ctx, appID, serviceName)
+```
+
+**改动范围**：
+
+| 文件 | 改动类型 | 说明 |
+|------|---------|------|
+| `longpoll/config_handler.go` | 新增字段 | 添加 `configMgr configmanager.OnDemandConfigManager`（与 `nacosClient` **并存**） |
+| `longpoll/config_handler.go` | 方法改造 | `loadConfigFromNacos` 改为调用 `h.configMgr.GetServiceConfig()`；`loadConfigAny` 和 `parseConfigContent` 标记为 deprecated 或保留给 Watch 回调 |
+| `manager_init.go` | 依赖注入 | `initConfigPollHandler` 增加 `OnDemandConfigManager` 参数传入 |
+
+**为什么低风险**：
+- `OnDemandConfigManager.GetServiceConfig()` 底层也是调 `nacosClient.GetConfig(Group=appID, DataId=serviceName)`，逻辑等价
+- 额外收益：自动获得 `OnDemandConfigManager` 的 **cache + retry + timeout** 能力（当前 `ConfigPollHandler` 的 `loadConfigAny` 无 retry 且超时依赖外部 ctx）
+- `nacosClient` 字段暂时保留，Watch 路径不变 → **Watch 行为零变化**
+
+**验证**：
+- 启动 collector → Agent 发起 config long-poll → 正确获取配置（验证读取路径）
+- 配置不存在时返回 skeleton config（Version=0）
+- 单元测试：mock `OnDemandConfigManager.GetServiceConfig()` 验证调用链
+
+**回滚**：revert `loadConfigFromNacos` 改动，恢复直接 Nacos 调用。
+
+##### Step 6.2b：Watch 路径收敛 + 移除直接 Nacos 依赖（中风险，核心）
+
+**目标**：`ConfigPollHandler` 的 Watch 从直接调 `nacosClient.ListenConfig` 改为走 `OnDemandConfigManager` 的订阅机制，**彻底移除** `nacosClient` 字段。
+
+**当前 ConfigPollHandler Watch 链**：
+```
+Poll() → ensureWatching() → nacosClient.ListenConfig(Group, DataId, OnChange)
+                                          ↓
+                              handleConfigChange() → 更新 serviceState.config → 通知 waiters
+Stop() → cancelWatch() → nacosClient.CancelListenConfig()
+```
+
+**改造方案**（两个子选项，需评估后选一）：
+
+**选项 1：复用 `SubscribeAgentConfig`（适配层方案）**
+- 现有 `SubscribeAgentConfig(token, agentID, callback)` 的 key 是 `token:agentID`
+- 在 `on_demand.go` 中，`setupWatch(token, dataID)` 的 Watch 回调会触发 `notifyAgentSubscribers(token, dataID, event)`
+- 由于 service 级别 Watch 的 `dataID = serviceName`，可以用 `SubscribeAgentConfig(appID, serviceName, callback)` 订阅
+- **优点**：不改接口，复用现有机制
+- **缺点**：语义上 `agentID` 参数传的是 `serviceName`，可读性差
+
+**选项 2：新增 `WatchServiceConfig` 接口（推荐）**
+- 在 `OnDemandConfigManager` 接口新增：
+  ```go
+  WatchServiceConfig(appID, serviceName string, callback AgentConfigChangeCallback)
+  UnwatchServiceConfig(appID, serviceName string)
+  ```
+- 内部实现委托给已有的 `setupWatch`/`cancelWatch` + `agentSubscribers`
+- **优点**：语义清晰，`ConfigPollHandler` 代码可读性高
+- **缺点**：接口变更，需更新 mock
+
+**改动范围（选项 2）**：
+
+| 文件 | 改动类型 | 说明 |
+|------|---------|------|
+| `configmanager/interface.go` | 新增方法 | `WatchServiceConfig(appID, serviceName, callback)` / `UnwatchServiceConfig(appID, serviceName)` |
+| `configmanager/on_demand.go` | 实现 | 内部委托 `setupWatch` + `agentSubscribers`（复用现有逻辑） |
+| `longpoll/config_handler.go` | **重构** | `ensureWatching` → `h.configMgr.WatchServiceConfig()`，回调中调 `handleConfigChange` |
+| `longpoll/config_handler.go` | **重构** | `cancelWatch` → `h.configMgr.UnwatchServiceConfig()` |
+| `longpoll/config_handler.go` | **移除** | 删除 `nacosClient` 字段、`loadConfigAny()`、`parseConfigContent()` |
+| `longpoll/config_handler.go` | **移除** | 删除 `nacosClient` import (`nacos-sdk-go/v2/clients/config_client`, `vo`) |
+| `manager_init.go` | 简化 | `initConfigPollHandler` 不再获取 `nacosClient`，只传 `OnDemandConfigManager` |
+
+**关键风险点和缓解措施**：
+
+| 风险点 | 说明 | 缓解 |
+|--------|------|------|
+| Watch 回调语义 | `OnDemandConfigManager` 的 `handleConfigChange` 更新 cache 后再通知 subscriber；`ConfigPollHandler` 需要拿到 parsed `*model.AgentConfig` | `WatchServiceConfig` 回调传递 `AgentConfigChangeEvent`（含 `NewConfig`），`ConfigPollHandler` 从 event 取 config 后通知 waiters |
+| 并发 watch 去重 | 当前 `ConfigPollHandler` 用 `serviceState.isWatching`，`OnDemandConfigManager` 用 `AgentConfigEntry.IsWatching` | 统一由 `OnDemandConfigManager` 负责去重，`ConfigPollHandler` 的 `ensureWatching` 只需调用 `WatchServiceConfig`（幂等） |
+| Watch 生命周期 | `ConfigPollHandler.Stop()` 需要取消所有 watch | `Stop()` 中遍历 services 调用 `UnwatchServiceConfig` |
+| 两个 Watch 冲突 | `OnDemandConfigManager.RegisterAgent()` 也会 `setupWatch`，可能与 `ConfigPollHandler` 的 `WatchServiceConfig` 重复 | `setupWatch` 已有去重逻辑（`IsWatching` 检查），不会重复注册 |
+
+**验证**：
+- Admin API 修改配置 → Agent long-poll **收到变更通知**（验证 watch 路径）
+- Admin API 删除配置 → Agent long-poll 收到 skeleton config（Version=0）
+- 多 agent 并发 poll 同一 service → watch 只注册一次
+- `ConfigPollHandler.Stop()` → 所有 watch 正确取消
+- 压力测试：高频配置变更下 waiter 通知不丢失
+
+**回滚**：revert 6.2b 改动，恢复 `nacosClient` 字段和直接 Watch（6.2a 的读取收敛保留不受影响）。
+
+#### Step 6.3：配置枚举能力 — 支持 FromConfig backfill（拆为 6.3a + 6.3b）
+
+**目标**：让 `OnDemandConfigManager` 支持"列出某个 app 下所有已配置的 serviceName"，供 Phase 2 的 FromConfig backfill 使用。
+
+**拆分依据**：枚举接口（纯新增）与 backfill 集成（调用方逻辑）完全独立，可以分步交付和验证。
+
+##### Step 6.3a：ConfigManager 枚举接口（低风险）
+
+**目标**：在 `OnDemandConfigManager` 中新增 `ListServiceConfigs` 方法，不影响任何现有功能。
+
+**前置条件**：Nacos SDK `IConfigClient` 接口已提供 `SearchConfig(vo.SearchConfigParam)` 方法。
+
+| 文件 | 改动类型 | 说明 |
+|------|---------|------|
+| `configmanager/interface.go` | 新增方法 | `ListServiceConfigs(ctx context.Context, appID string) ([]string, error)` |
+| `configmanager/on_demand.go` | 实现 | 调用 `m.client.SearchConfig(vo.SearchConfigParam{Group: appID, Search: "blur", PageNo: 1, PageSize: 200})`，分页遍历，过滤 `_unused_default_` 等非 service DataId |
+
+**风险与缓解**：
+- Nacos `SearchConfig` 分页行为差异 → 先写集成测试验证实际返回格式
+- 性能：某个 app 下 service 数量过多 → 设置合理 `PageSize`（200），分页遍历 + context 超时保护
+- DataId 噪声：`_unused_default_` 等 → 硬编码排除列表 + 命名规范校验
+
+**验证**：
+- 单元测试：mock `SearchConfig` 返回 → 验证过滤和分页逻辑
+- 集成测试：向 Nacos 写入 N 个 service config → `ListServiceConfigs` 返回完整列表
+- 边界测试：空 app（无 config）→ 返回空列表而非 error
+
+**回滚**：纯新增代码，删除即可，不影响任何现有功能。
+
+##### Step 6.3b：ServiceManager FromConfig backfill 集成（低风险）
+
+**目标**：`ServiceManager` 启动时调用 `ListServiceConfigs` 补全 service 记录的 `has_config` 状态。
+
+**前置**：Step 6.3a 完成。
+
+| 文件 | 改动类型 | 说明 |
+|------|---------|------|
+| `servicemanager/manager.go` | 新增 backfill 源 | 实现 `ConfigBackfillDataSource` 调用 `ListServiceConfigs`，为每个 serviceName 生成 `has_config=true` 的 service 记录 |
+| `servicemanager/manager.go` | 修改启动逻辑 | 在现有 backfill 流程中追加 config backfill source |
+
+**风险与缓解**：
+- backfill 失败不应阻断 ServiceManager 启动 → 宽松模式（log.Warn + 继续），与现有 backfill 策略一致
+- config backfill 可能创建已存在的 service → `EnsureService`（upsert 语义），幂等安全
+
+**验证**：
+- 集成测试：Nacos 有 3 个 service config → ServiceManager 启动后 → service 列表包含这 3 个且 `has_config=true`
+- 边界测试：`ListServiceConfigs` 失败 → ServiceManager 正常启动 + 日志告警
+
+**回滚**：移除 config backfill source 注册代码。
+
+#### Step 6.4：残留字段对齐（低风险）
+
+**目标**：清理残留的命名不一致，统一日志和结构体。
+
+| 文件 | 改动类型 | 说明 |
+|------|---------|------|
+| `configmanager/interface.go` | 结构体字段 | `AgentConfigChangeEvent.Token` → `AppID` |
+| `longpoll/config_handler.go` | 内部字段 | `serviceState.token` → `appID`，`ConfigWaiter.token` → `appID` |
+| `longpoll/*.go` | 日志字段 | `zap.String("token",...)` → `zap.String("app_id",...)` |
+| `agentregistry/interface.go` | 评估 | `AgentInfo.Token` 是否重命名为 `AppID`（影响面较大，需谨慎评估） |
+
+**验证**：编译通过 + 全量测试通过。
+
+#### 执行顺序与依赖关系
+
+```
+Step 6.1  (纯重命名，零风险)
+    ↓
+Step 6.2a (读取路径收敛，低风险)          Step 6.3a (枚举接口，低风险)
+    ↓                                      ↓
+Step 6.2b (Watch 路径收敛，中风险)       Step 6.3b (backfill 集成，低风险)
+    ↓                                      ↓
+    └──────────── 合流 ────────────────────┘
+                   ↓
+Step 6.4  (残留字段对齐，低风险)
+```
+
+- **6.1 先行**：改名后代码语义清晰，后续步骤不易犯错
+- **6.2a → 6.2b 串行**：先收敛读取（安全验证等价性），再收敛 Watch（需要新接口）
+- **6.3a → 6.3b 串行**：先实现枚举接口，再集成到 backfill
+- **6.2 线和 6.3 线可并行**：两条线互不依赖，可由不同开发者同时推进
+- **6.4 收尾**：等 6.2b 和 6.3b 都完成后统一清理
+
+**风险分布（细分后）**：
+
+| Step | 风险 | 运行时行为变化 | 回滚影响范围 |
+|------|------|-------------|------------|
+| 6.1 | 零风险 | ❌ 无 | 纯 revert |
+| 6.2a | 低风险 | ✅ 读取路径切换（等价） | revert 1 个方法 |
+| 6.2b | **中风险** | ✅ Watch 路径切换 + 移除 Nacos 依赖 | revert watch 改动（6.2a 不受影响） |
+| 6.3a | 低风险 | ❌ 无（纯新增） | 删除新增代码 |
+| 6.3b | 低风险 | ✅ 启动时多一次 backfill（宽松模式） | 移除 backfill source |
+| 6.4 | 低风险 | ❌ 无 | 纯 revert |
+
+#### 方案对比
+
+| 维度 | 方案 A 细分后（6 步） | 方案 B（双读/单写） |
+|------|---------------------|-------------------|
+| Nacos 数据迁移 | ❌ 不需要（值已一致） | ❌ 不需要 |
+| 代码复杂度 | 6 步，每步聚焦，最大单步仅 6.2b 中风险 | 双读逻辑 + 过渡期维护 + 清理 |
+| 最终状态 | 干净，单一路径 | 过渡期有双读分支 |
+| 回滚成本 | 每步独立 revert，6.2a/6.2b 可单独回滚 | 需保留双读逻辑 |
+| 并行能力 | 6.2 线和 6.3 线可并行 | 串行为主 |
+| 核心风险 | 仅 Step 6.2b（Watch 收敛） | 双读逻辑正确性 |
+
+**结论**：Nacos 数据层面已一致，方案 A 进一步细分为 6 步后，仅 Step 6.2b 为中风险，其余均为低风险或零风险。相比方案 B 更简单、可并行、回滚粒度更细，推荐采用。
 
 **验收标准**：
 
-- [ ] Admin、ConfigManager、Receiver 对 Group 语义使用一致
-- [ ] 新写入路径只存在一套主语义
-- [ ] 旧数据在迁移期间可读
-- [ ] 提供迁移脚本与回滚脚本
-- [ ] 集成测试覆盖配置读取、更新、删除、watch 回调场景
+- [ ] Step 6.1：接口参数 `token` → `appID` 重命名完成，编译通过，测试通过
+- [ ] Step 6.2a：`ConfigPollHandler` 读取配置走 `OnDemandConfigManager.GetServiceConfig()`，long-poll 获取配置正常
+- [ ] Step 6.2b：`ConfigPollHandler` 彻底移除 `nacosClient` 依赖，Watch 走 `WatchServiceConfig` 接口，变更通知正常
+- [ ] Step 6.3a：`ListServiceConfigs` 可枚举 app 下所有已配置 serviceName，单元测试 + 集成测试通过
+- [ ] Step 6.3b：ServiceManager 启动时 FromConfig backfill 工作，service 记录 `has_config` 状态正确
+- [ ] Step 6.4：所有配置相关结构体、字段、日志使用 `appID` 语义
+- [ ] 集成测试覆盖：配置读取、更新、删除、watch 回调、long-poll 变更通知场景
 
 ---
 
