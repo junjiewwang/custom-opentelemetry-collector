@@ -46,11 +46,8 @@ export interface CreateAppRequest {
   description?: string;
 }
 
-/** App 的 Service 信息（带统计） */
-export interface AppService {
-  service_name: string;
-  instance_count: number;
-}
+/** App 的 Service 信息（后端已升级为完整 ServiceInfo，保留别名兼容） */
+export type AppService = ServiceDetail;
 
 // ============================================================================
 // Instance (Agent)
@@ -105,6 +102,32 @@ export interface InstanceStats {
 // Service
 // ============================================================================
 
+/** 后端 ServiceInfo 完整结构（来自 ServiceManager） */
+export interface ServiceDetail {
+  id: string;
+  app_id: string;
+  service_name: string;
+  description: string;
+  tags: Record<string, string> | null;
+  created_at: string;
+  updated_at: string;
+  last_seen_at?: string;
+  // Runtime aggregated fields
+  instance_count: number;
+  online_count: number;
+  has_config?: boolean;
+  config_source?: string;
+  // Enriched by listAllServices
+  app_name?: string;
+}
+
+/** 更新 Service 元数据请求 */
+export interface UpdateServiceRequest {
+  description?: string;
+  tags?: Record<string, string>;
+}
+
+/** 旧版 Service 类型（兼容，可逐步替换为 ServiceDetail） */
 export interface Service {
   app_name: string;
   service_name: string;

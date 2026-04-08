@@ -12,7 +12,8 @@ import type {
   Instance,
   InstanceStats,
   InstanceListParams,
-  Service,
+  ServiceDetail,
+  UpdateServiceRequest,
   TaskInfoV2,
   TaskListParams,
   CreateTaskRequest,
@@ -111,7 +112,7 @@ class ApiClient {
       .then(res => res.apps || []);
   }
 
-  /** 获取指定 App 下的 Service 列表（带实例计数） */
+  /** 获取指定 App 下的 Service 列表（完整 ServiceInfo） */
   getAppServices(appId: string): Promise<AppService[]> {
     return this.request<{ app_id: string; services: AppService[]; total: number }>('GET', `/apps/${appId}/services`)
       .then(res => res.services || []);
@@ -161,8 +162,25 @@ class ApiClient {
   // Services
   // ========================================================================
 
-  getServices(): Promise<Service[]> {
-    return this.request<Service[]>('GET', '/services');
+  /** 获取全局 Service 列表（含 app_name enrichment） */
+  getServices(): Promise<ServiceDetail[]> {
+    return this.request<{ services: ServiceDetail[]; total: number }>('GET', '/services')
+      .then(res => res.services || []);
+  }
+
+  /** 获取单个 Service 详情 */
+  getService(appId: string, serviceName: string): Promise<ServiceDetail> {
+    return this.request<ServiceDetail>('GET', `/apps/${appId}/services/${encodeURIComponent(serviceName)}`);
+  }
+
+  /** 更新 Service 元数据（description / tags） */
+  updateService(appId: string, serviceName: string, data: UpdateServiceRequest): Promise<ServiceDetail> {
+    return this.request<ServiceDetail>('PUT', `/apps/${appId}/services/${encodeURIComponent(serviceName)}`, data);
+  }
+
+  /** 删除 Service（要求 instance_count == 0） */
+  deleteService(appId: string, serviceName: string): Promise<void> {
+    return this.request<void>('DELETE', `/apps/${appId}/services/${encodeURIComponent(serviceName)}`);
   }
 
   // ========================================================================
