@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
@@ -175,6 +176,28 @@ func (f *ComponentFactory) CreateTokenManager(cfg tokenmanager.Config) (tokenman
 	}
 }
 
+// CreateServiceManager creates the appropriate ServiceManager based on config.
+func (f *ComponentFactory) CreateServiceManager(cfg servicemanager.Config) (servicemanager.ServiceManager, error) {
+	var redisClient servicemanager.RedisClient
+
+	if cfg.Type == "redis" {
+		if f.storage == nil {
+			return nil, fmt.Errorf("storage extension required for redis service manager")
+		}
+		redisName := cfg.RedisName
+		if redisName == "" {
+			redisName = "default"
+		}
+		client, err := f.storage.GetRedis(redisName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
+		}
+		redisClient = client
+	}
+
+	return servicemanager.NewServiceManager(f.logger, cfg, redisClient)
+}
+
 // CreateChunkManager creates the appropriate ChunkManager based on config.
 func (f *ComponentFactory) CreateChunkManager(cfg ChunkManagerConfig) (*ChunkManager, error) {
 	var store ChunkStore
@@ -237,6 +260,7 @@ type ComponentConfigs struct {
 	TaskManager          taskmanager.Config
 	AgentRegistry        agentregistry.Config
 	TokenManager         tokenmanager.Config
+	ServiceManager       servicemanager.Config
 	ChunkManager         ChunkManagerConfig
 	ArtifactNotification notification.Config
 }
@@ -288,6 +312,15 @@ func ValidateComponentConfigs(cfg ComponentConfigs) error {
 
 	if cfg.TokenManager.Type == "redis" && cfg.StorageExtension == "" {
 		return errors.New("storage_extension is required when token_manager.type is 'redis'")
+	}
+
+	// Validate ServiceManager
+	if cfg.ServiceManager.Type != "" && cfg.ServiceManager.Type != "memory" && cfg.ServiceManager.Type != "redis" {
+		return errors.New("service_manager.type must be 'memory' or 'redis'")
+	}
+
+	if cfg.ServiceManager.Type == "redis" && cfg.StorageExtension == "" {
+		return errors.New("storage_extension is required when service_manager.type is 'redis'")
 	}
 
 	// Validate ChunkManager

@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 )
@@ -37,6 +38,9 @@ type Config struct {
 
 	// TokenManager configuration for token validation.
 	TokenManager tokenmanager.Config `mapstructure:"token_manager"`
+
+	// ServiceManager configuration for service entity management.
+	ServiceManager servicemanager.Config `mapstructure:"service_manager"`
 
 	// TaskExecutor configuration (for local task execution).
 	TaskExecutor TaskExecutorConfig `mapstructure:"task_executor"`
@@ -82,6 +86,7 @@ func (cfg *Config) Validate() error {
 		TaskManager:          cfg.TaskManager,
 		AgentRegistry:        cfg.AgentRegistry,
 		TokenManager:         cfg.TokenManager,
+		ServiceManager:       cfg.ServiceManager,
 		ChunkManager:         cfg.ChunkManager,
 		ArtifactNotification: cfg.ArtifactNotification,
 	}); err != nil {
@@ -114,6 +119,7 @@ func createDefaultConfig() *Config {
 		TaskManager:      taskmanager.DefaultConfig(),
 		AgentRegistry:    agentregistry.DefaultConfig(),
 		TokenManager:     tokenmanager.DefaultConfig(),
+		ServiceManager:   servicemanager.DefaultConfig(),
 		TaskExecutor: TaskExecutorConfig{
 			Workers:        4,
 			QueueSize:      100,

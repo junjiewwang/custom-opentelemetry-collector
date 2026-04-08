@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
@@ -91,6 +92,7 @@ type Extension struct {
 	taskMgr        taskmanager.TaskManager
 	agentReg       agentregistry.AgentRegistry
 	tokenMgr       tokenmanager.TokenManager
+	serviceMgr     servicemanager.ServiceManager
 	taskExecutor   *TaskExecutor
 	statusReporter *StatusReporter
 	chunkManager   *ChunkManager
@@ -171,6 +173,11 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		return fmt.Errorf("failed to create token manager: %w", err)
 	}
 
+	e.serviceMgr, err = factory.CreateServiceManager(e.config.ServiceManager)
+	if err != nil {
+		return fmt.Errorf("failed to create service manager: %w", err)
+	}
+
 	// Initialize local components
 	e.taskExecutor = newTaskExecutor(e.logger, e.config.TaskExecutor)
 	e.statusReporter = newStatusReporter(e.logger, e.config.StatusReporter)
@@ -209,6 +216,19 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	if err := e.tokenMgr.Start(ctx); err != nil {
 		return err
 	}
+
+	if err := e.serviceMgr.Start(ctx); err != nil {
+		return err
+	}
+
+	// Inject backfill data source after all components are initialized.
+	e.serviceMgr.SetBackfillDataSource(&backfillDataSourceAdapter{
+		agentReg: e.agentReg,
+		tokenMgr: e.tokenMgr,
+	})
+
+	// Execute a one-time lightweight backfill from registry on startup.
+	go e.runStartupBackfill()
 
 	if err := e.taskExecutor.Start(ctx); err != nil {
 		return err
@@ -254,6 +274,10 @@ func (e *Extension) Shutdown(ctx context.Context) error {
 
 	if err := e.agentReg.Close(); err != nil {
 		e.logger.Warn("Error closing agent registry", zap.Error(err))
+	}
+
+	if err := e.serviceMgr.Close(); err != nil {
+		e.logger.Warn("Error closing service manager", zap.Error(err))
 	}
 
 	if err := e.tokenMgr.Close(); err != nil {
@@ -364,7 +388,13 @@ func (e *Extension) IsTaskCancelled(ctx context.Context, taskID string) (bool, e
 
 // RegisterAgent implements ControlPlane.
 func (e *Extension) RegisterAgent(ctx context.Context, agent *agentregistry.AgentInfo) error {
-	return e.agentReg.Register(ctx, agent)
+	if err := e.agentReg.Register(ctx, agent); err != nil {
+		return err
+	}
+
+	// Lenient EnsureService: failure must NOT block agent registration.
+	e.ensureServiceForAgent(ctx, agent)
+	return nil
 }
 
 // HeartbeatAgent implements ControlPlane.
@@ -375,12 +405,46 @@ func (e *Extension) HeartbeatAgent(ctx context.Context, agentID string, status *
 // RegisterOrHeartbeatAgent implements ControlPlane.
 // This provides upsert semantics: registers the agent if not exists, or updates heartbeat if exists.
 func (e *Extension) RegisterOrHeartbeatAgent(ctx context.Context, agent *agentregistry.AgentInfo) error {
-	return e.agentReg.RegisterOrHeartbeat(ctx, agent)
+	if err := e.agentReg.RegisterOrHeartbeat(ctx, agent); err != nil {
+		return err
+	}
+
+	// Lenient EnsureService: failure must NOT block agent registration/heartbeat.
+	e.ensureServiceForAgent(ctx, agent)
+	return nil
 }
 
 // UnregisterAgent implements ControlPlane.
 func (e *Extension) UnregisterAgent(ctx context.Context, agentID string) error {
 	return e.agentReg.Unregister(ctx, agentID)
+}
+
+// ensureServiceForAgent is an internal helper that calls EnsureService in lenient mode.
+// It is invoked after successful agent registration/heartbeat. If EnsureService fails,
+// the error is logged with a warning but does NOT propagate — the agent registration
+// flow must never be blocked by a ServiceManager failure.
+func (e *Extension) ensureServiceForAgent(ctx context.Context, agent *agentregistry.AgentInfo) {
+	if agent == nil || agent.AppID == "" || agent.ServiceName == "" {
+		return
+	}
+
+	// Skip the placeholder "_unknown" service name.
+	if agent.ServiceName == "_unknown" {
+		return
+	}
+
+	if e.serviceMgr == nil {
+		return
+	}
+
+	if _, err := e.serviceMgr.EnsureService(ctx, agent.AppID, agent.ServiceName); err != nil {
+		e.logger.Warn("Failed to ensure service for agent (lenient mode, not blocking registration)",
+			zap.String("agent_id", agent.AgentID),
+			zap.String("app_id", agent.AppID),
+			zap.String("service_name", agent.ServiceName),
+			zap.Error(err),
+		)
+	}
 }
 
 // GetAgent implements ControlPlane.
@@ -463,6 +527,11 @@ func (e *Extension) GetOnDemandConfigManager() configmanager.OnDemandConfigManag
 // GetTokenManager returns the token manager for direct access.
 func (e *Extension) GetTokenManager() tokenmanager.TokenManager {
 	return e.tokenMgr
+}
+
+// GetServiceManager returns the service manager for direct access.
+func (e *Extension) GetServiceManager() servicemanager.ServiceManager {
+	return e.serviceMgr
 }
 
 // GetStorage returns the storage extension for direct access.
@@ -552,4 +621,79 @@ func (e *Extension) Dependencies() []component.ID {
 	}
 	// Return the storage extension as a dependency
 	return []component.ID{component.MustNewID(e.config.StorageExtension)}
+}
+
+// ===== Backfill Data Source Adapter =====
+
+// backfillDataSourceAdapter bridges AgentRegistry + TokenManager into the
+// servicemanager.BackfillDataSource interface, avoiding circular imports.
+type backfillDataSourceAdapter struct {
+	agentReg agentregistry.AgentRegistry
+	tokenMgr tokenmanager.TokenManager
+}
+
+// GetAllAppIDs returns all known application IDs by combining TokenManager.ListApps
+// and AgentRegistry.GetApps to cover both configured apps and apps with active agents.
+func (a *backfillDataSourceAdapter) GetAllAppIDs(ctx context.Context) ([]string, error) {
+	seen := make(map[string]struct{})
+	var allIDs []string
+
+	// Source 1: TokenManager — all configured apps
+	if a.tokenMgr != nil {
+		apps, err := a.tokenMgr.ListApps(ctx)
+		if err == nil {
+			for _, app := range apps {
+				if _, ok := seen[app.ID]; !ok {
+					seen[app.ID] = struct{}{}
+					allIDs = append(allIDs, app.ID)
+				}
+			}
+		}
+	}
+
+	// Source 2: AgentRegistry — apps with active/recent agents
+	if a.agentReg != nil {
+		registryApps, err := a.agentReg.GetApps(ctx)
+		if err == nil {
+			for _, appID := range registryApps {
+				if _, ok := seen[appID]; !ok {
+					seen[appID] = struct{}{}
+					allIDs = append(allIDs, appID)
+				}
+			}
+		}
+	}
+
+	return allIDs, nil
+}
+
+// GetServiceNamesByApp returns all service names for a given app from AgentRegistry.
+func (a *backfillDataSourceAdapter) GetServiceNamesByApp(ctx context.Context, appID string) ([]string, error) {
+	if a.agentReg == nil {
+		return nil, nil
+	}
+	return a.agentReg.GetServicesByApp(ctx, appID)
+}
+
+// runStartupBackfill executes a one-time lightweight backfill from the AgentRegistry
+// after the extension has fully started. It runs in a separate goroutine to avoid
+// blocking the Start sequence. Errors are logged but do not affect system health.
+func (e *Extension) runStartupBackfill() {
+	ctx := context.Background()
+
+	result, err := e.serviceMgr.BackfillServices(ctx, servicemanager.BackfillOptions{
+		FromRegistry: true,
+		FromConfig:   false,
+		DryRun:       false,
+	})
+	if err != nil {
+		e.logger.Warn("Startup backfill failed", zap.Error(err))
+		return
+	}
+
+	e.logger.Info("Startup backfill completed",
+		zap.Int("created", result.Created),
+		zap.Int("skipped", result.Skipped),
+		zap.Int("errors", result.Errors),
+	)
 }
