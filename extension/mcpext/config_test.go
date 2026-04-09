@@ -38,7 +38,7 @@ func TestConfig_Validate(t *testing.T) {
 			name: "empty endpoint",
 			config: func() *Config {
 				c := createDefaultConfig()
-				c.Endpoint.Endpoint = ""
+				c.Endpoint = ""
 				c.Auth.APIKeys = []string{"test-key"}
 				return c
 			}(),
@@ -101,7 +101,7 @@ func TestConfig_Validate(t *testing.T) {
 func TestCreateDefaultConfig(t *testing.T) {
 	cfg := createDefaultConfig()
 
-	assert.Equal(t, "0.0.0.0:8686", cfg.Endpoint.Endpoint)
+	assert.Equal(t, "0.0.0.0:8686", cfg.Endpoint)
 	assert.Equal(t, "api_key", cfg.Auth.Type)
 	assert.Equal(t, "controlplane", cfg.ControlPlaneExtension)
 	assert.Equal(t, "arthas_tunnel", cfg.ArthasTunnelExtension)
