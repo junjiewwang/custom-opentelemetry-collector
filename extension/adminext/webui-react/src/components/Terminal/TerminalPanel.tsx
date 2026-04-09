@@ -35,6 +35,9 @@ interface WSInputMessage {
 export default function TerminalPanel({ instance, onClose, onStatusChange }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const closeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressCloseRefreshRef = useRef(false);
+  const disposedRef = useRef(false);
   const [connecting, setConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
@@ -166,6 +169,24 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terminal.getXterm()]);
 
+  // 组件卸载时彻底清理关闭回调和 WebSocket，避免旧面板异步回调污染当前页面
+  useEffect(() => () => {
+    disposedRef.current = true;
+    if (closeRefreshTimerRef.current) {
+      clearTimeout(closeRefreshTimerRef.current);
+      closeRefreshTimerRef.current = null;
+    }
+    const ws = wsRef.current;
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      try { ws.close(); } catch { /* ignore */ }
+      wsRef.current = null;
+    }
+  }, []);
+
   // ── WebSocket 连接 ──
 
   const connectWebSocket = useCallback(async (_initCols?: number, _initRows?: number) => {
@@ -285,8 +306,18 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
         wsRef.current = null;
         const reason = event.reason ? `, reason: ${event.reason}` : '';
         terminal.write(`\r\n\x1b[33m[System] Connection closed (code: ${event.code}${reason})\x1b[0m\r\n`);
-        // 延迟刷新实例状态
-        setTimeout(() => onStatusChange?.(), 500);
+
+        // 用户主动关闭或组件已卸载时，禁止旧面板的延迟刷新继续污染当前页面
+        if (suppressCloseRefreshRef.current || disposedRef.current) return;
+
+        if (closeRefreshTimerRef.current) {
+          clearTimeout(closeRefreshTimerRef.current);
+        }
+        closeRefreshTimerRef.current = setTimeout(() => {
+          if (suppressCloseRefreshRef.current || disposedRef.current) return;
+          onStatusChange?.();
+          closeRefreshTimerRef.current = null;
+        }, 500);
       };
 
       // 超时保护
@@ -309,8 +340,18 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
   // ── 关闭 ──
 
   const handleClose = useCallback(() => {
+    suppressCloseRefreshRef.current = true;
+    if (closeRefreshTimerRef.current) {
+      clearTimeout(closeRefreshTimerRef.current);
+      closeRefreshTimerRef.current = null;
+    }
+
     const ws = wsRef.current;
     if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
       try { ws.close(); } catch { /* ignore */ }
       wsRef.current = null;
     }

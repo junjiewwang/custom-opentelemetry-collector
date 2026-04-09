@@ -10,7 +10,7 @@
  *   - Arthas 终端面板
  */
 
-import { useState, useCallback, useEffect, useMemo, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
 import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { useConfirm } from '@/components/ConfirmDialog';
@@ -117,9 +117,25 @@ export default function InstancesPage() {
   // 终端面板
   const [terminalInstance, setTerminalInstance] = useState<EnrichedInstance | null>(null);
 
-  // ── 加载实例（带过滤参数） ──────────────────────
+  // 当前级联选择的最新值：供异步回调读取，避免旧闭包把页面刷回上一个服务
+  const selectedAppIdRef = useRef(selectedAppId);
+  const selectedServiceNameRef = useRef(selectedServiceName);
+
+  // Generation counter：递增计数器，用于丢弃过期的异步响应
+  const loadGenRef = useRef(0);
+
+  useEffect(() => {
+    selectedAppIdRef.current = selectedAppId;
+  }, [selectedAppId]);
+
+  useEffect(() => {
+    selectedServiceNameRef.current = selectedServiceName;
+  }, [selectedServiceName]);
+
+  // ── 加载实例（带过滤参数 + generation counter 防竞态） ──
 
   const loadInstances = useCallback(async (appId?: string, serviceName?: string) => {
+    const gen = ++loadGenRef.current;
     setLoading(true);
     try {
       const [instancesRes, arthasRes] = await Promise.allSettled([
@@ -131,12 +147,15 @@ export default function InstancesPage() {
         apiClient.getArthasAgents(),
       ]);
 
+      // 如果在等待期间又触发了新的加载，丢弃本次过期响应
+      if (gen !== loadGenRef.current) return;
+
       const instancesList = instancesRes.status === 'fulfilled' ? instancesRes.value : [];
       const tunnelAgents = arthasRes.status === 'fulfilled' ? (arthasRes.value || []) : [];
       const enriched = enrichInstances(instancesList, tunnelAgents);
       setInstances(enriched);
 
-      // 自动选中第一个实例
+      // 自动选中：优先保留已选中的实例（如果仍在新列表中），否则选第一个
       setSelectedInstance(prev => {
         if (prev && enriched.some(i => i.agent_id === prev.agent_id)) {
           return enriched.find(i => i.agent_id === prev.agent_id) || prev;
@@ -144,11 +163,16 @@ export default function InstancesPage() {
         return enriched.length > 0 ? enriched[0]! : null;
       });
     } catch (e) {
+      if (gen !== loadGenRef.current) return;
       showToast(`Failed to load instances: ${(e as ApiError).message}`, 'error');
     } finally {
-      setLoading(false);
+      if (gen === loadGenRef.current) setLoading(false);
     }
   }, [showToast]);
+
+  const refreshCurrentSelection = useCallback(() => {
+    loadInstances(selectedAppIdRef.current || undefined, selectedServiceNameRef.current || undefined);
+  }, [loadInstances]);
 
   // ── 加载 App 下的 Services ──────────────────────
 
@@ -158,6 +182,9 @@ export default function InstancesPage() {
       setSelectedServiceName('');
       return;
     }
+    // 切换 App 时立即清空实例状态，防止显示旧数据
+    setSelectedInstance(null);
+    setInstances([]);
     setServicesLoading(true);
     try {
       const svcList = await apiClient.getAppServices(appId);
@@ -222,6 +249,9 @@ export default function InstancesPage() {
   const handleServiceChange = useCallback((serviceName: string) => {
     if (!serviceName) return;
     setSelectedServiceName(serviceName);
+    // 立即清空旧数据，防止切换期间显示前一个服务的实例
+    setSelectedInstance(null);
+    setInstances([]);
     loadInstances(selectedAppId || undefined, serviceName);
   }, [selectedAppId, loadInstances]);
 
@@ -294,7 +324,7 @@ export default function InstancesPage() {
     try {
       await apiClient.unregisterAgent(inst.agent_id);
       showToast('Instance removed successfully', 'success');
-      loadInstances(selectedAppId || undefined, selectedServiceName || undefined);
+      refreshCurrentSelection();
     } catch (e) {
       showToast(`Failed to remove instance: ${(e as ApiError).message}`, 'error');
     }
@@ -325,7 +355,7 @@ export default function InstancesPage() {
   return (
     <div className="flex flex-col h-full">
       {/* ═══ 顶部栏：标题 + 级联筛选 + 统计 + 刷新（单行） ═══ */}
-      <div className="flex-shrink-0 flex items-center gap-4 pb-3">
+      <div className="flex-shrink-0 flex items-center gap-4 pb-2">
         {/* 标题 */}
         <h2 className="text-base font-bold text-gray-800 whitespace-nowrap">Instances</h2>
 
@@ -368,7 +398,7 @@ export default function InstancesPage() {
         <button
           onClick={() => {
             loadApps(false);
-            loadInstances(selectedAppId || undefined, selectedServiceName || undefined);
+            refreshCurrentSelection();
           }}
           className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
           title="Refresh"
@@ -378,9 +408,9 @@ export default function InstancesPage() {
       </div>
 
       {/* ═══ 主体：左右两栏 ═══ */}
-      <div className="flex-1 flex gap-3 min-h-0">
+      <div className="flex-1 flex gap-2.5 min-h-0">
         {/* ── 左侧：实例列表面板 ── */}
-        <div className="w-72 flex-shrink-0 flex flex-col bg-white border border-gray-200/80 rounded-xl overflow-hidden">
+        <div className="w-64 flex-shrink-0 flex flex-col bg-white border border-gray-200/80 rounded-xl overflow-hidden">
           {/* 搜索框 */}
           <div className="flex-shrink-0 p-2.5 border-b border-gray-100">
             <div className="relative">
@@ -425,8 +455,8 @@ export default function InstancesPage() {
             {emptyReason === 'loading' ? (
               <div className="p-2 space-y-1">
                 {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="flex items-center gap-2 px-3 py-2 border-b border-gray-50" style={{ animationDelay: `${i * 80}ms` }}>
-                    <div className="w-7 h-7 rounded-lg skeleton-shimmer flex-shrink-0" />
+                  <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 border-b border-gray-50" style={{ animationDelay: `${i * 80}ms` }}>
+                    <div className="w-6 h-6 rounded-md skeleton-shimmer flex-shrink-0" />
                     <div className="flex-1 min-w-0 space-y-1.5">
                       <div className="h-3 skeleton-shimmer rounded w-3/4" />
                       <div className="h-2 skeleton-shimmer rounded w-1/2" />
@@ -491,7 +521,7 @@ export default function InstancesPage() {
                     <button
                       key={inst.agent_id}
                       onClick={() => { setSelectedInstance(inst); setActiveTab('overview'); }}
-                      className={`w-full text-left px-3 py-2 transition-all border-b border-gray-50 ${
+                      className={`w-full text-left px-2.5 py-1.5 transition-all border-b border-gray-50 ${
                         isSelected
                           ? 'bg-blue-50/80 border-l-[3px] border-l-blue-500'
                           : 'hover:bg-gray-50/80 border-l-[3px] border-l-transparent'
@@ -500,7 +530,7 @@ export default function InstancesPage() {
                       <div className="flex items-center gap-2">
                         {/* 状态指示器 */}
                         <div className="relative flex-shrink-0">
-                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] ${
+                          <div className={`w-6 h-6 rounded-md flex items-center justify-center text-[9px] ${
                             isOnline ? 'bg-green-50 text-green-500' : 'bg-gray-50 text-gray-300'
                           }`}>
                             <i className="fas fa-server" />
