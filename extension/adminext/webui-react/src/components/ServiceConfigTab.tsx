@@ -1,7 +1,8 @@
 /**
  * ServiceConfigTab — 服务配置编辑 Tab
  *
- * 从 ConfigsPage 提取的核心配置编辑逻辑，作为 ServicesPage 的第三个 Tab 使用。
+ * 服务配置编辑核心逻辑，作为 ServicesPage 的第三个 Tab 使用。
+ * （原 ConfigsPage 已废弃，/configs 路由重定向到 /services）
  *
  * 功能：
  *   - JSON 配置编辑器（textarea + 实时语法校验）
@@ -325,7 +326,7 @@ export default function ServiceConfigTab({ appId, serviceName }: ServiceConfigTa
   // ── 渲染 ──────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-full -m-4 bg-white">
+    <div className="flex flex-col h-full bg-white">
       {/* Loading Overlay */}
       {editing.loading && (
         <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center rounded-xl">
@@ -336,139 +337,105 @@ export default function ServiceConfigTab({ appId, serviceName }: ServiceConfigTa
         </div>
       )}
 
-      {/* 操作工具栏 */}
-      <div className="flex-shrink-0 px-4 py-2 border-b border-gray-100 flex items-center justify-between bg-white">
-        <div className="flex items-center gap-2 text-[10px] text-gray-400">
-          <i className="fas fa-cog text-gray-300" />
-          <span>Service Configuration</span>
-          {editing.isDirty && (
-            <span className="flex items-center gap-1 text-amber-500 font-bold animate-pulse">
-              <i className="fas fa-circle text-[5px]" /> Unsaved
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={handleDelete}
-            className="px-2.5 py-1.5 text-red-500 hover:bg-red-50 rounded-lg transition text-[11px] flex items-center gap-1.5"
-          >
-            <i className="fas fa-trash-alt text-[9px]" /> Delete
-          </button>
-          <button
-            onClick={handleReset}
-            disabled={!editing.isDirty}
-            className="px-2.5 py-1.5 text-gray-500 hover:bg-gray-100 rounded-lg transition text-[11px] flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <i className="fas fa-undo text-[9px]" /> Reset
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!editing.isDirty || editing.saving || !!editing.jsonError}
-            className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-[11px] flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
-          >
-            <i className={`fas ${editing.saving ? 'fa-spinner fa-spin' : 'fa-save'} text-[9px]`} />
-            {editing.saving ? 'Saving...' : 'Save'}
-          </button>
-        </div>
-      </div>
-
-      {/* 提示条 */}
-      <div className="flex-shrink-0 px-4 py-1.5 bg-blue-50/60 text-blue-600 text-[10px] border-b border-blue-100/50 flex items-center gap-2">
-        <i className="fas fa-info-circle text-[8px]" />
-        <span>Configuration is stored in JSON format. Use service name as DataId in Nacos.</span>
-      </div>
-
-      {/* 模板推荐 / 缺失字段提示 Banner */}
+      {/* 模板推荐 / 缺失字段提示 Banner（可关闭，仅在需要时出现） */}
       {editing.showHint && (
-        <div className={`flex-shrink-0 px-4 py-2.5 border-b flex items-center justify-between ${
+        <div className={`flex-shrink-0 px-4 py-2 border-b flex items-center justify-between ${
           editing.hintType === 'template'
             ? 'bg-amber-50/80 border-amber-100 text-amber-700'
             : 'bg-blue-50/80 border-blue-100 text-blue-700'
         }`}>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2 min-w-0">
             <i className={`fas ${
               editing.hintType === 'template' ? 'fa-magic text-amber-400' : 'fa-lightbulb text-blue-400'
-            } text-xs`} />
-            <div className="text-[10px]">
+            } text-xs flex-shrink-0`} />
+            <span className="text-[10px] truncate">
               {editing.hintType === 'template' ? (
-                <span>
-                  <span className="font-bold">Recommendation:</span> No configuration found. Would you like to use the recommended template?
-                </span>
+                <><span className="font-bold">Recommendation:</span> No configuration found. Use the recommended template?</>
               ) : (
-                <span>
-                  <span className="font-bold">Optimization:</span> Found {editing.missingFields.length} missing fields:{' '}
-                  <code className="bg-blue-100/60 px-1 rounded text-[9px]">
-                    {editing.missingFields.join(', ')}
-                  </code>
-                </span>
+                <><span className="font-bold">Optimization:</span> {editing.missingFields.length} missing fields: <code className="bg-blue-100/60 px-1 rounded text-[9px]">{editing.missingFields.join(', ')}</code></>
               )}
-            </div>
+            </span>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
             {editing.hintType === 'template' ? (
-              <button
-                onClick={handleApplyTemplate}
-                className="px-2.5 py-1 bg-amber-600 text-white rounded text-[10px] hover:bg-amber-700 transition"
-              >
+              <button onClick={handleApplyTemplate} className="px-2.5 py-1 bg-amber-600 text-white rounded text-[10px] hover:bg-amber-700 transition whitespace-nowrap">
                 Apply Template
               </button>
             ) : (
-              <button
-                onClick={handleFillMissing}
-                className="px-2.5 py-1 bg-blue-600 text-white rounded text-[10px] hover:bg-blue-700 transition"
-              >
+              <button onClick={handleFillMissing} className="px-2.5 py-1 bg-blue-600 text-white rounded text-[10px] hover:bg-blue-700 transition whitespace-nowrap">
                 Fill Missing
               </button>
             )}
-            <button
-              onClick={() => setEditing(prev => ({ ...prev, showHint: false }))}
-              className="p-0.5 hover:bg-black/5 rounded"
-            >
+            <button onClick={() => setEditing(prev => ({ ...prev, showHint: false }))} className="p-0.5 hover:bg-black/5 rounded">
               <i className="fas fa-times text-[9px] opacity-40" />
             </button>
           </div>
         </div>
       )}
 
-      {/* JSON 语法错误提示 */}
-      {editing.jsonError && (
-        <div className="flex-shrink-0 px-4 py-1.5 bg-red-50/80 text-red-600 text-[10px] border-b border-red-100/50 flex items-center gap-2">
-          <i className="fas fa-exclamation-triangle text-[9px]" />
-          <span className="font-mono text-[9px]">{editing.jsonError}</span>
-        </div>
-      )}
-
-      {/* JSON 编辑区域 */}
+      {/* JSON 编辑区域 — 最大化垂直空间 */}
       <div className="flex-1 relative overflow-hidden">
         <textarea
           ref={textareaRef}
           value={editing.content}
           onChange={e => handleContentChange(e.target.value)}
-          className={`absolute inset-0 w-full h-full p-4 font-mono text-xs bg-white border-none focus:ring-0 resize-none outline-none leading-relaxed ${
+          className={`absolute inset-0 w-full h-full px-4 py-3 font-mono text-xs bg-white border-none focus:ring-0 resize-none outline-none leading-relaxed ${
             editing.jsonError ? 'text-red-600' : 'text-gray-800'
           }`}
-          placeholder='{ "sampling": { "rate": 0.5 } }'
+          placeholder={'// JSON configuration for this service\n// Example:\n{\n  "sampler": { "type": 1, "ratio": 0.5 },\n  "batch": { "max_export_batch_size": 512 }\n}'}
           spellCheck={false}
         />
       </div>
 
-      {/* 底部状态栏 */}
-      <div className="flex-shrink-0 px-4 py-1.5 bg-gray-50/80 border-t border-gray-100 text-[9px] text-gray-400 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <span>Target: <span className="text-gray-500 font-medium">{serviceName}</span></span>
-        </div>
-        <div className="flex items-center gap-3">
-          <span>Version: {editing.version || 'none'}</span>
-          <span>Chars: {editing.content.length}</span>
+      {/* 底部统一工具栏：状态信息 + 操作按钮 */}
+      <div className="flex-shrink-0 px-3 py-1.5 bg-gray-50/80 border-t border-gray-100 flex items-center justify-between gap-2">
+        {/* 左侧：状态信息 */}
+        <div className="flex items-center gap-2.5 text-[9px] text-gray-400 min-w-0">
           {editing.jsonError ? (
-            <span className="text-red-400 flex items-center gap-0.5">
-              <i className="fas fa-times-circle text-[8px]" /> Invalid
+            <span className="text-red-400 flex items-center gap-1 font-medium" title={editing.jsonError}>
+              <i className="fas fa-times-circle text-[8px]" /> JSON Error
             </span>
           ) : editing.content.trim() ? (
-            <span className="text-green-400 flex items-center gap-0.5">
+            <span className="text-green-500 flex items-center gap-1">
               <i className="fas fa-check-circle text-[8px]" /> Valid
             </span>
           ) : null}
+          {editing.isDirty && (
+            <span className="text-amber-500 flex items-center gap-1 font-semibold">
+              <i className="fas fa-circle text-[4px]" /> Unsaved
+            </span>
+          )}
+          <span className="text-gray-300">|</span>
+          <span>v{editing.version || 'none'}</span>
+          <span className="text-gray-300">·</span>
+          <span>{editing.content.length} chars</span>
+        </div>
+
+        {/* 右侧：操作按钮 */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={handleDelete}
+            className="px-2 py-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition text-[10px] flex items-center gap-1"
+            title="Delete configuration"
+          >
+            <i className="fas fa-trash-alt text-[8px]" />
+          </button>
+          <button
+            onClick={handleReset}
+            disabled={!editing.isDirty}
+            className="px-2 py-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition text-[10px] flex items-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Reset changes"
+          >
+            <i className="fas fa-undo text-[8px]" />
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!editing.isDirty || editing.saving || !!editing.jsonError}
+            className="px-2.5 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition text-[10px] flex items-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm"
+          >
+            <i className={`fas ${editing.saving ? 'fa-spinner fa-spin' : 'fa-save'} text-[8px]`} />
+            {editing.saving ? 'Saving...' : 'Save'}
+          </button>
         </div>
       </div>
     </div>

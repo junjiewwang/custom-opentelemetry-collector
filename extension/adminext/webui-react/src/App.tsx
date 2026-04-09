@@ -14,7 +14,6 @@ import LoginPage from '@/pages/LoginPage';
 import DashboardPage from '@/pages/DashboardPage';
 import AppsPage from '@/pages/AppsPage';
 import ServicesPage from '@/pages/ServicesPage';
-import ConfigsPage from '@/pages/ConfigsPage';
 import InstancesPage from '@/pages/InstancesPage';
 
 // 懒加载：包含 ECharts 的页面 + TraceComparePage（减少主 chunk 体积）
@@ -44,7 +43,8 @@ function ProtectedRoutes() {
           <Route path="apps" element={<AppsPage />} />
           <Route path="services" element={<ServicesPage />} />
           <Route path="instances" element={<InstancesPage />} />
-          <Route path="configs" element={<ConfigsPage />} />
+          {/* /configs 已整合进 ServicesPage Config Tab，旧书签兼容重定向 */}
+          <Route path="configs" element={<Navigate to="/services" replace />} />
 
           {/* 懒加载页面 - 含 ECharts 或大型依赖 */}
           <Route path="traces/compare" element={<TraceComparePage />} />

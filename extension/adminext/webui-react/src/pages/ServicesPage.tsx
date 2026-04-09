@@ -98,30 +98,38 @@ export default function ServicesPage() {
     }
   }, [showToast]);
 
-  // 初始加载
+  // 初始加载 Apps
   useEffect(() => {
     loadApps();
-    loadServices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Apps 加载完成后，自动选择第一个 App 并加载其 services
+  useEffect(() => {
+    if (apps.length > 0 && !selectedAppId) {
+      const firstAppId = apps[0]!.id;
+      setSelectedAppId(firstAppId);
+      loadServices(firstAppId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apps]);
 
   // ── App 切换 ──────────────────────────────────────
 
   const handleAppChange = useCallback((appId: string) => {
     setSelectedAppId(appId);
-    loadServices(appId || undefined);
+    loadServices(appId);
   }, [loadServices]);
 
   // ── SearchableSelect 选项 ──────────────────────────
 
-  const appOptions: SelectOption[] = useMemo(() => [
-    { value: '', label: 'All Apps', description: `${services.length} services total` },
-    ...apps.map(app => ({
+  const appOptions: SelectOption[] = useMemo(() =>
+    apps.map(app => ({
       value: app.id,
       label: app.name || app.id,
       description: `${app.service_count ?? 0} services`,
     })),
-  ], [apps, services.length]);
+  [apps]);
 
   // ── 统计 & 过滤 ──────────────────────────────────────
 
@@ -171,7 +179,7 @@ export default function ServicesPage() {
       await apiClient.deleteService(svc.app_id, svc.service_name);
       showToast('Service deleted', 'success');
       // 刷新列表
-      loadServices(selectedAppId || undefined);
+      loadServices(selectedAppId);
     } catch (e) {
       showToast(`Failed to delete: ${(e as ApiError).message}`, 'error');
     }
@@ -209,7 +217,7 @@ export default function ServicesPage() {
   return (
     <div className="flex flex-col h-full">
       {/* ═══ 顶部栏：标题 + App 筛选 + 统计 + 刷新 ═══ */}
-      <div className="flex-shrink-0 flex items-center gap-4 pb-3">
+      <div className="flex-shrink-0 flex items-center gap-4 pb-2">
         <h2 className="text-base font-bold text-gray-800 whitespace-nowrap">Services</h2>
 
         <div className="w-px h-5 bg-gray-200 flex-shrink-0" />
@@ -238,7 +246,7 @@ export default function ServicesPage() {
         <button
           onClick={() => {
             loadApps();
-            loadServices(selectedAppId || undefined);
+            loadServices(selectedAppId);
           }}
           className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
           title="Refresh"
@@ -248,9 +256,9 @@ export default function ServicesPage() {
       </div>
 
       {/* ═══ 主体：左右两栏 ═══ */}
-      <div className="flex-1 flex gap-3 min-h-0">
+      <div className="flex-1 flex gap-2.5 min-h-0">
         {/* ── 左侧：服务列表 ── */}
-        <div className="w-72 flex-shrink-0 flex flex-col bg-white border border-gray-200/80 rounded-xl overflow-hidden">
+        <div className="w-64 flex-shrink-0 flex flex-col bg-white border border-gray-200/80 rounded-xl overflow-hidden">
           {/* 搜索框 */}
           <div className="flex-shrink-0 p-2.5 border-b border-gray-100">
             <div className="relative">
@@ -293,8 +301,8 @@ export default function ServicesPage() {
             {emptyReason === 'loading' ? (
               <div className="p-2 space-y-1">
                 {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="flex items-center gap-2 px-3 py-2 border-b border-gray-50" style={{ animationDelay: `${i * 80}ms` }}>
-                    <div className="w-7 h-7 rounded-lg skeleton-shimmer flex-shrink-0" />
+                  <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 border-b border-gray-50" style={{ animationDelay: `${i * 80}ms` }}>
+                    <div className="w-6 h-6 rounded-md skeleton-shimmer flex-shrink-0" />
                     <div className="flex-1 min-w-0 space-y-1.5">
                       <div className="h-3 skeleton-shimmer rounded w-3/4" />
                       <div className="h-2 skeleton-shimmer rounded w-1/2" />
@@ -353,7 +361,7 @@ export default function ServicesPage() {
                     <button
                       key={`${svc.app_id}:${svc.service_name}`}
                       onClick={() => { setSelectedService(svc); setActiveTab('info'); }}
-                      className={`w-full text-left px-3 py-2 transition-all border-b border-gray-50 ${
+                      className={`w-full text-left px-2.5 py-1.5 transition-all border-b border-gray-50 ${
                         isSelected
                           ? 'bg-blue-50/80 border-l-[3px] border-l-blue-500'
                           : 'hover:bg-gray-50/80 border-l-[3px] border-l-transparent'
@@ -361,7 +369,7 @@ export default function ServicesPage() {
                     >
                       <div className="flex items-center gap-2">
                         {/* 图标 */}
-                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] flex-shrink-0 ${
+                        <div className={`w-6 h-6 rounded-md flex items-center justify-center text-[9px] flex-shrink-0 ${
                           hasInstances ? 'bg-green-50 text-green-500' : 'bg-gray-50 text-gray-300'
                         }`}>
                           <i className="fas fa-sitemap" />

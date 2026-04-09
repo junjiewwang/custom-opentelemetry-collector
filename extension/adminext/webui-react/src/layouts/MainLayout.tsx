@@ -17,7 +17,7 @@ export default function MainLayout() {
   const mainMargin = isMobile ? '' : collapsed ? 'lg:ml-16' : 'lg:ml-64';
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="h-screen flex flex-col bg-gray-50 overflow-hidden">
       <Sidebar />
 
       {/* 移动端顶部导航栏 */}
@@ -50,8 +50,8 @@ export default function MainLayout() {
         </button>
       )}
 
-      {/* 主内容区域 */}
-      <main className={`transition-all duration-300 ${mainMargin} ${isMobile ? 'pt-14' : ''} p-6 lg:p-8`}>
+      {/* 主内容区域 — flex-1 撑满视口剩余高度 */}
+      <main className={`flex-1 min-h-0 overflow-hidden transition-all duration-300 ${mainMargin} ${isMobile ? 'pt-14' : ''} p-4 lg:p-5`}>
         <Outlet />
       </main>
     </div>
