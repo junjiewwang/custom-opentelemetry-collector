@@ -1237,12 +1237,12 @@ Step 6.4  (残留字段对齐，低风险)
 
 **验收标准**：
 
-- [ ] Step 6.1：接口参数 `token` → `appID` 重命名完成，编译通过，测试通过
-- [ ] Step 6.2a：`ConfigPollHandler` 读取配置走 `OnDemandConfigManager.GetServiceConfig()`，long-poll 获取配置正常
-- [ ] Step 6.2b：`ConfigPollHandler` 彻底移除 `nacosClient` 依赖，Watch 走 `WatchServiceConfig` 接口，变更通知正常
-- [ ] Step 6.3a：`ListServiceConfigs` 可枚举 app 下所有已配置 serviceName，单元测试 + 集成测试通过
-- [ ] Step 6.3b：ServiceManager 启动时 FromConfig backfill 工作，service 记录 `has_config` 状态正确
-- [ ] Step 6.4：所有配置相关结构体、字段、日志使用 `appID` 语义
+- [x] Step 6.1：接口参数 `token` → `appID` 重命名完成，编译通过，测试通过（2026-04-08）
+- [x] Step 6.2a：`ConfigPollHandler` 读取配置走 `OnDemandConfigManager.GetServiceConfig()`，long-poll 获取配置正常（2026-04-08）
+- [x] Step 6.2b：`ConfigPollHandler` 彻底移除 `nacosClient` 依赖，Watch 走 `WatchServiceConfig` 接口，变更通知正常（2026-04-08）
+- [x] Step 6.3a：`ListServiceConfigs` 可枚举 app 下所有已配置 serviceName，编译 + 现有单元测试通过（2026-04-08）
+- [x] Step 6.3b：ServiceManager 启动时 FromConfig backfill 工作，service 记录 `has_config` 状态正确（2026-04-08）
+- [x] Step 6.4：所有配置相关结构体、字段、日志使用 `appID` 语义（2026-04-08）
 - [ ] 集成测试覆盖：配置读取、更新、删除、watch 回调、long-poll 变更通知场景
 
 ---
@@ -1255,17 +1255,18 @@ Step 6.4  (残留字段对齐，低风险)
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `extension/adminext/webui-react/src/pages/ConfigsPage.tsx` | 修改 | 改为重定向/提示页 |
-| `extension/adminext/webui-react/src/App.tsx` | 修改 | 路由调整 |
-| `extension/adminext/webui-react/src/layouts/Sidebar.tsx` | 修改 | 侧边栏入口调整 |
-| `README.md` / `docs/*` | 修改 | 文档同步 |
+| `extension/adminext/webui-react/src/pages/ConfigsPage.tsx` | 删除 | 功能已整合到 `ServiceConfigTab`，文件不再被引用 |
+| `extension/adminext/webui-react/src/App.tsx` | 修改 | `/configs` 路由改为 `<Navigate to="/services" replace />`，移除 ConfigsPage import |
+| `extension/adminext/webui-react/src/layouts/Sidebar.tsx` | 修改 | Management 分组移除 Configs 菜单项 |
+| `extension/adminext/webui-react/src/components/ServiceConfigTab.tsx` | 修改 | 更新注释，标注 ConfigsPage 已废弃 |
+| `docs/service-entity-architecture.md` | 修改 | 进展清单同步 |
 
 **验收标准**：
 
-- [ ] 访问 `/configs` 自动跳转或明确提示去 `Services`
-- [ ] Sidebar 不再暴露重复入口
-- [ ] 无死链接、无 404
-- [ ] 文档与实现一致
+- [x] 访问 `/configs` 自动跳转或明确提示去 `Services`（路由级 `<Navigate to="/services" replace />`，2026-04-08）
+- [x] Sidebar 不再暴露重复入口（Configs 菜单项已移除，2026-04-08）
+- [x] 无死链接、无 404（`/configs` 重定向兼容旧书签，ConfigsPage 无其他引用后删除，2026-04-08）
+- [x] 文档与实现一致（Phase 6 + Phase 7 进展已同步，2026-04-08）
 
 ---
 
@@ -1417,18 +1418,69 @@ Step 6.4  (残留字段对齐，低风险)
 - [x] TypeScript 编译验证（`tsc --noEmit` 零错误，2026-04-08）
 - [ ] 页面整合端到端验证（需运行时测试）
 
-### Phase 6：Config 语义统一（高风险）
-- [ ] `token` / `appID` 语义统一方案定稿
-- [ ] ConfigManager 枚举 API（FromConfig backfill 前置，来源于 Phase 2 遗留项）
-- [ ] 迁移脚本
-- [ ] 回滚脚本
-- [ ] Long-poll / watch 改造
-- [ ] 集成测试
+### Phase 6：Config 语义统一（高风险 → 经分析降级为中风险）
+- [x] Step 6.1：纯重命名 — `token` → `appID`（`interface.go` + `on_demand.go`，编译 + 测试通过，2026-04-08）
+- [x] Step 6.2a：ConfigPollHandler 读取路径收敛到 `OnDemandConfigManager.GetServiceConfig()`（`config_handler.go` 新增 `configMgr` 字段 + `manager_init.go` 注入，configMgr 为 nil 时 fallback 直接 Nacos 调用，2026-04-08）
+- [x] Step 6.2b：ConfigPollHandler Watch 路径收敛 + 移除 nacosClient 依赖 — `interface.go` 新增 `WatchServiceConfig`/`UnwatchServiceConfig`，`on_demand.go` 实现委托 `setupWatch`+`agentSubscribers`，`config_handler.go` 重构 `ensureWatching`/`Stop` + 移除 `nacosClient`/`loadConfigAny`/`parseConfigContent`/`cancelWatch`/`handleConfigChange`，`manager_init.go` 简化移除 Nacos 依赖，编译 + 测试通过（2026-04-08）
+- [x] Step 6.3a：`ListServiceConfigs` 枚举接口（Nacos `SearchConfig`）— `interface.go` 新增 `ListServiceConfigs(ctx, appID) ([]string, error)` + `on_demand.go` 实现（分页遍历 + 过滤系统 DataId），编译 + 测试通过（2026-04-08）
+- [x] Step 6.3b：ServiceManager 启动时 FromConfig backfill 集成 — `BackfillDataSource` 新增 `GetConfiguredServiceNamesByApp`，`backfillFromConfig` 实现（2026-04-08）
+- [ ] Step 6.4：残留字段对齐（longpoll 包 `token` → `appID`）
+- [ ] 集成测试覆盖
 
 ### Phase 7：清理
-- [ ] `ConfigsPage` 重定向
-- [ ] Sidebar 更新
-- [ ] 文档同步
+- [x] `ConfigsPage` 重定向 — `/configs` 路由改为 `<Navigate to="/services" replace />`，移除 ConfigsPage import（2026-04-08）
+- [x] Sidebar 更新 — Management 分组移除 Configs 菜单项（2026-04-08）
+- [x] `ConfigsPage.tsx` 删除 — 功能已整合到 `ServiceConfigTab`，文件已删除（2026-04-08）
+- [x] 文档同步（2026-04-08）
+
+### Bug 修复（Phase 7 附加）
+- [x] `_default_` 幽灵服务修复 — `on_demand.go` 新增 `systemReservedDataIDs` 精确排除列表 + `IsSystemReservedDataID()` 导出函数；`service.go` 新增 `isReservedServiceName()` 统一过滤，`backfillFromRegistry` 和 `backfillFromConfig` 共用（2026-04-08）
+- [x] ServicesPage App 下拉框优化 — 移除 "All Apps" 硬编码选项，Apps 加载完成后自动选择第一个 App 并加载服务列表（2026-04-08）
+
+### UI/UX 改进（Phase 7 附加）
+- [x] Config Tab 布局优化 — `ServiceConfigTab.tsx` 重新设计布局，消除垂直空间浪费（2026-04-09）：
+  - 移除顶部操作工具栏（"Service Configuration" 标题 + Delete/Reset/Save 按钮）
+  - 移除常驻静态提示信息（"Configuration is stored in JSON format..."）
+  - 移除独立的 JSON 错误提示栏
+  - 移除 `-m-4` 负边距 hack（父容器已无 `p-4` padding）
+  - 新增底部统一工具栏：左侧状态信息（JSON 校验状态、未保存指示、版本号、字符数）+ 右侧操作按钮（Delete 图标、Reset 图标、Save 按钮）
+  - 保留条件性提示 Banner（模板推荐/缺失字段检测，仅在需要时出现）
+  - 优化 textarea placeholder 为多行示例格式
+  - 效果：从 4 层固定堆叠减少为 1 层底部工具栏 + 0-1 层条件 Banner，JSON 编辑区域最大化
+- [x] 侧边栏菜单顺序调整 — `Sidebar.tsx` Management 分组菜单顺序改为 Dashboard → Applications → Services → Instances，符合 App → Service → Instance 三层数据模型的业务层级（2026-04-09）
+- [x] 全高布局链 + 空间利用率优化（2026-04-09）：
+  - `MainLayout.tsx`：外层从 `min-h-screen` 改为 `h-screen flex flex-col overflow-hidden`，`<main>` 改为 `flex-1 min-h-0 overflow-hidden`，建立从视口到叶子组件的完整 flex 高度链
+  - `MainLayout.tsx`：主内容区 padding 从 `p-6 lg:p-8` 降为 `p-4 lg:p-5`，减少四周留白
+  - `ServicesPage.tsx`：左侧列表宽度从 `w-72`(288px) 缩为 `w-64`(256px)，释放右侧详情空间
+  - `ServicesPage.tsx`：服务列表项 `py-2 px-3` → `py-1.5 px-2.5`，图标 `w-7 h-7` → `w-6 h-6`，列表更紧凑
+  - `ServicesPage.tsx`：顶部栏 `pb-3` → `pb-2`，左右间距 `gap-3` → `gap-2.5`
+  - 效果：列表和详情面板撑满视口高度，消除底部大面积空白，Config Tab JSON 编辑器占满可用空间
+- [x] InstancesPage 服务切换竞态修复 + 布局对齐（2026-04-09）：
+  - **Bug 修复 — 服务切换显示旧数据**：
+    - `handleServiceChange`：切换服务时立即执行 `setSelectedInstance(null); setInstances([])`，清空旧数据后再异步加载
+    - `loadServices`（App 切换路径）：同样在异步加载前立即清空 `selectedInstance` 和 `instances`
+    - 根因：切换服务后 `loadInstances` 是异步的，期间 `selectedInstance` 仍持有旧服务的实例数据，右侧面板短暂显示旧内容
+  - **Bug 修复 — 快速连续切换竞态**：
+    - `loadInstances` 新增 generation counter（`loadGenRef`），每次调用递增，异步响应返回时检查 `gen !== loadGenRef.current` 则丢弃
+    - 防止快速切换 App/Service 时，先发后至的旧响应覆盖新数据
+  - **布局对齐**（与 ServicesPage 一致）：
+    - 顶部栏 `pb-3` → `pb-2`
+    - 主体间距 `gap-3` → `gap-2.5`
+    - 左侧面板宽度 `w-72`(288px) → `w-64`(256px)
+    - 列表项 `px-3 py-2` → `px-2.5 py-1.5`，图标 `w-7 h-7 rounded-lg` → `w-6 h-6 rounded-md`
+    - Skeleton loading 同步更新尺寸
+- [x] InstancesPage Arthas 关闭回调串页修复（2026-04-09）：
+  - **根因确认**：问题不只是普通请求竞态，而是 `TerminalPanel` 在关闭弹窗后，`ws.onclose` 里的 `setTimeout(() => onStatusChange?.(), 500)` 仍会触发旧回调，导致页面在切换到新服务后又被旧服务上下文重新刷新
+  - **TerminalPanel 修复**：
+    - 新增 `closeRefreshTimerRef`、`suppressCloseRefreshRef`、`disposedRef`
+    - `handleClose()`：主动关闭前先标记 suppress，清理延迟定时器，并移除当前 WebSocket 的 `onopen/onmessage/onerror/onclose` 事件处理器，再执行 `ws.close()`
+    - `useEffect cleanup`：组件卸载时统一清理定时器和 WebSocket 事件，防止旧面板生命周期结束后再触发异步回调
+    - `ws.onclose`：仅在“非主动关闭 + 未卸载”场景下才允许延迟执行 `onStatusChange`
+  - **InstancesPage 修复**：
+    - 新增 `selectedAppIdRef` / `selectedServiceNameRef` 保存当前最新筛选值
+    - 新增 `refreshCurrentSelection()`，统一按最新 refs 刷新实例列表
+    - `TerminalPanel.onStatusChange`、顶部刷新按钮、实例注销后的刷新统一改为调用 `refreshCurrentSelection()`，避免旧闭包携带过期的 app/service 参数
+  - **效果**：关闭旧服务的 Arthas 弹窗后再切换服务，不会在 500ms 延迟后被旧回调刷回上一个服务的信息和 Arthas 状态
 
 ---
 
