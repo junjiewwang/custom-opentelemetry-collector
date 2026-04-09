@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 )
 
-// ErrConfigNotFound indicates there is no config stored for the given (token/group + serviceName).
+// ErrConfigNotFound indicates there is no config stored for the given (appID/group + serviceName).
 //
 // This should be treated as a normal condition by callers (e.g. UI can show a template),
 // not as an operational failure.
@@ -53,7 +53,7 @@ type ConfigManager interface {
 // AgentConfigChangeEvent represents a config change event for an agent.
 type AgentConfigChangeEvent struct {
 	Type      string // "created", "updated", "deleted"
-	Token     string
+	AppID     string
 	AgentID   string
 	OldConfig *model.AgentConfig
 	NewConfig *model.AgentConfig
@@ -70,46 +70,64 @@ type OnDemandConfigManager interface {
 
 	// RegisterAgent registers an agent and starts watching its config.
 	// Returns the agent's config (or nil if not found, agent should use default).
-	RegisterAgent(ctx context.Context, token, agentID, serviceName string) (*model.AgentConfig, error)
+	RegisterAgent(ctx context.Context, appID, agentID, serviceName string) (*model.AgentConfig, error)
 
 	// UnregisterAgent unregisters an agent and releases its resources.
-	UnregisterAgent(ctx context.Context, token, agentID string) error
+	UnregisterAgent(ctx context.Context, appID, agentID string) error
 
 	// GetConfigForAgent returns config for a specific agent.
 	// If no specific config exists, returns the service config if serviceName is provided.
-	// If no service config exists, returns the default config for the token.
+	// If no service config exists, returns the default config for the appID.
 	// If no default config exists, returns nil (agent should use local default).
-	GetConfigForAgent(ctx context.Context, token, agentID, serviceName string) (*model.AgentConfig, error)
+	GetConfigForAgent(ctx context.Context, appID, agentID, serviceName string) (*model.AgentConfig, error)
 
 	// SetConfigForAgent sets/updates config for a specific agent.
-	SetConfigForAgent(ctx context.Context, token, agentID string, config *model.AgentConfig) error
+	SetConfigForAgent(ctx context.Context, appID, agentID string, config *model.AgentConfig) error
 
 	// SetServiceConfig sets/updates config for a specific service.
-	SetServiceConfig(ctx context.Context, token, serviceName string, config *model.AgentConfig) error
+	SetServiceConfig(ctx context.Context, appID, serviceName string, config *model.AgentConfig) error
 
 	// GetServiceConfig returns the config for a specific service.
-	GetServiceConfig(ctx context.Context, token, serviceName string) (*model.AgentConfig, error)
+	GetServiceConfig(ctx context.Context, appID, serviceName string) (*model.AgentConfig, error)
 
 	// DeleteServiceConfig deletes config for a specific service.
-	DeleteServiceConfig(ctx context.Context, token, serviceName string) error
+	DeleteServiceConfig(ctx context.Context, appID, serviceName string) error
 
-	// SetDefaultConfig sets the default config for a token (all agents under this token).
-	SetDefaultConfig(ctx context.Context, token string, config *model.AgentConfig) error
+	// SetDefaultConfig sets the default config for an appID (all agents under this appID).
+	SetDefaultConfig(ctx context.Context, appID string, config *model.AgentConfig) error
 
-	// GetDefaultConfig returns the default config for a token.
-	GetDefaultConfig(ctx context.Context, token string) (*model.AgentConfig, error)
+	// GetDefaultConfig returns the default config for an appID.
+	GetDefaultConfig(ctx context.Context, appID string) (*model.AgentConfig, error)
 
 	// DeleteConfigForAgent deletes config for a specific agent.
-	DeleteConfigForAgent(ctx context.Context, token, agentID string) error
+	DeleteConfigForAgent(ctx context.Context, appID, agentID string) error
 
 	// SubscribeAgentConfig subscribes to config changes for a specific agent.
-	SubscribeAgentConfig(token, agentID string, callback AgentConfigChangeCallback)
+	SubscribeAgentConfig(appID, agentID string, callback AgentConfigChangeCallback)
 
 	// UnsubscribeAgentConfig unsubscribes from config changes.
-	UnsubscribeAgentConfig(token, agentID string)
+	UnsubscribeAgentConfig(appID, agentID string)
 
 	// GetRegisteredAgents returns all registered agents.
-	GetRegisteredAgents() map[string][]string // token -> []agentID
+	GetRegisteredAgents() map[string][]string // appID -> []agentID
+
+	// ListServiceConfigs returns all service names that have configurations under the given appID.
+	// It queries the config backend (e.g., Nacos) to enumerate all DataIDs under the appID group.
+	// Internal/system DataIDs (like "_unused_default_") are filtered out.
+	ListServiceConfigs(ctx context.Context, appID string) ([]string, error)
+
+	// WatchServiceConfig subscribes to config changes for a specific service.
+	// The callback is invoked with an AgentConfigChangeEvent whenever the service config
+	// is created, updated, or deleted in the backend.
+	// Internally delegates to the existing Nacos ListenConfig mechanism with dedup.
+	// This method is idempotent — calling it multiple times for the same (appID, serviceName)
+	// adds additional callbacks without duplicating the underlying Nacos watch.
+	WatchServiceConfig(appID, serviceName string, callback AgentConfigChangeCallback)
+
+	// UnwatchServiceConfig removes all callbacks registered via WatchServiceConfig
+	// for the given (appID, serviceName) and cancels the underlying Nacos watch
+	// if no other subscribers remain for that key.
+	UnwatchServiceConfig(appID, serviceName string)
 
 	// GetCacheStats returns cache statistics.
 	GetCacheStats() *OnDemandCacheStats
@@ -126,7 +144,7 @@ type Config struct {
 	// DataId is the configuration data ID (for single-agent mode)
 	DataId string `mapstructure:"data_id"`
 
-	// Group is the configuration group (for single-agent mode, also used as token)
+	// Group is the configuration group (for single-agent mode, also used as appID)
 	Group string `mapstructure:"group"`
 
 	// MultiAgent holds configuration for multi-agent mode (deprecated, use on_demand)
@@ -145,7 +163,7 @@ type MultiAgentModeConfig struct {
 	// Namespace for Nacos (empty for default namespace)
 	Namespace string `mapstructure:"namespace"`
 
-	// Groups (tokens) to scan. If empty, no automatic scanning.
+	// Groups (appIDs) to scan. If empty, no automatic scanning.
 	Groups []string `mapstructure:"groups"`
 
 	// ScanInterval is the interval for periodic config scanning

@@ -31,12 +31,12 @@ func ComputeEtag(v any) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// AgentKey generates a unique key for an agent.
-func AgentKey(token, agentID string) string {
-	if token == "" {
+// AgentKey generates a unique key for an agent scoped by appID.
+func AgentKey(appID, agentID string) string {
+	if appID == "" {
 		return agentID
 	}
-	return fmt.Sprintf("%s:%s", token, agentID)
+	return fmt.Sprintf("%s:%s", appID, agentID)
 }
 
 // GenerateDefaultConfig generates a default config for a new agent.

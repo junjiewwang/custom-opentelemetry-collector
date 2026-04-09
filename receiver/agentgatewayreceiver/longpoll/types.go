@@ -31,7 +31,7 @@ const (
 // PollRequest represents a unified long poll request.
 type PollRequest struct {
 	AgentID              string `json:"agent_id"`
-	Token                string `json:"token"`                            // AppID/Token for multi-tenant
+	AppID                string `json:"app_id"`                           // Application ID for multi-tenant
 	ServiceName          string `json:"service_name,omitempty"`           // Service name for config lookup
 	CurrentConfigVersion string `json:"current_config_version,omitempty"` // Current config version
 	CurrentConfigEtag    string `json:"current_config_etag,omitempty"`    // Current config ETag

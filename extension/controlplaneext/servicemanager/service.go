@@ -11,6 +11,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager/store"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 )
@@ -270,10 +271,13 @@ func (s *ServiceService) BackfillServices(ctx context.Context, opts BackfillOpti
 	}
 
 	if opts.FromConfig {
-		// ConfigManager currently does not expose an enumeration API for configured services.
-		// This capability is deferred to a future phase when Nacos or the config layer
-		// provides a "list all configured service names per app" interface.
-		s.logger.Info("FromConfig backfill is not yet supported (ConfigManager lacks enumeration API)")
+		if s.backfillDS == nil {
+			s.logger.Warn("BackfillDataSource not set, skipping config backfill")
+		} else {
+			if err := s.backfillFromConfig(ctx, opts.DryRun, result); err != nil {
+				s.logger.Warn("Error during config backfill (partial results may exist)", zap.Error(err))
+			}
+		}
 	}
 
 	s.logger.Info("BackfillServices completed",
@@ -283,6 +287,20 @@ func (s *ServiceService) BackfillServices(ctx context.Context, opts BackfillOpti
 	)
 
 	return result, nil
+}
+
+// isReservedServiceName returns true if the service name is a system placeholder
+// or reserved DataId that should not be created as a real service record.
+// It consolidates filtering logic used by both backfillFromRegistry and
+// backfillFromConfig, avoiding duplicate hardcoded checks.
+func isReservedServiceName(name string) bool {
+	// AgentRegistry placeholder for agents without a service name
+	if name == "_unknown" {
+		return true
+	}
+	// Delegate to configmanager's centralized DataId exclusion list
+	// (covers _unused_default_, _default_, empty string, etc.)
+	return configmanager.IsSystemReservedDataID(name)
 }
 
 // backfillFromRegistry enumerates services from the AgentRegistry data source
@@ -304,8 +322,8 @@ func (s *ServiceService) backfillFromRegistry(ctx context.Context, dryRun bool, 
 		}
 
 		for _, svcName := range serviceNames {
-			// Skip the placeholder service name
-			if svcName == "_unknown" {
+			// Skip system-reserved/placeholder service names
+			if isReservedServiceName(svcName) {
 				continue
 			}
 
@@ -340,6 +358,69 @@ func (s *ServiceService) backfillFromRegistry(ctx context.Context, dryRun bool, 
 					// For backfill tracking, we can re-check, but since EnsureService
 					// already handles this cleanly, we simply count as "processed".
 					// A more precise count would require EnsureService to return created/existing status.
+					detail.Action = "ensured"
+					result.Created++
+				}
+			}
+
+			result.Details = append(result.Details, detail)
+		}
+	}
+
+	return nil
+}
+
+// backfillFromConfig enumerates services from the ConfigManager data source
+// (via GetConfiguredServiceNamesByApp) and ensures each one exists in the
+// ServiceManager store. This populates service records with has_config awareness.
+func (s *ServiceService) backfillFromConfig(ctx context.Context, dryRun bool, result *BackfillResult) error {
+	appIDs, err := s.backfillDS.GetAllAppIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("get all app IDs for config backfill: %w", err)
+	}
+
+	for _, appID := range appIDs {
+		serviceNames, err := s.backfillDS.GetConfiguredServiceNamesByApp(ctx, appID)
+		if err != nil {
+			s.logger.Warn("Failed to get configured services for app during backfill",
+				zap.String("app_id", appID),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		for _, svcName := range serviceNames {
+			// Skip system-reserved/placeholder service names
+			if isReservedServiceName(svcName) {
+				continue
+			}
+
+			detail := BackfillDetail{
+				AppID:       appID,
+				ServiceName: svcName,
+			}
+
+			if dryRun {
+				_, getErr := s.store.Get(ctx, appID, svcName)
+				if getErr != nil {
+					detail.Action = "would_create"
+					result.Created++
+				} else {
+					detail.Action = "would_skip"
+					result.Skipped++
+				}
+			} else {
+				_, ensureErr := s.EnsureService(ctx, appID, svcName)
+				if ensureErr != nil {
+					detail.Action = "error"
+					detail.Error = ensureErr.Error()
+					result.Errors++
+					s.logger.Warn("Config backfill EnsureService failed",
+						zap.String("app_id", appID),
+						zap.String("service_name", svcName),
+						zap.Error(ensureErr),
+					)
+				} else {
 					detail.Action = "ensured"
 					result.Created++
 				}

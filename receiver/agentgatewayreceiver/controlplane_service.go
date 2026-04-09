@@ -48,7 +48,7 @@ func (s *controlPlaneService) UnifiedPoll(ctx context.Context, req *controlplane
 
 	lpReq := &longpoll.PollRequest{
 		AgentID:              agentID,
-		Token:                appID,
+		AppID:                appID,
 		ServiceName:          serviceName,
 		CurrentConfigVersion: configVersionFromUnifiedPoll(req),
 		CurrentConfigEtag:    configEtagFromUnifiedPoll(req),
@@ -115,7 +115,7 @@ func (s *controlPlaneService) GetConfig(ctx context.Context, req *controlplanev1
 
 	lpReq := &longpoll.PollRequest{
 		AgentID:              agentID,
-		Token:                appID,
+		AppID:                appID,
 		ServiceName:          serviceName,
 		CurrentConfigVersion: pickFirstNonEmpty(req.GetCurrentVersion().GetVersion(), req.GetCurrentConfigVersion()),
 		CurrentConfigEtag:    pickFirstNonEmpty(req.GetCurrentVersion().GetEtag(), req.GetCurrentEtag()),
@@ -154,7 +154,7 @@ func (s *controlPlaneService) GetTasks(ctx context.Context, req *controlplanev1.
 
 	lpReq := &longpoll.PollRequest{
 		AgentID:       agentID,
-		Token:         appID,
+		AppID:         appID,
 		TimeoutMillis: req.GetLongPollTimeoutMillis(),
 	}
 

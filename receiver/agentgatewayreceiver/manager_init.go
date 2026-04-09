@@ -5,8 +5,8 @@ package agentgatewayreceiver
 
 import (
 	"context"
+	"errors"
 
-	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
@@ -31,10 +31,8 @@ func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
 	r.longPollManager = longpoll.NewManager(r.logger, longpoll.DefaultManagerConfig())
 
 	// 2. Initialize and register handlers
-	if storage.HasNacos("default") {
-		if err := r.initConfigPollHandler(storage); err != nil {
-			r.logger.Warn("Failed to initialize config poll handler", zap.Error(err))
-		}
+	if err := r.initConfigPollHandler(); err != nil {
+		r.logger.Warn("Failed to initialize config poll handler", zap.Error(err))
 	}
 
 	taskCfg := r.controlPlaneExt.GetTaskManagerConfig()
@@ -56,15 +54,17 @@ func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
 }
 
 // initConfigPollHandler initializes and registers the config poll handler.
-func (r *agentGatewayReceiver) initConfigPollHandler(storage interface {
-	GetDefaultNacosConfigClient() (config_client.IConfigClient, error)
-}) error {
-	nacosClient, err := storage.GetDefaultNacosConfigClient()
-	if err != nil {
-		return err
+func (r *agentGatewayReceiver) initConfigPollHandler() error {
+	// Get OnDemandConfigManager (required — no fallback to direct Nacos)
+	if r.controlPlaneExt == nil {
+		return errors.New("control plane extension not available")
+	}
+	cfgMgr := r.controlPlaneExt.GetOnDemandConfigManager()
+	if cfgMgr == nil {
+		return errors.New("OnDemandConfigManager not available")
 	}
 
-	configHandler := longpoll.NewConfigPollHandler(r.logger, nacosClient)
+	configHandler := longpoll.NewConfigPollHandler(r.logger, cfgMgr)
 
 	// Register metadata providers
 	configHandler.RegisterMetadataProvider(&gatewayMetadataProvider{config: r.config})

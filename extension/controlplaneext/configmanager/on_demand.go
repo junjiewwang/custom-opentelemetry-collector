@@ -27,6 +27,24 @@ const (
 	DefaultConfigDataId = "_unused_default_"
 )
 
+// systemReservedDataIDs contains Nacos DataIDs that are created by the system
+// and should NOT be treated as real service configurations.
+// Only exact matches are excluded — no pattern/wildcard matching — to avoid
+// accidentally filtering out user services that happen to start with "_".
+var systemReservedDataIDs = map[string]bool{
+	"":                 true, // empty DataId
+	"_unused_default_": true, // legacy constant from on_demand.go
+	"_default_":        true, // legacy/Nacos default DataId
+}
+
+// IsSystemReservedDataID returns true if the given DataId is a system-reserved
+// name that should not be treated as a real service configuration.
+// Exported so that other packages (e.g., servicemanager backfill) can reuse
+// the same filtering logic.
+func IsSystemReservedDataID(dataID string) bool {
+	return systemReservedDataIDs[dataID]
+}
+
 // OnDemandConfig holds configuration for OnDemandConfigManager.
 type OnDemandConfig struct {
 	// Namespace for Nacos (empty for default namespace).
@@ -63,14 +81,14 @@ func DefaultOnDemandConfig() OnDemandConfig {
 // AgentConfigEntry represents a cached config entry for an agent.
 type AgentConfigEntry struct {
 	Config     *model.AgentConfig
-	Token      string
+	AppID      string
 	AgentID    string
 	LoadedAt   time.Time
 	LastAccess time.Time
 	Version    string
 	LoadError  error
 	IsWatching bool
-	IsDefault  bool // True if this is the default config for the token
+	IsDefault  bool // True if this is the default config for the appID
 }
 
 // OnDemandCacheStats holds cache statistics.
@@ -206,7 +224,7 @@ func (m *NacosOnDemandConfigManager) cleanupExpiredEntries() {
 		entry := value.(*AgentConfigEntry)
 
 		// Skip if agent is still registered
-		if m.isAgentRegistered(entry.Token, entry.AgentID) {
+		if m.isAgentRegistered(entry.AppID, entry.AgentID) {
 			return true
 		}
 
@@ -214,7 +232,7 @@ func (m *NacosOnDemandConfigManager) cleanupExpiredEntries() {
 		if entry.LastAccess.Before(expireThreshold) {
 			// Cancel watch if active
 			if entry.IsWatching {
-				m.cancelWatch(entry.Token, entry.AgentID)
+				m.cancelWatch(entry.AppID, entry.AgentID)
 			}
 			m.configCache.Delete(key)
 			cleaned++
@@ -233,8 +251,8 @@ func (m *NacosOnDemandConfigManager) cleanupExpiredEntries() {
 }
 
 // isAgentRegistered checks if an agent is registered.
-func (m *NacosOnDemandConfigManager) isAgentRegistered(token, agentID string) bool {
-	if agents, ok := m.registeredAgents.Load(token); ok {
+func (m *NacosOnDemandConfigManager) isAgentRegistered(appID, agentID string) bool {
+	if agents, ok := m.registeredAgents.Load(appID); ok {
 		agentMap := agents.(*sync.Map)
 		_, exists := agentMap.Load(agentID)
 		return exists
@@ -254,27 +272,27 @@ func (m *NacosOnDemandConfigManager) serviceDataID(serviceName string) string {
 }
 
 // RegisterAgent registers an agent and starts watching its config.
-func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, token, agentID, serviceName string) (*model.AgentConfig, error) {
-	if token == "" || agentID == "" {
-		return nil, errors.New("token and agentID are required")
+func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, appID, agentID, serviceName string) (*model.AgentConfig, error) {
+	if appID == "" || agentID == "" {
+		return nil, errors.New("appID and agentID are required")
 	}
 
 	m.logger.Debug("Registering agent",
-		zap.String("token", token),
+		zap.String("app_id", appID),
 		zap.String("agent_id", agentID),
 		zap.String("service_name", serviceName),
 	)
 
 	// Add to registered agents
-	agents, _ := m.registeredAgents.LoadOrStore(token, &sync.Map{})
+	agents, _ := m.registeredAgents.LoadOrStore(appID, &sync.Map{})
 	agentMap := agents.(*sync.Map)
 	agentMap.Store(agentID, true)
 
 	// Try to load config with hierarchy: Instance -> Service -> App Default
-	config, err := m.GetConfigForAgent(ctx, token, agentID, serviceName)
+	config, err := m.GetConfigForAgent(ctx, appID, agentID, serviceName)
 	if err != nil {
 		m.logger.Debug("Failed to load initial config for agent",
-			zap.String("token", token),
+			zap.String("app_id", appID),
 			zap.String("agent_id", agentID),
 			zap.Error(err),
 		)
@@ -282,29 +300,29 @@ func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, token, a
 
 	// Setup watch for service-level config only
 	if svcID := m.serviceDataID(serviceName); svcID != "" {
-		m.setupWatch(token, svcID)
+		m.setupWatch(appID, svcID)
 	}
 
 	return config, nil
 }
 
 // UnregisterAgent unregisters an agent and releases its resources.
-func (m *NacosOnDemandConfigManager) UnregisterAgent(ctx context.Context, token, agentID string) error {
-	if token == "" || agentID == "" {
-		return errors.New("token and agentID are required")
+func (m *NacosOnDemandConfigManager) UnregisterAgent(ctx context.Context, appID, agentID string) error {
+	if appID == "" || agentID == "" {
+		return errors.New("appID and agentID are required")
 	}
 
 	m.logger.Debug("Unregistering agent",
-		zap.String("token", token),
+		zap.String("app_id", appID),
 		zap.String("agent_id", agentID),
 	)
 
 	// Remove from registered agents
-	if agents, ok := m.registeredAgents.Load(token); ok {
+	if agents, ok := m.registeredAgents.Load(appID); ok {
 		agentMap := agents.(*sync.Map)
 		agentMap.Delete(agentID)
 
-		// Check if any agents left under this token
+		// Check if any agents left under this appID
 		hasAgents := false
 		agentMap.Range(func(_, _ interface{}) bool {
 			hasAgents = true
@@ -312,12 +330,12 @@ func (m *NacosOnDemandConfigManager) UnregisterAgent(ctx context.Context, token,
 		})
 
 		if !hasAgents {
-			m.registeredAgents.Delete(token)
+			m.registeredAgents.Delete(appID)
 		}
 	}
 
 	// Remove subscribers
-	m.agentSubscribers.Delete(m.cacheKey(token, agentID))
+	m.agentSubscribers.Delete(m.cacheKey(appID, agentID))
 
 	// Note: We don't watch individual agents anymore, and we don't watch default config.
 	// Service-level watches are shared and kept active as long as any agent for that service is online.
@@ -328,9 +346,9 @@ func (m *NacosOnDemandConfigManager) UnregisterAgent(ctx context.Context, token,
 
 // GetConfigForAgent returns config for a specific agent.
 // In the simplified design, it only looks for service-level configuration.
-func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, token, agentID, serviceName string) (*model.AgentConfig, error) {
-	if token == "" {
-		return nil, errors.New("token is required")
+func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, appID, agentID, serviceName string) (*model.AgentConfig, error) {
+	if appID == "" {
+		return nil, errors.New("appID is required")
 	}
 
 	if serviceName == "" {
@@ -339,7 +357,7 @@ func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, toke
 
 	// 1. Try service-specific config from cache
 	svcID := m.serviceDataID(serviceName)
-	svcKey := m.cacheKey(token, svcID)
+	svcKey := m.cacheKey(appID, svcID)
 	if entry, ok := m.configCache.Load(svcKey); ok {
 		e := entry.(*AgentConfigEntry)
 		e.LastAccess = time.Now()
@@ -352,7 +370,7 @@ func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, toke
 	m.cacheMisses.Add(1)
 
 	// 2. Try service-specific config from Nacos
-	config, err := m.loadConfig(ctx, token, svcID)
+	config, err := m.loadConfig(ctx, appID, svcID)
 	if err == nil && config != nil {
 		return config, nil
 	}
@@ -361,8 +379,8 @@ func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, toke
 }
 
 // loadConfig loads config from Nacos with caching.
-func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, dataID string) (*model.AgentConfig, error) {
-	key := m.cacheKey(token, dataID)
+func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, appID, dataID string) (*model.AgentConfig, error) {
+	key := m.cacheKey(appID, dataID)
 
 	// Load with retry
 	var lastErr error
@@ -375,7 +393,7 @@ func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, data
 			}
 		}
 
-		content, err := m.loadConfigContent(ctx, token, dataID)
+		content, err := m.loadConfigContent(ctx, appID, dataID)
 		if err != nil {
 			lastErr = err
 			continue
@@ -388,7 +406,7 @@ func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, data
 		if err := json.Unmarshal([]byte(content), &cfg); err != nil {
 			return nil, fmt.Errorf("failed to parse config: %w", err)
 		}
-		m.cacheConfig(token, dataID, &cfg)
+		m.cacheConfig(appID, dataID, &cfg)
 		return &cfg, nil
 	}
 
@@ -398,14 +416,14 @@ func (m *NacosOnDemandConfigManager) loadConfig(ctx context.Context, token, data
 	return nil, ErrConfigNotFound
 }
 
-func (m *NacosOnDemandConfigManager) cacheConfig(token, dataID string, cfg *model.AgentConfig) {
+func (m *NacosOnDemandConfigManager) cacheConfig(appID, dataID string, cfg *model.AgentConfig) {
 	if cfg == nil {
 		return
 	}
-	key := m.cacheKey(token, dataID)
+	key := m.cacheKey(appID, dataID)
 	m.configCache.Store(key, &AgentConfigEntry{
 		Config:     cfg,
-		Token:      token,
+		AppID:      appID,
 		AgentID:    dataID,
 		LoadedAt:   time.Now(),
 		LastAccess: time.Now(),
@@ -413,7 +431,7 @@ func (m *NacosOnDemandConfigManager) cacheConfig(token, dataID string, cfg *mode
 		IsDefault:  dataID == DefaultConfigDataId,
 	})
 
-	m.logger.Debug("Config loaded and cached", zap.String("token", token), zap.String("data_id", dataID), zap.String("version", cfg.Version))
+	m.logger.Debug("Config loaded and cached", zap.String("app_id", appID), zap.String("data_id", dataID), zap.String("version", cfg.Version))
 }
 
 // loadConfigContent loads config content from Nacos with timeout.
@@ -478,7 +496,7 @@ func (m *NacosOnDemandConfigManager) publishConfig(ctx context.Context, group, d
 
 // SetServiceConfig sets/updates config for a specific service.
 // It automatically manages versioning (Version, UpdatedAt, Etag).
-func (m *NacosOnDemandConfigManager) SetServiceConfig(ctx context.Context, token, serviceName string, config *model.AgentConfig) error {
+func (m *NacosOnDemandConfigManager) SetServiceConfig(ctx context.Context, appID, serviceName string, config *model.AgentConfig) error {
 	svcID := m.serviceDataID(serviceName)
 	if svcID == "" {
 		return errors.New("serviceName is required")
@@ -521,26 +539,82 @@ func (m *NacosOnDemandConfigManager) SetServiceConfig(ctx context.Context, token
 		return err
 	}
 
-	if err := m.publishConfig(ctx, token, svcID, string(data)); err != nil {
+	if err := m.publishConfig(ctx, appID, svcID, string(data)); err != nil {
 		return err
 	}
 
-	m.cacheConfig(token, svcID, config)
-	m.logger.Info("Config set for service", zap.String("token", token), zap.String("service_name", serviceName), zap.String("version", config.Version))
+	m.cacheConfig(appID, svcID, config)
+	m.logger.Info("Config set for service", zap.String("app_id", appID), zap.String("service_name", serviceName), zap.String("version", config.Version))
 	return nil
 }
 
 // GetServiceConfig returns the config for a specific service.
-func (m *NacosOnDemandConfigManager) GetServiceConfig(ctx context.Context, token, serviceName string) (*model.AgentConfig, error) {
+func (m *NacosOnDemandConfigManager) GetServiceConfig(ctx context.Context, appID, serviceName string) (*model.AgentConfig, error) {
 	svcID := m.serviceDataID(serviceName)
 	if svcID == "" {
 		return nil, errors.New("serviceName is required")
 	}
-	return m.loadConfig(ctx, token, svcID)
+	return m.loadConfig(ctx, appID, svcID)
+}
+
+// ListServiceConfigs returns all service names that have configurations under the given appID.
+// It queries the Nacos backend to enumerate all DataIDs under the appID group,
+// filtering out internal/system DataIDs.
+func (m *NacosOnDemandConfigManager) ListServiceConfigs(ctx context.Context, appID string) ([]string, error) {
+	if appID == "" {
+		return nil, errors.New("appID is required")
+	}
+
+	var allServiceNames []string
+	pageNo := 1
+	pageSize := 200
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		configPage, err := m.client.SearchConfig(vo.SearchConfigParam{
+			Search:   "blur",
+			Group:    appID,
+			PageNo:   pageNo,
+			PageSize: pageSize,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to search configs for appID %s: %w", appID, err)
+		}
+
+		if configPage == nil || len(configPage.PageItems) == 0 {
+			break
+		}
+
+		for _, item := range configPage.PageItems {
+			// Filter out internal/system DataIDs using the centralized exclusion list
+			if IsSystemReservedDataID(item.DataId) {
+				continue
+			}
+			allServiceNames = append(allServiceNames, item.DataId)
+		}
+
+		// Check if there are more pages
+		if pageNo >= configPage.PagesAvailable {
+			break
+		}
+		pageNo++
+	}
+
+	m.logger.Debug("Listed service configs",
+		zap.String("app_id", appID),
+		zap.Int("count", len(allServiceNames)),
+	)
+
+	return allServiceNames, nil
 }
 
 // DeleteServiceConfig deletes config for a specific service.
-func (m *NacosOnDemandConfigManager) DeleteServiceConfig(ctx context.Context, token, serviceName string) error {
+func (m *NacosOnDemandConfigManager) DeleteServiceConfig(ctx context.Context, appID, serviceName string) error {
 	svcID := m.serviceDataID(serviceName)
 	if svcID == "" {
 		return errors.New("serviceName is required")
@@ -552,7 +626,7 @@ func (m *NacosOnDemandConfigManager) DeleteServiceConfig(ctx context.Context, to
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		success, err := m.client.DeleteConfig(vo.ConfigParam{Group: token, DataId: svcID})
+		success, err := m.client.DeleteConfig(vo.ConfigParam{Group: appID, DataId: svcID})
 		resultCh <- result{success: success, err: err}
 	}()
 
@@ -568,34 +642,34 @@ func (m *NacosOnDemandConfigManager) DeleteServiceConfig(ctx context.Context, to
 		}
 	}
 
-	m.configCache.Delete(m.cacheKey(token, svcID))
-	m.logger.Info("Config deleted for service", zap.String("token", token), zap.String("service_name", serviceName))
+	m.configCache.Delete(m.cacheKey(appID, svcID))
+	m.logger.Info("Config deleted for service", zap.String("app_id", appID), zap.String("service_name", serviceName))
 	return nil
 }
 
 // SetDefaultConfig is deprecated and returns an error.
-func (m *NacosOnDemandConfigManager) SetDefaultConfig(ctx context.Context, token string, config *model.AgentConfig) error {
+func (m *NacosOnDemandConfigManager) SetDefaultConfig(ctx context.Context, appID string, config *model.AgentConfig) error {
 	return errors.New("default config is no longer supported")
 }
 
 // GetDefaultConfig is deprecated and returns nil.
-func (m *NacosOnDemandConfigManager) GetDefaultConfig(ctx context.Context, token string) (*model.AgentConfig, error) {
+func (m *NacosOnDemandConfigManager) GetDefaultConfig(ctx context.Context, appID string) (*model.AgentConfig, error) {
 	return nil, nil
 }
 
 // SetConfigForAgent is deprecated and returns an error.
-func (m *NacosOnDemandConfigManager) SetConfigForAgent(ctx context.Context, token, agentID string, config *model.AgentConfig) error {
+func (m *NacosOnDemandConfigManager) SetConfigForAgent(ctx context.Context, appID, agentID string, config *model.AgentConfig) error {
 	return errors.New("instance-level config is no longer supported")
 }
 
 // DeleteConfigForAgent is deprecated and returns an error.
-func (m *NacosOnDemandConfigManager) DeleteConfigForAgent(ctx context.Context, token, agentID string) error {
+func (m *NacosOnDemandConfigManager) DeleteConfigForAgent(ctx context.Context, appID, agentID string) error {
 	return errors.New("instance-level config is no longer supported")
 }
 
 // setupWatch sets up config change watching.
-func (m *NacosOnDemandConfigManager) setupWatch(token, dataID string) {
-	key := m.cacheKey(token, dataID)
+func (m *NacosOnDemandConfigManager) setupWatch(appID, dataID string) {
+	key := m.cacheKey(appID, dataID)
 
 	// Check if already watching
 	if entry, ok := m.configCache.Load(key); ok {
@@ -606,7 +680,7 @@ func (m *NacosOnDemandConfigManager) setupWatch(token, dataID string) {
 	}
 
 	err := m.client.ListenConfig(vo.ConfigParam{
-		Group:  token,
+		Group:  appID,
 		DataId: dataID,
 		OnChange: func(namespace, group, dataId, data string) {
 			m.handleConfigChange(group, dataId, data)
@@ -615,7 +689,7 @@ func (m *NacosOnDemandConfigManager) setupWatch(token, dataID string) {
 
 	if err != nil {
 		m.logger.Warn("Failed to setup config watch",
-			zap.String("token", token),
+			zap.String("app_id", appID),
 			zap.String("data_id", dataID),
 			zap.Error(err),
 		)
@@ -629,7 +703,7 @@ func (m *NacosOnDemandConfigManager) setupWatch(token, dataID string) {
 	} else {
 		// Create placeholder entry
 		m.configCache.Store(key, &AgentConfigEntry{
-			Token:      token,
+			AppID:      appID,
 			AgentID:    dataID,
 			LastAccess: time.Now(),
 			IsWatching: true,
@@ -638,14 +712,14 @@ func (m *NacosOnDemandConfigManager) setupWatch(token, dataID string) {
 	}
 
 	m.logger.Debug("Setup config watch",
-		zap.String("token", token),
+		zap.String("app_id", appID),
 		zap.String("data_id", dataID),
 	)
 }
 
 // cancelWatch cancels config change watching.
-func (m *NacosOnDemandConfigManager) cancelWatch(token, dataID string) {
-	key := m.cacheKey(token, dataID)
+func (m *NacosOnDemandConfigManager) cancelWatch(appID, dataID string) {
+	key := m.cacheKey(appID, dataID)
 
 	// Check if watching
 	if entry, ok := m.configCache.Load(key); ok {
@@ -657,13 +731,13 @@ func (m *NacosOnDemandConfigManager) cancelWatch(token, dataID string) {
 	}
 
 	err := m.client.CancelListenConfig(vo.ConfigParam{
-		Group:  token,
+		Group:  appID,
 		DataId: dataID,
 	})
 
 	if err != nil {
 		m.logger.Warn("Failed to cancel config watch",
-			zap.String("token", token),
+			zap.String("app_id", appID),
 			zap.String("data_id", dataID),
 			zap.Error(err),
 		)
@@ -671,17 +745,17 @@ func (m *NacosOnDemandConfigManager) cancelWatch(token, dataID string) {
 	}
 
 	m.logger.Debug("Cancelled config watch",
-		zap.String("token", token),
+		zap.String("app_id", appID),
 		zap.String("data_id", dataID),
 	)
 }
 
 // handleConfigChange handles config change from Nacos watch.
-func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data string) {
-	key := m.cacheKey(token, dataID)
+func (m *NacosOnDemandConfigManager) handleConfigChange(appID, dataID, data string) {
+	key := m.cacheKey(appID, dataID)
 
 	m.logger.Info("Config changed",
-		zap.String("token", token),
+		zap.String("app_id", appID),
 		zap.String("data_id", dataID),
 	)
 
@@ -708,7 +782,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 		var config model.AgentConfig
 		if err := json.Unmarshal([]byte(data), &config); err != nil {
 			m.logger.Error("Failed to parse changed config",
-				zap.String("token", token),
+				zap.String("app_id", appID),
 				zap.String("data_id", dataID),
 				zap.Error(err),
 			)
@@ -732,7 +806,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 		} else {
 			m.configCache.Store(key, &AgentConfigEntry{
 				Config:     newConfig,
-				Token:      token,
+				AppID:      appID,
 				AgentID:    dataID,
 				LoadedAt:   time.Now(),
 				LastAccess: time.Now(),
@@ -745,7 +819,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 	// Create event
 	event := &AgentConfigChangeEvent{
 		Type:      eventType,
-		Token:     token,
+		AppID:     appID,
 		AgentID:   dataID,
 		OldConfig: oldConfig,
 		NewConfig: newConfig,
@@ -753,7 +827,7 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 	}
 
 	// Notify agent-specific subscribers
-	m.notifyAgentSubscribers(token, dataID, event)
+	m.notifyAgentSubscribers(appID, dataID, event)
 
 	// Notify ConfigManager subscribers
 	if newConfig != nil {
@@ -762,8 +836,8 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(token, dataID, data stri
 }
 
 // notifyAgentSubscribers notifies subscribers for a specific agent.
-func (m *NacosOnDemandConfigManager) notifyAgentSubscribers(token, agentID string, event *AgentConfigChangeEvent) {
-	key := m.cacheKey(token, agentID)
+func (m *NacosOnDemandConfigManager) notifyAgentSubscribers(appID, agentID string, event *AgentConfigChangeEvent) {
+	key := m.cacheKey(appID, agentID)
 	if subs, ok := m.agentSubscribers.Load(key); ok {
 		callbacks := subs.([]AgentConfigChangeCallback)
 		for _, cb := range callbacks {
@@ -772,21 +846,21 @@ func (m *NacosOnDemandConfigManager) notifyAgentSubscribers(token, agentID strin
 	}
 }
 
-// notifyAllAgentsForToken notifies all agents under a token about default config change.
-func (m *NacosOnDemandConfigManager) notifyAllAgentsForToken(token string, event *AgentConfigChangeEvent) {
-	if agents, ok := m.registeredAgents.Load(token); ok {
+// notifyAllAgentsForAppID notifies all agents under an appID about default config change.
+func (m *NacosOnDemandConfigManager) notifyAllAgentsForAppID(appID string, event *AgentConfigChangeEvent) {
+	if agents, ok := m.registeredAgents.Load(appID); ok {
 		agentMap := agents.(*sync.Map)
 		agentMap.Range(func(agentID, _ interface{}) bool {
 			// Create agent-specific event
 			agentEvent := &AgentConfigChangeEvent{
 				Type:      event.Type,
-				Token:     token,
+				AppID:     appID,
 				AgentID:   agentID.(string),
 				OldConfig: event.OldConfig,
 				NewConfig: event.NewConfig,
 				Timestamp: event.Timestamp,
 			}
-			m.notifyAgentSubscribers(token, agentID.(string), agentEvent)
+			m.notifyAgentSubscribers(appID, agentID.(string), agentEvent)
 			return true
 		})
 	}
@@ -805,8 +879,8 @@ func (m *NacosOnDemandConfigManager) notifySubscribers(oldConfig, newConfig *mod
 }
 
 // SubscribeAgentConfig subscribes to config changes for a specific agent.
-func (m *NacosOnDemandConfigManager) SubscribeAgentConfig(token, agentID string, callback AgentConfigChangeCallback) {
-	key := m.cacheKey(token, agentID)
+func (m *NacosOnDemandConfigManager) SubscribeAgentConfig(appID, agentID string, callback AgentConfigChangeCallback) {
+	key := m.cacheKey(appID, agentID)
 
 	existing, _ := m.agentSubscribers.LoadOrStore(key, []AgentConfigChangeCallback{})
 	callbacks := existing.([]AgentConfigChangeCallback)
@@ -815,23 +889,73 @@ func (m *NacosOnDemandConfigManager) SubscribeAgentConfig(token, agentID string,
 }
 
 // UnsubscribeAgentConfig unsubscribes from config changes.
-func (m *NacosOnDemandConfigManager) UnsubscribeAgentConfig(token, agentID string) {
-	key := m.cacheKey(token, agentID)
+func (m *NacosOnDemandConfigManager) UnsubscribeAgentConfig(appID, agentID string) {
+	key := m.cacheKey(appID, agentID)
 	m.agentSubscribers.Delete(key)
+}
+
+// WatchServiceConfig subscribes to config changes for a specific service.
+// It ensures the underlying Nacos watch is active (via setupWatch, which is idempotent)
+// and registers the callback under the "appID:serviceName" subscriber key.
+func (m *NacosOnDemandConfigManager) WatchServiceConfig(appID, serviceName string, callback AgentConfigChangeCallback) {
+	if appID == "" || serviceName == "" {
+		return
+	}
+
+	svcID := m.serviceDataID(serviceName)
+	if svcID == "" {
+		return
+	}
+
+	// Ensure the Nacos ListenConfig is active (idempotent — skips if already watching).
+	m.setupWatch(appID, svcID)
+
+	// Register the callback under the service subscriber key.
+	// This reuses the same agentSubscribers map with key "appID:serviceName".
+	m.SubscribeAgentConfig(appID, svcID, callback)
+
+	m.logger.Debug("WatchServiceConfig registered",
+		zap.String("app_id", appID),
+		zap.String("service_name", serviceName),
+	)
+}
+
+// UnwatchServiceConfig removes all callbacks for the given (appID, serviceName)
+// and cancels the underlying Nacos watch.
+func (m *NacosOnDemandConfigManager) UnwatchServiceConfig(appID, serviceName string) {
+	if appID == "" || serviceName == "" {
+		return
+	}
+
+	svcID := m.serviceDataID(serviceName)
+	if svcID == "" {
+		return
+	}
+
+	// Remove subscriber callbacks.
+	m.UnsubscribeAgentConfig(appID, svcID)
+
+	// Cancel the underlying Nacos watch.
+	m.cancelWatch(appID, svcID)
+
+	m.logger.Debug("UnwatchServiceConfig completed",
+		zap.String("app_id", appID),
+		zap.String("service_name", serviceName),
+	)
 }
 
 // GetRegisteredAgents returns all registered agents.
 func (m *NacosOnDemandConfigManager) GetRegisteredAgents() map[string][]string {
 	result := make(map[string][]string)
 
-	m.registeredAgents.Range(func(token, agents interface{}) bool {
+	m.registeredAgents.Range(func(appID, agents interface{}) bool {
 		agentMap := agents.(*sync.Map)
 		var agentList []string
 		agentMap.Range(func(agentID, _ interface{}) bool {
 			agentList = append(agentList, agentID.(string))
 			return true
 		})
-		result[token.(string)] = agentList
+		result[appID.(string)] = agentList
 		return true
 	})
 
@@ -898,16 +1022,16 @@ func (m *NacosOnDemandConfigManager) GetConfig(ctx context.Context) (*model.Agen
 
 // UpdateConfig updates config (for compatibility).
 func (m *NacosOnDemandConfigManager) UpdateConfig(ctx context.Context, config *model.AgentConfig) error {
-	// Find first token and update default config
-	var firstToken string
+	// Find first appID and update default config
+	var firstAppID string
 
-	m.registeredAgents.Range(func(token, _ interface{}) bool {
-		firstToken = token.(string)
+	m.registeredAgents.Range(func(appID, _ interface{}) bool {
+		firstAppID = appID.(string)
 		return false
 	})
 
-	if firstToken == "" {
-		return errors.New("no token available for update")
+	if firstAppID == "" {
+		return errors.New("no appID available for update")
 	}
 
 	return errors.New("update config is no longer supported via this interface")
@@ -927,7 +1051,7 @@ func (m *NacosOnDemandConfigManager) StopWatch() error {
 	m.configCache.Range(func(key, value interface{}) bool {
 		entry := value.(*AgentConfigEntry)
 		if entry.IsWatching {
-			m.cancelWatch(entry.Token, entry.AgentID)
+			m.cancelWatch(entry.AppID, entry.AgentID)
 		}
 		return true
 	})

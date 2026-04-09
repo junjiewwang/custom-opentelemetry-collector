@@ -222,9 +222,15 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	}
 
 	// Inject backfill data source after all components are initialized.
+	// Attempt to obtain OnDemandConfigManager for config backfill support.
+	var onDemandCfgMgr configmanager.OnDemandConfigManager
+	if od, ok := e.configMgr.(configmanager.OnDemandConfigManager); ok {
+		onDemandCfgMgr = od
+	}
 	e.serviceMgr.SetBackfillDataSource(&backfillDataSourceAdapter{
-		agentReg: e.agentReg,
-		tokenMgr: e.tokenMgr,
+		agentReg:  e.agentReg,
+		tokenMgr:  e.tokenMgr,
+		configMgr: onDemandCfgMgr,
 	})
 
 	// Execute a one-time lightweight backfill from registry on startup.
@@ -625,11 +631,12 @@ func (e *Extension) Dependencies() []component.ID {
 
 // ===== Backfill Data Source Adapter =====
 
-// backfillDataSourceAdapter bridges AgentRegistry + TokenManager into the
+// backfillDataSourceAdapter bridges AgentRegistry + TokenManager + ConfigManager into the
 // servicemanager.BackfillDataSource interface, avoiding circular imports.
 type backfillDataSourceAdapter struct {
-	agentReg agentregistry.AgentRegistry
-	tokenMgr tokenmanager.TokenManager
+	agentReg  agentregistry.AgentRegistry
+	tokenMgr  tokenmanager.TokenManager
+	configMgr configmanager.OnDemandConfigManager // nil if config backfill is not available
 }
 
 // GetAllAppIDs returns all known application IDs by combining TokenManager.ListApps
@@ -675,6 +682,16 @@ func (a *backfillDataSourceAdapter) GetServiceNamesByApp(ctx context.Context, ap
 	return a.agentReg.GetServicesByApp(ctx, appID)
 }
 
+// GetConfiguredServiceNamesByApp returns all service names that have configuration
+// under the given appID, using the ConfigManager's ListServiceConfigs enumeration API.
+// Returns nil, nil if the config data source is not available.
+func (a *backfillDataSourceAdapter) GetConfiguredServiceNamesByApp(ctx context.Context, appID string) ([]string, error) {
+	if a.configMgr == nil {
+		return nil, nil
+	}
+	return a.configMgr.ListServiceConfigs(ctx, appID)
+}
+
 // runStartupBackfill executes a one-time lightweight backfill from the AgentRegistry
 // after the extension has fully started. It runs in a separate goroutine to avoid
 // blocking the Start sequence. Errors are logged but do not affect system health.
@@ -683,7 +700,7 @@ func (e *Extension) runStartupBackfill() {
 
 	result, err := e.serviceMgr.BackfillServices(ctx, servicemanager.BackfillOptions{
 		FromRegistry: true,
-		FromConfig:   false,
+		FromConfig:   true,
 		DryRun:       false,
 	})
 	if err != nil {

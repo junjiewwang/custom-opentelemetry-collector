@@ -68,6 +68,12 @@ type BackfillDataSource interface {
 	// GetServiceNamesByApp returns all known service names for a given app.
 	// This typically comes from AgentRegistry's hierarchy index.
 	GetServiceNamesByApp(ctx context.Context, appID string) ([]string, error)
+
+	// GetConfiguredServiceNamesByApp returns all service names that have
+	// configuration data under the given appID. This comes from the
+	// ConfigManager's enumeration API (e.g., ListServiceConfigs).
+	// Returns nil, nil if the config data source is not available.
+	GetConfiguredServiceNamesByApp(ctx context.Context, appID string) ([]string, error)
 }
 
 // Config holds configuration for ServiceManager.
