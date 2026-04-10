@@ -9,9 +9,11 @@
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { useSidebar } from '@/contexts/SidebarContext';
+import { useShellChrome } from '@/contexts/ShellChromeContext';
 
 export default function MainLayout() {
   const { collapsed, isMobile, toggleMobile, toggleCollapsed } = useSidebar();
+  const { floatingUIHidden } = useShellChrome();
 
   // 桌面端根据折叠状态决定 main 的 margin-left
   const mainMargin = isMobile ? '' : collapsed ? 'lg:ml-16' : 'lg:ml-64';
@@ -38,7 +40,7 @@ export default function MainLayout() {
       )}
 
       {/* 桌面端折叠切换按钮（悬浮在侧边栏右侧边缘） */}
-      {!isMobile && (
+      {!isMobile && !floatingUIHidden && (
         <button
           onClick={toggleCollapsed}
           className={`fixed top-5 z-[51] w-6 h-6 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded-full flex items-center justify-center transition-all duration-300 shadow-md ${

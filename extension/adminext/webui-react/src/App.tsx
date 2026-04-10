@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { ToastProvider } from '@/contexts/ToastContext';
 import { ConfirmProvider } from '@/components/ConfirmDialog';
 import { SidebarProvider } from '@/contexts/SidebarContext';
+import { ShellChromeProvider } from '@/contexts/ShellChromeContext';
 import MainLayout from '@/layouts/MainLayout';
 import LazyLoadFallback from '@/components/LazyLoadFallback';
 import LoginPage from '@/pages/LoginPage';
@@ -65,9 +66,11 @@ export default function App() {
       <AuthProvider>
         <ToastProvider>
           <ConfirmProvider>
-            <SidebarProvider>
-              <ProtectedRoutes />
-            </SidebarProvider>
+            <ShellChromeProvider>
+              <SidebarProvider>
+                <ProtectedRoutes />
+              </SidebarProvider>
+            </ShellChromeProvider>
           </ConfirmProvider>
         </ToastProvider>
       </AuthProvider>

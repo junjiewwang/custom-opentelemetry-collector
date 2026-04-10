@@ -533,7 +533,10 @@ export default function TracesPage() {
       <DetailDrawer
         open={selectedTrace !== null}
         onClose={() => setSelectedTraceID(null)}
-        width="full"
+        width="wide"
+        hideHeader
+        suppressShellFloatingUI
+        bodyClassName="p-0 overflow-hidden bg-slate-50"
       >
         {selectedTrace && (
           <TraceDetail

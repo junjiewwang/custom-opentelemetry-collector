@@ -17,7 +17,8 @@
  * </DetailDrawer>
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useShellChrome } from '@/contexts/ShellChromeContext';
 
 // ── 类型定义 ──────────────────────────────────────────
 
@@ -30,14 +31,20 @@ export interface DetailDrawerProps {
   title?: string;
   /** 副标题（如实例 ID、任务 ID） */
   subtitle?: string;
-  /** 抽屉宽度：sm=384px, md=480px, lg=640px, xl=768px, full=100% */
-  width?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
+  /** 抽屉宽度：sm=384px, md=480px, lg=640px, xl=768px, wide=分析工作台, full=100% */
+  width?: 'sm' | 'md' | 'lg' | 'xl' | 'wide' | 'full';
+  /** 是否隐藏默认头部（由子组件自行渲染完整头部） */
+  hideHeader?: boolean;
+  /** 是否在打开时声明式隐藏全局浮动控件（如侧边栏折叠按钮） */
+  suppressShellFloatingUI?: boolean;
   /** 自定义页脚内容 */
   footer?: ReactNode;
   /** 子内容 */
   children: ReactNode;
   /** 额外的 className（应用到抽屉面板） */
   className?: string;
+  /** 内容区域额外 className（用于 full-bleed / 全高场景） */
+  bodyClassName?: string;
 }
 
 // ── 宽度映射 ──────────────────────────────────────────
@@ -47,8 +54,11 @@ const WIDTH_MAP: Record<string, string> = {
   md: 'max-w-md',     // 448px → 实际 480px
   lg: 'max-w-lg',     // 512px → 实际 640px
   xl: 'max-w-xl',     // 576px → 实际 768px
+  wide: 'max-w-[min(92vw,1600px)]',
   full: 'max-w-full',
 };
+
+const DRAWER_ANIMATION_MS = 250;
 
 // ── 组件实现 ──────────────────────────────────────────
 
@@ -58,76 +68,132 @@ export default function DetailDrawer({
   title,
   subtitle,
   width = 'lg',
+  hideHeader = false,
+  suppressShellFloatingUI = false,
   footer,
   children,
   className = '',
+  bodyClassName = '',
 }: DetailDrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { acquireFloatingUILock } = useShellChrome();
+  const [shouldRender, setShouldRender] = useState(open);
+  const [isClosing, setIsClosing] = useState(false);
+
+  // ── open/close 生命周期：关闭时保留 DOM，等待退出动画结束再卸载 ─────
+
+  useEffect(() => {
+    if (open) {
+      if (closeTimerRef.current) {
+        clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+      setShouldRender(true);
+      setIsClosing(false);
+      return;
+    }
+
+    if (!shouldRender) return;
+
+    setIsClosing(true);
+    closeTimerRef.current = setTimeout(() => {
+      setShouldRender(false);
+      setIsClosing(false);
+      closeTimerRef.current = null;
+    }, DRAWER_ANIMATION_MS);
+
+    return () => {
+      if (closeTimerRef.current) {
+        clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+    };
+  }, [open, shouldRender]);
 
   // ── Escape 键关闭 ──────────────────────────────────
 
   useEffect(() => {
-    if (!open) return;
+    if (!shouldRender) return;
 
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', handleEsc);
     return () => document.removeEventListener('keydown', handleEsc);
-  }, [open, onClose]);
+  }, [shouldRender, onClose]);
 
-  // ── 打开时禁止 body 滚动 ──────────────────────────
+  // ── 抽屉在 DOM 中期间都锁定 body 滚动；退出动画结束后再释放 ─────────
 
   useEffect(() => {
-    if (open) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
+    if (!shouldRender) return;
+    document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = '';
     };
-  }, [open]);
+  }, [shouldRender]);
 
-  if (!open) return null;
+  // ── 沉浸式抽屉可声明隐藏全局浮动控件；退出动画结束后再释放 ─────────
+
+  useEffect(() => {
+    if (!shouldRender || !suppressShellFloatingUI) return;
+    const release = acquireFloatingUILock();
+    return release;
+  }, [shouldRender, suppressShellFloatingUI, acquireFloatingUILock]);
+
+  // ── 组件卸载时清理动画定时器 ──────────────────────────
+
+  useEffect(() => () => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  if (!shouldRender) return null;
 
   const widthClass = WIDTH_MAP[width] || WIDTH_MAP.lg;
+  const backdropClass = isClosing ? 'opacity-0' : 'opacity-100';
+  const panelAnimationClass = isClosing ? 'animate-slide-out-right' : 'animate-slide-in-right';
 
   return (
-    <div className="fixed inset-0 z-50 flex">
+    <div className="fixed inset-0 z-[70] flex">
       {/* 遮罩层 */}
       <div
-        className="fixed inset-0 bg-gray-900/40 backdrop-blur-[2px] transition-opacity"
+        className={`fixed inset-0 bg-gray-900/40 backdrop-blur-[2px] transition-opacity ${backdropClass}`}
+        style={{ transitionDuration: `${DRAWER_ANIMATION_MS}ms` }}
         onClick={onClose}
       />
 
       {/* 抽屉面板 */}
       <div
         ref={drawerRef}
-        className={`fixed right-0 top-0 h-full w-full ${widthClass} bg-white shadow-2xl flex flex-col z-10 animate-slide-in-right ${className}`}
-        style={{ animationDuration: '0.25s' }}
+        className={`fixed right-0 top-0 h-full w-full ${widthClass} bg-white shadow-2xl flex flex-col z-10 ${panelAnimationClass} ${className}`}
+        style={{ animationDuration: `${DRAWER_ANIMATION_MS}ms` }}
       >
         {/* 头部 */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
-          <div className="min-w-0 flex-1">
-            {title && (
-              <h3 className="text-lg font-bold text-gray-800 truncate">{title}</h3>
-            )}
-            {subtitle && (
-              <p className="text-sm text-gray-400 font-mono truncate mt-0.5">{subtitle}</p>
-            )}
+        {!hideHeader && (
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+            <div className="min-w-0 flex-1">
+              {title && (
+                <h3 className="text-lg font-bold text-gray-800 truncate">{title}</h3>
+              )}
+              {subtitle && (
+                <p className="text-sm text-gray-400 font-mono truncate mt-0.5">{subtitle}</p>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="ml-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition flex-shrink-0"
+              title="Close"
+            >
+              <i className="fas fa-times" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="ml-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition flex-shrink-0"
-            title="Close"
-          >
-            <i className="fas fa-times" />
-          </button>
-        </div>
+        )}
 
-        {/* 内容区域（可滚动） */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        {/* 内容区域（默认可滚动；复杂页面可通过 bodyClassName 接管） */}
+        <div className={`flex-1 min-h-0 overflow-y-auto px-6 py-4 ${bodyClassName}`}>
           {children}
         </div>
 

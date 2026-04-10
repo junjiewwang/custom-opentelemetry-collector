@@ -36,9 +36,18 @@ body {
   animation: slideInRight 0.25s ease-out;
 }
 
+.animate-slide-out-right {
+  animation: slideOutRight 0.25s ease-in forwards;
+}
+
 @keyframes slideInRight {
   from { opacity: 0; transform: translateX(100%); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideOutRight {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(100%); }
 }
 
 .animate-modal-slide-up {
