@@ -26,6 +26,8 @@ export interface UseTerminalOptions {
   scrollback?: number;
   /** 光标闪烁，默认 true */
   cursorBlink?: boolean;
+  /** 是否将 \n 按 \r\n 语义处理，适合非 PTY 文本流场景 */
+  convertEol?: boolean;
   /** 当 xterm 有用户输入时的回调（raw data） */
   onData?: (data: string) => void;
   /** 终端就绪回调（首次 fit 完成后） */
@@ -124,6 +126,7 @@ export default function useTerminal(
       theme: DARK_THEME,
       allowTransparency: false,
       scrollback: options.scrollback ?? 10000,
+      convertEol: options.convertEol ?? false,
       tabStopWidth: 4,
     });
 

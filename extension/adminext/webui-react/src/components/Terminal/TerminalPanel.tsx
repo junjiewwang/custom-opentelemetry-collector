@@ -77,6 +77,7 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
     fontSize: 14,
     scrollback: 10000,
     cursorBlink: true,
+    convertEol: true,
     onData: (data: string) => {
       const code = data.charCodeAt(0);
 
