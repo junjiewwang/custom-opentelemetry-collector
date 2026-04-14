@@ -305,6 +305,22 @@ extensions:
       redis_name: default  # Reference to redis connection name
       key_prefix: "otel:ws_token:"
       ttl: 30s  # Token time-to-live
+
+    # Dynamic instrumentation manager configuration
+    # Current implementation supports both "memory" and "redis".
+    # If omitted, adminext falls back to the default in-code memory config.
+    instrumentation_manager:
+      type: redis
+      redis_name: default
+      key_prefix: "otel:instrumentation"
+      runtime_snapshot_ttl_millis: 20000
+      runtime_snapshot_query_timeout_millis: 5000
+      runtime_snapshot_poll_interval_millis: 200
+      runtime_snapshot_shared_sync_interval_millis: 1000  # Redis 模式下，本地 L1 与共享 L2 的最大校验间隔
+      runtime_snapshot_lease_ttl_millis: 2000  # Redis 模式下，同一 agent 刷新的分布式短租约
+      reconcile_interval_millis: 5000
+      reconcile_retry_interval_millis: 15000
+      audit_retention: 20
     
     # Observability query backend configuration
     # Configure Jaeger and Prometheus endpoints to enable Trace/Metric/ServiceMap query features.

@@ -160,6 +160,22 @@ func (e *Extension) newRouter() http.Handler {
 		})
 
 		// ============================================================================
+		// Dynamic Instrumentation Workbench
+		// ============================================================================
+		r.Route("/instrumentation", func(r chi.Router) {
+			r.Get("/rules", e.listInstrumentationRules)
+			r.Post("/rules", e.createInstrumentationRule)
+			r.Get("/rules/{ruleID}", e.getInstrumentationRule)
+			r.Put("/rules/{ruleID}", e.updateInstrumentationRule)
+			r.Post("/rules/{ruleID}/pause", e.pauseInstrumentationRule)
+			r.Post("/rules/{ruleID}/resume", e.resumeInstrumentationRule)
+			r.Delete("/rules/{ruleID}", e.deleteInstrumentationRule)
+			r.Get("/rules/{ruleID}/targets", e.listInstrumentationTargets)
+			r.Get("/rules/{ruleID}/runtime-snapshot", e.getInstrumentationRuntimeSnapshot)
+			r.Post("/rules/{ruleID}/runtime-snapshot/refresh", e.refreshInstrumentationRuntimeSnapshot)
+		})
+
+		// ============================================================================
 		// Dashboard
 		// ============================================================================
 		r.Get("/dashboard/overview", e.getDashboardOverview)

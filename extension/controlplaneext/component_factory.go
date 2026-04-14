@@ -14,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/instrumentationmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
@@ -196,6 +197,28 @@ func (f *ComponentFactory) CreateServiceManager(cfg servicemanager.Config) (serv
 	}
 
 	return servicemanager.NewServiceManager(f.logger, cfg, redisClient)
+}
+
+// CreateInstrumentationManager creates the dynamic instrumentation manager.
+func (f *ComponentFactory) CreateInstrumentationManager(cfg instrumentationmanager.Config, agentReg agentregistry.AgentRegistry, taskMgr taskmanager.TaskManager) (instrumentationmanager.InstrumentationManager, error) {
+	var redisClient instrumentationmanager.RedisClient
+
+	if cfg.Type == "redis" {
+		if f.storage == nil {
+			return nil, fmt.Errorf("storage extension required for redis instrumentation manager")
+		}
+		redisName := cfg.RedisName
+		if redisName == "" {
+			redisName = "default"
+		}
+		client, err := f.storage.GetRedis(redisName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
+		}
+		redisClient = client
+	}
+
+	return instrumentationmanager.NewInstrumentationManager(f.logger, cfg, redisClient, agentReg, taskMgr)
 }
 
 // CreateChunkManager creates the appropriate ChunkManager based on config.

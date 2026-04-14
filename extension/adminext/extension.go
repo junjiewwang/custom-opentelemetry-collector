@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/instrumentationmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
@@ -59,6 +60,7 @@ type Extension struct {
 	agentReg   agentregistry.AgentRegistry
 	tokenMgr   tokenmanager.TokenManager
 	serviceMgr servicemanager.ServiceManager
+	instrMgr   instrumentationmanager.InstrumentationManager
 
 	// On-demand config manager (if enabled)
 	onDemandConfigMgr configmanager.OnDemandConfigManager
@@ -144,6 +146,10 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		e.logger.Info("Metric reader initialized (Prometheus)",
 			zap.String("endpoint", e.config.Observability.Prometheus.Endpoint),
 		)
+	}
+
+	if err := e.initInstrumentationManager(ctx, host); err != nil {
+		return fmt.Errorf("failed to initialize instrumentation manager: %w", err)
 	}
 
 	// Initialize WebSocket token manager based on configuration
@@ -346,6 +352,26 @@ func (e *Extension) initOwnComponents(ctx context.Context, host component.Host) 
 	return nil
 }
 
+func (e *Extension) initInstrumentationManager(ctx context.Context, _ component.Host) error {
+	storage := e.storage
+	if storage == nil && e.config.ControlPlaneExtension != "" {
+		if cpExt, ok := e.controlPlane.(*controlplaneext.Extension); ok {
+			storage = cpExt.GetStorage()
+		}
+	}
+
+	factory := controlplaneext.NewComponentFactory(e.logger, storage)
+	mgr, err := factory.CreateInstrumentationManager(e.config.InstrumentationManager, e.agentReg, e.taskMgr)
+	if err != nil {
+		return err
+	}
+	if err := mgr.Start(ctx); err != nil {
+		return err
+	}
+	e.instrMgr = mgr
+	return nil
+}
+
 // startHTTPServer starts the HTTP server.
 func (e *Extension) startHTTPServer() error {
 	listener, err := net.Listen("tcp", e.config.HTTP.Endpoint)
@@ -396,6 +422,12 @@ func (e *Extension) Shutdown(ctx context.Context) error {
 	if e.wsTokenMgr != nil {
 		if err := e.wsTokenMgr.Close(); err != nil {
 			e.logger.Warn("Error closing WS token manager", zap.Error(err))
+		}
+	}
+
+	if e.instrMgr != nil {
+		if err := e.instrMgr.Close(); err != nil {
+			e.logger.Warn("Error closing instrumentation manager", zap.Error(err))
 		}
 	}
 

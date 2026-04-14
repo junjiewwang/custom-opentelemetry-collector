@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/instrumentationmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 )
@@ -81,6 +82,9 @@ type Config struct {
 
 	// TokenManager configuration.
 	TokenManager tokenmanager.Config `mapstructure:"token_manager"`
+
+	// InstrumentationManager configuration.
+	InstrumentationManager instrumentationmanager.Config `mapstructure:"instrumentation_manager"`
 }
 
 // HTTPConfig defines HTTP server settings.
@@ -268,11 +272,12 @@ func createDefaultConfig() *Config {
 				Header: "X-API-Key",
 			},
 		},
-		WSToken:       DefaultWSTokenConfig(),
-		Observability: ObservabilityConfig{},
-		ConfigManager: configmanager.DefaultConfig(),
-		TaskManager:   taskmanager.DefaultConfig(),
-		AgentRegistry: agentregistry.DefaultConfig(),
-		TokenManager:  tokenmanager.DefaultConfig(),
+		WSToken:                DefaultWSTokenConfig(),
+		Observability:          ObservabilityConfig{},
+		ConfigManager:          configmanager.DefaultConfig(),
+		TaskManager:            taskmanager.DefaultConfig(),
+		AgentRegistry:          agentregistry.DefaultConfig(),
+		TokenManager:           tokenmanager.DefaultConfig(),
+		InstrumentationManager: instrumentationmanager.DefaultConfig(),
 	}
 }
