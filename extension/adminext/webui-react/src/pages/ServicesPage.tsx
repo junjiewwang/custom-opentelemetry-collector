@@ -10,6 +10,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { useConfirm } from '@/components/ConfirmDialog';
@@ -33,6 +34,7 @@ const FILTER_ITEMS: { label: string; filter: InstanceFilter; icon: string; activ
 // ── 主组件 ──────────────────────────────────────────────
 
 export default function ServicesPage() {
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const confirm = useConfirm();
 
@@ -433,6 +435,14 @@ export default function ServicesPage() {
 
                   {/* 操作按钮 */}
                   <div className="flex items-center gap-1.5 flex-shrink-0 ml-3">
+                    <button
+                      onClick={() => navigate(`/instrumentation?app_id=${encodeURIComponent(selectedService.app_id)}&service_name=${encodeURIComponent(selectedService.service_name)}`)}
+                      className="px-2.5 h-7 inline-flex items-center justify-center rounded-lg text-[10px] font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 transition"
+                      title="Open instrumentation workbench"
+                    >
+                      <i className="fas fa-wave-square mr-1 text-[9px]" />
+                      Instrumentation
+                    </button>
                     <button
                       onClick={() => handleDeleteService(selectedService)}
                       disabled={selectedService.instance_count > 0}

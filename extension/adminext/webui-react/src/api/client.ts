@@ -38,6 +38,26 @@ import type {
   PrometheusMetadataResponse,
 } from '@/types/metric';
 
+import type {
+  InstrumentationRule,
+  InstrumentationRuleRuntimeSnapshot,
+  InstrumentationRuleTargetStatus,
+  CreateInstrumentationRuleRequest,
+  UpdateInstrumentationRuleRequest,
+  ListInstrumentationRulesParams,
+} from '@/types/instrumentation';
+
+interface InstrumentationRuleMutationResponse {
+  success: boolean;
+  message: string;
+  rule: InstrumentationRule;
+}
+
+interface InstrumentationTargetListResponse {
+  targets: InstrumentationRuleTargetStatus[];
+  total: number;
+}
+
 class ApiClient {
   private apiKey: string = '';
 
@@ -210,6 +230,65 @@ class ApiClient {
 
   cancelTask(id: string): Promise<void> {
     return this.request<void>('DELETE', `/tasks/${id}`);
+  }
+
+  // ========================================================================
+  // Instrumentation
+  // ========================================================================
+
+  listInstrumentationRules(params?: ListInstrumentationRulesParams): Promise<InstrumentationRule[]> {
+    const query = new URLSearchParams();
+    if (params?.app_id) query.set('app_id', params.app_id);
+    if (params?.service_name) query.set('service_name', params.service_name);
+    if (params?.instrument_type) query.set('instrument_type', params.instrument_type);
+    if (params?.desired_state) query.set('desired_state', params.desired_state);
+    if (params?.search) query.set('search', params.search);
+    if (params?.include_deleted) query.set('include_deleted', 'true');
+    const qs = query.toString();
+    return this.request<{ rules: InstrumentationRule[]; total: number }>('GET', `/instrumentation/rules${qs ? '?' + qs : ''}`)
+      .then(res => res.rules || []);
+  }
+
+  getInstrumentationRule(ruleId: string): Promise<InstrumentationRule> {
+    return this.request<InstrumentationRule>('GET', `/instrumentation/rules/${encodeURIComponent(ruleId)}`);
+  }
+
+  createInstrumentationRule(data: CreateInstrumentationRuleRequest): Promise<InstrumentationRule> {
+    return this.request<InstrumentationRuleMutationResponse>('POST', '/instrumentation/rules', data)
+      .then(res => res.rule);
+  }
+
+  updateInstrumentationRule(ruleId: string, data: UpdateInstrumentationRuleRequest): Promise<InstrumentationRule> {
+    return this.request<InstrumentationRuleMutationResponse>('PUT', `/instrumentation/rules/${encodeURIComponent(ruleId)}`, data)
+      .then(res => res.rule);
+  }
+
+  pauseInstrumentationRule(ruleId: string): Promise<InstrumentationRule> {
+    return this.request<InstrumentationRuleMutationResponse>('POST', `/instrumentation/rules/${encodeURIComponent(ruleId)}/pause`)
+      .then(res => res.rule);
+  }
+
+  resumeInstrumentationRule(ruleId: string): Promise<InstrumentationRule> {
+    return this.request<InstrumentationRuleMutationResponse>('POST', `/instrumentation/rules/${encodeURIComponent(ruleId)}/resume`)
+      .then(res => res.rule);
+  }
+
+  deleteInstrumentationRule(ruleId: string): Promise<InstrumentationRule> {
+    return this.request<InstrumentationRuleMutationResponse>('DELETE', `/instrumentation/rules/${encodeURIComponent(ruleId)}`)
+      .then(res => res.rule);
+  }
+
+  getInstrumentationTargets(ruleId: string): Promise<InstrumentationRuleTargetStatus[]> {
+    return this.request<InstrumentationTargetListResponse>('GET', `/instrumentation/rules/${encodeURIComponent(ruleId)}/targets`)
+      .then(res => res.targets || []);
+  }
+
+  getInstrumentationRuntimeSnapshot(ruleId: string): Promise<InstrumentationRuleRuntimeSnapshot> {
+    return this.request<InstrumentationRuleRuntimeSnapshot>('GET', `/instrumentation/rules/${encodeURIComponent(ruleId)}/runtime-snapshot`);
+  }
+
+  refreshInstrumentationRuntimeSnapshot(ruleId: string): Promise<InstrumentationRuleRuntimeSnapshot> {
+    return this.request<InstrumentationRuleRuntimeSnapshot>('POST', `/instrumentation/rules/${encodeURIComponent(ruleId)}/runtime-snapshot/refresh`);
   }
 
   // ========================================================================

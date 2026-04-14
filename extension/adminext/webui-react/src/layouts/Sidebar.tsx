@@ -28,6 +28,7 @@ const MENU_GROUPS = [
     items: [
       { id: 'traces', label: 'Traces', icon: 'fas fa-route', path: '/traces' },
       { id: 'metrics', label: 'Metrics', icon: 'fas fa-chart-line', path: '/metrics' },
+      { id: 'instrumentation', label: 'Instrumentation', icon: 'fas fa-wave-square', path: '/instrumentation' },
     ],
   },
 ];

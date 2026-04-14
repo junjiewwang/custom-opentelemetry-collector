@@ -16,6 +16,7 @@ import DashboardPage from '@/pages/DashboardPage';
 import AppsPage from '@/pages/AppsPage';
 import ServicesPage from '@/pages/ServicesPage';
 import InstancesPage from '@/pages/InstancesPage';
+import InstrumentationPage from '@/pages/InstrumentationPage';
 
 // 懒加载：包含 ECharts 的页面 + TraceComparePage（减少主 chunk 体积）
 const TracesPage = lazy(() => import('@/pages/TracesPage'));
@@ -44,6 +45,7 @@ function ProtectedRoutes() {
           <Route path="apps" element={<AppsPage />} />
           <Route path="services" element={<ServicesPage />} />
           <Route path="instances" element={<InstancesPage />} />
+          <Route path="instrumentation" element={<InstrumentationPage />} />
           {/* /configs 已整合进 ServicesPage Config Tab，旧书签兼容重定向 */}
           <Route path="configs" element={<Navigate to="/services" replace />} />
 
