@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -215,6 +217,7 @@ func (s *ServiceService) ListServicesByApp(ctx context.Context, appID string, q 
 	for _, si := range storeInfos {
 		result = append(result, fromStoreServiceInfo(si))
 	}
+	sortServiceInfos(result)
 	return result, nil
 }
 
@@ -233,6 +236,7 @@ func (s *ServiceService) ListAllServices(ctx context.Context, q ListServicesQuer
 	for _, si := range storeInfos {
 		result = append(result, fromStoreServiceInfo(si))
 	}
+	sortServiceInfos(result)
 	return result, nil
 }
 
@@ -481,4 +485,28 @@ func fromStoreServiceInfo(info *store.ServiceInfo) *ServiceInfo {
 		UpdatedAt:   info.UpdatedAt,
 		LastSeenAt:  info.LastSeenAt,
 	}
+}
+
+func sortServiceInfos(items []*ServiceInfo) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i]
+		right := items[j]
+		if left == nil || right == nil {
+			return right != nil
+		}
+
+		leftAppID := strings.ToLower(strings.TrimSpace(left.AppID))
+		rightAppID := strings.ToLower(strings.TrimSpace(right.AppID))
+		if leftAppID != rightAppID {
+			return leftAppID < rightAppID
+		}
+
+		leftServiceName := strings.ToLower(strings.TrimSpace(left.ServiceName))
+		rightServiceName := strings.ToLower(strings.TrimSpace(right.ServiceName))
+		if leftServiceName != rightServiceName {
+			return leftServiceName < rightServiceName
+		}
+
+		return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
+	})
 }
