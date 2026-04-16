@@ -19,6 +19,9 @@ type RuleStore interface {
 	ListRules(ctx context.Context, query ListRulesQuery) ([]*Rule, error)
 	SaveTargetStatuses(ctx context.Context, ruleID string, targets []*RuleTargetStatus) error
 	ListTargetStatuses(ctx context.Context, ruleID string) ([]*RuleTargetStatus, error)
+	// PhysicalDeleteRule permanently removes a rule and its associated target statuses from the store.
+	// This is used by the GC worker to clean up deleted rules that have completed their lifecycle.
+	PhysicalDeleteRule(ctx context.Context, ruleID string) error
 	Start(ctx context.Context) error
 	Close() error
 }
@@ -104,6 +107,18 @@ func (s *MemoryRuleStore) ListTargetStatuses(_ context.Context, ruleID string) (
 
 func (s *MemoryRuleStore) Start(_ context.Context) error { return nil }
 func (s *MemoryRuleStore) Close() error                  { return nil }
+
+func (s *MemoryRuleStore) PhysicalDeleteRule(_ context.Context, ruleID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.rules[ruleID]; !ok {
+		return ErrRuleNotFound
+	}
+	delete(s.rules, ruleID)
+	delete(s.targets, ruleID)
+	return nil
+}
 
 func cloneRule(rule *Rule) *Rule {
 	if rule == nil {

@@ -179,6 +179,7 @@ func (s *InstrumentationService) reconcileRule(ctx context.Context, rule *Rule) 
 		lastOperation.PendingTargets = summary.PendingTargets
 		lastOperation.FailedTargets = summary.FailedTargets
 		lastOperation.OfflineTargets = summary.OfflineTargets
+		lastOperation.ExpiredTargets = summary.ExpiredTargets
 		if isTerminalOperationStatus(lastOperation.Status) && lastOperation.CompletedAtMillis == 0 {
 			lastOperation.CompletedAtMillis = now
 		}
@@ -211,8 +212,15 @@ func (s *InstrumentationService) reconcileExistingTarget(ctx context.Context, ru
 	next.DesiredState = rule.DesiredState
 
 	if !isAgentOnline(agent) {
-		if next.State != TargetStateOffline {
+		if next.State != TargetStateOffline && next.State != TargetStateExpired {
 			next.State = TargetStateOffline
+			next.UpdatedAtMillis = now
+		}
+		// Auto-expire offline targets that exceed the configured timeout.
+		// This prevents deleted rules from being stuck in reconcile indefinitely
+		// due to long-term offline agents.
+		if next.State == TargetStateOffline && s.isTargetExpired(next, now) {
+			next.State = TargetStateExpired
 			next.UpdatedAtMillis = now
 		}
 		return next, nil, false
@@ -258,6 +266,8 @@ func (s *InstrumentationService) shouldDispatchReconcileApply(rule *Rule, target
 		return true, "retry failed apply"
 	case TargetStateOffline:
 		return true, "offline target is online again"
+	case TargetStateExpired:
+		return true, "expired target is online again"
 	case TargetStatePending, TargetStateDispatched, TargetStateRunning:
 		if strings.TrimSpace(target.TaskType) != taskTypeForOperation(OperationTypeApply) {
 			return true, "current task type does not match active desired state"
@@ -292,6 +302,8 @@ func (s *InstrumentationService) shouldDispatchReconcileRemove(rule *Rule, targe
 		return true, "retry failed remove"
 	case TargetStateOffline:
 		return true, "offline target is online again"
+	case TargetStateExpired:
+		return true, "expired target is online again"
 	case TargetStatePending, TargetStateDispatched, TargetStateRunning:
 		if strings.TrimSpace(target.TaskType) != taskTypeForOperation(OperationTypeRemove) {
 			return true, "current task type does not match inactive desired state"
@@ -444,6 +456,27 @@ func (s *InstrumentationService) auditRetention() int {
 		return 20
 	}
 	return s.config.AuditRetention
+}
+
+func (s *InstrumentationService) reconcileTargetExpireTimeout() time.Duration {
+	if s.config.ReconcileTargetExpireTimeout <= 0 {
+		return 7 * 24 * time.Hour // default: 7 days
+	}
+	return time.Duration(s.config.ReconcileTargetExpireTimeout) * time.Millisecond
+}
+
+// isTargetExpired checks whether an offline target has exceeded the configured expire timeout.
+// A target is considered expired when it has been in a non-active state (offline) for longer than
+// the configured threshold, indicating the agent is unlikely to return.
+func (s *InstrumentationService) isTargetExpired(target *RuleTargetStatus, now int64) bool {
+	if target == nil || target.UpdatedAtMillis == 0 {
+		return false
+	}
+	timeout := s.reconcileTargetExpireTimeout()
+	if timeout <= 0 {
+		return false
+	}
+	return now-target.UpdatedAtMillis >= timeout.Milliseconds()
 }
 
 func auditActionForOperation(operationType OperationType) AuditAction {

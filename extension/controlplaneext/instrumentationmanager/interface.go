@@ -55,6 +55,7 @@ const (
 	TargetStateRemoved    TargetState = "removed"
 	TargetStateFailed     TargetState = "failed"
 	TargetStateOffline    TargetState = "offline"
+	TargetStateExpired    TargetState = "expired"
 )
 
 // InstrumentationManager defines the public interface for dynamic instrumentation rule management.
@@ -85,6 +86,9 @@ type Config struct {
 	ReconcileInterval                int64  `mapstructure:"reconcile_interval_millis"`
 	ReconcileRetryInterval           int64  `mapstructure:"reconcile_retry_interval_millis"`
 	AuditRetention                   int    `mapstructure:"audit_retention"`
+	GCInterval                       int64  `mapstructure:"gc_interval_millis"`
+	DeletedRuleRetention             int64  `mapstructure:"deleted_rule_retention_millis"`
+	ReconcileTargetExpireTimeout     int64  `mapstructure:"reconcile_target_expire_timeout_millis"`
 }
 
 func DefaultConfig() Config {
@@ -100,6 +104,9 @@ func DefaultConfig() Config {
 		ReconcileInterval:                5000,
 		ReconcileRetryInterval:           15000,
 		AuditRetention:                   20,
+		GCInterval:                       60000,
+		DeletedRuleRetention:             7 * 24 * 3600 * 1000,
+		ReconcileTargetExpireTimeout:     7 * 24 * 3600 * 1000,
 	}
 }
 
@@ -121,8 +128,9 @@ type Rule struct {
 	CaptureReturn    string            `json:"capture_return,omitempty"`
 	CaptureMaxLength int               `json:"capture_max_length,omitempty"`
 	Force            bool              `json:"force,omitempty"`
-	DesiredState     RuleDesiredState  `json:"desired_state"`
-	CreatedAtMillis  int64             `json:"created_at_millis"`
+	DesiredState         RuleDesiredState  `json:"desired_state"`
+	EverApplySucceeded   bool              `json:"ever_apply_succeeded"`
+	CreatedAtMillis      int64             `json:"created_at_millis"`
 	UpdatedAtMillis  int64             `json:"updated_at_millis"`
 	CreatedBy        string            `json:"created_by,omitempty"`
 	UpdatedBy        string            `json:"updated_by,omitempty"`
@@ -139,6 +147,7 @@ type RuleSummary struct {
 	PendingTargets int             `json:"pending_targets"`
 	FailedTargets  int             `json:"failed_targets"`
 	OfflineTargets int             `json:"offline_targets"`
+	ExpiredTargets int             `json:"expired_targets"`
 }
 
 type OperationSummary struct {
@@ -153,6 +162,7 @@ type OperationSummary struct {
 	PendingTargets    int             `json:"pending_targets"`
 	FailedTargets     int             `json:"failed_targets"`
 	OfflineTargets    int             `json:"offline_targets"`
+	ExpiredTargets    int             `json:"expired_targets"`
 }
 
 type RuleTargetStatus struct {

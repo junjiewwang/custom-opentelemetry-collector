@@ -32,6 +32,8 @@ type InstrumentationService struct {
 	runtimeInstanceID   string
 	reconcileCancel     context.CancelFunc
 	reconcileWG         sync.WaitGroup
+	gcCancel            context.CancelFunc
+	gcWG                sync.WaitGroup
 }
 
 var _ InstrumentationManager = (*InstrumentationService)(nil)
@@ -68,10 +70,12 @@ func (s *InstrumentationService) Start(ctx context.Context) error {
 		return err
 	}
 	s.startReconcileWorker()
+	s.startGCWorker()
 	return nil
 }
 
 func (s *InstrumentationService) Close() error {
+	s.stopGCWorker()
 	s.stopReconcileWorker()
 	return errors.Join(s.runtimeSnapshots.Close(), s.store.Close())
 }
@@ -288,6 +292,7 @@ func (s *InstrumentationService) refreshRule(ctx context.Context, rule *Rule) (*
 		lastOperation.PendingTargets = summary.PendingTargets
 		lastOperation.FailedTargets = summary.FailedTargets
 		lastOperation.OfflineTargets = summary.OfflineTargets
+		lastOperation.ExpiredTargets = summary.ExpiredTargets
 		if isTerminalOperationStatus(lastOperation.Status) && lastOperation.CompletedAtMillis == 0 {
 			lastOperation.CompletedAtMillis = now
 		}
@@ -324,6 +329,12 @@ func (s *InstrumentationService) refreshTargetStatus(ctx context.Context, rule *
 		target.State = mapResultStatusToTargetState(result.Status, rule.DesiredState)
 		target.LastErrorMessage = strings.TrimSpace(result.ErrorMessage)
 		target.UpdatedAtMillis = now
+		// Set the monotonic ever_apply_succeeded flag when any target reaches applied state.
+		// Once true, this field never reverts to false, providing evidence for future
+		// conditional hard-delete fast path decisions.
+		if target.State == TargetStateApplied && !rule.EverApplySucceeded {
+			rule.EverApplySucceeded = true
+		}
 		return currentState != target.State || currentTaskStatus != target.TaskStatus || currentError != target.LastErrorMessage, nil
 	}
 
@@ -393,6 +404,7 @@ func (s *InstrumentationService) dispatchRuleOperation(ctx context.Context, rule
 		PendingTargets:    summary.PendingTargets,
 		FailedTargets:     summary.FailedTargets,
 		OfflineTargets:    summary.OfflineTargets,
+		ExpiredTargets:    summary.ExpiredTargets,
 	}
 	rule.Summary = summary
 	rule.UpdatedAtMillis = now
@@ -517,6 +529,8 @@ func summarizeTargets(targets []*RuleTargetStatus) RuleSummary {
 			summary.FailedTargets++
 		case TargetStateOffline:
 			summary.OfflineTargets++
+		case TargetStateExpired:
+			summary.ExpiredTargets++
 		}
 	}
 	summary.Status = deriveOperationStatus(summary)
@@ -527,8 +541,9 @@ func deriveOperationStatus(summary RuleSummary) OperationStatus {
 	if summary.TotalTargets == 0 {
 		return OperationStatusPending
 	}
+	completedTargets := summary.AppliedTargets + summary.ExpiredTargets
 	if summary.FailedTargets > 0 {
-		if summary.AppliedTargets > 0 || summary.RunningTargets > 0 || summary.PendingTargets > 0 {
+		if completedTargets > 0 || summary.RunningTargets > 0 || summary.PendingTargets > 0 {
 			return OperationStatusPartialSuccess
 		}
 		return OperationStatusFailed
@@ -536,7 +551,7 @@ func deriveOperationStatus(summary RuleSummary) OperationStatus {
 	if summary.PendingTargets > 0 || summary.RunningTargets > 0 {
 		return OperationStatusRunning
 	}
-	if summary.AppliedTargets > 0 {
+	if completedTargets > 0 {
 		return OperationStatusSuccess
 	}
 	if summary.OfflineTargets > 0 {

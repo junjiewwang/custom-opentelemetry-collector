@@ -266,6 +266,26 @@ func (s *RedisRuleStore) ListTargetStatuses(ctx context.Context, ruleID string) 
 	return cloneAndSortTargetStatuses(targets), nil
 }
 
+func (s *RedisRuleStore) PhysicalDeleteRule(ctx context.Context, ruleID string) error {
+	ruleID = strings.TrimSpace(ruleID)
+	if ruleID == "" {
+		return ErrRuleNotFound
+	}
+	client, err := s.getClient()
+	if err != nil {
+		return err
+	}
+
+	pipe := client.Pipeline()
+	pipe.HDel(ctx, s.rulesKey(), ruleID)
+	pipe.Del(ctx, s.targetKey(ruleID))
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("physical delete rule %s: %w", ruleID, err)
+	}
+	return nil
+}
+
 func (s *RedisRuleStore) validateStoredData(ctx context.Context) error {
 	client, err := s.getClient()
 	if err != nil {
