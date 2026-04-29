@@ -321,6 +321,11 @@ extensions:
       reconcile_interval_millis: 5000
       reconcile_retry_interval_millis: 15000
       audit_retention: 20
+      # GC (Garbage Collection) settings for deleted rules
+      # gc_interval_millis: 60000                        # How often GC scans for eligible rules (default: 60s)
+      # deleted_rule_retention_millis: 604800000          # How long to keep deleted rules before physical removal (default: 7 days)
+      # Reconcile target expiration
+      # reconcile_target_expire_timeout_millis: 604800000 # Auto-expire offline targets after this duration (default: 7 days)
     
     # Observability query backend configuration
     # Configure Jaeger and Prometheus endpoints to enable Trace/Metric/ServiceMap query features.
