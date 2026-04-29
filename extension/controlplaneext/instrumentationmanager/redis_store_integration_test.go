@@ -251,3 +251,49 @@ func TestRedisRuleStore_ConcurrentCreateSameRule(t *testing.T) {
 	require.Len(t, rules, 1)
 	assert.Equal(t, "rule-concurrent", rules[0].ID)
 }
+
+// TestRedisRuleStorePhysicalDelete 验证 RedisRuleStore 的 PhysicalDeleteRule 方法。
+func TestRedisRuleStorePhysicalDelete(t *testing.T) {
+	store, client, prefix := newTestRedisRuleStore(t)
+	ctx := context.Background()
+
+	rule := newTestRule("rule-pd")
+	require.NoError(t, store.SaveRule(ctx, rule, true))
+	require.NoError(t, store.SaveTargetStatuses(ctx, rule.ID, newTestTargets(rule.ID)))
+
+	// 验证数据存在
+	loadedRule, err := store.GetRule(ctx, rule.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "rule-pd", loadedRule.ID)
+
+	loadedTargets, err := store.ListTargetStatuses(ctx, rule.ID)
+	require.NoError(t, err)
+	assert.Len(t, loadedTargets, 1)
+
+	// 物理删除
+	require.NoError(t, store.PhysicalDeleteRule(ctx, rule.ID))
+
+	// 验证规则已被删除
+	_, err = store.GetRule(ctx, rule.ID)
+	assert.ErrorIs(t, err, ErrRuleNotFound)
+
+	// 验证 target 也被清理
+	_, err = store.ListTargetStatuses(ctx, rule.ID)
+	assert.ErrorIs(t, err, ErrRuleNotFound)
+
+	// 验证 Redis 中的 key 已被清理
+	rulesKey := fmt.Sprintf(keyRulesHash, prefix)
+	exists, err := client.HExists(ctx, rulesKey, "rule-pd").Result()
+	require.NoError(t, err)
+	assert.False(t, exists, "rule hash field should be deleted")
+
+	targetsKey := fmt.Sprintf(keyTargetsJSON, prefix, "rule-pd")
+	keyExists, err := client.Exists(ctx, targetsKey).Result()
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, keyExists, "targets key should be deleted")
+
+	// 重复删除：RedisRuleStore 的 PhysicalDeleteRule 使用 pipeline 批量删除，
+	// 不检查 rule 是否存在，因此重复删除返回 nil（与 MemoryRuleStore 行为不同）
+	err = store.PhysicalDeleteRule(ctx, rule.ID)
+	assert.NoError(t, err)
+}

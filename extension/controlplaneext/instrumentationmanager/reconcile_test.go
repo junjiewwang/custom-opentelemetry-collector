@@ -188,3 +188,132 @@ func TestReconcileRulePrunesTargetsOutsideServiceScope(t *testing.T) {
 	assert.Equal(t, AuditActionTargetPrune, updatedRule.RecentAudits[0].Action)
 	assert.Equal(t, "agent-1", updatedRule.RecentAudits[0].AgentID)
 }
+
+// TestReconcileOfflineTargetExpiresToExpired 验证 offline target 超时后自动变为 expired。
+func TestReconcileOfflineTargetExpiresToExpired(t *testing.T) {
+	svc, registry, tm := newTestInstrumentationService(t)
+	svc.config.ReconcileTargetExpireTimeout = 1 // 1ms，极短超时
+
+	registerTestAgent(t, registry, "agent-1")
+	rule, err := svc.CreateRule(context.Background(), &CreateRuleRequest{
+		AppID:          "app-a",
+		ServiceName:    "svc-a",
+		ClassName:      "demo.OrderService",
+		MethodName:     "submit",
+		InstrumentType: InstrumentTypeTrace,
+	})
+	require.NoError(t, err)
+	markTargetTaskSuccess(t, svc, tm, rule.ID, "agent-1")
+
+	// 手动设置 target 为 offline + 过去的时间戳
+	targets, err := svc.store.ListTargetStatuses(context.Background(), rule.ID)
+	require.NoError(t, err)
+	target := findTargetByAgent(targets, "agent-1")
+	require.NotNil(t, target)
+	target.State = TargetStateOffline
+	target.UpdatedAtMillis = time.Now().Add(-1 * time.Second).UnixMilli()
+	target.TaskID = ""
+	target.TaskStatus = ""
+	require.NoError(t, svc.store.SaveTargetStatuses(context.Background(), rule.ID, targets))
+
+	// 让 agent 心跳过期变为 offline（HeartbeatTTL=2ms）
+	time.Sleep(3 * time.Millisecond)
+
+	require.NoError(t, svc.reconcileRule(context.Background(), rule))
+
+	targets, err = svc.ListTargetStatuses(context.Background(), rule.ID)
+	require.NoError(t, err)
+	target = findTargetByAgent(targets, "agent-1")
+	require.NotNil(t, target)
+	assert.Equal(t, TargetStateExpired, target.State)
+}
+
+// TestReconcileExpiredTargetRecoversWhenOnline 验证 expired target 在 agent 恢复在线后被重新 dispatch。
+func TestReconcileExpiredTargetRecoversWhenOnline(t *testing.T) {
+	// 使用较长的 HeartbeatTTL 避免 offline detection 竞态
+	logger := zap.NewNop()
+	agentCfg := agentregistry.DefaultConfig()
+	agentCfg.HeartbeatTTL = 5 * time.Second
+	agentCfg.OfflineCheckInterval = 1 * time.Second
+	registry := agentregistry.NewMemoryAgentRegistry(logger, agentCfg)
+	require.NoError(t, registry.Start(context.Background()))
+
+	tm, err := taskmanager.NewTaskManager(logger, taskmanager.DefaultConfig(), nil)
+	require.NoError(t, err)
+	require.NoError(t, tm.Start(context.Background()))
+
+	cfg := DefaultConfig()
+	cfg.ReconcileRetryInterval = 1
+	svc := NewInstrumentationService(logger, cfg, NewMemoryRuleStore(), registry, tm)
+
+	t.Cleanup(func() {
+		require.NoError(t, tm.Close())
+		require.NoError(t, registry.Close())
+	})
+
+	registerTestAgent(t, registry, "agent-1")
+	rule, err := svc.CreateRule(context.Background(), &CreateRuleRequest{
+		AppID:          "app-a",
+		ServiceName:    "svc-a",
+		ClassName:      "demo.OrderService",
+		MethodName:     "submit",
+		InstrumentType: InstrumentTypeTrace,
+	})
+	require.NoError(t, err)
+	markTargetTaskSuccess(t, svc, tm, rule.ID, "agent-1")
+
+	// 手动设置 target 为 expired
+	targets, err := svc.store.ListTargetStatuses(context.Background(), rule.ID)
+	require.NoError(t, err)
+	target := findTargetByAgent(targets, "agent-1")
+	require.NotNil(t, target)
+	target.State = TargetStateExpired
+	target.TaskID = ""
+	target.TaskStatus = ""
+	target.UpdatedAtMillis = time.Now().UnixMilli()
+	require.NoError(t, svc.store.SaveTargetStatuses(context.Background(), rule.ID, targets))
+
+	// 重新注册 agent（模拟恢复在线）
+	registerTestAgent(t, registry, "agent-1")
+
+	// 确保 agent 在 reconcile 时是 online 的
+	require.Eventually(t, func() bool {
+		online, err := registry.IsOnline(context.Background(), "agent-1")
+		if err != nil || !online {
+			// 如果 offline detection 抢先标记了 offline，再次 heartbeat 恢复
+			_ = registry.Heartbeat(context.Background(), "agent-1", nil)
+			online, _ = registry.IsOnline(context.Background(), "agent-1")
+		}
+		return online
+	}, time.Second, time.Millisecond)
+
+	require.NoError(t, svc.reconcileRule(context.Background(), rule))
+
+	targets, err = svc.ListTargetStatuses(context.Background(), rule.ID)
+	require.NoError(t, err)
+	target = findTargetByAgent(targets, "agent-1")
+	require.NotNil(t, target)
+	assert.Equal(t, TargetStateDispatched, target.State) // 被重新 dispatch
+}
+
+// TestEverApplySucceededSetOnFirstApply 验证 target 成功 apply 后 EverApplySucceeded 被设为 true。
+func TestEverApplySucceededSetOnFirstApply(t *testing.T) {
+	svc, registry, tm := newTestInstrumentationService(t)
+	registerTestAgent(t, registry, "agent-1")
+
+	rule, err := svc.CreateRule(context.Background(), &CreateRuleRequest{
+		AppID:          "app-a",
+		ServiceName:    "svc-a",
+		ClassName:      "demo.OrderService",
+		MethodName:     "submit",
+		InstrumentType: InstrumentTypeTrace,
+	})
+	require.NoError(t, err)
+	assert.False(t, rule.EverApplySucceeded) // 初始为 false
+
+	markTargetTaskSuccess(t, svc, tm, rule.ID, "agent-1")
+
+	rule, err = svc.GetRule(context.Background(), rule.ID)
+	require.NoError(t, err)
+	assert.True(t, rule.EverApplySucceeded) // 成功 apply 后为 true
+}
