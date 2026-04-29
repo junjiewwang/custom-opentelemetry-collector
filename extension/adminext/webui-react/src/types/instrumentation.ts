@@ -2,7 +2,7 @@ export type InstrumentationScopeType = 'service' | 'instance';
 export type InstrumentationInstrumentType = 'trace' | 'metric' | 'log';
 export type InstrumentationRuleDesiredState = 'active' | 'paused' | 'deleted';
 export type InstrumentationOperationStatus = 'pending' | 'running' | 'success' | 'failed' | 'partial_success';
-export type InstrumentationTargetState = 'pending' | 'dispatched' | 'running' | 'applied' | 'removed' | 'failed' | 'offline';
+export type InstrumentationTargetState = 'pending' | 'dispatched' | 'running' | 'applied' | 'removed' | 'failed' | 'offline' | 'expired';
 export type InstrumentationAuditSource = 'manual' | 'reconcile';
 export type InstrumentationAuditAction = 'apply' | 'remove' | 'target_discovered' | 'target_pruned';
 export type InstrumentationAuditStatus = 'success' | 'failed' | 'skipped';
@@ -15,6 +15,7 @@ export interface InstrumentationRuleSummary {
   pending_targets: number;
   failed_targets: number;
   offline_targets: number;
+  expired_targets: number;
 }
 
 export interface InstrumentationOperationSummary {
@@ -29,6 +30,7 @@ export interface InstrumentationOperationSummary {
   pending_targets: number;
   failed_targets: number;
   offline_targets: number;
+  expired_targets: number;
 }
 
 export interface InstrumentationRuleAuditEntry {

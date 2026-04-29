@@ -85,6 +85,8 @@ function targetStateClass(state: InstrumentationTargetState): string {
       return 'bg-gray-100 text-gray-600 ring-gray-200';
     case 'offline':
       return 'bg-slate-100 text-slate-600 ring-slate-200';
+    case 'expired':
+      return 'bg-amber-50 text-amber-700 ring-amber-200';
     case 'failed':
       return 'bg-red-50 text-red-700 ring-red-200';
     default:
@@ -824,7 +826,7 @@ export default function InstrumentationPage() {
                     { label: 'Targets', value: selectedRule.summary.total_targets, color: 'bg-gray-50 text-gray-700' },
                     { label: 'Applied', value: selectedRule.summary.applied_targets, color: 'bg-green-50 text-green-700' },
                     { label: 'Pending / Running', value: selectedRule.summary.pending_targets + selectedRule.summary.running_targets, color: 'bg-blue-50 text-blue-700' },
-                    { label: 'Failed / Offline', value: selectedRule.summary.failed_targets + selectedRule.summary.offline_targets, color: 'bg-red-50 text-red-700' },
+                    { label: 'Failed / Offline / Expired', value: selectedRule.summary.failed_targets + selectedRule.summary.offline_targets + (selectedRule.summary.expired_targets || 0), color: 'bg-red-50 text-red-700' },
                   ].map(card => (
                     <div key={card.label} className="rounded-xl border border-gray-200 bg-white p-4">
                       <p className="text-xs text-gray-500">{card.label}</p>
@@ -927,6 +929,10 @@ export default function InstrumentationPage() {
                             <div>
                               <div className="text-xs text-gray-400">Offline</div>
                               <div className="mt-1 text-gray-700">{selectedRule.last_operation.offline_targets}</div>
+                            </div>
+                            <div>
+                              <div className="text-xs text-gray-400">Expired</div>
+                              <div className="mt-1 text-gray-700">{selectedRule.last_operation.expired_targets || 0}</div>
                             </div>
                           </div>
                         </div>
