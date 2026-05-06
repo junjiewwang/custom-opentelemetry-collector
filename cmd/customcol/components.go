@@ -32,6 +32,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor"
 
 	// Contrib connectors
+	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector"
 
 	// Custom components
@@ -43,9 +44,6 @@ import (
 	"go.opentelemetry.io/collector/custom/processor/tokenauthprocessor"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver"
 	"go.opentelemetry.io/collector/custom/receiver/testdatagenreceiver"
-
-	// 触发 scenarios 子包的 init() 注册
-	_ "go.opentelemetry.io/collector/custom/receiver/testdatagenreceiver/scenarios"
 )
 
 func components() (otelcol.Factories, error) {
@@ -111,6 +109,8 @@ func components() (otelcol.Factories, error) {
 	// Connectors
 	factories.Connectors, err = connector.MakeFactoryMap(
 		forwardconnector.NewFactory(),
+		// Routing connector - routes telemetry data based on resource attributes
+		routingconnector.NewFactory(),
 		// Span metrics connector - generates metrics from traces
 		spanmetricsconnector.NewFactory(),
 	)

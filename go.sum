@@ -282,6 +282,8 @@ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8m
 github.com/nacos-group/nacos-sdk-go/v2 v2.3.5 h1:Hux7C4N4rWhwBF5Zm4yyYskrs9VTgrRTA8DZjoEhQTs=
 github.com/nacos-group/nacos-sdk-go/v2 v2.3.5/go.mod h1:ygUBdt7eGeYBt6Lz2HO3wx7crKXk25Mp80568emGMWU=
 github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e/go.mod h1:zD1mROLANZcx1PVRCS0qkT7pwLkGfwJo4zjcN/Tysno=
+github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector v0.120.0 h1:jJ2Vd1G0Uf53gYus+5QooPcC7BzewRBInaN3GrBOEj8=
+github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector v0.120.0/go.mod h1:hotzTIbNU+2fYxRW+G+wUp70T/ZiRJrkVFDPbr35BCM=
 github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector v0.120.0 h1:K3KCufsHtpzLHBCALEDmRrAABs2b1RCEFXEW/hJdLh4=
 github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector v0.120.0/go.mod h1:msOAmN8kWdB+ywZ1B6jCPJC0pW+ZvagTad1RtmkSdSw=
 github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter v0.120.0 h1:dlIhT5r2IKrTPj1N+LlOsJgaDCmfQ9tFU4PVhes3AZw=

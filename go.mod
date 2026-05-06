@@ -8,6 +8,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.5
+	github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector v0.120.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector v0.120.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter v0.120.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/attributesprocessor v0.120.0
@@ -50,6 +51,7 @@ require (
 	go.opentelemetry.io/collector/receiver/nopreceiver v0.120.0
 	go.opentelemetry.io/collector/receiver/otlpreceiver v0.120.0
 	go.uber.org/zap v1.27.0
+	golang.org/x/sync v0.11.0
 	google.golang.org/grpc v1.70.0
 	google.golang.org/protobuf v1.36.5
 )
@@ -240,7 +242,6 @@ require (
 	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	golang.org/x/time v0.6.0 // indirect
