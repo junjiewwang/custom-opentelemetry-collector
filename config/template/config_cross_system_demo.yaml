@@ -1,0 +1,159 @@
+# =============================================================================
+# 跨业务系统演示场景 — 完整 Collector 配置
+# =============================================================================
+# 场景说明：
+#   业务系统A(app-a, app-b, app-c) → Token A
+#   业务系统B(app-d, app-e, app-f) → Token B
+#   调用链路：A→D→B→E→C→F
+#
+# 启动方式：
+#   ./collector --config config/template/config-test.yaml
+# =============================================================================
+
+# ======================== Connectors ========================
+
+connectors:
+  # Routing Connector：按 service.namespace 精确分流到不同 exporter
+  routing:
+    default_pipelines: [traces/system-a]
+    table:
+      - statement: route() where attributes["service.namespace"] == "system-a"
+        pipelines: [traces/system-a]
+      - statement: route() where attributes["service.namespace"] == "system-b"
+        pipelines: [traces/system-b]
+
+# ======================== Receivers ========================
+
+receivers:
+  # TestDataGen Receiver — 声明式配置驱动的测试数据生成器
+  testdatagen:
+    interval: 10s
+
+    # 业务系统声明
+    systems:
+      - name: "business-system-a"
+        namespace: "system-a"
+        applications:
+          - name: "app-a"
+            type: "http"
+            version: "1.0.0"
+          - name: "app-b"
+            type: "grpc"
+            version: "1.2.0"
+          - name: "app-c"
+            type: "grpc"
+            version: "2.0.0"
+
+      - name: "business-system-b"
+        namespace: "system-b"
+        applications:
+          - name: "app-d"
+            type: "grpc"
+            version: "1.1.0"
+          - name: "app-e"
+            type: "grpc"
+            version: "1.0.0"
+          - name: "app-f"
+            type: "grpc"
+            version: "1.3.0"
+
+    # 声明式业务流
+    flows:
+      - name: "cross_system_demo"
+        enabled: true
+        description: "跨业务系统演示：A→D→B→E→C→F"
+        error_rate: 0.03
+        entry_point:
+          app: "app-a"
+          protocol: "http"
+          method: "POST"
+          route: "/api/v1/process"
+        # 调用拓扑（图邻接表）
+        topology:
+          app-a:
+            calls:
+              - target: "app-d"
+                protocol: "grpc"
+                service: "DataService"
+                method: "Query"
+          app-d:
+            calls:
+              - target: "app-b"
+                protocol: "grpc"
+                service: "ProcessService"
+                method: "Execute"
+          app-b:
+            calls:
+              - target: "app-e"
+                protocol: "grpc"
+                service: "StorageService"
+                method: "Save"
+          app-e:
+            calls:
+              - target: "app-c"
+                protocol: "grpc"
+                service: "AnalyticsService"
+                method: "Analyze"
+          app-c:
+            calls:
+              - target: "app-f"
+                protocol: "grpc"
+                service: "NotifyService"
+                method: "Send"
+
+# ======================== Exporters ========================
+
+exporters:
+  # Debug 导出器（开发调试用）
+  debug:
+    verbosity: detailed
+
+  # 腾讯云 APM — 业务系统A（Token A）
+  otlphttp/system-a:
+    endpoint: [[.Service.apm_backend.gz_test.http_endpoint]]
+    headers:
+      authorization: "Bearer [[.Service.apm_backend.gz_test.token_system_a]]"
+    compression: ""
+    tls:
+      insecure: true
+
+  # 腾讯云 APM — 业务系统B（Token B）
+  otlphttp/system-b:
+    endpoint: [[.Service.apm_backend.gz_test.http_endpoint]]
+    headers:
+      authorization: "Bearer [[.Service.apm_backend.gz_test.token_system_b]]"
+    compression: ""
+    tls:
+      insecure: true
+
+# ======================== Processors ========================
+
+processors:
+  batch: {}
+
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+# ======================== Service ========================
+
+service:
+  pipelines:
+    # 入口 pipeline：接收 testdatagen 数据，经过 routing connector 分流
+    traces:
+      receivers: [testdatagen]
+      processors: [memory_limiter, batch]
+      exporters: [routing, debug]
+
+    # 业务系统A pipeline：routing 分流后，发送到 Token A 的 exporter
+    traces/system-a:
+      receivers: [routing]
+      processors: [batch]
+      exporters: [otlphttp/system-a]
+
+    # 业务系统B pipeline：routing 分流后，发送到 Token B 的 exporter
+    traces/system-b:
+      receivers: [routing]
+      processors: [batch]
+      exporters: [otlphttp/system-b]
