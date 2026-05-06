@@ -1,99 +1,61 @@
 # TestDataGen Receiver 完整配置示例
-# 演示多后端鉴权 + 全部场景配置
+# 演示声明式配置驱动的测试数据生成
 
 # ============================================================
 # Receivers
 # ============================================================
 receivers:
-  # TestDataGen Receiver - 生成测试数据
+  # TestDataGen Receiver - 声明式配置驱动的测试数据生成器
   testdatagen:
     interval: 10s
-    scenarios:
-      # ============ 基础场景（使用 Case + ExecuteFlow 引擎）============
-      - name: "basic_trace"
-        enabled: true
-        config:
-          service_name: "user-service"
-          error_rate: 0.0
 
-      - name: "error_trace"
-        enabled: true
-        config:
-          service_name: "payment-service"
-          error_rate: 0.5
+    # 方式一：使用独立场景配置文件目录（推荐）
+    # 每个场景一个 YAML 文件，便于管理和组织
+    scenarios_dir: "./config/scenarios"
 
-      - name: "multi_service_trace"
-        enabled: true
-        config:
-          error_rate: 0.0
-
-      - name: "basic_metric"
-        enabled: true
-        config:
-          service_name: "metric-test-service"
-          metric_count: 5
-          data_point_count: 3
-
-      # ============ 消息队列场景 ============
-      - name: "kafka_messaging"
-        enabled: true
-        config:
-          topic: "order-events"
-          consumer_group: "payment-processor-group"
-          error_rate: 0.05
-
-      - name: "rocketmq_messaging"
-        enabled: true
-        config:
-          topic: "payment-topic"
-          client_group: "account-consumer-group"
-          message_type: "transaction"
-          tag: "pay-success"
-          error_rate: 0.05
-
-      - name: "rabbitmq_messaging"
-        enabled: false
-        config:
-          exchange: "notification-exchange"
-          routing_key: "email.send"
-          queue: "email-queue"
-          error_rate: 0.05
-
-      # ============ 数据库场景 ============
-      - name: "mysql_database"
-        enabled: true
-        config:
-          service_name: "user-service"
-          db_name: "user_db"
-          table: "users"
-          error_rate: 0.05
-
-      - name: "redis_database"
-        enabled: true
-        config:
-          service_name: "product-service"
-          error_rate: 0.02
-
-      - name: "mongodb_database"
-        enabled: true
-        config:
-          service_name: "content-service"
-          db_name: "content_db"
-          collection: "articles"
-          error_rate: 0.03
-
-    # ============ 业务流（Business Flow）============
-    # 模拟真实微服务调用链，一条 Trace 跨越多个服务
-    flows:
-      - name: "ecommerce_order"
-        enabled: true
-        config:
-          error_rate: 0.05
-
-      - name: "user_login"
-        enabled: true
-        config:
-          error_rate: 0.03
+    # 方式二：内联配置（向后兼容，适合简单场景）
+    # 如果同时配置了 scenarios_dir 和内联配置，两者会合并
+    #
+    # systems:
+    #   - name: "my-system"
+    #     namespace: "my-namespace"
+    #     applications:
+    #       - name: "service-a"
+    #         type: "http"
+    #         version: "1.0.0"
+    #       - name: "service-b"
+    #         type: "grpc"
+    #         version: "1.0.0"
+    #
+    # flows:
+    #   - name: "my_flow"
+    #     enabled: true
+    #     description: "示例业务流"
+    #     error_rate: 0.03
+    #     entry_point:
+    #       app: "service-a"
+    #       protocol: "http"
+    #       method: "POST"
+    #       route: "/api/v1/example"
+    #     topology:
+    #       service-a:
+    #         internal_steps:
+    #           - type: "middleware"
+    #             name: "auth"
+    #           - type: "redis"
+    #             operation: "GET"
+    #             key_pattern: "session:{id}"
+    #         calls:
+    #           - target: "service-b"
+    #             protocol: "grpc"
+    #             service: "ExampleService"
+    #             method: "Process"
+    #       service-b:
+    #         internal_steps:
+    #           - type: "mysql"
+    #             database: "main_db"
+    #             operation: "SELECT"
+    #             table: "records"
 
 # ============================================================
 # Exporters - 多后端鉴权示例
@@ -131,57 +93,21 @@ processors:
     limit_percentage: 80
     spike_limit_percentage: 25
 
-  # 为后端 A 注入 token
-  resource/backend-a:
-    attributes:
-      - action: upsert
-        key: token
-        value: YOUR_TOKEN_A
-
-  # 为后端 B 注入 token
-  resource/backend-b:
-    attributes:
-      - action: upsert
-        key: token
-        value: YOUR_TOKEN_B
-
 # ============================================================
-# Service - 多 Pipeline 路由
+# Service - Pipeline 配置
 # ============================================================
 service:
   pipelines:
-    # Traces → 后端 A
-    traces/backend-a:
+    # Traces pipeline
+    traces/testdata:
       receivers:
         - testdatagen
       processors:
         - memory_limiter
         - batch
-        - resource/backend-a
       exporters:
         - otlp/backend-a
-        - debug
-
-    # Traces → 后端 B
-    traces/backend-b:
-      receivers:
-        - testdatagen
-      processors:
-        - memory_limiter
-        - batch
-        - resource/backend-b
-      exporters:
         - otlphttp/backend-b
-
-    # Metrics → 后端 A
-    metrics/backend-a:
-      receivers:
-        - testdatagen
-      processors:
-        - memory_limiter
-        - batch
-      exporters:
-        - otlp/backend-a
         - debug
 
   telemetry:

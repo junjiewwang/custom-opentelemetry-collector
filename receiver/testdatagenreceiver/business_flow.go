@@ -122,13 +122,23 @@ func ExecuteFlow(rootSteps []*FlowStep, errorRate float64) ptrace.Traces {
 		resAttrs.PutStr("host.name", fmt.Sprintf("%s-pod-%s", collector.serviceName, randomHexStr(r, 4)))
 		resAttrs.PutStr("os.type", "linux")
 		resAttrs.PutStr("deployment.environment", "production")
-		resAttrs.PutStr("service.namespace", "e-commerce")
+
+		// service.namespace: 优先从 ResourceAttributes 中读取，否则使用默认值
+		namespace := "default"
+		if ns, ok := collector.resourceAttrs["service.namespace"]; ok {
+			namespace = ns
+		}
+		resAttrs.PutStr("service.namespace", namespace)
+
 		resAttrs.PutStr("service.version", collector.serviceVersion)
 		resAttrs.PutStr("k8s.pod.name", fmt.Sprintf("%s-%s", collector.serviceName, randomHexStr(r, 8)))
 		resAttrs.PutStr("k8s.namespace.name", "default")
 
-		// 追加自定义 Resource 属性
+		// 追加自定义 Resource 属性（跳过已处理的 service.namespace）
 		for k, v := range collector.resourceAttrs {
+			if k == "service.namespace" {
+				continue
+			}
 			resAttrs.PutStr(k, v)
 		}
 
