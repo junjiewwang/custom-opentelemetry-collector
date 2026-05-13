@@ -1,0 +1,1819 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>APM Observability Platform</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+<div class="app-layout">
+  <!-- ========== Sidebar ========== -->
+  <aside class="sidebar">
+    <!-- Platform Admin Header -->
+    <div class="sidebar-header" id="sidebar-header-admin">
+      <div class="sidebar-logo"><i class="fas fa-wave-square" style="color:#fff;font-size:12px"></i></div>
+      <span class="sidebar-title">APM Platform</span>
+    </div>
+    <!-- Tenant User Header (hidden by default) -->
+    <div class="sidebar-header sidebar-header--tenant" id="sidebar-header-tenant" style="display:none">
+      <div class="sidebar-logo" style="background:linear-gradient(135deg, #3fb950, #58a6ff)"><i class="fas fa-store" style="color:#fff;font-size:11px"></i></div>
+      <div style="display:flex;flex-direction:column;gap:1px">
+        <span class="sidebar-title" style="font-size:0.8rem">Acme Corp</span>
+        <span style="font-size:0.6rem;color:var(--text-tertiary)">E-Commerce Platform</span>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-group">
+        <div class="nav-group-label">Overview</div>
+        <div class="nav-item active" data-page="dashboard"><i class="fas fa-th-large"></i>Service Dashboard</div>
+        <div class="nav-item" data-page="topology"><i class="fas fa-project-diagram"></i>Service Map</div>
+        <div class="nav-item" data-page="resources" data-admin-only><i class="fas fa-sitemap"></i>Resource Explorer</div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Explore</div>
+        <div class="nav-item" data-page="traces"><i class="fas fa-route"></i>Traces</div>
+        <div class="nav-item" data-page="errors"><i class="fas fa-bug"></i>Errors<span class="nav-badge" style="background:var(--accent-red-dim)">47</span></div>
+        <div class="nav-item" data-page="metrics"><i class="fas fa-chart-area"></i>Metrics</div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Infrastructure</div>
+        <div class="nav-item" data-page="instances"><i class="fas fa-server"></i>Instances<span class="nav-badge">2</span></div>
+        <div class="nav-item" data-page="instrumentation"><i class="fas fa-microscope"></i>Instrumentation</div>
+        <div class="nav-item" data-page="deployments"><i class="fas fa-rocket"></i>Deployments</div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Alerts</div>
+        <div class="nav-item" data-page="alerts"><i class="fas fa-bell"></i>Alert Rules<span class="nav-badge">3</span></div>
+      </div>
+      <!-- Tenant-only nav group (hidden by default) -->
+      <div class="nav-group" id="nav-tenant-only" style="display:none">
+        <div class="nav-group-label">Account</div>
+        <div class="nav-item" data-page="apikeys"><i class="fas fa-key"></i>API Keys</div>
+        <div class="nav-item" data-page="usage"><i class="fas fa-chart-pie"></i>Usage & Billing</div>
+        <div class="nav-item" data-page="team"><i class="fas fa-users"></i>Team Members</div>
+      </div>
+    </nav>
+    <div style="padding:var(--space-md);border-top:1px solid var(--border-default)">
+      <!-- Platform admin: settings -->
+      <div class="nav-item" id="nav-settings-admin"><i class="fas fa-cog"></i>Settings</div>
+      <!-- Tenant user: profile (hidden by default) -->
+      <div class="nav-item" id="nav-settings-tenant" style="display:none">
+        <i class="fas fa-user-circle"></i>
+        <span>Alex Chen</span>
+        <span class="badge badge-info" style="margin-left:auto;font-size:0.6rem">Admin</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ========== Main ========== -->
+  <div class="main-content">
+    <!-- Global Scope Bar: The unified context controller -->
+    <div class="scope-bar">
+      <div class="scope-bar-left">
+        <div class="scope-label"><i class="fas fa-filter"></i> Scope</div>
+        <!-- Tenant Picker -->
+        <div class="scope-picker" id="scope-tenant" onclick="toggleScopeDropdown('tenant')">
+          <i class="fas fa-building scope-picker-icon"></i>
+          <span class="scope-picker-value">Acme Corp</span>
+          <i class="fas fa-chevron-down scope-picker-arrow"></i>
+          <div class="scope-dropdown" id="dropdown-tenant">
+            <div class="scope-dropdown-search"><input placeholder="Search tenants..." class="scope-dropdown-input"></div>
+            <div class="scope-dropdown-item scope-dropdown-item--active"><i class="fas fa-check"></i> Acme Corp <span class="scope-dropdown-meta">3 apps</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span> Beta Inc <span class="scope-dropdown-meta">1 app</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span> Gamma Ltd <span class="scope-dropdown-meta">2 apps</span></div>
+          </div>
+        </div>
+        <i class="fas fa-chevron-right scope-sep"></i>
+        <!-- App Picker -->
+        <div class="scope-picker" id="scope-app" onclick="toggleScopeDropdown('app')">
+          <i class="fas fa-cube scope-picker-icon" style="color:var(--accent-blue)"></i>
+          <span class="scope-picker-value">E-Commerce Platform</span>
+          <i class="fas fa-chevron-down scope-picker-arrow"></i>
+          <div class="scope-dropdown" id="dropdown-app">
+            <div class="scope-dropdown-search"><input placeholder="Search apps..." class="scope-dropdown-input"></div>
+            <div class="scope-dropdown-item scope-dropdown-item--all"><i class="fas fa-globe"></i> All Apps</div>
+            <div class="scope-dropdown-item scope-dropdown-item--active"><i class="fas fa-check"></i> E-Commerce Platform <span class="scope-dropdown-meta">5 svc · 12 inst</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span> Internal Tools <span class="scope-dropdown-meta">2 svc · 3 inst</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span> Data Pipeline <span class="scope-dropdown-meta">1 svc · 1 inst</span></div>
+          </div>
+        </div>
+        <i class="fas fa-chevron-right scope-sep"></i>
+        <!-- Service Picker -->
+        <div class="scope-picker" id="scope-service" onclick="toggleScopeDropdown('service')">
+          <i class="fas fa-cogs scope-picker-icon" style="color:var(--accent-green)"></i>
+          <span class="scope-picker-value" style="color:var(--text-tertiary)">All Services</span>
+          <i class="fas fa-chevron-down scope-picker-arrow"></i>
+          <div class="scope-dropdown" id="dropdown-service">
+            <div class="scope-dropdown-search"><input placeholder="Search services..." class="scope-dropdown-input"></div>
+            <div class="scope-dropdown-item scope-dropdown-item--all scope-dropdown-item--active"><i class="fas fa-check"></i> All Services</div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-healthy"></span> order-service <span class="scope-dropdown-meta">4 inst</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-warning"></span> payment-gateway <span class="scope-dropdown-meta">3 inst</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-critical"></span> inventory-svc <span class="scope-dropdown-meta">2 inst</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-healthy"></span> user-auth <span class="scope-dropdown-meta">2 inst</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-healthy"></span> notification-svc <span class="scope-dropdown-meta">1 inst</span></div>
+          </div>
+        </div>
+        <i class="fas fa-chevron-right scope-sep"></i>
+        <!-- Instance Picker -->
+        <div class="scope-picker" id="scope-instance" onclick="toggleScopeDropdown('instance')">
+          <i class="fas fa-server scope-picker-icon" style="color:var(--text-tertiary)"></i>
+          <span class="scope-picker-value" style="color:var(--text-tertiary)">All Instances</span>
+          <i class="fas fa-chevron-down scope-picker-arrow"></i>
+          <div class="scope-dropdown" id="dropdown-instance">
+            <div class="scope-dropdown-search"><input placeholder="Search instances..." class="scope-dropdown-input"></div>
+            <div class="scope-dropdown-item scope-dropdown-item--all scope-dropdown-item--active"><i class="fas fa-check"></i> All Instances</div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-healthy"></span> pod-7f4d8 <span class="scope-dropdown-meta">10.0.2.15</span></div>
+            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-healthy"></span> pod-a2b3c <span class="scope-dropdown-meta">10.0.2.16</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="scope-bar-right">
+        <button class="scope-clear-btn" title="Reset scope to All"><i class="fas fa-times"></i> Clear</button>
+        <div class="role-switcher" id="role-switcher">
+          <span class="role-switcher-label">View as</span>
+          <div class="role-switcher-toggle" id="role-toggle" onclick="toggleRole()">
+            <div class="role-option role-option--active" data-role="admin"><i class="fas fa-shield-alt"></i> Platform</div>
+            <div class="role-option" data-role="tenant"><i class="fas fa-user"></i> Tenant</div>
+            <div class="role-toggle-slider" id="role-slider"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sub header: page title + time range -->
+    <header class="main-header">
+      <div class="breadcrumb">
+        <span class="text-secondary">APM</span>
+        <span class="breadcrumb-sep">/</span>
+        <span class="breadcrumb-current" id="page-title">Service Dashboard</span>
+        <span class="scope-context-tag" id="scope-context-tag"><i class="fas fa-filter" style="font-size:0.55rem"></i> Acme Corp / E-Commerce Platform</span>
+      </div>
+      <div class="header-actions">
+        <div class="time-range-picker">
+          <i class="far fa-clock"></i>
+          <span>Last 1 hour</span>
+          <i class="fas fa-chevron-down" style="font-size:0.6rem"></i>
+        </div>
+        <button class="btn btn-ghost"><i class="fas fa-sync-alt"></i></button>
+      </div>
+    </header>
+
+    <div class="main-body">
+      <!-- ===================== PAGE: Dashboard ===================== -->
+      <div class="page active" id="page-dashboard">
+        <!-- Golden Signals -->
+        <div class="stat-grid mb-xl">
+          <div class="stat-card">
+            <div class="stat-card-icon blue"><i class="fas fa-tachometer-alt"></i></div>
+            <div class="stat-card-label">Request Rate</div>
+            <div class="stat-card-value">12.4K<span style="font-size:0.9rem;color:var(--text-secondary)"> /min</span></div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> 8.2% vs last hour</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon green"><i class="fas fa-check-circle"></i></div>
+            <div class="stat-card-label">Success Rate</div>
+            <div class="stat-card-value">99.7<span style="font-size:0.9rem;color:var(--text-secondary)">%</span></div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> 0.1% vs last hour</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon yellow"><i class="fas fa-stopwatch"></i></div>
+            <div class="stat-card-label">P99 Latency</div>
+            <div class="stat-card-value">247<span style="font-size:0.9rem;color:var(--text-secondary)"> ms</span></div>
+            <div class="stat-card-trend down"><i class="fas fa-arrow-down"></i> 12ms vs last hour</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon red"><i class="fas fa-exclamation-triangle"></i></div>
+            <div class="stat-card-label">Error Rate</div>
+            <div class="stat-card-value">0.3<span style="font-size:0.9rem;color:var(--text-secondary)">%</span></div>
+            <div class="stat-card-trend neutral"><i class="fas fa-minus"></i> stable</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon purple"><i class="fas fa-cubes"></i></div>
+            <div class="stat-card-label">Active Services</div>
+            <div class="stat-card-value">18</div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> +2 new</div>
+          </div>
+          <div class="stat-card" style="display:flex;align-items:center;gap:var(--space-lg)">
+            <div class="health-ring">
+              <svg width="64" height="64" viewBox="0 0 64 64">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="var(--bg-tertiary)" stroke-width="6"/>
+                <circle cx="32" cy="32" r="28" fill="none" stroke="var(--accent-green)" stroke-width="6" stroke-dasharray="158" stroke-dashoffset="16" stroke-linecap="round"/>
+              </svg>
+              <span class="health-ring-value" style="color:var(--accent-green)">91</span>
+            </div>
+            <div>
+              <div class="stat-card-label">Apdex Score</div>
+              <div class="stat-card-value" style="font-size:1.4rem">0.91</div>
+              <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> +0.02 vs last hour</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Charts Row -->
+        <div class="grid-2 mb-xl">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title"><i class="fas fa-chart-line" style="color:var(--accent-blue)"></i> Request Throughput</span>
+              <span class="text-xs text-tertiary">req/min</span>
+            </div>
+            <div class="card-body">
+              <div class="chart-area" id="throughput-chart"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title"><i class="fas fa-clock" style="color:var(--accent-yellow)"></i> Latency Distribution</span>
+              <span class="text-xs text-tertiary">P50 / P95 / P99</span>
+            </div>
+            <div class="card-body">
+              <div class="chart-area" id="latency-chart"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Service Table -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-layer-group" style="color:var(--accent-blue)"></i> Service Health</span>
+            <button class="btn btn-ghost text-xs">View All →</button>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Service</th><th>Apdex</th><th>Health</th><th>Throughput</th><th>P99 Latency</th><th>Error Rate</th><th>Version</th><th>Instances</th></tr></thead>
+              <tbody>
+                <tr><td><span class="font-mono" style="color:var(--accent-blue)">order-service</span></td><td><span class="apdex-score apdex-good">0.97</span></td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td><td class="font-mono">3,421/min</td><td class="font-mono">89ms</td><td class="font-mono" style="color:var(--accent-green)">0.1%</td><td><span class="badge badge-info">v2.3.1</span></td><td>4</td></tr>
+                <tr><td><span class="font-mono" style="color:var(--accent-blue)">payment-gateway</span></td><td><span class="apdex-score apdex-fair">0.72</span></td><td><span class="badge badge-warning"><span class="dot dot-warning"></span>Degraded</span></td><td class="font-mono">1,205/min</td><td class="font-mono" style="color:var(--accent-yellow)">412ms</td><td class="font-mono" style="color:var(--accent-yellow)">2.3%</td><td><span class="badge badge-warning"><i class="fas fa-arrow-up" style="font-size:0.5rem"></i> v1.8.0</span></td><td>3</td></tr>
+                <tr><td><span class="font-mono" style="color:var(--accent-blue)">user-auth</span></td><td><span class="apdex-score apdex-excellent">0.99</span></td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td><td class="font-mono">5,678/min</td><td class="font-mono">34ms</td><td class="font-mono" style="color:var(--accent-green)">0.0%</td><td><span class="badge badge-info">v3.1.0</span></td><td>2</td></tr>
+                <tr><td><span class="font-mono" style="color:var(--accent-blue)">inventory-svc</span></td><td><span class="apdex-score apdex-poor">0.34</span></td><td><span class="badge badge-critical"><span class="dot dot-critical"></span>Critical</span></td><td class="font-mono">892/min</td><td class="font-mono" style="color:var(--accent-red)">1,240ms</td><td class="font-mono" style="color:var(--accent-red)">8.7%</td><td><span class="badge badge-critical"><i class="fas fa-arrow-up" style="font-size:0.5rem"></i> v1.2.4</span></td><td>2</td></tr>
+                <tr><td><span class="font-mono" style="color:var(--accent-blue)">notification-svc</span></td><td><span class="apdex-score apdex-good">0.95</span></td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td><td class="font-mono">2,103/min</td><td class="font-mono">56ms</td><td class="font-mono" style="color:var(--accent-green)">0.2%</td><td><span class="badge badge-info">v1.5.2</span></td><td>3</td></tr>
+                <tr><td><span class="font-mono" style="color:var(--accent-blue)">recommendation-engine</span></td><td><span class="apdex-score apdex-good">0.93</span></td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td><td class="font-mono">4,512/min</td><td class="font-mono">123ms</td><td class="font-mono" style="color:var(--accent-green)">0.4%</td><td><span class="badge badge-info">v4.0.1</span></td><td>5</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Topology ===================== -->
+      <div class="page" id="page-topology">
+        <div class="flex items-center justify-between mb-lg">
+          <div class="flex items-center gap-md">
+            <span class="badge badge-info">18 services</span>
+            <span class="badge badge-neutral">42 edges</span>
+          </div>
+          <div class="flex gap-sm">
+            <button class="btn btn-ghost"><i class="fas fa-search-plus"></i></button>
+            <button class="btn btn-ghost"><i class="fas fa-search-minus"></i></button>
+            <button class="btn btn-ghost"><i class="fas fa-expand"></i></button>
+          </div>
+        </div>
+        <div class="topology-container">
+          <!-- SVG edges -->
+          <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1">
+            <line x1="180" y1="120" x2="340" y2="200" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,4"/>
+            <line x1="180" y1="120" x2="340" y2="80" stroke="#58a6ff" stroke-width="2" opacity="0.6"/>
+            <line x1="340" y1="200" x2="520" y2="160" stroke="#30363d" stroke-width="1.5"/>
+            <line x1="340" y1="80" x2="520" y2="160" stroke="#30363d" stroke-width="1.5"/>
+            <line x1="520" y1="160" x2="680" y2="100" stroke="#f85149" stroke-width="2" opacity="0.6"/>
+            <line x1="520" y1="160" x2="680" y2="240" stroke="#30363d" stroke-width="1.5"/>
+            <line x1="340" y1="200" x2="520" y2="320" stroke="#30363d" stroke-width="1.5"/>
+            <line x1="520" y1="320" x2="680" y2="360" stroke="#30363d" stroke-width="1.5"/>
+            <line x1="180" y1="120" x2="120" y2="280" stroke="#30363d" stroke-width="1.5"/>
+            <line x1="120" y1="280" x2="340" y2="340" stroke="#d29922" stroke-width="2" opacity="0.6"/>
+          </svg>
+          <!-- Nodes -->
+          <div class="topo-node" style="left:140px;top:90px">
+            <div class="topo-node-circle" style="border-color:var(--accent-blue);background:rgba(88,166,255,0.1)"><i class="fas fa-globe" style="color:var(--accent-blue)"></i></div>
+            <span class="topo-node-label">API Gateway</span>
+          </div>
+          <div class="topo-node" style="left:300px;top:50px">
+            <div class="topo-node-circle" style="border-color:var(--accent-green);background:rgba(63,185,80,0.1)"><i class="fas fa-user" style="color:var(--accent-green)"></i></div>
+            <span class="topo-node-label">user-auth</span>
+          </div>
+          <div class="topo-node" style="left:300px;top:170px">
+            <div class="topo-node-circle" style="border-color:var(--accent-green);background:rgba(63,185,80,0.1)"><i class="fas fa-shopping-cart" style="color:var(--accent-green)"></i></div>
+            <span class="topo-node-label">order-service</span>
+          </div>
+          <div class="topo-node" style="left:480px;top:130px">
+            <div class="topo-node-circle" style="border-color:var(--accent-yellow);background:rgba(210,153,34,0.1)"><i class="fas fa-credit-card" style="color:var(--accent-yellow)"></i></div>
+            <span class="topo-node-label">payment-gateway</span>
+          </div>
+          <div class="topo-node" style="left:640px;top:70px">
+            <div class="topo-node-circle" style="border-color:var(--accent-red);background:rgba(248,81,73,0.1)"><i class="fas fa-boxes" style="color:var(--accent-red)"></i></div>
+            <span class="topo-node-label">inventory-svc</span>
+          </div>
+          <div class="topo-node" style="left:640px;top:210px">
+            <div class="topo-node-circle" style="border-color:var(--accent-green);background:rgba(63,185,80,0.1)"><i class="fas fa-bell" style="color:var(--accent-green)"></i></div>
+            <span class="topo-node-label">notification-svc</span>
+          </div>
+          <div class="topo-node" style="left:80px;top:250px">
+            <div class="topo-node-circle" style="border-color:var(--accent-purple);background:rgba(188,140,255,0.1)"><i class="fas fa-database" style="color:var(--accent-purple)"></i></div>
+            <span class="topo-node-label">PostgreSQL</span>
+          </div>
+          <div class="topo-node" style="left:300px;top:310px">
+            <div class="topo-node-circle" style="border-color:var(--accent-yellow);background:rgba(210,153,34,0.1)"><i class="fas fa-bolt" style="color:var(--accent-yellow)"></i></div>
+            <span class="topo-node-label">Redis Cache</span>
+          </div>
+          <div class="topo-node" style="left:480px;top:290px">
+            <div class="topo-node-circle" style="border-color:var(--accent-green);background:rgba(63,185,80,0.1)"><i class="fas fa-envelope" style="color:var(--accent-green)"></i></div>
+            <span class="topo-node-label">Kafka</span>
+          </div>
+          <div class="topo-node" style="left:640px;top:330px">
+            <div class="topo-node-circle" style="border-color:var(--accent-green);background:rgba(63,185,80,0.1)"><i class="fas fa-brain" style="color:var(--accent-green)"></i></div>
+            <span class="topo-node-label">recommendation</span>
+          </div>
+        </div>
+        <!-- Legend -->
+        <div class="flex items-center gap-lg" style="margin-top:var(--space-lg)">
+          <span class="text-xs text-tertiary">Legend:</span>
+          <span class="flex items-center gap-sm text-xs"><span class="dot dot-healthy"></span> Healthy</span>
+          <span class="flex items-center gap-sm text-xs"><span class="dot dot-warning"></span> Degraded</span>
+          <span class="flex items-center gap-sm text-xs"><span class="dot dot-critical"></span> Critical</span>
+          <span class="flex items-center gap-sm text-xs" style="margin-left:var(--space-xl)"><span style="width:20px;height:2px;background:var(--accent-blue);border-radius:1px"></span> High traffic</span>
+          <span class="flex items-center gap-sm text-xs"><span style="width:20px;height:2px;background:var(--accent-red);border-radius:1px"></span> Errors</span>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Traces ===================== -->
+      <div class="page" id="page-traces">
+        <div class="filter-bar">
+          <i class="fas fa-search" style="color:var(--text-tertiary)"></i>
+          <div class="filter-tag">service = order-service <i class="fas fa-times" style="font-size:0.6rem;cursor:pointer"></i></div>
+          <div class="filter-tag">status = error <i class="fas fa-times" style="font-size:0.6rem;cursor:pointer"></i></div>
+          <input class="filter-input" placeholder="Add filter... (e.g. duration > 500ms, operation = /api/orders)">
+          <button class="btn btn-primary"><i class="fas fa-search"></i> Search</button>
+        </div>
+
+        <!-- Scatter Plot -->
+        <div class="card mb-lg">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-braille" style="color:var(--accent-blue)"></i> Latency Scatter Plot</span>
+            <span class="text-xs text-tertiary">126 traces found</span>
+          </div>
+          <div class="card-body" style="height:160px;position:relative;overflow:hidden">
+            <!-- Simulated scatter points -->
+            <div style="position:absolute;inset:0;padding:8px">
+              <svg width="100%" height="100%" viewBox="0 0 800 140">
+                <!-- Grid lines -->
+                <line x1="0" y1="35" x2="800" y2="35" stroke="#21262d" stroke-width="1"/>
+                <line x1="0" y1="70" x2="800" y2="70" stroke="#21262d" stroke-width="1"/>
+                <line x1="0" y1="105" x2="800" y2="105" stroke="#21262d" stroke-width="1"/>
+                <!-- Normal points -->
+                <circle cx="45" cy="95" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="82" cy="98" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="120" cy="92" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="155" cy="100" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="190" cy="88" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="230" cy="94" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="265" cy="96" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="300" cy="91" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="340" cy="93" r="4" fill="#58a6ff" opacity="0.6"/><circle cx="375" cy="97" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="410" cy="89" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="450" cy="95" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="485" cy="99" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="520" cy="87" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="555" cy="93" r="4" fill="#58a6ff" opacity="0.6"/><circle cx="590" cy="96" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="625" cy="91" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="665" cy="94" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="700" cy="88" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="735" cy="97" r="3" fill="#58a6ff" opacity="0.6"/>
+                <!-- Slow points -->
+                <circle cx="195" cy="45" r="4" fill="#d29922" opacity="0.8"/><circle cx="410" cy="38" r="5" fill="#d29922" opacity="0.8"/>
+                <circle cx="590" cy="52" r="4" fill="#d29922" opacity="0.8"/>
+                <!-- Error points -->
+                <circle cx="310" cy="25" r="5" fill="#f85149" opacity="0.9"/><circle cx="520" cy="18" r="6" fill="#f85149" opacity="0.9"/>
+                <circle cx="680" cy="30" r="5" fill="#f85149" opacity="0.9"/>
+                <!-- Y axis labels -->
+                <text x="2" y="108" fill="#6e7681" font-size="9" font-family="JetBrains Mono">50ms</text>
+                <text x="2" y="73" fill="#6e7681" font-size="9" font-family="JetBrains Mono">200ms</text>
+                <text x="2" y="38" fill="#6e7681" font-size="9" font-family="JetBrains Mono">500ms</text>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- Latency Heatmap -->
+        <div class="card mb-lg">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-fire" style="color:var(--accent-orange)"></i> Latency Heatmap</span>
+            <span class="text-xs text-tertiary">X = time · Y = latency bucket · Color = request density</span>
+          </div>
+          <div class="card-body" style="padding:var(--space-md)">
+            <div class="heatmap-container" style="height:180px;position:relative">
+              <!-- Y-axis labels -->
+              <div style="position:absolute;left:0;top:0;bottom:20px;width:50px;display:flex;flex-direction:column;justify-content:space-between;padding:4px 0">
+                <span class="text-xs font-mono text-tertiary">2s+</span>
+                <span class="text-xs font-mono text-tertiary">1s</span>
+                <span class="text-xs font-mono text-tertiary">500ms</span>
+                <span class="text-xs font-mono text-tertiary">200ms</span>
+                <span class="text-xs font-mono text-tertiary">50ms</span>
+                <span class="text-xs font-mono text-tertiary">10ms</span>
+              </div>
+              <!-- Heatmap SVG -->
+              <div style="margin-left:54px;height:160px">
+                <svg width="100%" height="100%" viewBox="0 0 480 120" preserveAspectRatio="none">
+                  <!-- Row 1: 2s+ (very few, red) -->
+                  <rect x="0" y="0" width="12" height="20" fill="#f8514900"/><rect x="14" y="0" width="12" height="20" fill="#f8514900"/>
+                  <rect x="28" y="0" width="12" height="20" fill="#f8514900"/><rect x="42" y="0" width="12" height="20" fill="#f8514910"/>
+                  <rect x="56" y="0" width="12" height="20" fill="#f8514900"/><rect x="70" y="0" width="12" height="20" fill="#f8514900"/>
+                  <rect x="84" y="0" width="12" height="20" fill="#f8514900"/><rect x="98" y="0" width="12" height="20" fill="#f8514900"/>
+                  <rect x="112" y="0" width="12" height="20" fill="#f8514920"/><rect x="126" y="0" width="12" height="20" fill="#f8514900"/>
+                  <rect x="140" y="0" width="12" height="20" fill="#f8514900"/><rect x="154" y="0" width="12" height="20" fill="#f8514900"/>
+                  <rect x="168" y="0" width="12" height="20" fill="#f8514900"/><rect x="182" y="0" width="12" height="20" fill="#f8514930"/>
+                  <rect x="196" y="0" width="12" height="20" fill="#f8514950"/><rect x="210" y="0" width="12" height="20" fill="#f8514960"/>
+                  <rect x="224" y="0" width="12" height="20" fill="#f8514940"/><rect x="238" y="0" width="12" height="20" fill="#f8514920"/>
+                  <rect x="252" y="0" width="12" height="20" fill="#f8514900"/><rect x="266" y="0" width="12" height="20" fill="#f8514900"/>
+                  <!-- Row 2: 1s (sparse yellow-red) -->
+                  <rect x="0" y="20" width="12" height="20" fill="#d2992200"/><rect x="14" y="20" width="12" height="20" fill="#d2992210"/>
+                  <rect x="28" y="20" width="12" height="20" fill="#d2992200"/><rect x="42" y="20" width="12" height="20" fill="#d2992215"/>
+                  <rect x="56" y="20" width="12" height="20" fill="#d2992220"/><rect x="70" y="20" width="12" height="20" fill="#d2992210"/>
+                  <rect x="84" y="20" width="12" height="20" fill="#d2992200"/><rect x="98" y="20" width="12" height="20" fill="#d2992200"/>
+                  <rect x="112" y="20" width="12" height="20" fill="#d2992230"/><rect x="126" y="20" width="12" height="20" fill="#d2992240"/>
+                  <rect x="140" y="20" width="12" height="20" fill="#d2992230"/><rect x="154" y="20" width="12" height="20" fill="#d2992210"/>
+                  <rect x="168" y="20" width="12" height="20" fill="#d2992220"/><rect x="182" y="20" width="12" height="20" fill="#d2992250"/>
+                  <rect x="196" y="20" width="12" height="20" fill="#f8514970"/><rect x="210" y="20" width="12" height="20" fill="#f8514980"/>
+                  <rect x="224" y="20" width="12" height="20" fill="#d2992260"/><rect x="238" y="20" width="12" height="20" fill="#d2992240"/>
+                  <rect x="252" y="20" width="12" height="20" fill="#d2992230"/><rect x="266" y="20" width="12" height="20" fill="#d2992220"/>
+                  <!-- Row 3: 500ms (moderate yellow) -->
+                  <rect x="0" y="40" width="12" height="20" fill="#d2992220"/><rect x="14" y="40" width="12" height="20" fill="#d2992230"/>
+                  <rect x="28" y="40" width="12" height="20" fill="#d2992225"/><rect x="42" y="40" width="12" height="20" fill="#d2992235"/>
+                  <rect x="56" y="40" width="12" height="20" fill="#d2992240"/><rect x="70" y="40" width="12" height="20" fill="#d2992230"/>
+                  <rect x="84" y="40" width="12" height="20" fill="#d2992225"/><rect x="98" y="40" width="12" height="20" fill="#d2992235"/>
+                  <rect x="112" y="40" width="12" height="20" fill="#d2992250"/><rect x="126" y="40" width="12" height="20" fill="#d2992260"/>
+                  <rect x="140" y="40" width="12" height="20" fill="#d2992245"/><rect x="154" y="40" width="12" height="20" fill="#d2992240"/>
+                  <rect x="168" y="40" width="12" height="20" fill="#d2992250"/><rect x="182" y="40" width="12" height="20" fill="#d2992270"/>
+                  <rect x="196" y="40" width="12" height="20" fill="#d2992280"/><rect x="210" y="40" width="12" height="20" fill="#d2992275"/>
+                  <rect x="224" y="40" width="12" height="20" fill="#d2992260"/><rect x="238" y="40" width="12" height="20" fill="#d2992250"/>
+                  <rect x="252" y="40" width="12" height="20" fill="#d2992240"/><rect x="266" y="40" width="12" height="20" fill="#d2992235"/>
+                  <!-- Row 4: 200ms (heavy blue-green) -->
+                  <rect x="0" y="60" width="12" height="20" fill="#58a6ff40"/><rect x="14" y="60" width="12" height="20" fill="#58a6ff50"/>
+                  <rect x="28" y="60" width="12" height="20" fill="#58a6ff45"/><rect x="42" y="60" width="12" height="20" fill="#58a6ff55"/>
+                  <rect x="56" y="60" width="12" height="20" fill="#58a6ff60"/><rect x="70" y="60" width="12" height="20" fill="#58a6ff50"/>
+                  <rect x="84" y="60" width="12" height="20" fill="#58a6ff45"/><rect x="98" y="60" width="12" height="20" fill="#58a6ff55"/>
+                  <rect x="112" y="60" width="12" height="20" fill="#58a6ff65"/><rect x="126" y="60" width="12" height="20" fill="#58a6ff70"/>
+                  <rect x="140" y="60" width="12" height="20" fill="#58a6ff60"/><rect x="154" y="60" width="12" height="20" fill="#58a6ff55"/>
+                  <rect x="168" y="60" width="12" height="20" fill="#58a6ff50"/><rect x="182" y="60" width="12" height="20" fill="#58a6ff65"/>
+                  <rect x="196" y="60" width="12" height="20" fill="#58a6ff60"/><rect x="210" y="60" width="12" height="20" fill="#58a6ff55"/>
+                  <rect x="224" y="60" width="12" height="20" fill="#58a6ff50"/><rect x="238" y="60" width="12" height="20" fill="#58a6ff55"/>
+                  <rect x="252" y="60" width="12" height="20" fill="#58a6ff60"/><rect x="266" y="60" width="12" height="20" fill="#58a6ff55"/>
+                  <!-- Row 5: 50ms (dense green) -->
+                  <rect x="0" y="80" width="12" height="20" fill="#3fb95070"/><rect x="14" y="80" width="12" height="20" fill="#3fb95080"/>
+                  <rect x="28" y="80" width="12" height="20" fill="#3fb95075"/><rect x="42" y="80" width="12" height="20" fill="#3fb95085"/>
+                  <rect x="56" y="80" width="12" height="20" fill="#3fb95090"/><rect x="70" y="80" width="12" height="20" fill="#3fb95080"/>
+                  <rect x="84" y="80" width="12" height="20" fill="#3fb95075"/><rect x="98" y="80" width="12" height="20" fill="#3fb95085"/>
+                  <rect x="112" y="80" width="12" height="20" fill="#3fb95070"/><rect x="126" y="80" width="12" height="20" fill="#3fb95065"/>
+                  <rect x="140" y="80" width="12" height="20" fill="#3fb95075"/><rect x="154" y="80" width="12" height="20" fill="#3fb95080"/>
+                  <rect x="168" y="80" width="12" height="20" fill="#3fb95085"/><rect x="182" y="80" width="12" height="20" fill="#3fb95070"/>
+                  <rect x="196" y="80" width="12" height="20" fill="#3fb95060"/><rect x="210" y="80" width="12" height="20" fill="#3fb95065"/>
+                  <rect x="224" y="80" width="12" height="20" fill="#3fb95075"/><rect x="238" y="80" width="12" height="20" fill="#3fb95080"/>
+                  <rect x="252" y="80" width="12" height="20" fill="#3fb95085"/><rect x="266" y="80" width="12" height="20" fill="#3fb95080"/>
+                  <!-- Row 6: 10ms (densest green) -->
+                  <rect x="0" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="14" y="100" width="12" height="20" fill="#3fb950b0"/>
+                  <rect x="28" y="100" width="12" height="20" fill="#3fb950a5"/><rect x="42" y="100" width="12" height="20" fill="#3fb950b5"/>
+                  <rect x="56" y="100" width="12" height="20" fill="#3fb950c0"/><rect x="70" y="100" width="12" height="20" fill="#3fb950b0"/>
+                  <rect x="84" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="98" y="100" width="12" height="20" fill="#3fb950b0"/>
+                  <rect x="112" y="100" width="12" height="20" fill="#3fb95095"/><rect x="126" y="100" width="12" height="20" fill="#3fb95090"/>
+                  <rect x="140" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="154" y="100" width="12" height="20" fill="#3fb950b0"/>
+                  <rect x="168" y="100" width="12" height="20" fill="#3fb950b5"/><rect x="182" y="100" width="12" height="20" fill="#3fb95095"/>
+                  <rect x="196" y="100" width="12" height="20" fill="#3fb95085"/><rect x="210" y="100" width="12" height="20" fill="#3fb95090"/>
+                  <rect x="224" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="238" y="100" width="12" height="20" fill="#3fb950b0"/>
+                  <rect x="252" y="100" width="12" height="20" fill="#3fb950b5"/><rect x="266" y="100" width="12" height="20" fill="#3fb950b0"/>
+                </svg>
+              </div>
+              <!-- Color legend -->
+              <div style="position:absolute;bottom:0;left:54px;right:0;display:flex;align-items:center;gap:var(--space-md)">
+                <span class="text-xs text-tertiary">Density:</span>
+                <div style="display:flex;align-items:center;gap:2px">
+                  <div style="width:12px;height:8px;background:#3fb95030;border-radius:1px"></div>
+                  <div style="width:12px;height:8px;background:#3fb95060;border-radius:1px"></div>
+                  <div style="width:12px;height:8px;background:#3fb95090;border-radius:1px"></div>
+                  <div style="width:12px;height:8px;background:#d29922a0;border-radius:1px"></div>
+                  <div style="width:12px;height:8px;background:#f85149c0;border-radius:1px"></div>
+                </div>
+                <span class="text-xs text-tertiary">Low → High</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trace List -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Recent Traces</span>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Trace ID</th><th>Root Service</th><th>Operation</th><th>Duration</th><th>Spans</th><th>Status</th><th>Time</th></tr></thead>
+              <tbody>
+                <tr><td class="font-mono" style="color:var(--text-link)">abc123def456</td><td>order-service</td><td>POST /api/orders</td><td class="font-mono" style="color:var(--accent-red)">1,240ms</td><td>23</td><td><span class="badge badge-critical"><span class="dot dot-critical"></span>Error</span></td><td class="text-secondary">2 min ago</td></tr>
+                <tr><td class="font-mono" style="color:var(--text-link)">def789ghi012</td><td>user-auth</td><td>POST /auth/login</td><td class="font-mono">89ms</td><td>8</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td><td class="text-secondary">3 min ago</td></tr>
+                <tr><td class="font-mono" style="color:var(--text-link)">ghi345jkl678</td><td>payment-gateway</td><td>POST /pay/charge</td><td class="font-mono" style="color:var(--accent-yellow)">567ms</td><td>15</td><td><span class="badge badge-warning"><span class="dot dot-warning"></span>Slow</span></td><td class="text-secondary">5 min ago</td></tr>
+                <tr><td class="font-mono" style="color:var(--text-link)">jkl901mno234</td><td>order-service</td><td>GET /api/orders/{id}</td><td class="font-mono">45ms</td><td>6</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td><td class="text-secondary">6 min ago</td></tr>
+                <tr><td class="font-mono" style="color:var(--text-link)">mno567pqr890</td><td>inventory-svc</td><td>GET /api/stock</td><td class="font-mono" style="color:var(--accent-red)">2,100ms</td><td>31</td><td><span class="badge badge-critical"><span class="dot dot-critical"></span>Error</span></td><td class="text-secondary">8 min ago</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Trace Detail (inline expandable) -->
+        <div class="card" style="margin-top:var(--space-lg)">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-stream" style="color:var(--accent-blue)"></i> Trace Detail — <span class="font-mono">abc123def456</span></span>
+            <span class="text-xs text-tertiary">Total: 1,240ms · 23 Spans · 4 Services</span>
+          </div>
+          <div class="card-body" style="padding:0">
+            <div class="trace-timeline">
+              <div class="span-row"><div class="span-label"><i class="fas fa-caret-down" style="color:var(--text-tertiary)"></i><span class="font-mono">order-service</span></div><div class="span-bar-container"><div class="span-bar" style="left:0%;width:100%;background:var(--accent-blue)"></div></div><span class="span-duration">1,240ms</span></div>
+              <div class="span-row" style="padding-left:20px"><div class="span-label"><span class="span-service">order-service</span><span class="font-mono">POST /api/orders</span></div><div class="span-bar-container"><div class="span-bar" style="left:0%;width:95%;background:var(--accent-blue)"></div></div><span class="span-duration">1,180ms</span></div>
+              <div class="span-row" style="padding-left:40px"><div class="span-label"><span class="span-service">user-auth</span><span class="font-mono">validateToken</span></div><div class="span-bar-container"><div class="span-bar" style="left:2%;width:8%;background:var(--accent-green)"></div></div><span class="span-duration">34ms</span></div>
+              <div class="span-row" style="padding-left:40px"><div class="span-label"><span class="span-service">inventory-svc</span><span class="font-mono">checkStock</span></div><div class="span-bar-container"><div class="span-bar" style="left:12%;width:65%;background:var(--accent-red)"></div></div><span class="span-duration" style="color:var(--accent-red)">820ms ⚠</span></div>
+              <div class="span-row" style="padding-left:60px"><div class="span-label"><span class="span-service">inventory-svc</span><span class="font-mono">db.query</span></div><div class="span-bar-container"><div class="span-bar" style="left:14%;width:60%;background:var(--accent-red);opacity:0.7"></div></div><span class="span-duration" style="color:var(--accent-red)">780ms</span></div>
+              <div class="span-row" style="padding-left:40px"><div class="span-label"><span class="span-service">payment-gateway</span><span class="font-mono">charge</span></div><div class="span-bar-container"><div class="span-bar" style="left:78%;width:18%;background:var(--accent-yellow)"></div></div><span class="span-duration">210ms</span></div>
+              <div class="span-row" style="padding-left:40px"><div class="span-label"><span class="span-service">notification-svc</span><span class="font-mono">sendEmail</span></div><div class="span-bar-container"><div class="span-bar" style="left:96%;width:4%;background:var(--accent-purple)"></div></div><span class="span-duration">45ms</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Metrics ===================== -->
+      <div class="page" id="page-metrics">
+        <div class="tabs">
+          <div class="tab active">RED Dashboard</div>
+          <div class="tab">Endpoints</div>
+          <div class="tab">Custom Query</div>
+          <div class="tab">Saved Panels</div>
+        </div>
+
+        <div class="stat-grid mb-xl" style="grid-template-columns:repeat(3,1fr)">
+          <div class="stat-card"><div class="stat-card-label">Avg Response Time</div><div class="stat-card-value">124<span style="font-size:0.9rem;color:var(--text-secondary)"> ms</span></div></div>
+          <div class="stat-card"><div class="stat-card-label">Throughput</div><div class="stat-card-value">8.2K<span style="font-size:0.9rem;color:var(--text-secondary)"> rpm</span></div></div>
+          <div class="stat-card"><div class="stat-card-label">Error Count</div><div class="stat-card-value" style="color:var(--accent-red)">47</div></div>
+        </div>
+
+        <div class="grid-2 mb-lg">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Rate — Requests per minute</span></div>
+            <div class="card-body"><div class="chart-area" id="metrics-rate-chart"></div></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">Errors — Error count by service</span></div>
+            <div class="card-body"><div class="chart-area" id="metrics-errors-chart"></div></div>
+          </div>
+        </div>
+        <div class="grid-2 mb-lg">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Duration — Response time percentiles</span></div>
+            <div class="card-body"><div class="chart-area" id="metrics-duration-chart"></div></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">Saturation — CPU / Memory</span></div>
+            <div class="card-body"><div class="chart-area" id="metrics-saturation-chart"></div></div>
+          </div>
+        </div>
+
+        <!-- Endpoint Analysis Section -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-exchange-alt" style="color:var(--accent-purple)"></i> Top Endpoints by P99 Latency</span>
+            <span class="text-xs text-tertiary">Sorted by slowest P99</span>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Method</th><th>Endpoint</th><th>Service</th><th>Throughput</th><th>P50</th><th>P95</th><th>P99</th><th>Error Rate</th><th>Apdex</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><span class="endpoint-method endpoint-method--get">GET</span></td>
+                  <td><span class="endpoint-path">/api/inventory/stock/{sku}</span></td>
+                  <td>inventory-svc</td>
+                  <td class="font-mono">892/min</td>
+                  <td class="font-mono">340ms</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">980ms</td>
+                  <td class="font-mono" style="color:var(--accent-red)">2,100ms</td>
+                  <td class="font-mono" style="color:var(--accent-red)">8.7%</td>
+                  <td><span class="apdex-score apdex-poor">0.28</span></td>
+                </tr>
+                <tr>
+                  <td><span class="endpoint-method endpoint-method--post">POST</span></td>
+                  <td><span class="endpoint-path">/api/payments/charge</span></td>
+                  <td>payment-gateway</td>
+                  <td class="font-mono">1,205/min</td>
+                  <td class="font-mono">180ms</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">450ms</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">890ms</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">2.3%</td>
+                  <td><span class="apdex-score apdex-fair">0.72</span></td>
+                </tr>
+                <tr>
+                  <td><span class="endpoint-method endpoint-method--post">POST</span></td>
+                  <td><span class="endpoint-path">/api/orders</span></td>
+                  <td>order-service</td>
+                  <td class="font-mono">3,421/min</td>
+                  <td class="font-mono">45ms</td>
+                  <td class="font-mono">120ms</td>
+                  <td class="font-mono">245ms</td>
+                  <td class="font-mono" style="color:var(--accent-green)">0.1%</td>
+                  <td><span class="apdex-score apdex-good">0.97</span></td>
+                </tr>
+                <tr>
+                  <td><span class="endpoint-method endpoint-method--get">GET</span></td>
+                  <td><span class="endpoint-path">/api/orders/{id}</span></td>
+                  <td>order-service</td>
+                  <td class="font-mono">5,120/min</td>
+                  <td class="font-mono">22ms</td>
+                  <td class="font-mono">68ms</td>
+                  <td class="font-mono">142ms</td>
+                  <td class="font-mono" style="color:var(--accent-green)">0.05%</td>
+                  <td><span class="apdex-score apdex-excellent">0.99</span></td>
+                </tr>
+                <tr>
+                  <td><span class="endpoint-method endpoint-method--post">POST</span></td>
+                  <td><span class="endpoint-path">/auth/login</span></td>
+                  <td>user-auth</td>
+                  <td class="font-mono">5,678/min</td>
+                  <td class="font-mono">18ms</td>
+                  <td class="font-mono">45ms</td>
+                  <td class="font-mono">89ms</td>
+                  <td class="font-mono" style="color:var(--accent-green)">0.0%</td>
+                  <td><span class="apdex-score apdex-excellent">0.99</span></td>
+                </tr>
+                <tr>
+                  <td><span class="endpoint-method endpoint-method--put">PUT</span></td>
+                  <td><span class="endpoint-path">/api/orders/{id}/status</span></td>
+                  <td>order-service</td>
+                  <td class="font-mono">1,890/min</td>
+                  <td class="font-mono">35ms</td>
+                  <td class="font-mono">78ms</td>
+                  <td class="font-mono">120ms</td>
+                  <td class="font-mono" style="color:var(--accent-green)">0.2%</td>
+                  <td><span class="apdex-score apdex-good">0.96</span></td>
+                </tr>
+                <tr>
+                  <td><span class="endpoint-method endpoint-method--delete">DELETE</span></td>
+                  <td><span class="endpoint-path">/api/cart/items/{id}</span></td>
+                  <td>order-service</td>
+                  <td class="font-mono">780/min</td>
+                  <td class="font-mono">12ms</td>
+                  <td class="font-mono">28ms</td>
+                  <td class="font-mono">56ms</td>
+                  <td class="font-mono" style="color:var(--accent-green)">0.0%</td>
+                  <td><span class="apdex-score apdex-excellent">1.00</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Instances ===================== -->
+      <div class="page" id="page-instances">
+        <div class="filter-bar">
+          <i class="fas fa-search" style="color:var(--text-tertiary)"></i>
+          <input class="filter-input" placeholder="Search instances by hostname, IP, service...">
+          <div class="flex gap-sm">
+            <button class="btn btn-ghost" style="color:var(--accent-green)"><span class="dot dot-healthy"></span> 14 Online</button>
+            <button class="btn btn-ghost" style="color:var(--accent-red)"><span class="dot dot-critical"></span> 2 Offline</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Instance</th><th>Service</th><th>Status</th><th>CPU</th><th>Memory</th><th>GC Pause</th><th>Uptime</th><th>Agent</th></tr></thead>
+              <tbody>
+                <tr><td><span class="font-mono">order-svc-pod-7f4d8</span><br><span class="text-xs text-tertiary">10.0.2.15</span></td><td>order-service</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Online</span></td><td><div class="flex items-center gap-sm"><div style="width:60px;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:35%;height:100%;background:var(--accent-green);border-radius:3px"></div></div><span class="text-xs font-mono">35%</span></div></td><td><div class="flex items-center gap-sm"><div style="width:60px;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:62%;height:100%;background:var(--accent-yellow);border-radius:3px"></div></div><span class="text-xs font-mono">62%</span></div></td><td class="font-mono">12ms</td><td class="text-secondary">3d 14h</td><td><span class="badge badge-info">v1.4.2</span></td></tr>
+                <tr><td><span class="font-mono">order-svc-pod-a2b3c</span><br><span class="text-xs text-tertiary">10.0.2.16</span></td><td>order-service</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Online</span></td><td><div class="flex items-center gap-sm"><div style="width:60px;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:42%;height:100%;background:var(--accent-green);border-radius:3px"></div></div><span class="text-xs font-mono">42%</span></div></td><td><div class="flex items-center gap-sm"><div style="width:60px;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:58%;height:100%;background:var(--accent-yellow);border-radius:3px"></div></div><span class="text-xs font-mono">58%</span></div></td><td class="font-mono">15ms</td><td class="text-secondary">3d 14h</td><td><span class="badge badge-info">v1.4.2</span></td></tr>
+                <tr><td><span class="font-mono">payment-gw-pod-x9y8z</span><br><span class="text-xs text-tertiary">10.0.3.21</span></td><td>payment-gateway</td><td><span class="badge badge-warning"><span class="dot dot-warning"></span>High Load</span></td><td><div class="flex items-center gap-sm"><div style="width:60px;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:87%;height:100%;background:var(--accent-red);border-radius:3px"></div></div><span class="text-xs font-mono" style="color:var(--accent-red)">87%</span></div></td><td><div class="flex items-center gap-sm"><div style="width:60px;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:78%;height:100%;background:var(--accent-orange);border-radius:3px"></div></div><span class="text-xs font-mono" style="color:var(--accent-orange)">78%</span></div></td><td class="font-mono" style="color:var(--accent-yellow)">45ms</td><td class="text-secondary">1d 6h</td><td><span class="badge badge-info">v1.4.1</span></td></tr>
+                <tr><td><span class="font-mono">inv-svc-pod-m1n2o</span><br><span class="text-xs text-tertiary">10.0.4.8</span></td><td>inventory-svc</td><td><span class="badge badge-critical"><span class="dot dot-critical"></span>Offline</span></td><td><span class="text-xs text-tertiary">—</span></td><td><span class="text-xs text-tertiary">—</span></td><td><span class="text-xs text-tertiary">—</span></td><td class="text-secondary text-xs">Last seen 12min ago</td><td><span class="badge badge-neutral">v1.4.0</span></td></tr>
+                <tr><td><span class="font-mono">user-auth-pod-k5l6m</span><br><span class="text-xs text-tertiary">10.0.1.5</span></td><td>user-auth</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Online</span></td><td><div class="flex items-center gap-sm"><div style="width:60px;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:22%;height:100%;background:var(--accent-green);border-radius:3px"></div></div><span class="text-xs font-mono">22%</span></div></td><td><div class="flex items-center gap-sm"><div style="width:60px;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:45%;height:100%;background:var(--accent-green);border-radius:3px"></div></div><span class="text-xs font-mono">45%</span></div></td><td class="font-mono">8ms</td><td class="text-secondary">7d 2h</td><td><span class="badge badge-info">v1.4.2</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Instrumentation ===================== -->
+      <div class="page" id="page-instrumentation">
+        <div class="flex items-center justify-between mb-lg">
+          <div class="flex items-center gap-md">
+            <span class="badge badge-info">12 active rules</span>
+            <span class="badge badge-neutral">3 paused</span>
+            <span class="badge badge-critical">1 failed</span>
+          </div>
+          <button class="btn btn-primary" onclick="openNewRuleModal()"><i class="fas fa-plus"></i> New Rule</button>
+        </div>
+
+        <div class="grid-2-1" style="grid-template-columns:1fr 380px">
+          <!-- Rule List -->
+          <div class="card">
+            <div class="card-header"><span class="card-title">Instrumentation Rules</span></div>
+            <div class="table-container">
+              <table>
+                <thead><tr><th>Rule</th><th>Service</th><th>Type</th><th>Targets</th><th>Status</th></tr></thead>
+                <tbody>
+                  <tr style="background:var(--bg-hover)"><td><span class="font-mono" style="color:var(--accent-blue)">OrderService.submit</span><br><span class="text-xs text-tertiary">Capture args & return</span></td><td>order-service</td><td><span class="badge badge-info">trace</span></td><td><span class="font-mono">4/4</span> <span class="text-xs text-secondary">applied</span></td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Active</span></td></tr>
+                  <tr><td><span class="font-mono" style="color:var(--accent-blue)">PaymentGateway.charge</span><br><span class="text-xs text-tertiary">Track payment latency</span></td><td>payment-gateway</td><td><span class="badge badge-info">trace</span></td><td><span class="font-mono">2/3</span> <span class="text-xs text-secondary">applied</span></td><td><span class="badge badge-warning"><span class="dot dot-warning"></span>Partial</span></td></tr>
+                  <tr><td><span class="font-mono" style="color:var(--accent-blue)">InventoryService.query</span><br><span class="text-xs text-tertiary">Debug slow queries</span></td><td>inventory-svc</td><td><span class="badge badge-neutral">metric</span></td><td><span class="font-mono">0/2</span> <span class="text-xs text-secondary">offline</span></td><td><span class="badge badge-critical"><span class="dot dot-critical"></span>Failed</span></td></tr>
+                  <tr><td><span class="font-mono" style="color:var(--accent-blue)">AuthService.validate</span><br><span class="text-xs text-tertiary">Monitor auth perf</span></td><td>user-auth</td><td><span class="badge badge-info">trace</span></td><td><span class="font-mono">2/2</span> <span class="text-xs text-secondary">applied</span></td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Active</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Rule Detail -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Rule Detail</span>
+              <div class="flex gap-sm"><button class="btn btn-ghost text-xs"><i class="fas fa-pause"></i></button><button class="btn btn-ghost text-xs"><i class="fas fa-trash"></i></button></div>
+            </div>
+            <div class="card-body">
+              <div style="margin-bottom:var(--space-lg)">
+                <div class="text-xs text-tertiary">Rule Name</div>
+                <div class="font-mono" style="margin-top:2px">OrderService.submit</div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-md);margin-bottom:var(--space-lg)">
+                <div><div class="text-xs text-tertiary">Class</div><div class="font-mono text-sm" style="margin-top:2px">com.demo.OrderService</div></div>
+                <div><div class="text-xs text-tertiary">Method</div><div class="font-mono text-sm" style="margin-top:2px">submit</div></div>
+                <div><div class="text-xs text-tertiary">Type</div><div style="margin-top:2px"><span class="badge badge-info">trace</span></div></div>
+                <div><div class="text-xs text-tertiary">Desired State</div><div style="margin-top:2px"><span class="badge badge-healthy">active</span></div></div>
+              </div>
+              <div class="text-xs text-tertiary" style="margin-bottom:var(--space-sm)">Target Status</div>
+              <div style="display:flex;flex-direction:column;gap:var(--space-sm)">
+                <div class="flex items-center justify-between" style="padding:var(--space-sm) var(--space-md);background:var(--bg-tertiary);border-radius:var(--radius-md)"><div class="flex items-center gap-sm"><span class="dot dot-healthy"></span><span class="font-mono text-xs">pod-7f4d8</span></div><span class="badge badge-healthy">applied</span></div>
+                <div class="flex items-center justify-between" style="padding:var(--space-sm) var(--space-md);background:var(--bg-tertiary);border-radius:var(--radius-md)"><div class="flex items-center gap-sm"><span class="dot dot-healthy"></span><span class="font-mono text-xs">pod-a2b3c</span></div><span class="badge badge-healthy">applied</span></div>
+                <div class="flex items-center justify-between" style="padding:var(--space-sm) var(--space-md);background:var(--bg-tertiary);border-radius:var(--radius-md)"><div class="flex items-center gap-sm"><span class="dot dot-healthy"></span><span class="font-mono text-xs">pod-d4e5f</span></div><span class="badge badge-healthy">applied</span></div>
+                <div class="flex items-center justify-between" style="padding:var(--space-sm) var(--space-md);background:var(--bg-tertiary);border-radius:var(--radius-md)"><div class="flex items-center gap-sm"><span class="dot dot-healthy"></span><span class="font-mono text-xs">pod-g7h8i</span></div><span class="badge badge-healthy">applied</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Alerts ===================== -->
+      <div class="page" id="page-alerts">
+        <div class="tabs">
+          <div class="tab active">Active Alerts <span class="nav-badge" style="margin-left:4px">3</span></div>
+          <div class="tab">Alert Rules</div>
+          <div class="tab">History</div>
+        </div>
+
+        <!-- Active Alerts -->
+        <div style="display:flex;flex-direction:column;gap:var(--space-md)">
+          <div class="card" style="border-left:3px solid var(--accent-red)">
+            <div class="card-body" style="padding:var(--space-md) var(--space-lg)">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-md">
+                  <span class="dot dot-critical" style="width:8px;height:8px"></span>
+                  <div>
+                    <div style="font-weight:600;font-size:0.85rem">High Error Rate — inventory-svc</div>
+                    <div class="text-xs text-secondary" style="margin-top:2px">Error rate exceeded 5% threshold for 5 minutes</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-md">
+                  <span class="text-xs text-tertiary">Firing since 12 min ago</span>
+                  <button class="btn btn-ghost text-xs">Acknowledge</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="border-left:3px solid var(--accent-red)">
+            <div class="card-body" style="padding:var(--space-md) var(--space-lg)">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-md">
+                  <span class="dot dot-critical" style="width:8px;height:8px"></span>
+                  <div>
+                    <div style="font-weight:600;font-size:0.85rem">P99 Latency Spike — inventory-svc</div>
+                    <div class="text-xs text-secondary" style="margin-top:2px">P99 latency > 1000ms for 3 consecutive minutes</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-md">
+                  <span class="text-xs text-tertiary">Firing since 10 min ago</span>
+                  <button class="btn btn-ghost text-xs">Acknowledge</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="border-left:3px solid var(--accent-yellow)">
+            <div class="card-body" style="padding:var(--space-md) var(--space-lg)">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-md">
+                  <span class="dot dot-warning" style="width:8px;height:8px"></span>
+                  <div>
+                    <div style="font-weight:600;font-size:0.85rem">High CPU Usage — payment-gw-pod-x9y8z</div>
+                    <div class="text-xs text-secondary" style="margin-top:2px">CPU utilization exceeded 80% for 10 minutes</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-md">
+                  <span class="text-xs text-tertiary">Firing since 6 min ago</span>
+                  <button class="btn btn-ghost text-xs">Acknowledge</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Error Inbox ===================== -->
+      <div class="page" id="page-errors">
+        <div class="flex items-center justify-between mb-lg">
+          <div class="flex items-center gap-md">
+            <span class="badge badge-critical">12 Unresolved</span>
+            <span class="badge badge-warning">8 Triaged</span>
+            <span class="badge badge-healthy">27 Resolved</span>
+          </div>
+          <div class="flex gap-sm">
+            <button class="btn btn-ghost"><i class="fas fa-filter"></i> Filter</button>
+            <button class="btn btn-ghost"><i class="fas fa-sort-amount-down"></i> Most Frequent</button>
+          </div>
+        </div>
+
+        <!-- Error Groups -->
+        <div style="display:flex;flex-direction:column;gap:var(--space-md)">
+          <!-- Error Group 1: Critical -->
+          <div class="card error-group-card" style="border-left:3px solid var(--accent-red)">
+            <div class="card-body" style="padding:var(--space-md) var(--space-lg)">
+              <div class="flex items-center justify-between mb-sm">
+                <div class="flex items-center gap-md">
+                  <span class="dot dot-critical" style="width:8px;height:8px"></span>
+                  <div>
+                    <div style="font-weight:600;font-size:0.85rem;font-family:'JetBrains Mono',monospace">NullPointerException</div>
+                    <div class="text-xs text-secondary" style="margin-top:2px">com.demo.inventory.StockService.checkAvailability(StockService.java:142)</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-md">
+                  <span class="error-count-badge">2,847</span>
+                  <span class="badge badge-critical">New</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-lg text-xs text-tertiary">
+                <span><i class="fas fa-layer-group"></i> inventory-svc</span>
+                <span><i class="fas fa-users"></i> ~340 users affected</span>
+                <span><i class="fas fa-clock"></i> First: 45 min ago</span>
+                <span><i class="fas fa-redo"></i> Last: 12s ago</span>
+                <span class="error-sparkline">▁▂▃▅▇█████</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Error Group 2 -->
+          <div class="card error-group-card" style="border-left:3px solid var(--accent-red)">
+            <div class="card-body" style="padding:var(--space-md) var(--space-lg)">
+              <div class="flex items-center justify-between mb-sm">
+                <div class="flex items-center gap-md">
+                  <span class="dot dot-critical" style="width:8px;height:8px"></span>
+                  <div>
+                    <div style="font-weight:600;font-size:0.85rem;font-family:'JetBrains Mono',monospace">ConnectionTimeoutException</div>
+                    <div class="text-xs text-secondary" style="margin-top:2px">com.demo.payment.client.StripeClient.charge(StripeClient.java:89)</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-md">
+                  <span class="error-count-badge">456</span>
+                  <span class="badge badge-warning">Triaged</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-lg text-xs text-tertiary">
+                <span><i class="fas fa-layer-group"></i> payment-gateway</span>
+                <span><i class="fas fa-users"></i> ~120 users affected</span>
+                <span><i class="fas fa-clock"></i> First: 2 hours ago</span>
+                <span><i class="fas fa-redo"></i> Last: 3 min ago</span>
+                <span class="error-sparkline">▃▅▇▅▃▂▁▁▂▃</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Error Group 3 -->
+          <div class="card error-group-card" style="border-left:3px solid var(--accent-yellow)">
+            <div class="card-body" style="padding:var(--space-md) var(--space-lg)">
+              <div class="flex items-center justify-between mb-sm">
+                <div class="flex items-center gap-md">
+                  <span class="dot dot-warning" style="width:8px;height:8px"></span>
+                  <div>
+                    <div style="font-weight:600;font-size:0.85rem;font-family:'JetBrains Mono',monospace">SlowQueryWarning</div>
+                    <div class="text-xs text-secondary" style="margin-top:2px">com.demo.order.repository.OrderDAO.findByUserId(OrderDAO.java:67) — query > 2000ms</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-md">
+                  <span class="error-count-badge" style="background:rgba(210,153,34,0.15);color:var(--accent-yellow)">89</span>
+                  <span class="badge badge-warning">Triaged</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-lg text-xs text-tertiary">
+                <span><i class="fas fa-layer-group"></i> order-service</span>
+                <span><i class="fas fa-users"></i> ~45 users affected</span>
+                <span><i class="fas fa-clock"></i> First: 5 hours ago</span>
+                <span><i class="fas fa-redo"></i> Last: 8 min ago</span>
+                <span class="error-sparkline">▁▁▂▂▃▂▂▁▁▂</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Error Group 4: Resolved -->
+          <div class="card error-group-card" style="border-left:3px solid var(--accent-green);opacity:0.7">
+            <div class="card-body" style="padding:var(--space-md) var(--space-lg)">
+              <div class="flex items-center justify-between mb-sm">
+                <div class="flex items-center gap-md">
+                  <span class="dot dot-healthy" style="width:8px;height:8px"></span>
+                  <div>
+                    <div style="font-weight:600;font-size:0.85rem;font-family:'JetBrains Mono',monospace;text-decoration:line-through;opacity:0.7">IllegalStateException</div>
+                    <div class="text-xs text-secondary" style="margin-top:2px">com.demo.auth.TokenValidator.validate(TokenValidator.java:23)</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-md">
+                  <span class="error-count-badge" style="background:rgba(63,185,80,0.15);color:var(--accent-green)">0</span>
+                  <span class="badge badge-healthy">Resolved</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-lg text-xs text-tertiary">
+                <span><i class="fas fa-layer-group"></i> user-auth</span>
+                <span><i class="fas fa-check-circle" style="color:var(--accent-green)"></i> Fixed in v3.1.0</span>
+                <span><i class="fas fa-clock"></i> Resolved 2 days ago</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Deployments ===================== -->
+      <div class="page" id="page-deployments">
+        <div class="flex items-center justify-between mb-lg">
+          <div class="flex items-center gap-md">
+            <span class="badge badge-info">6 deployments today</span>
+            <span class="badge badge-healthy">5 healthy</span>
+            <span class="badge badge-critical">1 degraded</span>
+          </div>
+          <div class="flex gap-sm">
+            <button class="btn btn-ghost"><i class="fas fa-calendar"></i> Last 7 days</button>
+          </div>
+        </div>
+
+        <!-- Deployment Timeline -->
+        <div class="card mb-lg">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-code-branch" style="color:var(--accent-blue)"></i> Deployment Timeline</span>
+            <span class="text-xs text-tertiary">Markers show deploy events on performance graph</span>
+          </div>
+          <div class="card-body" style="position:relative">
+            <div class="chart-area" id="deploy-timeline-chart" style="height:160px"></div>
+            <!-- Deploy markers -->
+            <div class="deploy-marker deploy-marker--success" style="left:15%"><div class="deploy-marker-line"></div><div class="deploy-marker-dot"></div><span class="deploy-marker-label">v2.3.1</span></div>
+            <div class="deploy-marker deploy-marker--success" style="left:38%"><div class="deploy-marker-line"></div><div class="deploy-marker-dot"></div><span class="deploy-marker-label">v1.5.2</span></div>
+            <div class="deploy-marker deploy-marker--danger" style="left:62%"><div class="deploy-marker-line"></div><div class="deploy-marker-dot" style="background:var(--accent-red)"></div><span class="deploy-marker-label" style="color:var(--accent-red)">v1.2.4 ⚠</span></div>
+            <div class="deploy-marker deploy-marker--success" style="left:78%"><div class="deploy-marker-line"></div><div class="deploy-marker-dot"></div><span class="deploy-marker-label">v1.8.0</span></div>
+          </div>
+        </div>
+
+        <!-- Deployment List -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">Recent Deployments</span></div>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Service</th><th>Version</th><th>Status</th><th>Deployed</th><th>Δ Latency</th><th>Δ Error Rate</th><th>Rollback</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><span class="font-mono" style="color:var(--accent-blue)">inventory-svc</span></td>
+                  <td><span class="font-mono">v1.2.3 → <strong style="color:var(--accent-red)">v1.2.4</strong></span></td>
+                  <td><span class="badge badge-critical"><span class="dot dot-critical"></span>Degraded</span></td>
+                  <td class="text-secondary">45 min ago</td>
+                  <td class="font-mono" style="color:var(--accent-red)">+890ms (+256%)</td>
+                  <td class="font-mono" style="color:var(--accent-red)">+7.8%</td>
+                  <td><button class="btn btn-ghost" style="color:var(--accent-red);font-size:0.7rem"><i class="fas fa-undo"></i> Rollback</button></td>
+                </tr>
+                <tr>
+                  <td><span class="font-mono" style="color:var(--accent-blue)">payment-gateway</span></td>
+                  <td><span class="font-mono">v1.7.9 → <strong>v1.8.0</strong></span></td>
+                  <td><span class="badge badge-warning"><span class="dot dot-warning"></span>Monitoring</span></td>
+                  <td class="text-secondary">1 hour ago</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">+45ms (+12%)</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">+1.1%</td>
+                  <td><button class="btn btn-ghost" style="font-size:0.7rem"><i class="fas fa-undo"></i> Rollback</button></td>
+                </tr>
+                <tr>
+                  <td><span class="font-mono" style="color:var(--accent-blue)">order-service</span></td>
+                  <td><span class="font-mono">v2.3.0 → <strong>v2.3.1</strong></span></td>
+                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td>
+                  <td class="text-secondary">3 hours ago</td>
+                  <td class="font-mono" style="color:var(--accent-green)">-12ms (-13%)</td>
+                  <td class="font-mono" style="color:var(--accent-green)">-0.05%</td>
+                  <td><span class="text-xs text-tertiary">—</span></td>
+                </tr>
+                <tr>
+                  <td><span class="font-mono" style="color:var(--accent-blue)">notification-svc</span></td>
+                  <td><span class="font-mono">v1.5.1 → <strong>v1.5.2</strong></span></td>
+                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td>
+                  <td class="text-secondary">5 hours ago</td>
+                  <td class="font-mono" style="color:var(--accent-green)">-3ms (-5%)</td>
+                  <td class="font-mono text-tertiary">0.0%</td>
+                  <td><span class="text-xs text-tertiary">—</span></td>
+                </tr>
+                <tr>
+                  <td><span class="font-mono" style="color:var(--accent-blue)">user-auth</span></td>
+                  <td><span class="font-mono">v3.0.9 → <strong>v3.1.0</strong></span></td>
+                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td>
+                  <td class="text-secondary">1 day ago</td>
+                  <td class="font-mono" style="color:var(--accent-green)">-8ms (-19%)</td>
+                  <td class="font-mono" style="color:var(--accent-green)">-0.02%</td>
+                  <td><span class="text-xs text-tertiary">—</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Resource Explorer ===================== -->
+      <div class="page" id="page-resources">
+        <div class="resource-explorer">
+          <!-- Left: Tree Navigation -->
+          <div class="re-tree-panel">
+            <div class="re-tree-header">
+              <div class="re-search">
+                <i class="fas fa-search" style="color:var(--text-tertiary);font-size:0.75rem"></i>
+                <input class="re-search-input" placeholder="Search apps, services, instances..." id="re-search-input">
+              </div>
+              <div class="re-tree-stats">
+                <span class="text-xs text-tertiary">3 Apps · 8 Services · 16 Instances</span>
+              </div>
+            </div>
+            <div class="re-tree-body" id="re-tree-body">
+              <!-- App: E-Commerce Platform -->
+              <div class="re-tree-node re-app" data-type="app" data-id="app-ecommerce">
+                <div class="re-node-row re-node-row--app" onclick="toggleTreeNode(this)" data-select="app-ecommerce">
+                  <i class="fas fa-chevron-down re-chevron"></i>
+                  <i class="fas fa-cube re-icon" style="color:var(--accent-blue)"></i>
+                  <span class="re-node-name">E-Commerce Platform</span>
+                  <span class="re-node-count">5 svc · 12 inst</span>
+                  <span class="dot dot-healthy" style="margin-left:auto"></span>
+                </div>
+                <div class="re-children">
+                  <!-- Service: order-service -->
+                  <div class="re-tree-node re-service" data-type="service" data-id="svc-order">
+                    <div class="re-node-row re-node-row--service" onclick="toggleTreeNode(this)" data-select="svc-order">
+                      <i class="fas fa-chevron-down re-chevron"></i>
+                      <i class="fas fa-cogs re-icon" style="color:var(--accent-green)"></i>
+                      <span class="re-node-name">order-service</span>
+                      <span class="re-node-count">4 inst</span>
+                      <span class="dot dot-healthy" style="margin-left:auto"></span>
+                    </div>
+                    <div class="re-children">
+                      <div class="re-tree-node re-instance" data-type="instance" data-id="inst-order-1">
+                        <div class="re-node-row re-node-row--instance re-node-row--selected" data-select="inst-order-1">
+                          <span class="re-leaf-spacer"></span>
+                          <span class="dot dot-healthy"></span>
+                          <span class="re-node-name font-mono">pod-7f4d8</span>
+                          <span class="text-xs text-tertiary" style="margin-left:auto">10.0.2.15</span>
+                        </div>
+                      </div>
+                      <div class="re-tree-node re-instance" data-type="instance" data-id="inst-order-2">
+                        <div class="re-node-row re-node-row--instance" data-select="inst-order-2">
+                          <span class="re-leaf-spacer"></span>
+                          <span class="dot dot-healthy"></span>
+                          <span class="re-node-name font-mono">pod-a2b3c</span>
+                          <span class="text-xs text-tertiary" style="margin-left:auto">10.0.2.16</span>
+                        </div>
+                      </div>
+                      <div class="re-tree-node re-instance" data-type="instance" data-id="inst-order-3">
+                        <div class="re-node-row re-node-row--instance" data-select="inst-order-3">
+                          <span class="re-leaf-spacer"></span>
+                          <span class="dot dot-healthy"></span>
+                          <span class="re-node-name font-mono">pod-d4e5f</span>
+                          <span class="text-xs text-tertiary" style="margin-left:auto">10.0.2.17</span>
+                        </div>
+                      </div>
+                      <div class="re-tree-node re-instance" data-type="instance" data-id="inst-order-4">
+                        <div class="re-node-row re-node-row--instance" data-select="inst-order-4">
+                          <span class="re-leaf-spacer"></span>
+                          <span class="dot dot-healthy"></span>
+                          <span class="re-node-name font-mono">pod-g7h8i</span>
+                          <span class="text-xs text-tertiary" style="margin-left:auto">10.0.2.18</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- Service: payment-gateway -->
+                  <div class="re-tree-node re-service" data-type="service" data-id="svc-payment">
+                    <div class="re-node-row re-node-row--service" onclick="toggleTreeNode(this)" data-select="svc-payment">
+                      <i class="fas fa-chevron-down re-chevron"></i>
+                      <i class="fas fa-cogs re-icon" style="color:var(--accent-yellow)"></i>
+                      <span class="re-node-name">payment-gateway</span>
+                      <span class="re-node-count">3 inst</span>
+                      <span class="dot dot-warning" style="margin-left:auto"></span>
+                    </div>
+                    <div class="re-children">
+                      <div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-pay-1"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-x9y8z</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.3.21</span></div></div>
+                      <div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-pay-2"><span class="re-leaf-spacer"></span><span class="dot dot-warning"></span><span class="re-node-name font-mono">pod-w7v6u</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.3.22</span></div></div>
+                      <div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-pay-3"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-t5s4r</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.3.23</span></div></div>
+                    </div>
+                  </div>
+                  <!-- Service: inventory-svc -->
+                  <div class="re-tree-node re-service" data-type="service" data-id="svc-inventory">
+                    <div class="re-node-row re-node-row--service" onclick="toggleTreeNode(this)" data-select="svc-inventory">
+                      <i class="fas fa-chevron-down re-chevron"></i>
+                      <i class="fas fa-cogs re-icon" style="color:var(--accent-red)"></i>
+                      <span class="re-node-name">inventory-svc</span>
+                      <span class="re-node-count">2 inst</span>
+                      <span class="dot dot-critical" style="margin-left:auto"></span>
+                    </div>
+                    <div class="re-children">
+                      <div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-inv-1"><span class="re-leaf-spacer"></span><span class="dot dot-critical"></span><span class="re-node-name font-mono">pod-m1n2o</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.4.8</span></div></div>
+                      <div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-inv-2"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-p3q4r</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.4.9</span></div></div>
+                    </div>
+                  </div>
+                  <!-- Service: user-auth (collapsed) -->
+                  <div class="re-tree-node re-service" data-type="service" data-id="svc-auth">
+                    <div class="re-node-row re-node-row--service" onclick="toggleTreeNode(this)" data-select="svc-auth">
+                      <i class="fas fa-chevron-right re-chevron"></i>
+                      <i class="fas fa-cogs re-icon" style="color:var(--accent-green)"></i>
+                      <span class="re-node-name">user-auth</span>
+                      <span class="re-node-count">2 inst</span>
+                      <span class="dot dot-healthy" style="margin-left:auto"></span>
+                    </div>
+                    <div class="re-children" style="display:none">
+                      <div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-auth-1"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-k5l6m</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.1.5</span></div></div>
+                      <div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-auth-2"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-n7o8p</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.1.6</span></div></div>
+                    </div>
+                  </div>
+                  <!-- Service: notification-svc (collapsed) -->
+                  <div class="re-tree-node re-service" data-type="service" data-id="svc-notif">
+                    <div class="re-node-row re-node-row--service" onclick="toggleTreeNode(this)" data-select="svc-notif">
+                      <i class="fas fa-chevron-right re-chevron"></i>
+                      <i class="fas fa-cogs re-icon" style="color:var(--accent-green)"></i>
+                      <span class="re-node-name">notification-svc</span>
+                      <span class="re-node-count">1 inst</span>
+                      <span class="dot dot-healthy" style="margin-left:auto"></span>
+                    </div>
+                    <div class="re-children" style="display:none">
+                      <div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-notif-1"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-q1r2s</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.5.3</span></div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- App: Internal Tools -->
+              <div class="re-tree-node re-app" data-type="app" data-id="app-internal">
+                <div class="re-node-row re-node-row--app" onclick="toggleTreeNode(this)" data-select="app-internal">
+                  <i class="fas fa-chevron-right re-chevron"></i>
+                  <i class="fas fa-cube re-icon" style="color:var(--accent-purple)"></i>
+                  <span class="re-node-name">Internal Tools</span>
+                  <span class="re-node-count">2 svc · 3 inst</span>
+                  <span class="dot dot-healthy" style="margin-left:auto"></span>
+                </div>
+                <div class="re-children" style="display:none">
+                  <div class="re-tree-node re-service"><div class="re-node-row re-node-row--service" onclick="toggleTreeNode(this)" data-select="svc-admin"><i class="fas fa-chevron-right re-chevron"></i><i class="fas fa-cogs re-icon" style="color:var(--accent-green)"></i><span class="re-node-name">admin-portal</span><span class="re-node-count">2 inst</span><span class="dot dot-healthy" style="margin-left:auto"></span></div><div class="re-children" style="display:none"><div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-admin-1"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-adm01</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.6.1</span></div></div><div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-admin-2"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-adm02</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.6.2</span></div></div></div></div>
+                  <div class="re-tree-node re-service"><div class="re-node-row re-node-row--service" data-select="svc-scheduler"><i class="fas fa-chevron-right re-chevron"></i><i class="fas fa-cogs re-icon" style="color:var(--accent-green)"></i><span class="re-node-name">task-scheduler</span><span class="re-node-count">1 inst</span><span class="dot dot-healthy" style="margin-left:auto"></span></div><div class="re-children" style="display:none"><div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-sched-1"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-sch01</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.7.1</span></div></div></div></div>
+                </div>
+              </div>
+
+              <!-- App: Data Pipeline -->
+              <div class="re-tree-node re-app" data-type="app" data-id="app-pipeline">
+                <div class="re-node-row re-node-row--app" onclick="toggleTreeNode(this)" data-select="app-pipeline">
+                  <i class="fas fa-chevron-right re-chevron"></i>
+                  <i class="fas fa-cube re-icon" style="color:var(--accent-cyan)"></i>
+                  <span class="re-node-name">Data Pipeline</span>
+                  <span class="re-node-count">1 svc · 1 inst</span>
+                  <span class="dot dot-healthy" style="margin-left:auto"></span>
+                </div>
+                <div class="re-children" style="display:none">
+                  <div class="re-tree-node re-service"><div class="re-node-row re-node-row--service" data-select="svc-etl"><i class="fas fa-chevron-right re-chevron"></i><i class="fas fa-cogs re-icon" style="color:var(--accent-green)"></i><span class="re-node-name">etl-worker</span><span class="re-node-count">1 inst</span><span class="dot dot-healthy" style="margin-left:auto"></span></div><div class="re-children" style="display:none"><div class="re-tree-node re-instance"><div class="re-node-row re-node-row--instance" data-select="inst-etl-1"><span class="re-leaf-spacer"></span><span class="dot dot-healthy"></span><span class="re-node-name font-mono">pod-etl01</span><span class="text-xs text-tertiary" style="margin-left:auto">10.0.8.1</span></div></div></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Detail Panel -->
+          <div class="re-detail-panel" id="re-detail-panel">
+            <!-- Default: Instance detail (pod-7f4d8 selected) -->
+            <div class="re-detail-header">
+              <div class="re-detail-breadcrumb">
+                <span class="text-xs" style="color:var(--accent-blue);cursor:pointer">E-Commerce Platform</span>
+                <i class="fas fa-chevron-right" style="font-size:0.5rem;color:var(--text-tertiary)"></i>
+                <span class="text-xs" style="color:var(--accent-blue);cursor:pointer">order-service</span>
+                <i class="fas fa-chevron-right" style="font-size:0.5rem;color:var(--text-tertiary)"></i>
+                <span class="text-xs text-primary">pod-7f4d8</span>
+              </div>
+              <div class="re-detail-title">
+                <span class="dot dot-healthy" style="width:10px;height:10px"></span>
+                <h2 style="font-size:1.1rem;font-weight:600">pod-7f4d8</h2>
+                <span class="badge badge-healthy">Online</span>
+                <span class="badge badge-info" style="margin-left:auto">Agent v1.4.2</span>
+              </div>
+            </div>
+
+            <!-- Quick Stats -->
+            <div class="re-detail-stats">
+              <div class="re-mini-stat">
+                <div class="re-mini-stat-label">CPU</div>
+                <div class="re-mini-stat-value">35%</div>
+                <div class="re-mini-stat-bar"><div class="re-mini-stat-fill" style="width:35%;background:var(--accent-green)"></div></div>
+              </div>
+              <div class="re-mini-stat">
+                <div class="re-mini-stat-label">Memory</div>
+                <div class="re-mini-stat-value">62%</div>
+                <div class="re-mini-stat-bar"><div class="re-mini-stat-fill" style="width:62%;background:var(--accent-yellow)"></div></div>
+              </div>
+              <div class="re-mini-stat">
+                <div class="re-mini-stat-label">GC Pause</div>
+                <div class="re-mini-stat-value" style="color:var(--accent-green)">12ms</div>
+                <div class="re-mini-stat-bar"><div class="re-mini-stat-fill" style="width:12%;background:var(--accent-green)"></div></div>
+              </div>
+              <div class="re-mini-stat">
+                <div class="re-mini-stat-label">Uptime</div>
+                <div class="re-mini-stat-value">3d 14h</div>
+                <div class="re-mini-stat-bar"><div class="re-mini-stat-fill" style="width:90%;background:var(--accent-blue)"></div></div>
+              </div>
+            </div>
+
+            <!-- Tabs -->
+            <div class="tabs" style="padding:0 var(--space-lg)">
+              <div class="tab active">Overview</div>
+              <div class="tab">Metrics</div>
+              <div class="tab">Tasks</div>
+              <div class="tab">Arthas</div>
+              <div class="tab">Instrumentation</div>
+            </div>
+
+            <!-- Tab Content: Overview -->
+            <div class="re-detail-content">
+              <!-- Instance Info -->
+              <div class="card mb-lg">
+                <div class="card-header"><span class="card-title"><i class="fas fa-info-circle" style="color:var(--accent-blue)"></i> Instance Info</span></div>
+                <div class="card-body">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-md)">
+                    <div><div class="text-xs text-tertiary">Agent ID</div><div class="font-mono text-sm" style="margin-top:2px">agent-7f4d8b2c</div></div>
+                    <div><div class="text-xs text-tertiary">Hostname</div><div class="font-mono text-sm" style="margin-top:2px">order-svc-pod-7f4d8</div></div>
+                    <div><div class="text-xs text-tertiary">IP Address</div><div class="font-mono text-sm" style="margin-top:2px">10.0.2.15</div></div>
+                    <div><div class="text-xs text-tertiary">Java Version</div><div class="font-mono text-sm" style="margin-top:2px">OpenJDK 17.0.9</div></div>
+                    <div><div class="text-xs text-tertiary">OS</div><div class="font-mono text-sm" style="margin-top:2px">Linux 5.15.0 (amd64)</div></div>
+                    <div><div class="text-xs text-tertiary">Last Heartbeat</div><div class="font-mono text-sm" style="margin-top:2px;color:var(--accent-green)">2s ago</div></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Active Instrumentation Rules on this instance -->
+              <div class="card mb-lg">
+                <div class="card-header"><span class="card-title"><i class="fas fa-microscope" style="color:var(--accent-purple)"></i> Active Rules (2)</span></div>
+                <div class="card-body" style="padding:var(--space-sm) var(--space-lg)">
+                  <div style="display:flex;flex-direction:column;gap:var(--space-sm)">
+                    <div class="flex items-center justify-between" style="padding:var(--space-sm) var(--space-md);background:var(--bg-tertiary);border-radius:var(--radius-md)">
+                      <div class="flex items-center gap-sm"><span class="dot dot-healthy"></span><span class="font-mono text-xs">OrderService.submit</span></div>
+                      <span class="badge badge-healthy">applied</span>
+                    </div>
+                    <div class="flex items-center justify-between" style="padding:var(--space-sm) var(--space-md);background:var(--bg-tertiary);border-radius:var(--radius-md)">
+                      <div class="flex items-center gap-sm"><span class="dot dot-healthy"></span><span class="font-mono text-xs">OrderService.getById</span></div>
+                      <span class="badge badge-healthy">applied</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Recent Tasks -->
+              <div class="card">
+                <div class="card-header"><span class="card-title"><i class="fas fa-tasks" style="color:var(--accent-yellow)"></i> Recent Tasks</span></div>
+                <div class="card-body" style="padding:var(--space-sm) var(--space-lg)">
+                  <div style="display:flex;flex-direction:column;gap:var(--space-sm)">
+                    <div class="flex items-center justify-between" style="padding:var(--space-sm) var(--space-md);background:var(--bg-tertiary);border-radius:var(--radius-md)">
+                      <div><span class="font-mono text-xs">dynamic_instrument</span><span class="text-xs text-tertiary" style="margin-left:8px">5 min ago</span></div>
+                      <span class="badge badge-healthy">success</span>
+                    </div>
+                    <div class="flex items-center justify-between" style="padding:var(--space-sm) var(--space-md);background:var(--bg-tertiary);border-radius:var(--radius-md)">
+                      <div><span class="font-mono text-xs">config_push</span><span class="text-xs text-tertiary" style="margin-left:8px">1 hour ago</span></div>
+                      <span class="badge badge-healthy">success</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Quick Actions -->
+              <div style="margin-top:var(--space-lg);display:flex;gap:var(--space-md)">
+                <button class="btn btn-ghost"><i class="fas fa-terminal"></i> Open Arthas</button>
+                <button class="btn btn-ghost"><i class="fas fa-plus"></i> New Task</button>
+                <button class="btn btn-ghost"><i class="fas fa-chart-line"></i> View Metrics</button>
+                <button class="btn btn-ghost" style="color:var(--accent-red)"><i class="fas fa-power-off"></i> Unregister</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- end main-body -->
+  </div><!-- end main-content -->
+</div><!-- end app-layout -->
+
+<!-- ========== Modal: New Instrumentation Rule ========== -->
+<div class="modal-overlay" id="new-rule-modal">
+  <div class="modal">
+    <!-- Header -->
+    <div class="modal-header">
+      <span class="modal-title"><i class="fas fa-microscope" style="color:var(--accent-purple)"></i> Create Instrumentation Rule</span>
+      <button class="modal-close" onclick="closeNewRuleModal()"><i class="fas fa-times"></i></button>
+    </div>
+    <!-- Steps Indicator -->
+    <div class="modal-steps">
+      <div class="modal-step modal-step--active" data-step="1">
+        <span class="modal-step-num">1</span>
+        <span>Basic Info</span>
+      </div>
+      <div class="modal-step-sep"></div>
+      <div class="modal-step" data-step="2">
+        <span class="modal-step-num">2</span>
+        <span>Target</span>
+      </div>
+      <div class="modal-step-sep"></div>
+      <div class="modal-step" data-step="3">
+        <span class="modal-step-num">3</span>
+        <span>Capture</span>
+      </div>
+    </div>
+    <!-- Body -->
+    <div class="modal-body">
+      <!-- Step 1: Basic Info -->
+      <div class="modal-section modal-section--active" id="modal-step-1">
+        <div class="form-group">
+          <label class="form-label">Rule Name</label>
+          <input class="form-input" type="text" placeholder="e.g. OrderService.submit" id="rule-name-input">
+          <div class="form-hint">A descriptive name to identify this rule in the list</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description</label>
+          <input class="form-input" type="text" placeholder="e.g. Capture args & return value for debugging">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Rule Type</label>
+          <div class="segmented-control" id="rule-type-seg">
+            <div class="segment segment--active" data-value="trace" onclick="selectSegment(this)"><i class="fas fa-route"></i> Trace</div>
+            <div class="segment" data-value="metric" onclick="selectSegment(this)"><i class="fas fa-chart-bar"></i> Metric</div>
+            <div class="segment" data-value="log" onclick="selectSegment(this)"><i class="fas fa-file-alt"></i> Log</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Target Service</label>
+          <select class="form-select">
+            <option value="">Select a service...</option>
+            <option value="order-service">order-service</option>
+            <option value="payment-gateway">payment-gateway</option>
+            <option value="inventory-svc">inventory-svc</option>
+            <option value="user-auth">user-auth</option>
+            <option value="notification-svc">notification-svc</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Step 2: Target -->
+      <div class="modal-section" id="modal-step-2">
+        <div class="form-group">
+          <label class="form-label">Class Pattern</label>
+          <input class="form-input form-input--mono" type="text" placeholder="com.demo.order.OrderService" id="class-pattern-input">
+          <div class="form-hint">Fully qualified class name or pattern (supports * wildcard)</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Method Pattern</label>
+          <input class="form-input form-input--mono" type="text" placeholder="submit*" id="method-pattern-input">
+          <div class="form-hint">Method name or pattern (supports * wildcard)</div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Include Overloads</label>
+            <div class="segmented-control">
+              <div class="segment segment--active" onclick="selectSegment(this)">Yes</div>
+              <div class="segment" onclick="selectSegment(this)">No</div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Interface Match</label>
+            <div class="segmented-control">
+              <div class="segment segment--active" onclick="selectSegment(this)">Exact</div>
+              <div class="segment" onclick="selectSegment(this)">Subclass</div>
+            </div>
+          </div>
+        </div>
+        <!-- Match Preview -->
+        <div class="match-preview" id="match-preview">
+          <i class="fas fa-info-circle"></i>
+          <span>Will match <strong>4 instances</strong> in <strong>order-service</strong></span>
+        </div>
+      </div>
+
+      <!-- Step 3: Capture -->
+      <div class="modal-section" id="modal-step-3">
+        <div class="form-group">
+          <label class="form-label">Capture Options</label>
+          <div class="checkbox-group">
+            <div class="checkbox-item checkbox-item--checked" onclick="toggleCheckbox(this)">
+              <div class="checkbox-box"><i class="fas fa-check"></i></div>
+              <span>Arguments</span>
+            </div>
+            <div class="checkbox-item checkbox-item--checked" onclick="toggleCheckbox(this)">
+              <div class="checkbox-box"><i class="fas fa-check"></i></div>
+              <span>Return Value</span>
+            </div>
+            <div class="checkbox-item" onclick="toggleCheckbox(this)">
+              <div class="checkbox-box"><i class="fas fa-check"></i></div>
+              <span>Exception</span>
+            </div>
+            <div class="checkbox-item" onclick="toggleCheckbox(this)">
+              <div class="checkbox-box"><i class="fas fa-check"></i></div>
+              <span>Execution Time</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Sampling Rate</label>
+          <div class="form-row">
+            <input class="form-input form-input--mono" type="text" value="100" style="width:80px">
+            <span class="text-sm text-secondary" style="align-self:center">% of requests</span>
+          </div>
+          <div class="form-hint">Lower sampling rate reduces overhead in high-throughput services</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Desired State</label>
+          <div class="toggle-switch">
+            <div class="toggle-track toggle-track--on" id="desired-state-toggle" onclick="toggleDesiredState()">
+              <div class="toggle-knob"></div>
+            </div>
+            <span class="toggle-label toggle-label--on" id="desired-state-label">Active</span>
+          </div>
+          <div class="form-hint" style="margin-top:var(--space-sm)">Rule will be immediately pushed to matching instances when set to Active</div>
+        </div>
+        <!-- Summary Preview -->
+        <div class="card" style="margin-top:var(--space-lg)">
+          <div class="card-header"><span class="card-title text-xs"><i class="fas fa-eye" style="color:var(--accent-blue)"></i> Rule Summary</span></div>
+          <div class="card-body" style="padding:var(--space-md) var(--space-lg)">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-sm)">
+              <div><span class="text-xs text-tertiary">Name:</span> <span class="font-mono text-sm" id="summary-name">—</span></div>
+              <div><span class="text-xs text-tertiary">Type:</span> <span class="badge badge-info text-xs" id="summary-type">trace</span></div>
+              <div><span class="text-xs text-tertiary">Class:</span> <span class="font-mono text-sm" id="summary-class">—</span></div>
+              <div><span class="text-xs text-tertiary">Method:</span> <span class="font-mono text-sm" id="summary-method">—</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Footer -->
+    <div class="modal-footer">
+      <div class="modal-footer-left">
+        <button class="btn btn-ghost" id="modal-back-btn" onclick="modalPrevStep()" style="display:none"><i class="fas fa-arrow-left"></i> Back</button>
+      </div>
+      <div class="modal-footer-right">
+        <button class="btn btn-ghost" onclick="closeNewRuleModal()">Cancel</button>
+        <button class="btn btn-primary" id="modal-next-btn" onclick="modalNextStep()"><span id="modal-next-label">Next</span> <i class="fas fa-arrow-right" id="modal-next-icon"></i></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- Role Switcher: Platform Admin ↔ Tenant User ----
+let currentRole = 'admin'; // 'admin' | 'tenant'
+
+function toggleRole() {
+  currentRole = currentRole === 'admin' ? 'tenant' : 'admin';
+  applyRole(currentRole);
+}
+
+function applyRole(role) {
+  const isAdmin = role === 'admin';
+  const isTenant = role === 'tenant';
+  
+  // 1. Toggle slider visual
+  const slider = document.getElementById('role-slider');
+  const options = document.querySelectorAll('.role-option');
+  options.forEach(o => o.classList.remove('role-option--active'));
+  document.querySelector(`.role-option[data-role="${role}"]`).classList.add('role-option--active');
+  slider.style.transform = isTenant ? 'translateX(100%)' : 'translateX(0)';
+  
+  // 2. Scope Bar: hide/show Tenant picker + its separator
+  const tenantPicker = document.getElementById('scope-tenant');
+  const tenantSep = tenantPicker.nextElementSibling; // the > separator after tenant picker
+  tenantPicker.style.display = isTenant ? 'none' : '';
+  tenantSep.style.display = isTenant ? 'none' : '';
+  
+  // 3. Sidebar Header toggle
+  document.getElementById('sidebar-header-admin').style.display = isAdmin ? '' : 'none';
+  document.getElementById('sidebar-header-tenant').style.display = isTenant ? '' : 'none';
+  
+  // 4. Nav items: hide admin-only, show tenant-only
+  document.querySelectorAll('[data-admin-only]').forEach(el => {
+    el.style.display = isTenant ? 'none' : '';
+  });
+  document.getElementById('nav-tenant-only').style.display = isTenant ? '' : 'none';
+  
+  // 5. Bottom nav: settings vs user profile
+  document.getElementById('nav-settings-admin').style.display = isAdmin ? '' : 'none';
+  document.getElementById('nav-settings-tenant').style.display = isTenant ? '' : 'none';
+  
+  // 6. Scope context tag update
+  const ctxTag = document.getElementById('scope-context-tag');
+  if (isTenant) {
+    ctxTag.innerHTML = '<i class="fas fa-building" style="font-size:0.55rem"></i> Acme Corp';
+  } else {
+    ctxTag.innerHTML = '<i class="fas fa-filter" style="font-size:0.55rem"></i> Acme Corp / E-Commerce Platform';
+  }
+  
+  // 7. Scope label text
+  const scopeLabel = document.querySelector('.scope-label');
+  scopeLabel.innerHTML = isTenant 
+    ? '<i class="fas fa-filter"></i> Scope' 
+    : '<i class="fas fa-filter"></i> Scope';
+  
+  // 8. If tenant was viewing admin-only page, redirect to dashboard
+  const activePage = document.querySelector('.page.active');
+  if (isTenant && activePage && activePage.id === 'page-resources') {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelector('.nav-item[data-page="dashboard"]').classList.add('active');
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-dashboard').classList.add('active');
+    document.getElementById('page-title').textContent = 'Service Dashboard';
+  }
+}
+
+// ---- Scope Bar: Dropdown Toggle ----
+function toggleScopeDropdown(level) {
+  const dropdown = document.getElementById('dropdown-' + level);
+  const allDropdowns = document.querySelectorAll('.scope-dropdown');
+  allDropdowns.forEach(d => { if (d !== dropdown) d.classList.remove('scope-dropdown--open'); });
+  dropdown.classList.toggle('scope-dropdown--open');
+}
+
+// Close dropdowns on outside click
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.scope-picker')) {
+    document.querySelectorAll('.scope-dropdown').forEach(d => d.classList.remove('scope-dropdown--open'));
+  }
+});
+
+// Scope dropdown item selection
+document.querySelectorAll('.scope-dropdown-item').forEach(item => {
+  item.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dropdown = item.closest('.scope-dropdown');
+    const picker = item.closest('.scope-picker');
+    const valueEl = picker.querySelector('.scope-picker-value');
+    
+    // Update active state
+    dropdown.querySelectorAll('.scope-dropdown-item').forEach(i => i.classList.remove('scope-dropdown-item--active'));
+    item.classList.add('scope-dropdown-item--active');
+    
+    // Update display value
+    let text = item.textContent.trim().replace(/^\u2713\s*/, '');
+    const meta = item.querySelector('.scope-dropdown-meta');
+    if (meta) text = text.replace(meta.textContent, '').trim();
+    valueEl.textContent = text;
+    valueEl.style.color = item.classList.contains('scope-dropdown-item--all') ? 'var(--text-tertiary)' : '';
+    
+    dropdown.classList.remove('scope-dropdown--open');
+  });
+});
+
+// Navigation
+document.querySelectorAll('.nav-item[data-page]').forEach(item => {
+  item.addEventListener('click', () => {
+    // Update nav active state
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    item.classList.add('active');
+    // Switch page
+    const pageId = item.dataset.page;
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    const target = document.getElementById('page-' + pageId);
+    if (target) target.classList.add('active');
+    // Update breadcrumb
+    document.getElementById('page-title').textContent = item.textContent.trim();
+  });
+});
+
+// ---- Generate chart bars ----
+function generateBars(containerId, count, minH, maxH, color) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '';
+  for (let i = 0; i < count; i++) {
+    const bar = document.createElement('div');
+    bar.className = 'chart-bar';
+    const h = minH + Math.random() * (maxH - minH);
+    bar.style.height = h + '%';
+    if (color) bar.style.background = `linear-gradient(180deg, ${color} 0%, ${color}88 100%)`;
+    container.appendChild(bar);
+  }
+}
+
+generateBars('throughput-chart', 60, 30, 85);
+generateBars('latency-chart', 60, 15, 70, '#d29922');
+generateBars('metrics-rate-chart', 60, 35, 90);
+generateBars('metrics-errors-chart', 60, 5, 40, '#f85149');
+generateBars('metrics-duration-chart', 60, 20, 75, '#bc8cff');
+generateBars('metrics-saturation-chart', 60, 25, 65, '#3fb950');
+generateBars('deploy-timeline-chart', 60, 20, 80);
+
+// ---- Tab switching ----
+document.querySelectorAll('.tabs').forEach(tabGroup => {
+  tabGroup.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabGroup.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+    });
+  });
+});
+
+// ---- Resource Explorer: Tree Toggle ----
+function toggleTreeNode(el) {
+  const nodeRow = el.closest ? el.closest('.re-node-row') : el;
+  const treeNode = nodeRow.parentElement;
+  const children = treeNode.querySelector('.re-children');
+  const chevron = nodeRow.querySelector('.re-chevron');
+  if (!children) return;
+  
+  const isCollapsed = children.style.display === 'none';
+  children.style.display = isCollapsed ? '' : 'none';
+  if (chevron) {
+    chevron.classList.toggle('fa-chevron-down', isCollapsed);
+    chevron.classList.toggle('fa-chevron-right', !isCollapsed);
+  }
+}
+
+// ---- Resource Explorer: Node Selection ----
+document.querySelectorAll('.re-node-row[data-select]').forEach(row => {
+  row.addEventListener('click', (e) => {
+    // Don't trigger when clicking chevron for toggle
+    if (e.target.classList.contains('re-chevron')) return;
+    
+    // Remove previous selection
+    document.querySelectorAll('.re-node-row--selected').forEach(r => r.classList.remove('re-node-row--selected'));
+    row.classList.add('re-node-row--selected');
+  });
+});
+
+// ---- Resource Explorer: Search Filter ----
+const reSearchInput = document.getElementById('re-search-input');
+if (reSearchInput) {
+  reSearchInput.addEventListener('input', (e) => {
+    const query = e.target.value.toLowerCase().trim();
+    document.querySelectorAll('.re-tree-node').forEach(node => {
+      const name = node.querySelector('.re-node-name');
+      if (!name) return;
+      const match = !query || name.textContent.toLowerCase().includes(query);
+      node.style.display = match ? '' : 'none';
+      // Show parent nodes if child matches
+      if (match && query) {
+        let parent = node.parentElement;
+        while (parent) {
+          if (parent.classList && parent.classList.contains('re-tree-node')) {
+            parent.style.display = '';
+          }
+          if (parent.classList && parent.classList.contains('re-children')) {
+            parent.style.display = '';
+          }
+          parent = parent.parentElement;
+        }
+      }
+    });
+  });
+}
+
+// ---- New Rule Modal ----
+let modalCurrentStep = 1;
+const MODAL_TOTAL_STEPS = 3;
+
+function openNewRuleModal() {
+  modalCurrentStep = 1;
+  updateModalUI();
+  document.getElementById('new-rule-modal').classList.add('modal-overlay--open');
+  // Focus first input after animation
+  setTimeout(() => {
+    const input = document.getElementById('rule-name-input');
+    if (input) input.focus();
+  }, 300);
+}
+
+function closeNewRuleModal() {
+  document.getElementById('new-rule-modal').classList.remove('modal-overlay--open');
+}
+
+function modalNextStep() {
+  if (modalCurrentStep < MODAL_TOTAL_STEPS) {
+    modalCurrentStep++;
+    updateModalUI();
+  } else {
+    // Final step → "Create Rule" action
+    createRule();
+  }
+}
+
+function modalPrevStep() {
+  if (modalCurrentStep > 1) {
+    modalCurrentStep--;
+    updateModalUI();
+  }
+}
+
+function updateModalUI() {
+  // Update step sections visibility
+  for (let i = 1; i <= MODAL_TOTAL_STEPS; i++) {
+    const section = document.getElementById('modal-step-' + i);
+    if (section) {
+      section.classList.toggle('modal-section--active', i === modalCurrentStep);
+    }
+  }
+  
+  // Update step indicators
+  document.querySelectorAll('.modal-step').forEach(step => {
+    const stepNum = parseInt(step.dataset.step);
+    step.classList.remove('modal-step--active', 'modal-step--done');
+    if (stepNum === modalCurrentStep) {
+      step.classList.add('modal-step--active');
+    } else if (stepNum < modalCurrentStep) {
+      step.classList.add('modal-step--done');
+    }
+  });
+  
+  // Update footer buttons
+  const backBtn = document.getElementById('modal-back-btn');
+  const nextLabel = document.getElementById('modal-next-label');
+  const nextIcon = document.getElementById('modal-next-icon');
+  
+  backBtn.style.display = modalCurrentStep > 1 ? '' : 'none';
+  
+  if (modalCurrentStep === MODAL_TOTAL_STEPS) {
+    nextLabel.textContent = 'Create Rule';
+    nextIcon.className = 'fas fa-check';
+  } else {
+    nextLabel.textContent = 'Next';
+    nextIcon.className = 'fas fa-arrow-right';
+  }
+  
+  // Update summary in step 3
+  if (modalCurrentStep === MODAL_TOTAL_STEPS) {
+    updateSummary();
+  }
+}
+
+function updateSummary() {
+  const name = document.getElementById('rule-name-input')?.value || '—';
+  const classVal = document.getElementById('class-pattern-input')?.value || '—';
+  const methodVal = document.getElementById('method-pattern-input')?.value || '—';
+  const typeActive = document.querySelector('#rule-type-seg .segment--active');
+  const type = typeActive ? typeActive.dataset.value : 'trace';
+  
+  document.getElementById('summary-name').textContent = name || '—';
+  document.getElementById('summary-class').textContent = classVal || '—';
+  document.getElementById('summary-method').textContent = methodVal || '—';
+  document.getElementById('summary-type').textContent = type;
+}
+
+function createRule() {
+  // Simulate rule creation with success feedback
+  const modal = document.getElementById('new-rule-modal');
+  const nextBtn = document.getElementById('modal-next-btn');
+  nextBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
+  nextBtn.disabled = true;
+  
+  setTimeout(() => {
+    closeNewRuleModal();
+    // Reset button
+    nextBtn.innerHTML = '<span id="modal-next-label">Next</span> <i class="fas fa-arrow-right" id="modal-next-icon"></i>';
+    nextBtn.disabled = false;
+    // Show success toast (brief inline notification)
+    showToast('Rule created successfully');
+  }, 800);
+}
+
+function showToast(message) {
+  let toast = document.getElementById('toast-notification');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'toast-notification';
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;padding:10px 20px;background:var(--accent-green-dim);color:#fff;border-radius:var(--radius-md);font-size:0.8rem;font-weight:500;z-index:600;display:flex;align-items:center;gap:8px;box-shadow:var(--shadow-lg);animation:modalSlideIn 0.3s ease';
+    document.body.appendChild(toast);
+  }
+  toast.innerHTML = '<i class="fas fa-check-circle"></i> ' + message;
+  toast.style.display = 'flex';
+  setTimeout(() => { toast.style.display = 'none'; }, 3000);
+}
+
+// ---- Segmented Control ----
+function selectSegment(el) {
+  const parent = el.parentElement;
+  parent.querySelectorAll('.segment').forEach(s => s.classList.remove('segment--active'));
+  el.classList.add('segment--active');
+}
+
+// ---- Checkbox Toggle ----
+function toggleCheckbox(el) {
+  el.classList.toggle('checkbox-item--checked');
+}
+
+// ---- Toggle Desired State ----
+function toggleDesiredState() {
+  const track = document.getElementById('desired-state-toggle');
+  const label = document.getElementById('desired-state-label');
+  const isOn = track.classList.contains('toggle-track--on');
+  
+  track.classList.toggle('toggle-track--on', !isOn);
+  label.classList.toggle('toggle-label--on', !isOn);
+  label.textContent = isOn ? 'Paused' : 'Active';
+}
+
+// Close modal on overlay click
+document.getElementById('new-rule-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeNewRuleModal();
+});
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('new-rule-modal');
+    if (modal.classList.contains('modal-overlay--open')) closeNewRuleModal();
+  }
+});
+</script>
+</body>
+</html>
