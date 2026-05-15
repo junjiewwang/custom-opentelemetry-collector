@@ -1694,3 +1694,76 @@ tr:hover td { background: var(--bg-hover); }
   display: flex;
   gap: var(--space-sm);
 }
+
+/* ============================================
+   v1.4 — Platform Admin Console
+   ============================================ */
+
+/* ---- Admin Nav Group Highlight ---- */
+#nav-platform-mgmt .nav-group-label {
+  color: var(--accent-blue);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+#nav-platform-mgmt .nav-item.active::before {
+  background: var(--accent-blue);
+  box-shadow: 0 0 8px rgba(88,166,255,0.3);
+}
+
+/* ---- Tenant Avatar (in tenant table) ---- */
+.tenant-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ---- Progress Bar (inline resource usage) ---- */
+.usage-bar-container {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.usage-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width var(--transition-normal);
+}
+
+/* ---- Cross-Tenant Error Table Enhancements ---- */
+.global-error-row:hover {
+  border-left-color: var(--accent-red);
+}
+
+/* ---- Alert Severity Pulse (global alerts) ---- */
+.alert-row--critical {
+  border-left: 3px solid var(--accent-red);
+}
+
+.alert-row--warning {
+  border-left: 3px solid var(--accent-yellow);
+}
+
+/* ---- Platform Dashboard Quick Action Cards ---- */
+.quick-action-card {
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  cursor: pointer;
+}
+
+.quick-action-card:hover {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-glow-blue);
+}

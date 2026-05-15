@@ -1,12 +1,13 @@
 # APM Observability Platform — 原型设计文档
 
-> **版本**：v1.3  
-> **日期**：2026-05-13  
+> **版本**：v1.4  
+> **日期**：2026-05-15  
 > **产出物**：`docs/prototype/apm-prototype.html` + `docs/prototype/styles.css`  
 > **技术栈**：纯 HTML + CSS + Vanilla JS（独立交互原型，无框架依赖）  
 > **v1.1 更新**：新增全局 Scope Bar（多租户四级资源选择器）+ Resource Explorer 页面  
 > **v1.2 更新**：新增角色切换器（Platform Admin ↔ Tenant User），同一原型演示双视角差异  
-> **v1.3 更新**：业界对标增强 — Apdex 评分 + Error Inbox + Deployment Tracking + Latency Heatmap + Endpoint 分析
+> **v1.3 更新**：业界对标增强 — Apdex 评分 + Error Inbox + Deployment Tracking + Latency Heatmap + Endpoint 分析  
+> **v1.4 更新**：管理端重新定位 — Platform Dashboard + Tenant Management + Resource Usage + Global Errors/Alerts + Scope Bar Service 默认行为优化
 
 ---
 
@@ -40,21 +41,40 @@
 ```
 APM Platform
 ├── 🌐 Global Scope Bar (全页面共享)
-│   └── Tenant → App → Service → Instance 四级级联选择器
-├── Overview
-│   ├── Service Dashboard    ← 黄金信号 + Apdex 评分 + 服务健康表
-│   ├── Service Map          ← 拓扑图 + 依赖关系
-│   └── Resource Explorer    ← 树形资源导航 + 详情面板
-├── Explore
-│   ├── Traces              ← 链路检索 + 散点图 + Latency Heatmap + Timeline
-│   ├── Errors              ← Error Inbox（异常聚合收件箱）（NEW v1.3）
-│   └── Metrics             ← RED Dashboard + Endpoint 分析 + PromQL
-├── Infrastructure
-│   ├── Instances           ← 节点健康 + 资源指标
-│   ├── Instrumentation     ← 动态插桩规则管理
-│   └── Deployments         ← 发布追踪 + 性能对比（NEW v1.3）
-└── Alerts
-    └── Alert Rules         ← 告警列表 + 规则配置
+│   └── Tenant → App → Service(默认选第一个) → Instance(保留 All) 四级级联选择器
+│
+├── 🛡️ Platform Admin 视角
+│   ├── Platform (管理职能)
+│   │   ├── Platform Dashboard  ← 跨租户全局概览 + 快速操作入口
+│   │   ├── Tenants             ← 租户目录 + 接入状态 + Agent 版本
+│   │   ├── Resource Usage      ← 按租户的配额/用量/趋势
+│   │   ├── Global Errors       ← 跨租户错误聚合排查
+│   │   ├── Global Alerts       ← 跨租户告警统一管理
+│   │   └── Resource Explorer   ← 树形资源导航 + 详情面板
+│   └── Triage (排查辅助)
+│       ├── Service Dashboard   ← 帮租户看服务黄金信号
+│       ├── Service Map         ← 帮租户看服务拓扑
+│       ├── Traces              ← 帮租户看链路
+│       └── Metrics             ← 帮租户看指标
+│
+└── 👤 Tenant User 视角
+    ├── Overview
+    │   ├── Service Dashboard
+    │   └── Service Map
+    ├── Explore
+    │   ├── Traces
+    │   ├── Errors (Error Inbox)
+    │   └── Metrics
+    ├── Infrastructure
+    │   ├── Instances
+    │   ├── Instrumentation
+    │   └── Deployments
+    ├── Alerts
+    │   └── Alert Rules
+    └── Account
+        ├── API Keys
+        ├── Usage & Billing
+        └── Team Members
 ```
 
 ---
@@ -229,7 +249,9 @@ APM Platform
 2. **四级级联 Picker**：
    - 每个 Picker 包含图标 + 当前值 + 下拉箭头
    - Picker 之间用 `>` 分隔符连接
-   - "All" 选项固定在顶部，文字用 `--text-tertiary` 区分
+   - **Service 默认行为**（v1.4）：没有 "All Services" 选项，默认选中第一个具体服务
+   - **Instance 层**保留 "All Instances" 选项（同一服务下看所有实例的聚合是合理的）
+   - App 层仍保留 "All Apps" 选项
 
 **交互设计**：
 - 点击 Picker 展开下拉面板，面板内含搜索框 + 选项列表
@@ -259,11 +281,13 @@ APM Platform
 
 | 维度 | Platform Admin | Tenant User |
 |------|---------------|-------------|
+| 默认页面 | Platform Dashboard | Service Dashboard |
 | Scope Bar | 四级 `Tenant → App → Service → Instance` | 三级 `App → Service → Instance`（Tenant 隐式） |
 | Sidebar Logo | 平台通用 Logo + "APM Platform" | 租户品牌色 Logo + 租户名 + App 名 |
-| 导航菜单 | 全量（含 Resource Explorer） | 隐藏 Resource Explorer，新增 API Keys / Usage & Billing / Team |
+| 导航菜单 | **Platform 组**（6 项管理职能）+ **Triage 组**（4 项排查辅助） | **Overview** + **Explore** + **Infrastructure** + **Alerts** + **Account** |
+| 管理端不显示 | — | ~~Alert Rules~~ / ~~Errors(Inbox)~~ / ~~Instances~~ / ~~Instrumentation~~ / ~~Deployments~~ 这些归租户 |
 | 底部设置 | Settings | 用户头像 + 姓名 + 角色 badge |
-| Context Tag | `Acme Corp / E-Commerce Platform` | `Acme Corp`（固定租户） |
+| Context Tag | `Acme Corp / E-Commerce Platform / order-service` | `Acme Corp / order-service`（固定租户） |
 
 **交互设计**：
 - **Toggle 滑块**：Scope Bar 右侧，`View as [ Platform | Tenant ]`
@@ -271,11 +295,33 @@ APM Platform
 - 切换时触发全局状态变更：
   1. Tenant Picker + 分隔符隐藏/显示
   2. Sidebar Header 切换
-  3. 导航项按 `data-admin-only` 标记隐藏
-  4. 租户专属导航组显示/隐藏
+  3. `data-admin-only` 导航组隐藏/显示（Platform + Triage）
+  4. `data-tenant-only` 导航组显示/隐藏（Overview + Explore + Infrastructure + Alerts + Account）
   5. 底部 Settings/Profile 切换
   6. 面包屑 Context Tag 内容更新
-- 若 Tenant 模式下当前页是 admin-only 页（如 Resource Explorer），自动重定向到 Dashboard
+- 若 Tenant 模式下当前页是 admin-only 页，自动重定向到 Service Dashboard
+- 若切换到 Admin 模式，自动跳转到 Platform Dashboard
+
+**管理端导航精简决策**（v1.4）：
+
+管理端**不显示**租户侧的以下页面，原因：
+
+| 移除的页面 | 原因 |
+|-----------|------|
+| Alert Rules | 被 Global Alerts 替代，单租户告警是租户自己的事 |
+| Errors (Error Inbox) | 被 Global Errors 替代，管理端用跨租户聚合视角 |
+| Instances | 已在 Resource Explorer 中可查看 |
+| Instrumentation | 动态插桩是开发/SRE 的操作，管理员不应改租户规则 |
+| Deployments | 发布追踪是租户侧的 DevOps 职能 |
+
+管理端**保留**的排查辅助页面（Triage 组）：
+
+| 保留的页面 | 原因 |
+|-----------|------|
+| Service Dashboard | 帮租户排查时需要看具体服务的黄金信号 |
+| Service Map | 帮助理解服务依赖关系 |
+| Traces | 排查问题时必须能看链路 |
+| Metrics | 排查问题时必须能看指标 |
 
 ### 3.11 Error Inbox（错误聚合收件箱）
 
@@ -389,6 +435,107 @@ APM Platform
 - 点击 Endpoint Path 跳转该接口的详细 Trace 列表
 - 表头可排序：点击 P99/Error Rate/Apdex 切换排序维度
 
+### 3.15 Platform Dashboard（管理端总览）
+
+> **v1.4 新增** · 管理端默认首页
+
+**目标用户**：平台管理员（全局健康一览 + 快速定位问题租户）
+
+**设计动机**：
+- 管理端的核心职能是①租户管理 ②资源使用查看 ③快速帮助租户排查问题
+- 之前管理端和租户端几乎一样，缺少独立管理职能
+- Platform Dashboard 作为管理端专属入口，聚合跨租户全局数据
+
+**核心区块**：
+1. **平台 KPI 卡片组**（6 张）：Active Tenants / Total Services / Total Instances / Data Ingested / Active Alerts / Platform Health
+2. **Tenant Health Overview 表格**：租户名 + Apps + Services + Instances + Health(Apdex) + Data Ingested + Active Alerts + Status
+3. **Quick Action 双栏**：
+   - 左：Recent Cross-Tenant Errors（最新跨租户错误，带 "View All →" 跳转）
+   - 右：Resource Utilization（Span/Metric/Log/Alert 四项进度条）
+
+**交互设计**：
+- Tenant Health 表格行点击可跳转 Tenant 详情
+- Quick Action 卡片的 "View All →" / "Details →" 按钮联动到对应管理页
+- 切换到 Tenant 模式时自动重定向到 Service Dashboard
+
+### 3.16 Tenants（租户管理）
+
+> **v1.4 新增** · 管理端专属
+
+**目标用户**：平台管理员（租户接入管理 + 状态监控）
+
+**核心区块**：
+1. **状态统计栏**（3 张 stat-card）：Total Tenants / Connected / Degraded
+2. **Tenant Directory 表格**：
+   - 租户头像+名称+ID / Plan(Enterprise/Standard badge) / Apps / Services / Instances
+   - Agent Version（过期版本黄色标记 + ↑ 箭头）/ Onboarded 日期 / Status
+   - Actions 列：👁 View as tenant / 🔍 Investigate / ⚙ Settings
+
+**交互设计**：
+- "View as tenant" 按钮点击后触发角色切换到 Tenant 模式
+- Degraded 租户行的 Investigate 按钮用黄色高亮
+- "Add Tenant" 按钮用蓝色主色调
+
+### 3.17 Resource Usage（资源使用）
+
+> **v1.4 新增** · 管理端专属
+
+**目标用户**：平台管理员（容量规划 + 成本控制 + 配额管理）
+
+**核心区块**：
+1. **全局资源 KPI**（4 张）：Spans/Day / Metric Series / Storage Used / Quota Usage
+2. **Per-Tenant Resource Usage 表格**：
+   - 租户名 / Spans/Day / Metrics Series / Storage / Quota / Quota Usage(进度条+百分比) / Trend(7d sparkline)
+   - 进度条颜色：绿(<50%) / 黄(50-75%) / 红(>75%)
+3. **Storage Growth Trend 图表**：时序柱状图
+
+**交互设计**：
+- 配额即将超标的租户自动标红
+- 点击租户行展开详细的用量明细
+- Sparkline 趋势一眼看出增长方向
+
+### 3.18 Global Errors（跨租户错误排查）
+
+> **v1.4 新增** · 管理端专属
+
+**目标用户**：平台管理员（快速帮助租户排查问题）
+
+**设计动机**：
+- 管理端需要一个全局视角，看到所有租户的错误
+- 能快速定位是哪个租户的哪个服务出了问题
+- 一键跳转到对应租户的 Error Inbox 继续深入排查
+
+**核心区块**：
+1. **全局错误统计**（3 张）：Total Error Groups / Affected Tenants / Avg Resolution
+2. **Cross-Tenant Error Groups 表格**：
+   - 状态圆点 + Error Name(代码+堆栈位置) + Tenant + Service + Count + Trend(sparkline)
+   - First Seen / Status(New/Triaged/Resolved) / Action(跳转按钮)
+   - Resolved 行降低透明度 + 删除线
+
+**交互设计**：
+- ↗ 跳转按钮一键进入对应租户的 Errors 页面，携带筛选上下文
+- 按 Count 降序排列，最高频错误在最上面
+- Status badge 颜色编码与 Error Inbox 一致
+
+### 3.19 Global Alerts（跨租户告警管理）
+
+> **v1.4 新增** · 管理端专属
+
+**目标用户**：平台管理员（全局告警监控 + 快速响应）
+
+**核心区块**：
+1. **告警统计**（3 张）：Active Alerts / Avg Response Time / Resolved(24h)
+2. **Cross-Tenant Alerts 表格**：
+   - 状态圆点(critical 带脉冲动画) + Alert 标题+描述 + Tenant + Service
+   - Severity(Critical/Warning badge) + Duration + Actions(Ack/跳转)
+   - 平台级告警（如 Storage quota、Agent outdated）Service 列显示 "Platform" badge
+
+**交互设计**：
+- Critical 告警的圆点有脉冲动画
+- Ack 按钮一键确认
+- ↗ 按钮跳转到对应租户的服务详情
+- 告警按严重程度排序：Critical → Warning
+
 ---
 
 ## 4. 色彩体系
@@ -468,6 +615,11 @@ APM Platform
 | Checkbox Group | 复选框组 | checked 态蓝色填充 + ✓（v1.3） |
 | Toggle Switch | 开关控件 | On=绿色/Off=灰色（v1.3） |
 | Toast | 轻提示 | 底部右侧，3s 自动消失（v1.3） |
+| Admin Nav Group | 管理端导航组 | Platform 专属导航，蓝色标签高亮（v1.4） |
+| Tenant Row | 租户表格行 | 头像+名称+ID + Plan badge + Action 按钮组（v1.4） |
+| Usage Bar | 用量进度条 | 行内进度条 + 百分比，三级颜色编码（v1.4） |
+| Cross-Tenant Error Row | 跨租户错误行 | 错误+堆栈 + 租户 + 服务 + 跳转按钮（v1.4） |
+| Cross-Tenant Alert Row | 跨租户告警行 | 告警详情 + 租户 + 严重等级 + Ack 按钮（v1.4） |
 
 ---
 
@@ -521,6 +673,12 @@ Alert 触发 → 点击告警 → 关联 Service + Trace
 | P0 | ~~Deployment Tracking~~ | 发布追踪，版本标记线 + Δ 指标对比 + Rollback | ✅ v1.3 |
 | P1 | ~~Latency Heatmap~~ | X=时间 Y=延迟分桶 Color=密度，替代散点图 | ✅ v1.3 |
 | P1 | ~~Endpoint 分析~~ | 接口级 Method+Path+P50/P95/P99/Apdex 排行 | ✅ v1.3 |
+| P0 | ~~Platform Dashboard~~ | 管理端专属总览：跨租户 KPI + 快速操作入口 | ✅ v1.4 |
+| P0 | ~~Tenant Management~~ | 租户目录 + 接入状态 + Agent 版本 + 一键切换视角 | ✅ v1.4 |
+| P0 | ~~Resource Usage~~ | 按租户配额/用量/趋势 + Storage Growth 图表 | ✅ v1.4 |
+| P0 | ~~Global Errors~~ | 跨租户错误聚合排查 + 一键跳转 | ✅ v1.4 |
+| P0 | ~~Global Alerts~~ | 跨租户告警统一管理 + 严重等级排序 | ✅ v1.4 |
+| P0 | ~~Scope Bar 优化~~ | Service 默认选第一个具体服务，去掉 All Services | ✅ v1.4 |
 | P0 | Logs 查看器 | 可观测三支柱补齐，支持 Trace ↔ Log 关联 | 待实施 |
 | P1 | Scope Bar 联动 | 选择 App 后自动过滤 Service/Instance 下拉选项 | 待实施 |
 | P1 | Alert Rule 编辑器 | 支持 PromQL 条件 + 通知渠道配置 | 待实施 |

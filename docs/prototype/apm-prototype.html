@@ -25,30 +25,46 @@
       </div>
     </div>
     <nav class="sidebar-nav">
-      <div class="nav-group">
-        <div class="nav-group-label">Overview</div>
-        <div class="nav-item active" data-page="dashboard"><i class="fas fa-th-large"></i>Service Dashboard</div>
-        <div class="nav-item" data-page="topology"><i class="fas fa-project-diagram"></i>Service Map</div>
-        <div class="nav-item" data-page="resources" data-admin-only><i class="fas fa-sitemap"></i>Resource Explorer</div>
+      <!-- ====== Platform Admin Groups (admin-only) ====== -->
+      <div class="nav-group" id="nav-platform-mgmt" data-admin-only>
+        <div class="nav-group-label">Platform</div>
+        <div class="nav-item active" data-page="platform-dashboard"><i class="fas fa-tachometer-alt"></i>Platform Dashboard</div>
+        <div class="nav-item" data-page="tenants"><i class="fas fa-building"></i>Tenants<span class="nav-badge" style="background:var(--accent-blue-dim)">3</span></div>
+        <div class="nav-item" data-page="resource-usage"><i class="fas fa-chart-bar"></i>Resource Usage</div>
+        <div class="nav-item" data-page="global-errors"><i class="fas fa-exclamation-triangle"></i>Global Errors<span class="nav-badge" style="background:var(--accent-red-dim)">12</span></div>
+        <div class="nav-item" data-page="global-alerts"><i class="fas fa-bell"></i>Global Alerts<span class="nav-badge">5</span></div>
+        <div class="nav-item" data-page="resources"><i class="fas fa-sitemap"></i>Resource Explorer</div>
       </div>
-      <div class="nav-group">
+      <div class="nav-group" data-admin-only>
+        <div class="nav-group-label">Triage</div>
+        <div class="nav-item" data-page="dashboard"><i class="fas fa-th-large"></i>Service Dashboard</div>
+        <div class="nav-item" data-page="topology"><i class="fas fa-project-diagram"></i>Service Map</div>
+        <div class="nav-item" data-page="traces"><i class="fas fa-route"></i>Traces</div>
+        <div class="nav-item" data-page="metrics"><i class="fas fa-chart-area"></i>Metrics</div>
+      </div>
+      <!-- ====== Tenant User Groups (tenant-only) ====== -->
+      <div class="nav-group" data-tenant-only style="display:none">
+        <div class="nav-group-label">Overview</div>
+        <div class="nav-item" data-page="dashboard"><i class="fas fa-th-large"></i>Service Dashboard</div>
+        <div class="nav-item" data-page="topology"><i class="fas fa-project-diagram"></i>Service Map</div>
+      </div>
+      <div class="nav-group" data-tenant-only style="display:none">
         <div class="nav-group-label">Explore</div>
         <div class="nav-item" data-page="traces"><i class="fas fa-route"></i>Traces</div>
         <div class="nav-item" data-page="errors"><i class="fas fa-bug"></i>Errors<span class="nav-badge" style="background:var(--accent-red-dim)">47</span></div>
         <div class="nav-item" data-page="metrics"><i class="fas fa-chart-area"></i>Metrics</div>
       </div>
-      <div class="nav-group">
+      <div class="nav-group" data-tenant-only style="display:none">
         <div class="nav-group-label">Infrastructure</div>
         <div class="nav-item" data-page="instances"><i class="fas fa-server"></i>Instances<span class="nav-badge">2</span></div>
         <div class="nav-item" data-page="instrumentation"><i class="fas fa-microscope"></i>Instrumentation</div>
         <div class="nav-item" data-page="deployments"><i class="fas fa-rocket"></i>Deployments</div>
       </div>
-      <div class="nav-group">
+      <div class="nav-group" data-tenant-only style="display:none">
         <div class="nav-group-label">Alerts</div>
         <div class="nav-item" data-page="alerts"><i class="fas fa-bell"></i>Alert Rules<span class="nav-badge">3</span></div>
       </div>
-      <!-- Tenant-only nav group (hidden by default) -->
-      <div class="nav-group" id="nav-tenant-only" style="display:none">
+      <div class="nav-group" id="nav-tenant-only" data-tenant-only style="display:none">
         <div class="nav-group-label">Account</div>
         <div class="nav-item" data-page="apikeys"><i class="fas fa-key"></i>API Keys</div>
         <div class="nav-item" data-page="usage"><i class="fas fa-chart-pie"></i>Usage & Billing</div>
@@ -103,12 +119,11 @@
         <!-- Service Picker -->
         <div class="scope-picker" id="scope-service" onclick="toggleScopeDropdown('service')">
           <i class="fas fa-cogs scope-picker-icon" style="color:var(--accent-green)"></i>
-          <span class="scope-picker-value" style="color:var(--text-tertiary)">All Services</span>
+          <span class="scope-picker-value">order-service</span>
           <i class="fas fa-chevron-down scope-picker-arrow"></i>
           <div class="scope-dropdown" id="dropdown-service">
             <div class="scope-dropdown-search"><input placeholder="Search services..." class="scope-dropdown-input"></div>
-            <div class="scope-dropdown-item scope-dropdown-item--all scope-dropdown-item--active"><i class="fas fa-check"></i> All Services</div>
-            <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-healthy"></span> order-service <span class="scope-dropdown-meta">4 inst</span></div>
+            <div class="scope-dropdown-item scope-dropdown-item--active"><i class="fas fa-check"></i><span class="dot dot-healthy"></span> order-service <span class="scope-dropdown-meta">4 inst</span></div>
             <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-warning"></span> payment-gateway <span class="scope-dropdown-meta">3 inst</span></div>
             <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-critical"></span> inventory-svc <span class="scope-dropdown-meta">2 inst</span></div>
             <div class="scope-dropdown-item"><span style="width:14px;display:inline-block"></span><span class="dot dot-healthy"></span> user-auth <span class="scope-dropdown-meta">2 inst</span></div>
@@ -147,8 +162,8 @@
       <div class="breadcrumb">
         <span class="text-secondary">APM</span>
         <span class="breadcrumb-sep">/</span>
-        <span class="breadcrumb-current" id="page-title">Service Dashboard</span>
-        <span class="scope-context-tag" id="scope-context-tag"><i class="fas fa-filter" style="font-size:0.55rem"></i> Acme Corp / E-Commerce Platform</span>
+        <span class="breadcrumb-current" id="page-title">Platform Dashboard</span>
+        <span class="scope-context-tag" id="scope-context-tag"><i class="fas fa-filter" style="font-size:0.55rem"></i> Acme Corp / E-Commerce Platform / order-service</span>
       </div>
       <div class="header-actions">
         <div class="time-range-picker">
@@ -161,8 +176,649 @@
     </header>
 
     <div class="main-body">
+      <!-- ===================== PAGE: Platform Dashboard (Admin Only) ===================== -->
+      <div class="page active" id="page-platform-dashboard">
+        <!-- Platform Overview KPI -->
+        <div class="stat-grid mb-xl">
+          <div class="stat-card">
+            <div class="stat-card-icon blue"><i class="fas fa-building"></i></div>
+            <div class="stat-card-label">Active Tenants</div>
+            <div class="stat-card-value">3</div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> 1 new this month</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon green"><i class="fas fa-cogs"></i></div>
+            <div class="stat-card-label">Total Services</div>
+            <div class="stat-card-value">18</div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> 3 vs last month</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon purple"><i class="fas fa-server"></i></div>
+            <div class="stat-card-label">Total Instances</div>
+            <div class="stat-card-value">47</div>
+            <div class="stat-card-trend neutral"><i class="fas fa-minus"></i> Stable</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon yellow"><i class="fas fa-database"></i></div>
+            <div class="stat-card-label">Data Ingested</div>
+            <div class="stat-card-value">2.8<span style="font-size:0.9rem;color:var(--text-secondary)"> TB/day</span></div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> 12% vs last week</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon red"><i class="fas fa-exclamation-circle"></i></div>
+            <div class="stat-card-label">Active Alerts</div>
+            <div class="stat-card-value">5</div>
+            <div class="stat-card-trend down"><i class="fas fa-arrow-up"></i> 2 new today</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon green"><i class="fas fa-heartbeat"></i></div>
+            <div class="stat-card-label">Platform Health</div>
+            <div class="stat-card-value" style="color:var(--accent-green)">99.9<span style="font-size:0.9rem">%</span></div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> Healthy</div>
+          </div>
+        </div>
+
+        <!-- Tenant Health Overview -->
+        <div class="card mb-xl">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-building"></i> Tenant Health Overview</span>
+            <span class="text-xs text-tertiary">All tenants</span>
+          </div>
+          <div class="card-body">
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Tenant</th>
+                    <th>Apps</th>
+                    <th>Services</th>
+                    <th>Instances</th>
+                    <th>Health</th>
+                    <th>Data Ingested</th>
+                    <th>Active Alerts</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><i class="fas fa-building" style="color:var(--accent-blue);margin-right:6px"></i><strong>Acme Corp</strong></td>
+                    <td class="font-mono">3</td>
+                    <td class="font-mono">8</td>
+                    <td class="font-mono">24</td>
+                    <td><span class="apdex-score apdex-good">0.91</span></td>
+                    <td class="font-mono">1.4 TB/day</td>
+                    <td><span class="error-count-badge">3</span></td>
+                    <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span> Active</span></td>
+                  </tr>
+                  <tr>
+                    <td><i class="fas fa-building" style="color:var(--accent-green);margin-right:6px"></i><strong>Beta Inc</strong></td>
+                    <td class="font-mono">1</td>
+                    <td class="font-mono">4</td>
+                    <td class="font-mono">10</td>
+                    <td><span class="apdex-score apdex-excellent">0.96</span></td>
+                    <td class="font-mono">680 GB/day</td>
+                    <td><span class="error-count-badge" style="background:rgba(210,153,34,0.15);color:var(--accent-yellow)">1</span></td>
+                    <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span> Active</span></td>
+                  </tr>
+                  <tr>
+                    <td><i class="fas fa-building" style="color:var(--accent-purple);margin-right:6px"></i><strong>Gamma Ltd</strong></td>
+                    <td class="font-mono">2</td>
+                    <td class="font-mono">6</td>
+                    <td class="font-mono">13</td>
+                    <td><span class="apdex-score apdex-fair">0.78</span></td>
+                    <td class="font-mono">720 GB/day</td>
+                    <td><span class="error-count-badge">8</span></td>
+                    <td><span class="badge badge-warning"><span class="dot dot-warning"></span> Degraded</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="grid-2">
+          <!-- Recent Cross-Tenant Errors -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title"><i class="fas fa-exclamation-triangle" style="color:var(--accent-red)"></i> Recent Cross-Tenant Errors</span>
+              <button class="btn btn-ghost text-xs" onclick="navigateToPage('global-errors')">View All →</button>
+            </div>
+            <div class="card-body" style="padding:0">
+              <table>
+                <tbody>
+                  <tr>
+                    <td><span class="dot dot-critical"></span></td>
+                    <td><code class="mono" style="color:var(--accent-red)">NullPointerException</code></td>
+                    <td class="text-xs text-secondary">Acme Corp / order-service</td>
+                    <td class="text-xs font-mono" style="color:var(--accent-red)">1,247</td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-critical"></span></td>
+                    <td><code class="mono" style="color:var(--accent-red)">ConnectionTimeoutException</code></td>
+                    <td class="text-xs text-secondary">Gamma Ltd / payment-svc</td>
+                    <td class="text-xs font-mono" style="color:var(--accent-red)">893</td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-warning"></span></td>
+                    <td><code class="mono" style="color:var(--accent-yellow)">RateLimitExceeded</code></td>
+                    <td class="text-xs text-secondary">Beta Inc / api-gateway</td>
+                    <td class="text-xs font-mono" style="color:var(--accent-yellow)">156</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <!-- Resource Utilization -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title"><i class="fas fa-chart-bar" style="color:var(--accent-blue)"></i> Resource Utilization</span>
+              <button class="btn btn-ghost text-xs" onclick="navigateToPage('resource-usage')">Details →</button>
+            </div>
+            <div class="card-body">
+              <div style="display:flex;flex-direction:column;gap:var(--space-lg)">
+                <div>
+                  <div class="flex justify-between mb-sm"><span class="text-xs text-secondary">Span Ingestion</span><span class="text-xs font-mono">68%</span></div>
+                  <div style="height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:68%;height:100%;background:var(--accent-blue);border-radius:3px"></div></div>
+                </div>
+                <div>
+                  <div class="flex justify-between mb-sm"><span class="text-xs text-secondary">Metric Storage</span><span class="text-xs font-mono">45%</span></div>
+                  <div style="height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:45%;height:100%;background:var(--accent-green);border-radius:3px"></div></div>
+                </div>
+                <div>
+                  <div class="flex justify-between mb-sm"><span class="text-xs text-secondary">Log Storage</span><span class="text-xs font-mono">82%</span></div>
+                  <div style="height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:82%;height:100%;background:var(--accent-yellow);border-radius:3px"></div></div>
+                </div>
+                <div>
+                  <div class="flex justify-between mb-sm"><span class="text-xs text-secondary">Alert Quota</span><span class="text-xs font-mono">33%</span></div>
+                  <div style="height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:33%;height:100%;background:var(--accent-green);border-radius:3px"></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Tenants (Admin Only) ===================== -->
+      <div class="page" id="page-tenants">
+        <!-- Tenant Stats -->
+        <div class="stat-grid mb-xl">
+          <div class="stat-card">
+            <div class="stat-card-icon blue"><i class="fas fa-building"></i></div>
+            <div class="stat-card-label">Total Tenants</div>
+            <div class="stat-card-value">3</div>
+            <div class="stat-card-trend neutral"><i class="fas fa-minus"></i> No change</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon green"><i class="fas fa-plug"></i></div>
+            <div class="stat-card-label">Connected</div>
+            <div class="stat-card-value">3</div>
+            <div class="stat-card-trend up"><i class="fas fa-check"></i> All connected</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon yellow"><i class="fas fa-exclamation-triangle"></i></div>
+            <div class="stat-card-label">Degraded</div>
+            <div class="stat-card-value" style="color:var(--accent-yellow)">1</div>
+            <div class="stat-card-trend down"><i class="fas fa-arrow-up"></i> Gamma Ltd</div>
+          </div>
+        </div>
+
+        <!-- Tenant Detail Table -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-list"></i> Tenant Directory</span>
+            <button class="btn btn-primary"><i class="fas fa-plus"></i> Add Tenant</button>
+          </div>
+          <div class="card-body" style="padding:0">
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Tenant</th>
+                    <th>Plan</th>
+                    <th>Apps</th>
+                    <th>Services</th>
+                    <th>Instances</th>
+                    <th>Agent Version</th>
+                    <th>Onboarded</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <div style="width:28px;height:28px;border-radius:var(--radius-sm);background:rgba(88,166,255,0.1);display:flex;align-items:center;justify-content:center"><i class="fas fa-building" style="font-size:0.7rem;color:var(--accent-blue)"></i></div>
+                        <div><strong>Acme Corp</strong><div class="text-xs text-tertiary">acme-corp-001</div></div>
+                      </div>
+                    </td>
+                    <td><span class="badge badge-info">Enterprise</span></td>
+                    <td class="font-mono">3</td>
+                    <td class="font-mono">8</td>
+                    <td class="font-mono">24</td>
+                    <td class="font-mono text-xs">v1.8.2</td>
+                    <td class="text-xs text-secondary">2025-09-15</td>
+                    <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span> Active</span></td>
+                    <td>
+                      <div style="display:flex;gap:4px">
+                        <button class="btn btn-ghost text-xs" title="View as tenant" onclick="switchToTenantView('acme')"><i class="fas fa-eye"></i></button>
+                        <button class="btn btn-ghost text-xs" title="Settings"><i class="fas fa-cog"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <div style="width:28px;height:28px;border-radius:var(--radius-sm);background:rgba(63,185,80,0.1);display:flex;align-items:center;justify-content:center"><i class="fas fa-building" style="font-size:0.7rem;color:var(--accent-green)"></i></div>
+                        <div><strong>Beta Inc</strong><div class="text-xs text-tertiary">beta-inc-002</div></div>
+                      </div>
+                    </td>
+                    <td><span class="badge badge-neutral">Standard</span></td>
+                    <td class="font-mono">1</td>
+                    <td class="font-mono">4</td>
+                    <td class="font-mono">10</td>
+                    <td class="font-mono text-xs">v1.8.1</td>
+                    <td class="text-xs text-secondary">2025-11-02</td>
+                    <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span> Active</span></td>
+                    <td>
+                      <div style="display:flex;gap:4px">
+                        <button class="btn btn-ghost text-xs" title="View as tenant"><i class="fas fa-eye"></i></button>
+                        <button class="btn btn-ghost text-xs" title="Settings"><i class="fas fa-cog"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <div style="width:28px;height:28px;border-radius:var(--radius-sm);background:rgba(188,140,255,0.1);display:flex;align-items:center;justify-content:center"><i class="fas fa-building" style="font-size:0.7rem;color:var(--accent-purple)"></i></div>
+                        <div><strong>Gamma Ltd</strong><div class="text-xs text-tertiary">gamma-ltd-003</div></div>
+                      </div>
+                    </td>
+                    <td><span class="badge badge-info">Enterprise</span></td>
+                    <td class="font-mono">2</td>
+                    <td class="font-mono">6</td>
+                    <td class="font-mono">13</td>
+                    <td class="font-mono text-xs" style="color:var(--accent-yellow)">v1.7.9 ↑</td>
+                    <td class="text-xs text-secondary">2025-07-20</td>
+                    <td><span class="badge badge-warning"><span class="dot dot-warning"></span> Degraded</span></td>
+                    <td>
+                      <div style="display:flex;gap:4px">
+                        <button class="btn btn-ghost text-xs" title="View as tenant"><i class="fas fa-eye"></i></button>
+                        <button class="btn btn-ghost text-xs" title="Investigate" style="color:var(--accent-yellow)"><i class="fas fa-search"></i></button>
+                        <button class="btn btn-ghost text-xs" title="Settings"><i class="fas fa-cog"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Resource Usage (Admin Only) ===================== -->
+      <div class="page" id="page-resource-usage">
+        <div class="stat-grid mb-xl">
+          <div class="stat-card">
+            <div class="stat-card-icon blue"><i class="fas fa-stream"></i></div>
+            <div class="stat-card-label">Spans / Day</div>
+            <div class="stat-card-value">1.2<span style="font-size:0.9rem;color:var(--text-secondary)">B</span></div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> 15% vs last week</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon green"><i class="fas fa-database"></i></div>
+            <div class="stat-card-label">Metric Series</div>
+            <div class="stat-card-value">840<span style="font-size:0.9rem;color:var(--text-secondary)">K</span></div>
+            <div class="stat-card-trend neutral"><i class="fas fa-minus"></i> Stable</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon purple"><i class="fas fa-hdd"></i></div>
+            <div class="stat-card-label">Storage Used</div>
+            <div class="stat-card-value">14.2<span style="font-size:0.9rem;color:var(--text-secondary)"> TB</span></div>
+            <div class="stat-card-trend down"><i class="fas fa-arrow-up"></i> Growing 3%/week</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon yellow"><i class="fas fa-percentage"></i></div>
+            <div class="stat-card-label">Quota Usage</div>
+            <div class="stat-card-value">62<span style="font-size:0.9rem;color:var(--text-secondary)">%</span></div>
+            <div class="stat-card-trend neutral"><i class="fas fa-minus"></i> Within limits</div>
+          </div>
+        </div>
+
+        <!-- Per-Tenant Resource Usage -->
+        <div class="card mb-xl">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-chart-bar"></i> Per-Tenant Resource Usage</span>
+            <span class="text-xs text-tertiary">Last 30 days</span>
+          </div>
+          <div class="card-body" style="padding:0">
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Tenant</th>
+                    <th>Spans/Day</th>
+                    <th>Metrics Series</th>
+                    <th>Storage</th>
+                    <th>Quota</th>
+                    <th>Quota Usage</th>
+                    <th>Trend (7d)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><i class="fas fa-building" style="color:var(--accent-blue);margin-right:6px"></i><strong>Acme Corp</strong></td>
+                    <td class="font-mono">580M</td>
+                    <td class="font-mono">420K</td>
+                    <td class="font-mono">7.1 TB</td>
+                    <td class="font-mono">10 TB</td>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <div style="flex:1;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:71%;height:100%;background:var(--accent-yellow);border-radius:3px"></div></div>
+                        <span class="text-xs font-mono" style="color:var(--accent-yellow)">71%</span>
+                      </div>
+                    </td>
+                    <td><span class="error-sparkline">▂▃▃▅▅▆▇</span></td>
+                  </tr>
+                  <tr>
+                    <td><i class="fas fa-building" style="color:var(--accent-green);margin-right:6px"></i><strong>Beta Inc</strong></td>
+                    <td class="font-mono">280M</td>
+                    <td class="font-mono">180K</td>
+                    <td class="font-mono">3.2 TB</td>
+                    <td class="font-mono">8 TB</td>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <div style="flex:1;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:40%;height:100%;background:var(--accent-green);border-radius:3px"></div></div>
+                        <span class="text-xs font-mono">40%</span>
+                      </div>
+                    </td>
+                    <td><span class="error-sparkline">▃▃▃▃▃▃▃</span></td>
+                  </tr>
+                  <tr>
+                    <td><i class="fas fa-building" style="color:var(--accent-purple);margin-right:6px"></i><strong>Gamma Ltd</strong></td>
+                    <td class="font-mono">340M</td>
+                    <td class="font-mono">240K</td>
+                    <td class="font-mono">3.9 TB</td>
+                    <td class="font-mono">5 TB</td>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <div style="flex:1;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="width:78%;height:100%;background:var(--accent-red);border-radius:3px"></div></div>
+                        <span class="text-xs font-mono" style="color:var(--accent-red)">78%</span>
+                      </div>
+                    </td>
+                    <td><span class="error-sparkline" style="color:var(--accent-red)">▃▅▅▆▇▇█</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Storage Trend Chart -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-chart-line"></i> Storage Growth Trend</span>
+          </div>
+          <div class="card-body">
+            <div class="chart-area" id="storage-trend-chart"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Global Errors (Admin Only) ===================== -->
+      <div class="page" id="page-global-errors">
+        <div class="stat-grid mb-xl">
+          <div class="stat-card">
+            <div class="stat-card-icon red"><i class="fas fa-bug"></i></div>
+            <div class="stat-card-label">Total Error Groups</div>
+            <div class="stat-card-value" style="color:var(--accent-red)">12</div>
+            <div class="stat-card-trend down"><i class="fas fa-arrow-up"></i> 3 new today</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon yellow"><i class="fas fa-building"></i></div>
+            <div class="stat-card-label">Affected Tenants</div>
+            <div class="stat-card-value">2<span style="font-size:0.9rem;color:var(--text-secondary)"> / 3</span></div>
+            <div class="stat-card-trend down"><i class="fas fa-arrow-up"></i> Gamma & Acme</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon blue"><i class="fas fa-clock"></i></div>
+            <div class="stat-card-label">Avg Resolution</div>
+            <div class="stat-card-value">4.2<span style="font-size:0.9rem;color:var(--text-secondary)">h</span></div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-down"></i> -18% improvement</div>
+          </div>
+        </div>
+
+        <!-- Cross-Tenant Error Groups -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-exclamation-triangle"></i> Cross-Tenant Error Groups</span>
+            <div style="display:flex;gap:var(--space-sm)">
+              <span class="badge badge-critical">Unresolved 8</span>
+              <span class="badge badge-warning">Triaged 3</span>
+              <span class="badge badge-healthy">Resolved 1</span>
+            </div>
+          </div>
+          <div class="card-body" style="padding:0">
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Error</th>
+                    <th>Tenant</th>
+                    <th>Service</th>
+                    <th>Count</th>
+                    <th>Trend</th>
+                    <th>First Seen</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="dot dot-critical"></span></td>
+                    <td><code class="mono" style="color:var(--accent-red);font-size:0.75rem">NullPointerException</code><br><span class="text-xs text-tertiary">OrderController.create(OrderController.java:142)</span></td>
+                    <td class="text-sm">Acme Corp</td>
+                    <td><span class="badge badge-info">order-service</span></td>
+                    <td><span class="error-count-badge">1,247</span></td>
+                    <td><span class="error-sparkline" style="color:var(--accent-red)">▂▃▅▇▇█▇</span></td>
+                    <td class="text-xs text-secondary">2h ago</td>
+                    <td><span class="badge badge-critical">New</span></td>
+                    <td><button class="btn btn-ghost text-xs" title="Jump to tenant errors"><i class="fas fa-external-link-alt"></i></button></td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-critical"></span></td>
+                    <td><code class="mono" style="color:var(--accent-red);font-size:0.75rem">ConnectionTimeoutException</code><br><span class="text-xs text-tertiary">RedisPool.getConnection(RedisPool.java:87)</span></td>
+                    <td class="text-sm">Gamma Ltd</td>
+                    <td><span class="badge badge-info">payment-svc</span></td>
+                    <td><span class="error-count-badge">893</span></td>
+                    <td><span class="error-sparkline" style="color:var(--accent-red)">▁▁▃▃▅▇█</span></td>
+                    <td class="text-xs text-secondary">45min ago</td>
+                    <td><span class="badge badge-critical">New</span></td>
+                    <td><button class="btn btn-ghost text-xs" title="Jump to tenant errors"><i class="fas fa-external-link-alt"></i></button></td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-warning"></span></td>
+                    <td><code class="mono" style="color:var(--accent-yellow);font-size:0.75rem">RateLimitExceeded</code><br><span class="text-xs text-tertiary">APIGateway.handleRequest(Gateway.java:55)</span></td>
+                    <td class="text-sm">Beta Inc</td>
+                    <td><span class="badge badge-info">api-gateway</span></td>
+                    <td><span class="error-count-badge" style="background:rgba(210,153,34,0.15);color:var(--accent-yellow)">156</span></td>
+                    <td><span class="error-sparkline">▃▃▅▃▂▁▁</span></td>
+                    <td class="text-xs text-secondary">1d ago</td>
+                    <td><span class="badge badge-warning">Triaged</span></td>
+                    <td><button class="btn btn-ghost text-xs" title="Jump to tenant errors"><i class="fas fa-external-link-alt"></i></button></td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-critical"></span></td>
+                    <td><code class="mono" style="color:var(--accent-red);font-size:0.75rem">OutOfMemoryError</code><br><span class="text-xs text-tertiary">InventorySync.batchUpdate(InventorySync.java:203)</span></td>
+                    <td class="text-sm">Acme Corp</td>
+                    <td><span class="badge badge-info">inventory-svc</span></td>
+                    <td><span class="error-count-badge">67</span></td>
+                    <td><span class="error-sparkline" style="color:var(--accent-red)">▁▁▁▃▇█▇</span></td>
+                    <td class="text-xs text-secondary">30min ago</td>
+                    <td><span class="badge badge-critical">New</span></td>
+                    <td><button class="btn btn-ghost text-xs" title="Jump to tenant errors"><i class="fas fa-external-link-alt"></i></button></td>
+                  </tr>
+                  <tr style="opacity:0.5">
+                    <td><span class="dot dot-healthy"></span></td>
+                    <td><code class="mono" style="color:var(--accent-green);font-size:0.75rem;text-decoration:line-through">SocketException</code><br><span class="text-xs text-tertiary">HttpClient.send(HttpClient.java:44)</span></td>
+                    <td class="text-sm">Gamma Ltd</td>
+                    <td><span class="badge badge-info">user-auth</span></td>
+                    <td><span class="error-count-badge" style="background:rgba(63,185,80,0.15);color:var(--accent-green)">0</span></td>
+                    <td><span class="error-sparkline">▇▅▃▂▁▁▁</span></td>
+                    <td class="text-xs text-secondary">3d ago</td>
+                    <td><span class="badge badge-healthy">Resolved</span></td>
+                    <td><button class="btn btn-ghost text-xs" title="View details"><i class="fas fa-eye"></i></button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== PAGE: Global Alerts (Admin Only) ===================== -->
+      <div class="page" id="page-global-alerts">
+        <div class="stat-grid mb-xl">
+          <div class="stat-card">
+            <div class="stat-card-icon red"><i class="fas fa-bell"></i></div>
+            <div class="stat-card-label">Active Alerts</div>
+            <div class="stat-card-value" style="color:var(--accent-red)">5</div>
+            <div class="stat-card-trend down"><i class="fas fa-arrow-up"></i> 2 new</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon yellow"><i class="fas fa-clock"></i></div>
+            <div class="stat-card-label">Avg Response Time</div>
+            <div class="stat-card-value">8<span style="font-size:0.9rem;color:var(--text-secondary)"> min</span></div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-down"></i> -25%</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-icon green"><i class="fas fa-check-circle"></i></div>
+            <div class="stat-card-label">Resolved (24h)</div>
+            <div class="stat-card-value">7</div>
+            <div class="stat-card-trend up"><i class="fas fa-arrow-up"></i> Good pace</div>
+          </div>
+        </div>
+
+        <!-- Alert List -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title"><i class="fas fa-bell"></i> Cross-Tenant Alerts</span>
+            <div style="display:flex;gap:var(--space-sm)">
+              <span class="badge badge-critical"><span class="dot dot-critical"></span> Critical 2</span>
+              <span class="badge badge-warning"><span class="dot dot-warning"></span> Warning 3</span>
+            </div>
+          </div>
+          <div class="card-body" style="padding:0">
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Alert</th>
+                    <th>Tenant</th>
+                    <th>Service</th>
+                    <th>Severity</th>
+                    <th>Duration</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="dot dot-critical" style="animation:pulse 2s infinite"></span></td>
+                    <td>
+                      <div><strong>Error rate > 5% for 10min</strong></div>
+                      <div class="text-xs text-tertiary">Error rate spiked to 8.3% after deployment v2.4.1</div>
+                    </td>
+                    <td class="text-sm">Acme Corp</td>
+                    <td><span class="badge badge-info">order-service</span></td>
+                    <td><span class="badge badge-critical">Critical</span></td>
+                    <td class="font-mono text-xs" style="color:var(--accent-red)">23min</td>
+                    <td>
+                      <div style="display:flex;gap:4px">
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-check"></i> Ack</button>
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-external-link-alt"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-critical" style="animation:pulse 2s infinite"></span></td>
+                    <td>
+                      <div><strong>P99 latency > 2s for 5min</strong></div>
+                      <div class="text-xs text-tertiary">Redis connection pool exhaustion causing timeout cascade</div>
+                    </td>
+                    <td class="text-sm">Gamma Ltd</td>
+                    <td><span class="badge badge-info">payment-svc</span></td>
+                    <td><span class="badge badge-critical">Critical</span></td>
+                    <td class="font-mono text-xs" style="color:var(--accent-red)">45min</td>
+                    <td>
+                      <div style="display:flex;gap:4px">
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-check"></i> Ack</button>
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-external-link-alt"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-warning"></span></td>
+                    <td>
+                      <div><strong>CPU usage > 80% for 15min</strong></div>
+                      <div class="text-xs text-tertiary">Instance pod-x9y0z approaching resource limit</div>
+                    </td>
+                    <td class="text-sm">Acme Corp</td>
+                    <td><span class="badge badge-info">inventory-svc</span></td>
+                    <td><span class="badge badge-warning">Warning</span></td>
+                    <td class="font-mono text-xs">1h 12min</td>
+                    <td>
+                      <div style="display:flex;gap:4px">
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-check"></i> Ack</button>
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-external-link-alt"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-warning"></span></td>
+                    <td>
+                      <div><strong>Storage quota > 70%</strong></div>
+                      <div class="text-xs text-tertiary">Tenant approaching storage limit, consider plan upgrade</div>
+                    </td>
+                    <td class="text-sm">Acme Corp</td>
+                    <td><span class="badge badge-neutral">Platform</span></td>
+                    <td><span class="badge badge-warning">Warning</span></td>
+                    <td class="font-mono text-xs">3h 40min</td>
+                    <td>
+                      <div style="display:flex;gap:4px">
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-check"></i> Ack</button>
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-external-link-alt"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span class="dot dot-warning"></span></td>
+                    <td>
+                      <div><strong>Agent version outdated</strong></div>
+                      <div class="text-xs text-tertiary">Running v1.7.9, recommend upgrade to v1.8.2</div>
+                    </td>
+                    <td class="text-sm">Gamma Ltd</td>
+                    <td><span class="badge badge-neutral">Platform</span></td>
+                    <td><span class="badge badge-warning">Warning</span></td>
+                    <td class="font-mono text-xs">5d</td>
+                    <td>
+                      <div style="display:flex;gap:4px">
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-check"></i> Ack</button>
+                        <button class="btn btn-ghost text-xs"><i class="fas fa-external-link-alt"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ===================== PAGE: Dashboard ===================== -->
-      <div class="page active" id="page-dashboard">
+      <div class="page" id="page-dashboard">
         <!-- Golden Signals -->
         <div class="stat-grid mb-xl">
           <div class="stat-card">
@@ -1482,11 +2138,13 @@ function applyRole(role) {
   document.getElementById('sidebar-header-admin').style.display = isAdmin ? '' : 'none';
   document.getElementById('sidebar-header-tenant').style.display = isTenant ? '' : 'none';
   
-  // 4. Nav items: hide admin-only, show tenant-only
+  // 4. Nav groups: toggle admin-only / tenant-only visibility
   document.querySelectorAll('[data-admin-only]').forEach(el => {
     el.style.display = isTenant ? 'none' : '';
   });
-  document.getElementById('nav-tenant-only').style.display = isTenant ? '' : 'none';
+  document.querySelectorAll('[data-tenant-only]').forEach(el => {
+    el.style.display = isTenant ? '' : 'none';
+  });
   
   // 5. Bottom nav: settings vs user profile
   document.getElementById('nav-settings-admin').style.display = isAdmin ? '' : 'none';
@@ -1495,9 +2153,9 @@ function applyRole(role) {
   // 6. Scope context tag update
   const ctxTag = document.getElementById('scope-context-tag');
   if (isTenant) {
-    ctxTag.innerHTML = '<i class="fas fa-building" style="font-size:0.55rem"></i> Acme Corp';
+    ctxTag.innerHTML = '<i class="fas fa-building" style="font-size:0.55rem"></i> Acme Corp / order-service';
   } else {
-    ctxTag.innerHTML = '<i class="fas fa-filter" style="font-size:0.55rem"></i> Acme Corp / E-Commerce Platform';
+    ctxTag.innerHTML = '<i class="fas fa-filter" style="font-size:0.55rem"></i> Acme Corp / E-Commerce Platform / order-service';
   }
   
   // 7. Scope label text
@@ -1507,13 +2165,15 @@ function applyRole(role) {
     : '<i class="fas fa-filter"></i> Scope';
   
   // 8. If tenant was viewing admin-only page, redirect to dashboard
+  const adminOnlyPages = ['page-platform-dashboard', 'page-tenants', 'page-resource-usage', 'page-global-errors', 'page-global-alerts', 'page-resources'];
   const activePage = document.querySelector('.page.active');
-  if (isTenant && activePage && activePage.id === 'page-resources') {
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    document.querySelector('.nav-item[data-page="dashboard"]').classList.add('active');
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    document.getElementById('page-dashboard').classList.add('active');
-    document.getElementById('page-title').textContent = 'Service Dashboard';
+  if (isTenant && activePage && adminOnlyPages.includes(activePage.id)) {
+    navigateToPage('dashboard');
+  }
+  
+  // 9. If switching to admin, go to Platform Dashboard
+  if (isAdmin) {
+    navigateToPage('platform-dashboard');
   }
 }
 
@@ -1593,6 +2253,24 @@ generateBars('metrics-errors-chart', 60, 5, 40, '#f85149');
 generateBars('metrics-duration-chart', 60, 20, 75, '#bc8cff');
 generateBars('metrics-saturation-chart', 60, 25, 65, '#3fb950');
 generateBars('deploy-timeline-chart', 60, 20, 80);
+generateBars('storage-trend-chart', 60, 30, 75, '#bc8cff');
+
+// ---- Navigate to page helper ----
+function navigateToPage(pageId) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const navItem = document.querySelector('.nav-item[data-page="' + pageId + '"]');
+  if (navItem) navItem.classList.add('active');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const target = document.getElementById('page-' + pageId);
+  if (target) target.classList.add('active');
+  document.getElementById('page-title').textContent = navItem ? navItem.textContent.trim() : pageId;
+}
+
+// ---- Switch to Tenant View (from admin tenant table) ----
+function switchToTenantView(tenantId) {
+  currentRole = 'tenant';
+  applyRole('tenant');
+}
 
 // ---- Tab switching ----
 document.querySelectorAll('.tabs').forEach(tabGroup => {
