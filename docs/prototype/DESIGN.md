@@ -1,13 +1,14 @@
 # APM Observability Platform — 原型设计文档
 
-> **版本**：v1.4  
-> **日期**：2026-05-15  
+> **版本**：v1.5  
+> **日期**：2026-05-20  
 > **产出物**：`docs/prototype/apm-prototype.html` + `docs/prototype/styles.css`  
 > **技术栈**：纯 HTML + CSS + Vanilla JS（独立交互原型，无框架依赖）  
 > **v1.1 更新**：新增全局 Scope Bar（多租户四级资源选择器）+ Resource Explorer 页面  
 > **v1.2 更新**：新增角色切换器（Platform Admin ↔ Tenant User），同一原型演示双视角差异  
 > **v1.3 更新**：业界对标增强 — Apdex 评分 + Error Inbox + Deployment Tracking + Latency Heatmap + Endpoint 分析  
 > **v1.4 更新**：管理端重新定位 — Platform Dashboard + Tenant Management + Resource Usage + Global Errors/Alerts + Scope Bar Service 默认行为优化
+> **v1.5 更新**：Traces 页面交互重构 — 图表 Tab 切换 + 增强列表（10行+Load More）+ 右侧抽屉式 Trace Detail（黄金比例 62:38 Waterfall/Span属性分栏）
 
 ---
 
@@ -538,6 +539,55 @@ APM Platform
 
 ---
 
+### 3.20 Traces 页面 (v1.5 重构)
+
+**设计目标**：解决旧版 Traces 页面垂直堆叠过深、信息密度低、大量 Trace 浏览不友好的问题。
+
+**布局架构**：
+
+```
+┌─────────────────────────────────────────────────┐
+│  Filter Bar                                      │
+├─────────────────────────────────────────────────┤
+│  [Scatter Plot | Heatmap]  ← Tab 切换            │
+│  可视化面板 (150px)                               │
+├─────────────────────────────────────────────────┤
+│  Trace List (全宽, 10行 + Load More)             │
+└─────────────────────────────────────────────────┘
+         ↓ 点击某行 Trace
+┌──────────────────────────────────────────────────┐
+│       Trace Detail Drawer (右侧滑出, 62vw)        │
+│  ┌──────────────────┬─────────────────────────┐  │
+│  │ Waterfall (62%)  │  Span Attributes (38%)  │  │
+│  │ 瀑布流时间线      │  选中 Span 的属性详情     │  │
+│  └──────────────────┴─────────────────────────┘  │
+└──────────────────────────────────────────────────┘
+```
+
+**核心设计决策**：
+
+| 决策点 | 方案 | 理由 |
+|--------|------|------|
+| 图表展示 | Tab 切换（Scatter Plot / Heatmap）| 两图信息重叠，Tab 省 180px 垂直空间 |
+| Trace 列表 | 全宽 10 行 + Load More | 给列表足够空间，支持大量 trace 浏览 |
+| Trace 详情 | 右侧 Drawer（60%+ 视口宽） | 不破坏列表上下文，按需展开 |
+| Drawer 内部 | 黄金比例 62:38 分栏 | Waterfall 为主角，Span属性为辅助 |
+| Span 选中 | 点击 Span 行 → 右栏更新 | 不跳转页面，保持上下文 |
+| 关闭方式 | 遮罩层点击 / Close按钮 / ESC | 符合抽屉交互标准 |
+
+**Trace List 增强**：
+- 新增排序按钮（Duration 排序）
+- 结果计数指示器 "Showing 10 of 1,234"
+- 选中行左侧蓝色边框 + 浅蓝底色
+- 点击行箭头图标暗示可展开
+
+**Span Attributes 面板**：
+- 三大信息区域：Attributes / Resource / Events
+- Key-Value 对齐排列，Key 为蓝色等宽字体
+- 悬停行高亮，便于复制
+
+---
+
 ## 4. 色彩体系
 
 ### 4.1 基础色板
@@ -679,6 +729,7 @@ Alert 触发 → 点击告警 → 关联 Service + Trace
 | P0 | ~~Global Errors~~ | 跨租户错误聚合排查 + 一键跳转 | ✅ v1.4 |
 | P0 | ~~Global Alerts~~ | 跨租户告警统一管理 + 严重等级排序 | ✅ v1.4 |
 | P0 | ~~Scope Bar 优化~~ | Service 默认选第一个具体服务，去掉 All Services | ✅ v1.4 |
+| P0 | ~~Traces 页面重构~~ | 图表Tab切换 + 10行列表+Load More + 抽屉式详情（62:38 黄金比例） | ✅ v1.5 |
 | P0 | Logs 查看器 | 可观测三支柱补齐，支持 Trace ↔ Log 关联 | 待实施 |
 | P1 | Scope Bar 联动 | 选择 App 后自动过滤 Service/Instance 下拉选项 | 待实施 |
 | P1 | Alert Rule 编辑器 | 支持 PromQL 条件 + 通知渠道配置 | 待实施 |

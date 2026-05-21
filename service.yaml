@@ -37,18 +37,18 @@ service:
     protocol: TCP
     expose: true
     description: "grpc port"
-  - name: http
+  - name: http-report
     port: 4318
     protocol: TCP
     expose: true
     description: "HTTP API port"
-  - name: http
+  - name: http-monitor
     port: 8088
     protocol: TCP
     expose: true
     description: "Admin API port"
 
-  - name: http
+  - name: http-console
     port: 8686
     protocol: TCP
     expose: true

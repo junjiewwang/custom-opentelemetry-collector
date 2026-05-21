@@ -993,6 +993,7 @@
 
       <!-- ===================== PAGE: Traces ===================== -->
       <div class="page" id="page-traces">
+        <!-- Filter Bar -->
         <div class="filter-bar">
           <i class="fas fa-search" style="color:var(--text-tertiary)"></i>
           <div class="filter-tag">service = order-service <i class="fas fa-times" style="font-size:0.6rem;cursor:pointer"></i></div>
@@ -1001,56 +1002,54 @@
           <button class="btn btn-primary"><i class="fas fa-search"></i> Search</button>
         </div>
 
-        <!-- Scatter Plot -->
+        <!-- Visualization: Tab-switched Scatter Plot / Heatmap -->
         <div class="card mb-lg">
           <div class="card-header">
-            <span class="card-title"><i class="fas fa-braille" style="color:var(--accent-blue)"></i> Latency Scatter Plot</span>
-            <span class="text-xs text-tertiary">126 traces found</span>
+            <div style="display:flex;align-items:center;gap:0">
+              <div class="trace-viz-tab active" data-viz="scatter" onclick="switchTraceViz(this)">
+                <i class="fas fa-braille" style="font-size:0.7rem"></i> Scatter Plot
+              </div>
+              <div class="trace-viz-tab" data-viz="heatmap" onclick="switchTraceViz(this)">
+                <i class="fas fa-fire" style="font-size:0.7rem"></i> Heatmap
+              </div>
+            </div>
+            <span class="text-xs text-tertiary">1,234 traces · last 15 min</span>
           </div>
-          <div class="card-body" style="height:160px;position:relative;overflow:hidden">
-            <!-- Simulated scatter points -->
-            <div style="position:absolute;inset:0;padding:8px">
-              <svg width="100%" height="100%" viewBox="0 0 800 140">
-                <!-- Grid lines -->
-                <line x1="0" y1="35" x2="800" y2="35" stroke="#21262d" stroke-width="1"/>
-                <line x1="0" y1="70" x2="800" y2="70" stroke="#21262d" stroke-width="1"/>
-                <line x1="0" y1="105" x2="800" y2="105" stroke="#21262d" stroke-width="1"/>
+          <!-- Scatter Plot Panel -->
+          <div class="trace-viz-panel active" id="viz-scatter">
+            <div style="height:150px;position:relative;overflow:hidden;padding:8px">
+              <svg width="100%" height="100%" viewBox="0 0 800 130">
+                <line x1="0" y1="32" x2="800" y2="32" stroke="#21262d" stroke-width="1"/>
+                <line x1="0" y1="65" x2="800" y2="65" stroke="#21262d" stroke-width="1"/>
+                <line x1="0" y1="98" x2="800" y2="98" stroke="#21262d" stroke-width="1"/>
                 <!-- Normal points -->
-                <circle cx="45" cy="95" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="82" cy="98" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="120" cy="92" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="155" cy="100" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="190" cy="88" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="230" cy="94" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="265" cy="96" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="300" cy="91" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="340" cy="93" r="4" fill="#58a6ff" opacity="0.6"/><circle cx="375" cy="97" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="410" cy="89" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="450" cy="95" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="485" cy="99" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="520" cy="87" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="555" cy="93" r="4" fill="#58a6ff" opacity="0.6"/><circle cx="590" cy="96" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="625" cy="91" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="665" cy="94" r="3" fill="#58a6ff" opacity="0.6"/>
-                <circle cx="700" cy="88" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="735" cy="97" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="45" cy="92" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="82" cy="95" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="120" cy="89" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="155" cy="97" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="190" cy="85" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="230" cy="91" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="265" cy="93" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="300" cy="88" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="340" cy="90" r="4" fill="#58a6ff" opacity="0.6"/><circle cx="375" cy="94" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="410" cy="86" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="450" cy="92" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="485" cy="96" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="520" cy="84" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="555" cy="90" r="4" fill="#58a6ff" opacity="0.6"/><circle cx="590" cy="93" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="625" cy="88" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="665" cy="91" r="3" fill="#58a6ff" opacity="0.6"/>
+                <circle cx="700" cy="85" r="3" fill="#58a6ff" opacity="0.6"/><circle cx="735" cy="94" r="3" fill="#58a6ff" opacity="0.6"/>
                 <!-- Slow points -->
-                <circle cx="195" cy="45" r="4" fill="#d29922" opacity="0.8"/><circle cx="410" cy="38" r="5" fill="#d29922" opacity="0.8"/>
-                <circle cx="590" cy="52" r="4" fill="#d29922" opacity="0.8"/>
+                <circle cx="195" cy="42" r="4" fill="#d29922" opacity="0.8"/><circle cx="410" cy="35" r="5" fill="#d29922" opacity="0.8"/>
+                <circle cx="590" cy="49" r="4" fill="#d29922" opacity="0.8"/>
                 <!-- Error points -->
-                <circle cx="310" cy="25" r="5" fill="#f85149" opacity="0.9"/><circle cx="520" cy="18" r="6" fill="#f85149" opacity="0.9"/>
-                <circle cx="680" cy="30" r="5" fill="#f85149" opacity="0.9"/>
+                <circle cx="310" cy="22" r="5" fill="#f85149" opacity="0.9"/><circle cx="520" cy="15" r="6" fill="#f85149" opacity="0.9"/>
+                <circle cx="680" cy="27" r="5" fill="#f85149" opacity="0.9"/>
                 <!-- Y axis labels -->
-                <text x="2" y="108" fill="#6e7681" font-size="9" font-family="JetBrains Mono">50ms</text>
-                <text x="2" y="73" fill="#6e7681" font-size="9" font-family="JetBrains Mono">200ms</text>
-                <text x="2" y="38" fill="#6e7681" font-size="9" font-family="JetBrains Mono">500ms</text>
+                <text x="2" y="101" fill="#6e7681" font-size="9" font-family="JetBrains Mono">50ms</text>
+                <text x="2" y="68" fill="#6e7681" font-size="9" font-family="JetBrains Mono">200ms</text>
+                <text x="2" y="35" fill="#6e7681" font-size="9" font-family="JetBrains Mono">500ms</text>
               </svg>
             </div>
           </div>
-        </div>
-
-        <!-- Latency Heatmap -->
-        <div class="card mb-lg">
-          <div class="card-header">
-            <span class="card-title"><i class="fas fa-fire" style="color:var(--accent-orange)"></i> Latency Heatmap</span>
-            <span class="text-xs text-tertiary">X = time · Y = latency bucket · Color = request density</span>
-          </div>
-          <div class="card-body" style="padding:var(--space-md)">
-            <div class="heatmap-container" style="height:180px;position:relative">
-              <!-- Y-axis labels -->
-              <div style="position:absolute;left:0;top:0;bottom:20px;width:50px;display:flex;flex-direction:column;justify-content:space-between;padding:4px 0">
+          <!-- Heatmap Panel -->
+          <div class="trace-viz-panel" id="viz-heatmap">
+            <div style="height:150px;position:relative;padding:var(--space-md)">
+              <div style="position:absolute;left:12px;top:12px;bottom:32px;width:44px;display:flex;flex-direction:column;justify-content:space-between;padding:4px 0">
                 <span class="text-xs font-mono text-tertiary">2s+</span>
                 <span class="text-xs font-mono text-tertiary">1s</span>
                 <span class="text-xs font-mono text-tertiary">500ms</span>
@@ -1058,86 +1057,48 @@
                 <span class="text-xs font-mono text-tertiary">50ms</span>
                 <span class="text-xs font-mono text-tertiary">10ms</span>
               </div>
-              <!-- Heatmap SVG -->
-              <div style="margin-left:54px;height:160px">
+              <div style="margin-left:54px;height:120px">
                 <svg width="100%" height="100%" viewBox="0 0 480 120" preserveAspectRatio="none">
-                  <!-- Row 1: 2s+ (very few, red) -->
                   <rect x="0" y="0" width="12" height="20" fill="#f8514900"/><rect x="14" y="0" width="12" height="20" fill="#f8514900"/>
-                  <rect x="28" y="0" width="12" height="20" fill="#f8514900"/><rect x="42" y="0" width="12" height="20" fill="#f8514910"/>
-                  <rect x="56" y="0" width="12" height="20" fill="#f8514900"/><rect x="70" y="0" width="12" height="20" fill="#f8514900"/>
-                  <rect x="84" y="0" width="12" height="20" fill="#f8514900"/><rect x="98" y="0" width="12" height="20" fill="#f8514900"/>
-                  <rect x="112" y="0" width="12" height="20" fill="#f8514920"/><rect x="126" y="0" width="12" height="20" fill="#f8514900"/>
-                  <rect x="140" y="0" width="12" height="20" fill="#f8514900"/><rect x="154" y="0" width="12" height="20" fill="#f8514900"/>
-                  <rect x="168" y="0" width="12" height="20" fill="#f8514900"/><rect x="182" y="0" width="12" height="20" fill="#f8514930"/>
-                  <rect x="196" y="0" width="12" height="20" fill="#f8514950"/><rect x="210" y="0" width="12" height="20" fill="#f8514960"/>
-                  <rect x="224" y="0" width="12" height="20" fill="#f8514940"/><rect x="238" y="0" width="12" height="20" fill="#f8514920"/>
-                  <rect x="252" y="0" width="12" height="20" fill="#f8514900"/><rect x="266" y="0" width="12" height="20" fill="#f8514900"/>
-                  <!-- Row 2: 1s (sparse yellow-red) -->
-                  <rect x="0" y="20" width="12" height="20" fill="#d2992200"/><rect x="14" y="20" width="12" height="20" fill="#d2992210"/>
-                  <rect x="28" y="20" width="12" height="20" fill="#d2992200"/><rect x="42" y="20" width="12" height="20" fill="#d2992215"/>
-                  <rect x="56" y="20" width="12" height="20" fill="#d2992220"/><rect x="70" y="20" width="12" height="20" fill="#d2992210"/>
-                  <rect x="84" y="20" width="12" height="20" fill="#d2992200"/><rect x="98" y="20" width="12" height="20" fill="#d2992200"/>
-                  <rect x="112" y="20" width="12" height="20" fill="#d2992230"/><rect x="126" y="20" width="12" height="20" fill="#d2992240"/>
-                  <rect x="140" y="20" width="12" height="20" fill="#d2992230"/><rect x="154" y="20" width="12" height="20" fill="#d2992210"/>
-                  <rect x="168" y="20" width="12" height="20" fill="#d2992220"/><rect x="182" y="20" width="12" height="20" fill="#d2992250"/>
-                  <rect x="196" y="20" width="12" height="20" fill="#f8514970"/><rect x="210" y="20" width="12" height="20" fill="#f8514980"/>
-                  <rect x="224" y="20" width="12" height="20" fill="#d2992260"/><rect x="238" y="20" width="12" height="20" fill="#d2992240"/>
-                  <rect x="252" y="20" width="12" height="20" fill="#d2992230"/><rect x="266" y="20" width="12" height="20" fill="#d2992220"/>
-                  <!-- Row 3: 500ms (moderate yellow) -->
-                  <rect x="0" y="40" width="12" height="20" fill="#d2992220"/><rect x="14" y="40" width="12" height="20" fill="#d2992230"/>
-                  <rect x="28" y="40" width="12" height="20" fill="#d2992225"/><rect x="42" y="40" width="12" height="20" fill="#d2992235"/>
-                  <rect x="56" y="40" width="12" height="20" fill="#d2992240"/><rect x="70" y="40" width="12" height="20" fill="#d2992230"/>
-                  <rect x="84" y="40" width="12" height="20" fill="#d2992225"/><rect x="98" y="40" width="12" height="20" fill="#d2992235"/>
-                  <rect x="112" y="40" width="12" height="20" fill="#d2992250"/><rect x="126" y="40" width="12" height="20" fill="#d2992260"/>
-                  <rect x="140" y="40" width="12" height="20" fill="#d2992245"/><rect x="154" y="40" width="12" height="20" fill="#d2992240"/>
-                  <rect x="168" y="40" width="12" height="20" fill="#d2992250"/><rect x="182" y="40" width="12" height="20" fill="#d2992270"/>
-                  <rect x="196" y="40" width="12" height="20" fill="#d2992280"/><rect x="210" y="40" width="12" height="20" fill="#d2992275"/>
-                  <rect x="224" y="40" width="12" height="20" fill="#d2992260"/><rect x="238" y="40" width="12" height="20" fill="#d2992250"/>
-                  <rect x="252" y="40" width="12" height="20" fill="#d2992240"/><rect x="266" y="40" width="12" height="20" fill="#d2992235"/>
-                  <!-- Row 4: 200ms (heavy blue-green) -->
-                  <rect x="0" y="60" width="12" height="20" fill="#58a6ff40"/><rect x="14" y="60" width="12" height="20" fill="#58a6ff50"/>
-                  <rect x="28" y="60" width="12" height="20" fill="#58a6ff45"/><rect x="42" y="60" width="12" height="20" fill="#58a6ff55"/>
-                  <rect x="56" y="60" width="12" height="20" fill="#58a6ff60"/><rect x="70" y="60" width="12" height="20" fill="#58a6ff50"/>
-                  <rect x="84" y="60" width="12" height="20" fill="#58a6ff45"/><rect x="98" y="60" width="12" height="20" fill="#58a6ff55"/>
-                  <rect x="112" y="60" width="12" height="20" fill="#58a6ff65"/><rect x="126" y="60" width="12" height="20" fill="#58a6ff70"/>
-                  <rect x="140" y="60" width="12" height="20" fill="#58a6ff60"/><rect x="154" y="60" width="12" height="20" fill="#58a6ff55"/>
-                  <rect x="168" y="60" width="12" height="20" fill="#58a6ff50"/><rect x="182" y="60" width="12" height="20" fill="#58a6ff65"/>
-                  <rect x="196" y="60" width="12" height="20" fill="#58a6ff60"/><rect x="210" y="60" width="12" height="20" fill="#58a6ff55"/>
-                  <rect x="224" y="60" width="12" height="20" fill="#58a6ff50"/><rect x="238" y="60" width="12" height="20" fill="#58a6ff55"/>
-                  <rect x="252" y="60" width="12" height="20" fill="#58a6ff60"/><rect x="266" y="60" width="12" height="20" fill="#58a6ff55"/>
-                  <!-- Row 5: 50ms (dense green) -->
-                  <rect x="0" y="80" width="12" height="20" fill="#3fb95070"/><rect x="14" y="80" width="12" height="20" fill="#3fb95080"/>
-                  <rect x="28" y="80" width="12" height="20" fill="#3fb95075"/><rect x="42" y="80" width="12" height="20" fill="#3fb95085"/>
-                  <rect x="56" y="80" width="12" height="20" fill="#3fb95090"/><rect x="70" y="80" width="12" height="20" fill="#3fb95080"/>
-                  <rect x="84" y="80" width="12" height="20" fill="#3fb95075"/><rect x="98" y="80" width="12" height="20" fill="#3fb95085"/>
-                  <rect x="112" y="80" width="12" height="20" fill="#3fb95070"/><rect x="126" y="80" width="12" height="20" fill="#3fb95065"/>
-                  <rect x="140" y="80" width="12" height="20" fill="#3fb95075"/><rect x="154" y="80" width="12" height="20" fill="#3fb95080"/>
-                  <rect x="168" y="80" width="12" height="20" fill="#3fb95085"/><rect x="182" y="80" width="12" height="20" fill="#3fb95070"/>
-                  <rect x="196" y="80" width="12" height="20" fill="#3fb95060"/><rect x="210" y="80" width="12" height="20" fill="#3fb95065"/>
-                  <rect x="224" y="80" width="12" height="20" fill="#3fb95075"/><rect x="238" y="80" width="12" height="20" fill="#3fb95080"/>
-                  <rect x="252" y="80" width="12" height="20" fill="#3fb95085"/><rect x="266" y="80" width="12" height="20" fill="#3fb95080"/>
-                  <!-- Row 6: 10ms (densest green) -->
-                  <rect x="0" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="14" y="100" width="12" height="20" fill="#3fb950b0"/>
-                  <rect x="28" y="100" width="12" height="20" fill="#3fb950a5"/><rect x="42" y="100" width="12" height="20" fill="#3fb950b5"/>
-                  <rect x="56" y="100" width="12" height="20" fill="#3fb950c0"/><rect x="70" y="100" width="12" height="20" fill="#3fb950b0"/>
-                  <rect x="84" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="98" y="100" width="12" height="20" fill="#3fb950b0"/>
-                  <rect x="112" y="100" width="12" height="20" fill="#3fb95095"/><rect x="126" y="100" width="12" height="20" fill="#3fb95090"/>
-                  <rect x="140" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="154" y="100" width="12" height="20" fill="#3fb950b0"/>
-                  <rect x="168" y="100" width="12" height="20" fill="#3fb950b5"/><rect x="182" y="100" width="12" height="20" fill="#3fb95095"/>
-                  <rect x="196" y="100" width="12" height="20" fill="#3fb95085"/><rect x="210" y="100" width="12" height="20" fill="#3fb95090"/>
-                  <rect x="224" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="238" y="100" width="12" height="20" fill="#3fb950b0"/>
-                  <rect x="252" y="100" width="12" height="20" fill="#3fb950b5"/><rect x="266" y="100" width="12" height="20" fill="#3fb950b0"/>
+                  <rect x="28" y="0" width="12" height="20" fill="#f8514910"/><rect x="42" y="0" width="12" height="20" fill="#f8514900"/>
+                  <rect x="56" y="0" width="12" height="20" fill="#f8514900"/><rect x="70" y="0" width="12" height="20" fill="#f8514920"/>
+                  <rect x="84" y="0" width="12" height="20" fill="#f8514900"/><rect x="98" y="0" width="12" height="20" fill="#f8514930"/>
+                  <rect x="112" y="0" width="12" height="20" fill="#f8514950"/><rect x="126" y="0" width="12" height="20" fill="#f8514960"/>
+                  <rect x="0" y="20" width="12" height="20" fill="#d2992210"/><rect x="14" y="20" width="12" height="20" fill="#d2992220"/>
+                  <rect x="28" y="20" width="12" height="20" fill="#d2992215"/><rect x="42" y="20" width="12" height="20" fill="#d2992230"/>
+                  <rect x="56" y="20" width="12" height="20" fill="#d2992240"/><rect x="70" y="20" width="12" height="20" fill="#d2992250"/>
+                  <rect x="84" y="20" width="12" height="20" fill="#d2992260"/><rect x="98" y="20" width="12" height="20" fill="#f8514970"/>
+                  <rect x="112" y="20" width="12" height="20" fill="#f8514980"/><rect x="126" y="20" width="12" height="20" fill="#d2992240"/>
+                  <rect x="0" y="40" width="12" height="20" fill="#d2992230"/><rect x="14" y="40" width="12" height="20" fill="#d2992240"/>
+                  <rect x="28" y="40" width="12" height="20" fill="#d2992235"/><rect x="42" y="40" width="12" height="20" fill="#d2992250"/>
+                  <rect x="56" y="40" width="12" height="20" fill="#d2992260"/><rect x="70" y="40" width="12" height="20" fill="#d2992270"/>
+                  <rect x="84" y="40" width="12" height="20" fill="#d2992280"/><rect x="98" y="40" width="12" height="20" fill="#d2992275"/>
+                  <rect x="112" y="40" width="12" height="20" fill="#d2992260"/><rect x="126" y="40" width="12" height="20" fill="#d2992250"/>
+                  <rect x="0" y="60" width="12" height="20" fill="#58a6ff50"/><rect x="14" y="60" width="12" height="20" fill="#58a6ff60"/>
+                  <rect x="28" y="60" width="12" height="20" fill="#58a6ff55"/><rect x="42" y="60" width="12" height="20" fill="#58a6ff65"/>
+                  <rect x="56" y="60" width="12" height="20" fill="#58a6ff70"/><rect x="70" y="60" width="12" height="20" fill="#58a6ff60"/>
+                  <rect x="84" y="60" width="12" height="20" fill="#58a6ff55"/><rect x="98" y="60" width="12" height="20" fill="#58a6ff65"/>
+                  <rect x="112" y="60" width="12" height="20" fill="#58a6ff50"/><rect x="126" y="60" width="12" height="20" fill="#58a6ff55"/>
+                  <rect x="0" y="80" width="12" height="20" fill="#3fb95080"/><rect x="14" y="80" width="12" height="20" fill="#3fb95090"/>
+                  <rect x="28" y="80" width="12" height="20" fill="#3fb95085"/><rect x="42" y="80" width="12" height="20" fill="#3fb95095"/>
+                  <rect x="56" y="80" width="12" height="20" fill="#3fb950a0"/><rect x="70" y="80" width="12" height="20" fill="#3fb95090"/>
+                  <rect x="84" y="80" width="12" height="20" fill="#3fb95085"/><rect x="98" y="80" width="12" height="20" fill="#3fb95070"/>
+                  <rect x="112" y="80" width="12" height="20" fill="#3fb95065"/><rect x="126" y="80" width="12" height="20" fill="#3fb95075"/>
+                  <rect x="0" y="100" width="12" height="20" fill="#3fb950b0"/><rect x="14" y="100" width="12" height="20" fill="#3fb950c0"/>
+                  <rect x="28" y="100" width="12" height="20" fill="#3fb950b5"/><rect x="42" y="100" width="12" height="20" fill="#3fb950c0"/>
+                  <rect x="56" y="100" width="12" height="20" fill="#3fb950d0"/><rect x="70" y="100" width="12" height="20" fill="#3fb950b0"/>
+                  <rect x="84" y="100" width="12" height="20" fill="#3fb950a0"/><rect x="98" y="100" width="12" height="20" fill="#3fb95095"/>
+                  <rect x="112" y="100" width="12" height="20" fill="#3fb95090"/><rect x="126" y="100" width="12" height="20" fill="#3fb950a0"/>
                 </svg>
               </div>
-              <!-- Color legend -->
-              <div style="position:absolute;bottom:0;left:54px;right:0;display:flex;align-items:center;gap:var(--space-md)">
+              <div style="position:absolute;bottom:8px;left:54px;display:flex;align-items:center;gap:var(--space-md)">
                 <span class="text-xs text-tertiary">Density:</span>
                 <div style="display:flex;align-items:center;gap:2px">
-                  <div style="width:12px;height:8px;background:#3fb95030;border-radius:1px"></div>
-                  <div style="width:12px;height:8px;background:#3fb95060;border-radius:1px"></div>
-                  <div style="width:12px;height:8px;background:#3fb95090;border-radius:1px"></div>
-                  <div style="width:12px;height:8px;background:#d29922a0;border-radius:1px"></div>
-                  <div style="width:12px;height:8px;background:#f85149c0;border-radius:1px"></div>
+                  <div style="width:10px;height:6px;background:#3fb95030;border-radius:1px"></div>
+                  <div style="width:10px;height:6px;background:#3fb95060;border-radius:1px"></div>
+                  <div style="width:10px;height:6px;background:#3fb95090;border-radius:1px"></div>
+                  <div style="width:10px;height:6px;background:#d29922a0;border-radius:1px"></div>
+                  <div style="width:10px;height:6px;background:#f85149c0;border-radius:1px"></div>
                 </div>
                 <span class="text-xs text-tertiary">Low → High</span>
               </div>
@@ -1145,40 +1106,292 @@
           </div>
         </div>
 
-        <!-- Trace List -->
+        <!-- Trace List (full-width, enhanced) -->
         <div class="card">
           <div class="card-header">
-            <span class="card-title">Recent Traces</span>
+            <span class="card-title">Traces</span>
+            <div style="display:flex;align-items:center;gap:var(--space-md)">
+              <span class="text-xs text-tertiary">Showing 10 of 1,234</span>
+              <div class="btn btn-ghost" style="padding:2px 8px;font-size:0.7rem"><i class="fas fa-sort-amount-down"></i> Duration</div>
+            </div>
           </div>
           <div class="table-container">
             <table>
-              <thead><tr><th>Trace ID</th><th>Root Service</th><th>Operation</th><th>Duration</th><th>Spans</th><th>Status</th><th>Time</th></tr></thead>
-              <tbody>
-                <tr><td class="font-mono" style="color:var(--text-link)">abc123def456</td><td>order-service</td><td>POST /api/orders</td><td class="font-mono" style="color:var(--accent-red)">1,240ms</td><td>23</td><td><span class="badge badge-critical"><span class="dot dot-critical"></span>Error</span></td><td class="text-secondary">2 min ago</td></tr>
-                <tr><td class="font-mono" style="color:var(--text-link)">def789ghi012</td><td>user-auth</td><td>POST /auth/login</td><td class="font-mono">89ms</td><td>8</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td><td class="text-secondary">3 min ago</td></tr>
-                <tr><td class="font-mono" style="color:var(--text-link)">ghi345jkl678</td><td>payment-gateway</td><td>POST /pay/charge</td><td class="font-mono" style="color:var(--accent-yellow)">567ms</td><td>15</td><td><span class="badge badge-warning"><span class="dot dot-warning"></span>Slow</span></td><td class="text-secondary">5 min ago</td></tr>
-                <tr><td class="font-mono" style="color:var(--text-link)">jkl901mno234</td><td>order-service</td><td>GET /api/orders/{id}</td><td class="font-mono">45ms</td><td>6</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td><td class="text-secondary">6 min ago</td></tr>
-                <tr><td class="font-mono" style="color:var(--text-link)">mno567pqr890</td><td>inventory-svc</td><td>GET /api/stock</td><td class="font-mono" style="color:var(--accent-red)">2,100ms</td><td>31</td><td><span class="badge badge-critical"><span class="dot dot-critical"></span>Error</span></td><td class="text-secondary">8 min ago</td></tr>
+              <thead>
+                <tr>
+                  <th style="width:32px"></th>
+                  <th>Trace ID</th>
+                  <th>Root Service</th>
+                  <th>Operation</th>
+                  <th>Duration</th>
+                  <th>Spans</th>
+                  <th>Status</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="trace-list-tbody">
+                <tr class="trace-row trace-row--selected" onclick="openTraceDrawer(this, 'abc123def456')" data-trace-id="abc123def456">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">abc123def456</td>
+                  <td>order-service</td>
+                  <td>POST /api/orders</td>
+                  <td class="font-mono" style="color:var(--accent-red)">1,240ms</td>
+                  <td>23</td>
+                  <td><span class="badge badge-critical"><span class="dot dot-critical"></span>Error</span></td>
+                  <td class="text-secondary">2 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'def789ghi012')" data-trace-id="def789ghi012">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">def789ghi012</td>
+                  <td>user-auth</td>
+                  <td>POST /auth/login</td>
+                  <td class="font-mono">89ms</td>
+                  <td>8</td>
+                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td>
+                  <td class="text-secondary">3 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'ghi345jkl678')" data-trace-id="ghi345jkl678">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">ghi345jkl678</td>
+                  <td>payment-gateway</td>
+                  <td>POST /pay/charge</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">567ms</td>
+                  <td>15</td>
+                  <td><span class="badge badge-warning"><span class="dot dot-warning"></span>Slow</span></td>
+                  <td class="text-secondary">5 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'jkl901mno234')" data-trace-id="jkl901mno234">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">jkl901mno234</td>
+                  <td>order-service</td>
+                  <td>GET /api/orders/{id}</td>
+                  <td class="font-mono">45ms</td>
+                  <td>6</td>
+                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td>
+                  <td class="text-secondary">6 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'mno567pqr890')" data-trace-id="mno567pqr890">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">mno567pqr890</td>
+                  <td>inventory-svc</td>
+                  <td>GET /api/stock</td>
+                  <td class="font-mono" style="color:var(--accent-red)">2,100ms</td>
+                  <td>31</td>
+                  <td><span class="badge badge-critical"><span class="dot dot-critical"></span>Error</span></td>
+                  <td class="text-secondary">8 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'pqr123stu456')" data-trace-id="pqr123stu456">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">pqr123stu456</td>
+                  <td>user-auth</td>
+                  <td>GET /auth/verify</td>
+                  <td class="font-mono">32ms</td>
+                  <td>4</td>
+                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td>
+                  <td class="text-secondary">9 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'stu789vwx012')" data-trace-id="stu789vwx012">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">stu789vwx012</td>
+                  <td>payment-gateway</td>
+                  <td>POST /pay/refund</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">423ms</td>
+                  <td>11</td>
+                  <td><span class="badge badge-warning"><span class="dot dot-warning"></span>Slow</span></td>
+                  <td class="text-secondary">10 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'vwx345yza678')" data-trace-id="vwx345yza678">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">vwx345yza678</td>
+                  <td>notification-svc</td>
+                  <td>POST /notify/email</td>
+                  <td class="font-mono">78ms</td>
+                  <td>5</td>
+                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td>
+                  <td class="text-secondary">11 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'yza901bcd234')" data-trace-id="yza901bcd234">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">yza901bcd234</td>
+                  <td>order-service</td>
+                  <td>PUT /api/orders/{id}/cancel</td>
+                  <td class="font-mono">156ms</td>
+                  <td>9</td>
+                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span></td>
+                  <td class="text-secondary">12 min ago</td>
+                </tr>
+                <tr class="trace-row" onclick="openTraceDrawer(this, 'bcd567efg890')" data-trace-id="bcd567efg890">
+                  <td><i class="fas fa-chevron-right text-tertiary" style="font-size:0.6rem"></i></td>
+                  <td class="font-mono" style="color:var(--text-link)">bcd567efg890</td>
+                  <td>inventory-svc</td>
+                  <td>POST /api/stock/reserve</td>
+                  <td class="font-mono" style="color:var(--accent-yellow)">890ms</td>
+                  <td>18</td>
+                  <td><span class="badge badge-warning"><span class="dot dot-warning"></span>Slow</span></td>
+                  <td class="text-secondary">14 min ago</td>
+                </tr>
               </tbody>
             </table>
           </div>
-        </div>
-
-        <!-- Trace Detail (inline expandable) -->
-        <div class="card" style="margin-top:var(--space-lg)">
-          <div class="card-header">
-            <span class="card-title"><i class="fas fa-stream" style="color:var(--accent-blue)"></i> Trace Detail — <span class="font-mono">abc123def456</span></span>
-            <span class="text-xs text-tertiary">Total: 1,240ms · 23 Spans · 4 Services</span>
+          <!-- Load More -->
+          <div style="padding:var(--space-md) var(--space-lg);border-top:1px solid var(--border-muted);text-align:center">
+            <button class="btn btn-ghost" style="width:100%"><i class="fas fa-ellipsis-h"></i> Load More Traces</button>
           </div>
-          <div class="card-body" style="padding:0">
-            <div class="trace-timeline">
-              <div class="span-row"><div class="span-label"><i class="fas fa-caret-down" style="color:var(--text-tertiary)"></i><span class="font-mono">order-service</span></div><div class="span-bar-container"><div class="span-bar" style="left:0%;width:100%;background:var(--accent-blue)"></div></div><span class="span-duration">1,240ms</span></div>
-              <div class="span-row" style="padding-left:20px"><div class="span-label"><span class="span-service">order-service</span><span class="font-mono">POST /api/orders</span></div><div class="span-bar-container"><div class="span-bar" style="left:0%;width:95%;background:var(--accent-blue)"></div></div><span class="span-duration">1,180ms</span></div>
-              <div class="span-row" style="padding-left:40px"><div class="span-label"><span class="span-service">user-auth</span><span class="font-mono">validateToken</span></div><div class="span-bar-container"><div class="span-bar" style="left:2%;width:8%;background:var(--accent-green)"></div></div><span class="span-duration">34ms</span></div>
-              <div class="span-row" style="padding-left:40px"><div class="span-label"><span class="span-service">inventory-svc</span><span class="font-mono">checkStock</span></div><div class="span-bar-container"><div class="span-bar" style="left:12%;width:65%;background:var(--accent-red)"></div></div><span class="span-duration" style="color:var(--accent-red)">820ms ⚠</span></div>
-              <div class="span-row" style="padding-left:60px"><div class="span-label"><span class="span-service">inventory-svc</span><span class="font-mono">db.query</span></div><div class="span-bar-container"><div class="span-bar" style="left:14%;width:60%;background:var(--accent-red);opacity:0.7"></div></div><span class="span-duration" style="color:var(--accent-red)">780ms</span></div>
-              <div class="span-row" style="padding-left:40px"><div class="span-label"><span class="span-service">payment-gateway</span><span class="font-mono">charge</span></div><div class="span-bar-container"><div class="span-bar" style="left:78%;width:18%;background:var(--accent-yellow)"></div></div><span class="span-duration">210ms</span></div>
-              <div class="span-row" style="padding-left:40px"><div class="span-label"><span class="span-service">notification-svc</span><span class="font-mono">sendEmail</span></div><div class="span-bar-container"><div class="span-bar" style="left:96%;width:4%;background:var(--accent-purple)"></div></div><span class="span-duration">45ms</span></div>
+        </div>
+      </div>
+
+      <!-- ===================== DRAWER: Trace Detail ===================== -->
+      <div class="trace-drawer-overlay" id="trace-drawer-overlay" onclick="closeTraceDrawer()"></div>
+      <div class="trace-drawer" id="trace-drawer">
+        <!-- Drawer Header -->
+        <div class="trace-drawer-header">
+          <div style="display:flex;align-items:center;gap:var(--space-md)">
+            <i class="fas fa-stream" style="color:var(--accent-blue)"></i>
+            <div>
+              <div style="font-size:0.85rem;font-weight:600;color:var(--text-primary)">Trace Detail</div>
+              <div style="font-size:0.7rem;color:var(--text-tertiary);font-family:'JetBrains Mono',monospace" id="drawer-trace-id">abc123def456</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:var(--space-lg)">
+            <div style="display:flex;gap:var(--space-xl);font-size:0.75rem">
+              <span><span class="text-tertiary">Duration:</span> <span class="font-mono" style="color:var(--accent-red)" id="drawer-duration">1,240ms</span></span>
+              <span><span class="text-tertiary">Spans:</span> <span class="font-mono" id="drawer-spans">23</span></span>
+              <span><span class="text-tertiary">Services:</span> <span class="font-mono" id="drawer-services">4</span></span>
+            </div>
+            <button class="btn btn-ghost" onclick="closeTraceDrawer()" style="padding:4px 8px"><i class="fas fa-times"></i></button>
+          </div>
+        </div>
+        <!-- Drawer Body: Golden Ratio Split (62% Waterfall : 38% Span Detail) -->
+        <div class="trace-drawer-body">
+          <!-- Left: Waterfall Timeline (62%) -->
+          <div class="trace-drawer-waterfall">
+            <div style="padding:var(--space-sm) var(--space-md);border-bottom:1px solid var(--border-muted);display:flex;align-items:center;justify-content:space-between">
+              <span class="text-xs text-secondary" style="font-weight:600;text-transform:uppercase;letter-spacing:0.04em">Waterfall</span>
+              <span class="text-xs text-tertiary">Click a span for details →</span>
+            </div>
+            <div class="trace-drawer-waterfall-content">
+              <div class="span-row span-row--drawer" onclick="selectSpan(this, 0)">
+                <div class="span-label"><i class="fas fa-caret-down" style="color:var(--text-tertiary);font-size:0.6rem"></i><span class="font-mono">order-service</span></div>
+                <div class="span-bar-container"><div class="span-bar" style="left:0%;width:100%;background:var(--accent-blue)"></div></div>
+                <span class="span-duration">1,240ms</span>
+              </div>
+              <div class="span-row span-row--drawer" style="padding-left:20px" onclick="selectSpan(this, 1)">
+                <div class="span-label"><span class="span-service">order-service</span><span class="font-mono">POST /api/orders</span></div>
+                <div class="span-bar-container"><div class="span-bar" style="left:0%;width:95%;background:var(--accent-blue)"></div></div>
+                <span class="span-duration">1,180ms</span>
+              </div>
+              <div class="span-row span-row--drawer span-row--active" style="padding-left:40px" onclick="selectSpan(this, 2)">
+                <div class="span-label"><span class="span-service">user-auth</span><span class="font-mono">validateToken</span></div>
+                <div class="span-bar-container"><div class="span-bar" style="left:2%;width:8%;background:var(--accent-green)"></div></div>
+                <span class="span-duration">34ms</span>
+              </div>
+              <div class="span-row span-row--drawer" style="padding-left:40px" onclick="selectSpan(this, 3)">
+                <div class="span-label"><span class="span-service">inventory-svc</span><span class="font-mono">checkStock</span></div>
+                <div class="span-bar-container"><div class="span-bar" style="left:12%;width:65%;background:var(--accent-red)"></div></div>
+                <span class="span-duration" style="color:var(--accent-red)">820ms ⚠</span>
+              </div>
+              <div class="span-row span-row--drawer" style="padding-left:60px" onclick="selectSpan(this, 4)">
+                <div class="span-label"><span class="span-service">inventory-svc</span><span class="font-mono">db.query</span></div>
+                <div class="span-bar-container"><div class="span-bar" style="left:14%;width:60%;background:var(--accent-red);opacity:0.7"></div></div>
+                <span class="span-duration" style="color:var(--accent-red)">780ms</span>
+              </div>
+              <div class="span-row span-row--drawer" style="padding-left:40px" onclick="selectSpan(this, 5)">
+                <div class="span-label"><span class="span-service">payment-gateway</span><span class="font-mono">charge</span></div>
+                <div class="span-bar-container"><div class="span-bar" style="left:78%;width:18%;background:var(--accent-yellow)"></div></div>
+                <span class="span-duration">210ms</span>
+              </div>
+              <div class="span-row span-row--drawer" style="padding-left:40px" onclick="selectSpan(this, 6)">
+                <div class="span-label"><span class="span-service">notification-svc</span><span class="font-mono">sendEmail</span></div>
+                <div class="span-bar-container"><div class="span-bar" style="left:96%;width:4%;background:var(--accent-purple)"></div></div>
+                <span class="span-duration">45ms</span>
+              </div>
+            </div>
+          </div>
+          <!-- Right: Span Attributes (38%) -->
+          <div class="trace-drawer-span-detail">
+            <div style="padding:var(--space-sm) var(--space-md);border-bottom:1px solid var(--border-muted)">
+              <span class="text-xs text-secondary" style="font-weight:600;text-transform:uppercase;letter-spacing:0.04em">Span Detail</span>
+            </div>
+            <div class="trace-drawer-span-content" id="span-detail-content">
+              <!-- Span Header -->
+              <div style="margin-bottom:var(--space-lg)">
+                <div style="font-size:0.85rem;font-weight:600;color:var(--text-primary);margin-bottom:var(--space-xs)" id="span-detail-name">validateToken</div>
+                <div style="display:flex;align-items:center;gap:var(--space-md);flex-wrap:wrap">
+                  <span class="badge badge-info">user-auth</span>
+                  <span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span>
+                  <span class="font-mono text-xs" style="color:var(--text-secondary)">34ms</span>
+                </div>
+              </div>
+              <!-- Attributes Section -->
+              <div class="span-attr-section">
+                <div class="span-attr-section-title"><i class="fas fa-tags"></i> Attributes</div>
+                <div class="span-attr-table">
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">http.method</span>
+                    <span class="span-attr-value">POST</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">http.url</span>
+                    <span class="span-attr-value">/auth/validate</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">http.status_code</span>
+                    <span class="span-attr-value">200</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">net.peer.name</span>
+                    <span class="span-attr-value">10.0.2.15</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">net.peer.port</span>
+                    <span class="span-attr-value">8443</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">auth.token_type</span>
+                    <span class="span-attr-value">JWT</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">auth.user_id</span>
+                    <span class="span-attr-value">usr_7f3a2b</span>
+                  </div>
+                </div>
+              </div>
+              <!-- Resource Section -->
+              <div class="span-attr-section">
+                <div class="span-attr-section-title"><i class="fas fa-server"></i> Resource</div>
+                <div class="span-attr-table">
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">service.name</span>
+                    <span class="span-attr-value">user-auth</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">service.version</span>
+                    <span class="span-attr-value">2.1.0</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">host.name</span>
+                    <span class="span-attr-value">auth-pod-5c8f9</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">k8s.namespace</span>
+                    <span class="span-attr-value">production</span>
+                  </div>
+                </div>
+              </div>
+              <!-- Events Section -->
+              <div class="span-attr-section">
+                <div class="span-attr-section-title"><i class="fas fa-bolt"></i> Events</div>
+                <div class="span-attr-table">
+                  <div class="span-attr-row">
+                    <span class="span-attr-key" style="color:var(--text-tertiary)">10:23:45.012</span>
+                    <span class="span-attr-value">Token validation started</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key" style="color:var(--text-tertiary)">10:23:45.046</span>
+                    <span class="span-attr-value">Token validated successfully</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2488,10 +2701,122 @@ document.getElementById('new-rule-modal').addEventListener('click', (e) => {
 // Close modal on Escape key
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    // Close trace drawer first if open
+    const drawer = document.getElementById('trace-drawer');
+    if (drawer && drawer.classList.contains('trace-drawer--open')) {
+      closeTraceDrawer();
+      return;
+    }
     const modal = document.getElementById('new-rule-modal');
     if (modal.classList.contains('modal-overlay--open')) closeNewRuleModal();
   }
 });
+
+// ============================================
+// Traces Page: Drawer + Visualization Tabs
+// ============================================
+
+// ---- Visualization Tab Switching ----
+function switchTraceViz(tabEl) {
+  const parent = tabEl.parentElement;
+  parent.querySelectorAll('.trace-viz-tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+  
+  const vizId = tabEl.getAttribute('data-viz');
+  const card = tabEl.closest('.card');
+  card.querySelectorAll('.trace-viz-panel').forEach(p => p.classList.remove('active'));
+  const panel = card.querySelector('#viz-' + vizId);
+  if (panel) panel.classList.add('active');
+}
+
+// ---- Open Trace Drawer ----
+function openTraceDrawer(rowEl, traceId) {
+  // Update selected state in table
+  document.querySelectorAll('.trace-row').forEach(r => r.classList.remove('trace-row--selected'));
+  rowEl.classList.add('trace-row--selected');
+  
+  // Update drawer header info
+  document.getElementById('drawer-trace-id').textContent = traceId;
+  
+  // Show overlay and drawer
+  const overlay = document.getElementById('trace-drawer-overlay');
+  const drawer = document.getElementById('trace-drawer');
+  overlay.classList.add('trace-drawer-overlay--open');
+  // Trigger reflow for animation
+  drawer.offsetHeight;
+  drawer.classList.add('trace-drawer--open');
+  
+  // Auto-select first span
+  const firstSpan = drawer.querySelector('.span-row--drawer');
+  if (firstSpan) {
+    drawer.querySelectorAll('.span-row--drawer').forEach(s => s.classList.remove('span-row--active'));
+    firstSpan.classList.add('span-row--active');
+  }
+}
+
+// ---- Close Trace Drawer ----
+function closeTraceDrawer() {
+  const overlay = document.getElementById('trace-drawer-overlay');
+  const drawer = document.getElementById('trace-drawer');
+  drawer.classList.remove('trace-drawer--open');
+  overlay.classList.remove('trace-drawer-overlay--open');
+}
+
+// ---- Select Span (in waterfall) ----
+function selectSpan(spanEl, spanIndex) {
+  // Update active state
+  const drawer = spanEl.closest('.trace-drawer');
+  drawer.querySelectorAll('.span-row--drawer').forEach(s => s.classList.remove('span-row--active'));
+  spanEl.classList.add('span-row--active');
+  
+  // Mock span data for demonstration
+  const spanData = [
+    { name: 'order-service (root)', service: 'order-service', duration: '1,240ms', status: 'Error', statusClass: 'badge-critical', attrs: { 'rpc.system': 'grpc', 'rpc.method': 'CreateOrder', 'rpc.grpc.status_code': '2' }, resource: { 'service.name': 'order-service', 'service.version': '3.2.1', 'host.name': 'order-pod-8a2c7', 'k8s.namespace': 'production' }, events: [{ time: '10:23:44.890', msg: 'Order creation started' }, { time: '10:23:46.130', msg: 'Order creation failed: inventory timeout' }] },
+    { name: 'POST /api/orders', service: 'order-service', duration: '1,180ms', status: 'Error', statusClass: 'badge-critical', attrs: { 'http.method': 'POST', 'http.url': '/api/orders', 'http.status_code': '500', 'http.request_content_length': '1024' }, resource: { 'service.name': 'order-service', 'service.version': '3.2.1', 'host.name': 'order-pod-8a2c7', 'k8s.namespace': 'production' }, events: [{ time: '10:23:44.892', msg: 'Request received' }, { time: '10:23:46.072', msg: 'Internal server error' }] },
+    { name: 'validateToken', service: 'user-auth', duration: '34ms', status: 'OK', statusClass: 'badge-healthy', attrs: { 'http.method': 'POST', 'http.url': '/auth/validate', 'http.status_code': '200', 'net.peer.name': '10.0.2.15', 'net.peer.port': '8443', 'auth.token_type': 'JWT', 'auth.user_id': 'usr_7f3a2b' }, resource: { 'service.name': 'user-auth', 'service.version': '2.1.0', 'host.name': 'auth-pod-5c8f9', 'k8s.namespace': 'production' }, events: [{ time: '10:23:45.012', msg: 'Token validation started' }, { time: '10:23:45.046', msg: 'Token validated successfully' }] },
+    { name: 'checkStock', service: 'inventory-svc', duration: '820ms', status: 'Error', statusClass: 'badge-critical', attrs: { 'http.method': 'GET', 'http.url': '/api/stock/check', 'http.status_code': '504', 'net.peer.name': '10.0.3.22', 'inventory.sku_count': '3', 'error.type': 'TimeoutError' }, resource: { 'service.name': 'inventory-svc', 'service.version': '1.8.4', 'host.name': 'inv-pod-3d4e1', 'k8s.namespace': 'production' }, events: [{ time: '10:23:45.050', msg: 'Stock check initiated' }, { time: '10:23:45.870', msg: 'Database timeout after 780ms' }] },
+    { name: 'db.query', service: 'inventory-svc', duration: '780ms', status: 'Error', statusClass: 'badge-critical', attrs: { 'db.system': 'postgresql', 'db.statement': 'SELECT stock FROM inventory WHERE sku IN ($1,$2,$3)', 'db.name': 'inventory_db', 'db.operation': 'SELECT', 'net.peer.name': 'pg-primary.internal', 'net.peer.port': '5432' }, resource: { 'service.name': 'inventory-svc', 'service.version': '1.8.4', 'host.name': 'inv-pod-3d4e1', 'k8s.namespace': 'production' }, events: [{ time: '10:23:45.052', msg: 'Query sent to database' }, { time: '10:23:45.832', msg: 'Query timeout: connection pool exhausted' }] },
+    { name: 'charge', service: 'payment-gateway', duration: '210ms', status: 'OK', statusClass: 'badge-healthy', attrs: { 'http.method': 'POST', 'http.url': '/pay/charge', 'http.status_code': '200', 'payment.provider': 'stripe', 'payment.amount': '99.50', 'payment.currency': 'USD' }, resource: { 'service.name': 'payment-gateway', 'service.version': '4.0.2', 'host.name': 'pay-pod-9b1a6', 'k8s.namespace': 'production' }, events: [{ time: '10:23:45.900', msg: 'Payment initiated' }, { time: '10:23:46.110', msg: 'Payment confirmed' }] },
+    { name: 'sendEmail', service: 'notification-svc', duration: '45ms', status: 'OK', statusClass: 'badge-healthy', attrs: { 'messaging.system': 'smtp', 'messaging.destination': 'user@example.com', 'notification.type': 'order_confirmation', 'notification.template': 'order_v2' }, resource: { 'service.name': 'notification-svc', 'service.version': '1.3.0', 'host.name': 'notify-pod-2f7d8', 'k8s.namespace': 'production' }, events: [{ time: '10:23:46.130', msg: 'Email queued' }, { time: '10:23:46.175', msg: 'Email sent successfully' }] }
+  ];
+  
+  const data = spanData[spanIndex] || spanData[0];
+  
+  // Build span detail HTML
+  let html = '';
+  // Header
+  html += '<div style="margin-bottom:var(--space-lg)">';
+  html += '<div style="font-size:0.85rem;font-weight:600;color:var(--text-primary);margin-bottom:var(--space-xs)">' + data.name + '</div>';
+  html += '<div style="display:flex;align-items:center;gap:var(--space-md);flex-wrap:wrap">';
+  html += '<span class="badge badge-info">' + data.service + '</span>';
+  const dotClass = data.status === 'OK' ? 'dot-healthy' : 'dot-critical';
+  html += '<span class="badge ' + data.statusClass + '"><span class="dot ' + dotClass + '"></span>' + data.status + '</span>';
+  html += '<span class="font-mono text-xs" style="color:var(--text-secondary)">' + data.duration + '</span>';
+  html += '</div></div>';
+  
+  // Attributes
+  html += '<div class="span-attr-section"><div class="span-attr-section-title"><i class="fas fa-tags"></i> Attributes</div><div class="span-attr-table">';
+  for (const [key, val] of Object.entries(data.attrs)) {
+    html += '<div class="span-attr-row"><span class="span-attr-key">' + key + '</span><span class="span-attr-value">' + val + '</span></div>';
+  }
+  html += '</div></div>';
+  
+  // Resource
+  html += '<div class="span-attr-section"><div class="span-attr-section-title"><i class="fas fa-server"></i> Resource</div><div class="span-attr-table">';
+  for (const [key, val] of Object.entries(data.resource)) {
+    html += '<div class="span-attr-row"><span class="span-attr-key">' + key + '</span><span class="span-attr-value">' + val + '</span></div>';
+  }
+  html += '</div></div>';
+  
+  // Events
+  html += '<div class="span-attr-section"><div class="span-attr-section-title"><i class="fas fa-bolt"></i> Events</div><div class="span-attr-table">';
+  for (const evt of data.events) {
+    html += '<div class="span-attr-row"><span class="span-attr-key" style="color:var(--text-tertiary)">' + evt.time + '</span><span class="span-attr-value">' + evt.msg + '</span></div>';
+  }
+  html += '</div></div>';
+  
+  document.getElementById('span-detail-content').innerHTML = html;
+}
 </script>
 </body>
 </html>
