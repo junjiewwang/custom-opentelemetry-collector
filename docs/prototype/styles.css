@@ -1981,3 +1981,146 @@ tr:hover td { background: var(--bg-hover); }
   color: var(--text-primary);
   word-break: break-all;
 }
+
+/* ======================================
+   v1.6 — Instrumentation Detail Page
+   ====================================== */
+
+/* ---- Rule List Item ---- */
+.inst-rule-item {
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--border-muted);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.inst-rule-item:hover {
+  background: var(--bg-hover);
+}
+
+.inst-rule-item--active {
+  background: var(--bg-active);
+  border-left: 3px solid var(--accent-blue);
+}
+
+/* ---- Offline Targets Divider ---- */
+.inst-offline-divider {
+  background: var(--bg-tertiary) !important;
+  cursor: pointer;
+}
+
+.inst-offline-divider:hover {
+  background: var(--bg-hover) !important;
+}
+
+.inst-offline-divider td {
+  padding: var(--space-sm) var(--space-md) !important;
+}
+
+.inst-offline-chevron {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  transition: transform 0.2s ease;
+}
+
+.inst-offline-chevron--expanded {
+  transform: rotate(90deg);
+}
+
+/* ---- Offline Target Row ---- */
+.inst-offline-row {
+  opacity: 0.6;
+}
+
+.inst-offline-row td {
+  background: var(--bg-tertiary) !important;
+}
+
+.inst-completed-row {
+  opacity: 0.6;
+}
+
+.inst-completed-row td {
+  background: var(--bg-tertiary) !important;
+}
+
+/* ---- Audit Log ---- */
+.inst-audit-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.inst-audit-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--border-muted);
+  transition: background var(--transition-fast);
+}
+
+.inst-audit-item:hover {
+  background: var(--bg-hover);
+}
+
+.inst-audit-item:last-child {
+  border-bottom: none;
+}
+
+.inst-audit-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+
+.inst-audit-body {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ─── Instrumentation Detail Tabs (v1.7) ─── */
+.inst-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.inst-tab:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+.inst-tab--active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+  background: var(--bg-secondary);
+}
+.inst-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+}
+.inst-tab--active .inst-tab-badge {
+  background: var(--accent-blue-dim);
+  color: var(--accent-blue);
+}
+.inst-tab-panel {
+  /* default hidden, toggled by JS */
+}

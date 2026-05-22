@@ -1,7 +1,7 @@
 # APM Observability Platform — 原型设计文档
 
-> **版本**：v1.5  
-> **日期**：2026-05-20  
+> **版本**：v1.8  
+> **日期**：2026-05-22  
 > **产出物**：`docs/prototype/apm-prototype.html` + `docs/prototype/styles.css`  
 > **技术栈**：纯 HTML + CSS + Vanilla JS（独立交互原型，无框架依赖）  
 > **v1.1 更新**：新增全局 Scope Bar（多租户四级资源选择器）+ Resource Explorer 页面  
@@ -9,6 +9,9 @@
 > **v1.3 更新**：业界对标增强 — Apdex 评分 + Error Inbox + Deployment Tracking + Latency Heatmap + Endpoint 分析  
 > **v1.4 更新**：管理端重新定位 — Platform Dashboard + Tenant Management + Resource Usage + Global Errors/Alerts + Scope Bar Service 默认行为优化
 > **v1.5 更新**：Traces 页面交互重构 — 图表 Tab 切换 + 增强列表（10行+Load More）+ 右侧抽屉式 Trace Detail（黄金比例 62:38 Waterfall/Span属性分栏）
+> **v1.6 更新**：Instrumentation 详情页面重构 — Master-Detail 布局 + Target Status 离线实例折叠 + Runtime Snapshot 面板 + Audit Log 时间线
+> **v1.7 更新**：Instrumentation UX 提升 — Health Summary Bar（分段进度条+健康判定+Coverage%）+ Detail Tabs 四标签切换（Targets/Runtime/Config & Op/Audit）替代垂直堆叠
+> **v1.8 更新**：Runtime Tab 数据一致性对齐 — Summary 只统计 Reachable agents + Offline 分组折叠 + Effective 列离线标记 "offline" 代替误导性的 "yes/no"
 
 ---
 
@@ -730,6 +733,7 @@ Alert 触发 → 点击告警 → 关联 Service + Trace
 | P0 | ~~Global Alerts~~ | 跨租户告警统一管理 + 严重等级排序 | ✅ v1.4 |
 | P0 | ~~Scope Bar 优化~~ | Service 默认选第一个具体服务，去掉 All Services | ✅ v1.4 |
 | P0 | ~~Traces 页面重构~~ | 图表Tab切换 + 10行列表+Load More + 抽屉式详情（62:38 黄金比例） | ✅ v1.5 |
+| P0 | ~~Instrumentation 详情页~~ | Master-Detail 布局 + Target 离线折叠 + Runtime Snapshot + Audit Log | ✅ v1.6 |
 | P0 | Logs 查看器 | 可观测三支柱补齐，支持 Trace ↔ Log 关联 | 待实施 |
 | P1 | Scope Bar 联动 | 选择 App 后自动过滤 Service/Instance 下拉选项 | 待实施 |
 | P1 | Alert Rule 编辑器 | 支持 PromQL 条件 + 通知渠道配置 | 待实施 |
@@ -739,6 +743,61 @@ Alert 触发 → 点击告警 → 关联 Service + Trace
 | P2 | AI Anomaly Detection | Watchdog 式异常自动检测 + 根因分析 | 待实施 |
 | P3 | Profiling 视图 | 持续性能分析（CPU/Memory Flame Graph） | 待实施 |
 | P3 | Service Catalog | 服务目录 + 所有者 + SLO + 依赖关系元数据 | 待实施 |
+
+---
+
+### 3.21 Instrumentation 详情页面（v1.6）
+
+**目标用户**：SRE + 后端开发（管理动态插桩规则、排查规则下发问题）
+
+**页面布局**：Master-Detail 左右分栏
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ Page Header: Badge统计 + New Rule按钮                     │
+├─────────────┬────────────────────────────────────────────┤
+│ Rule List   │  Detail Header (规则名/操作按钮)            │
+│ (320px)     ├────────────────────────────────────────────┤
+│             │  Operation Summary Cards (5列 KPI)         │
+│ - Filter    ├────────────────────────────────────────────┤
+│   Tabs      │  Target Status Table                       │
+│             │   ├─ Online targets (正常展示)              │
+│ - Rule 1 ←  │   └─ Offline/Expired (折叠，可展开)        │
+│ - Rule 2    ├────────────────────────────────────────────┤
+│ - Rule 3    │  Runtime Snapshot                           │
+│ - Rule 4    │   ├─ Summary Cards (5列聚合指标)           │
+│ - Rule 5    │   └─ Detail Table                          │
+│             ├────────────────────────────────────────────┤
+│             │  Audit Log (时间线，最近20条)               │
+└─────────────┴────────────────────────────────────────────┘
+```
+
+**核心设计决策**：
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 布局 | Master-Detail (320px : 1fr) | 规则列表常驻左侧，快速切换；右侧详情有足够空间展示完整信息 |
+| Target 离线分组 | 折叠式分隔行 | 减少视觉噪音，聚焦在线实例；离线实例可展开查看 |
+| Runtime Snapshot | 聚合卡片 + 详情表格 | 先看全局指标（健康/漂移/过期），再下钻单实例 |
+| Audit Log | 时间线列表 | 最近事件优先，颜色圆点区分成功/跳过/失败/修剪 |
+| 离线实例视觉 | opacity:0.6 + 灰色底色 | 降低视觉权重，暗示"不可操作" |
+
+**交互规范**：
+
+1. **Rule 列表选择**：点击规则项，高亮选中（蓝色左边框），右侧详情面板联动更新
+2. **Offline 折叠**：
+   - 默认折叠，显示 "Offline / Expired Instances (N)"
+   - 点击分隔行展开/收起，chevron 图标旋转 90°
+   - 展开后的行视觉降级（opacity:0.6 + bg-tertiary）
+3. **Filter Tabs**：All / Active / Paused / Failed 快速过滤规则列表
+4. **操作按钮**：Refresh（刷新状态）/ Pause（暂停规则）/ Delete（删除规则）
+
+**CSS 新增类**：
+- `.inst-rule-item` / `.inst-rule-item--active`：规则列表项
+- `.inst-offline-divider`：离线分组分隔行
+- `.inst-offline-chevron` / `.inst-offline-chevron--expanded`：折叠箭头
+- `.inst-offline-row`：折叠的离线行
+- `.inst-audit-list` / `.inst-audit-item` / `.inst-audit-dot` / `.inst-audit-body`：审计日志时间线
 
 ---
 
