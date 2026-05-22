@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiClient } from '@/api/client';
 import EmptyState from '@/components/EmptyState';
@@ -95,9 +95,18 @@ function targetStateClass(state: InstrumentationTargetState): string {
 }
 
 const OFFLINE_STATES: InstrumentationTargetState[] = ['offline', 'expired'];
+const COMPLETED_STATES: InstrumentationTargetState[] = ['removed'];
 
 function isOfflineTarget(target: InstrumentationRuleTargetStatus): boolean {
   return OFFLINE_STATES.includes(target.state);
+}
+
+function isCompletedTarget(target: InstrumentationRuleTargetStatus): boolean {
+  return COMPLETED_STATES.includes(target.state);
+}
+
+function isActiveTarget(target: InstrumentationRuleTargetStatus): boolean {
+  return !isOfflineTarget(target) && !isCompletedTarget(target);
 }
 
 /** Target Status 表格行 */
@@ -135,12 +144,59 @@ function TargetRow({ target }: { target: InstrumentationRuleTargetStatus }) {
   );
 }
 
-/** Target Status 分组表格：在线实例正常展示，离线/过期实例折叠展示 */
-function TargetStatusTable({ targets }: { targets: InstrumentationRuleTargetStatus[] }) {
+/** 折叠分组行 */
+function CollapsibleGroupRow({
+  expanded,
+  onToggle,
+  icon,
+  iconColor,
+  label,
+  count,
+  hint,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  icon: string;
+  iconColor: string;
+  label: string;
+  count: number;
+  hint?: string;
+}) {
+  return (
+    <tr className="bg-slate-50/60">
+      <td colSpan={6} className="px-4 py-2">
+        <button
+          onClick={onToggle}
+          className="flex items-center gap-2 text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors w-full"
+        >
+          <i className={`fas fa-chevron-right text-[10px] transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} />
+          <i className={`${icon} ${iconColor}`} />
+          <span>{label} ({count})</span>
+          {hint && <span className="ml-1 text-slate-400 font-normal">— {hint}</span>}
+          <span className="ml-auto text-slate-400 font-normal">
+            {expanded ? 'click to collapse' : 'click to expand'}
+          </span>
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+/** Target Status 三段分组表格：Active → Completed/Removed → Offline/Expired */
+function TargetStatusTable({ targets, rulePaused }: { targets: InstrumentationRuleTargetStatus[]; rulePaused?: boolean }) {
+  const [completedExpanded, setCompletedExpanded] = useState(false);
   const [offlineExpanded, setOfflineExpanded] = useState(false);
 
-  const onlineTargets = useMemo(() => targets.filter(t => !isOfflineTarget(t)), [targets]);
-  const offlineTargets = useMemo(() => targets.filter(t => isOfflineTarget(t)), [targets]);
+  const activeTargets = useMemo(() => targets.filter(isActiveTarget), [targets]);
+  const completedTargets = useMemo(() => targets.filter(isCompletedTarget), [targets]);
+  const offlineTargets = useMemo(() => targets.filter(isOfflineTarget), [targets]);
+
+  // 最近一次 completed target 的活动时间
+  const completedHint = useMemo(() => {
+    if (completedTargets.length === 0) return undefined;
+    const latest = Math.max(...completedTargets.map(t => t.updated_at_millis));
+    return `last activity: ${formatRelativeTime(latest)}`;
+  }, [completedTargets]);
 
   return (
     <div className="overflow-x-auto">
@@ -156,29 +212,54 @@ function TargetStatusTable({ targets }: { targets: InstrumentationRuleTargetStat
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 bg-white">
-          {onlineTargets.map(target => (
-            <TargetRow key={`${target.rule_id}:${target.agent_id}`} target={target} />
-          ))}
+          {/* ── Active Targets ── */}
+          {activeTargets.length > 0 ? (
+            activeTargets.map(target => (
+              <TargetRow key={`${target.rule_id}:${target.agent_id}`} target={target} />
+            ))
+          ) : (
+            <tr>
+              <td colSpan={6} className="px-4 py-6 text-center">
+                <div className="text-gray-400 text-sm">
+                  <i className="fas fa-info-circle mr-2" />
+                  {rulePaused
+                    ? 'Rule is paused — all targets have been uninstrumented'
+                    : 'No active targets'
+                  }
+                </div>
+              </td>
+            </tr>
+          )}
 
+          {/* ── Completed / Removed ── */}
+          {completedTargets.length > 0 && (
+            <>
+              <CollapsibleGroupRow
+                expanded={completedExpanded}
+                onToggle={() => setCompletedExpanded(!completedExpanded)}
+                icon="fas fa-check-circle"
+                iconColor="text-gray-400"
+                label="Completed / Removed"
+                count={completedTargets.length}
+                hint={completedHint}
+              />
+              {completedExpanded && completedTargets.map(target => (
+                <TargetRow key={`${target.rule_id}:${target.agent_id}`} target={target} />
+              ))}
+            </>
+          )}
+
+          {/* ── Offline / Expired ── */}
           {offlineTargets.length > 0 && (
             <>
-              <tr className="bg-slate-50/60">
-                <td colSpan={6} className="px-4 py-2">
-                  <button
-                    onClick={() => setOfflineExpanded(!offlineExpanded)}
-                    className="flex items-center gap-2 text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors w-full"
-                  >
-                    <i className={`fas fa-chevron-right text-[10px] transition-transform duration-200 ${offlineExpanded ? 'rotate-90' : ''}`} />
-                    <i className="fas fa-plug-circle-xmark text-slate-400" />
-                    <span>
-                      Offline / Expired Instances ({offlineTargets.length})
-                    </span>
-                    <span className="ml-auto text-slate-400 font-normal">
-                      {offlineExpanded ? 'click to collapse' : 'click to expand'}
-                    </span>
-                  </button>
-                </td>
-              </tr>
+              <CollapsibleGroupRow
+                expanded={offlineExpanded}
+                onToggle={() => setOfflineExpanded(!offlineExpanded)}
+                icon="fas fa-plug-circle-xmark"
+                iconColor="text-slate-400"
+                label="Offline / Expired"
+                count={offlineTargets.length}
+              />
               {offlineExpanded && offlineTargets.map(target => (
                 <TargetRow key={`${target.rule_id}:${target.agent_id}`} target={target} />
               ))}
@@ -189,6 +270,497 @@ function TargetStatusTable({ targets }: { targets: InstrumentationRuleTargetStat
     </div>
   );
 }
+
+// ─── Health Summary Bar ──────────────────────────────────────────────────────
+
+interface HealthSummaryBarProps {
+  rule: InstrumentationRule;
+  runtimeSnapshot: InstrumentationRuleRuntimeSnapshot | null;
+}
+
+function HealthSummaryBar({ rule, runtimeSnapshot }: HealthSummaryBarProps) {
+  const { summary } = rule;
+
+  // Active targets = total - offline - expired (removed are "completed", not active)
+  // For progress bar we use active scope only
+  const activeTotal = summary.applied_targets + summary.running_targets + summary.pending_targets + summary.failed_targets;
+  const denominator = activeTotal || 1; // avoid divide by zero
+
+  // Segment widths (percentage) — based on active targets only
+  const applied = (summary.applied_targets / denominator) * 100;
+  const running = ((summary.running_targets + summary.pending_targets) / denominator) * 100;
+  const failed = (summary.failed_targets / denominator) * 100;
+
+  // Coverage: applied out of active targets
+  const coveragePercent = activeTotal > 0 ? Math.round((summary.applied_targets / activeTotal) * 100) : 0;
+
+  // Inactive counts for context
+  const inactiveCount = summary.total_targets - activeTotal;
+
+  // Determine health verdict
+  let verdict: { label: string; color: string; icon: string };
+  if (rule.desired_state === 'paused') {
+    verdict = { label: 'Paused', color: 'text-amber-600', icon: 'fas fa-pause-circle' };
+  } else if (rule.desired_state === 'deleted') {
+    verdict = { label: 'Deleted', color: 'text-gray-500', icon: 'fas fa-trash' };
+  } else if (summary.failed_targets > 0) {
+    verdict = { label: 'Degraded', color: 'text-red-600', icon: 'fas fa-exclamation-circle' };
+  } else if (activeTotal === 0) {
+    verdict = { label: 'No Active Targets', color: 'text-gray-500', icon: 'fas fa-minus-circle' };
+  } else if (coveragePercent === 100) {
+    verdict = { label: 'Healthy', color: 'text-green-600', icon: 'fas fa-check-circle' };
+  } else if (coveragePercent >= 50) {
+    verdict = { label: 'Partial', color: 'text-amber-600', icon: 'fas fa-exclamation-triangle' };
+  } else {
+    verdict = { label: 'Low Coverage', color: 'text-orange-600', icon: 'fas fa-minus-circle' };
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gradient-to-r from-gray-50/60 to-white px-5 py-4">
+      <div className="flex items-center justify-between mb-3">
+        {/* Verdict */}
+        <div className="flex items-center gap-2">
+          <i className={`${verdict.icon} ${verdict.color}`} />
+          <span className={`text-sm font-semibold ${verdict.color}`}>{verdict.label}</span>
+          <span className="text-xs text-gray-400 ml-2">
+            {summary.applied_targets}/{activeTotal} active applied
+          </span>
+          {inactiveCount > 0 && (
+            <span className="text-[10px] text-gray-300 ml-1">
+              (+{inactiveCount} inactive)
+            </span>
+          )}
+        </div>
+
+        {/* Coverage badge + last reconcile */}
+        <div className="flex items-center gap-3">
+          {activeTotal > 0 && (
+            <span className="px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 text-[11px] font-bold ring-1 ring-blue-200">
+              {coveragePercent}% coverage
+            </span>
+          )}
+          {runtimeSnapshot && (
+            <span className="text-[11px] text-gray-400">
+              <i className="fas fa-clock mr-1" />
+              snapshot {formatRelativeTime(runtimeSnapshot.generated_at_millis)}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Segmented progress bar — active targets only */}
+      <div className="w-full h-2.5 rounded-full bg-gray-100 overflow-hidden flex">
+        {applied > 0 && (
+          <div
+            className="h-full bg-green-500 transition-all duration-500"
+            style={{ width: `${applied}%` }}
+            title={`Applied: ${summary.applied_targets}`}
+          />
+        )}
+        {running > 0 && (
+          <div
+            className="h-full bg-blue-400 transition-all duration-500"
+            style={{ width: `${running}%` }}
+            title={`Running/Pending: ${summary.running_targets + summary.pending_targets}`}
+          />
+        )}
+        {failed > 0 && (
+          <div
+            className="h-full bg-red-500 transition-all duration-500"
+            style={{ width: `${failed}%` }}
+            title={`Failed: ${summary.failed_targets}`}
+          />
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 mt-2 text-[10px] text-gray-400">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" />Applied ({summary.applied_targets})</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400" />Running/Pending ({summary.running_targets + summary.pending_targets})</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500" />Failed ({summary.failed_targets})</span>
+        {inactiveCount > 0 && (
+          <span className="flex items-center gap-1 ml-auto"><span className="w-2 h-2 rounded-full bg-gray-300" />Inactive ({inactiveCount})</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Detail Tabs ─────────────────────────────────────────────────────────────
+
+type DetailTab = 'targets' | 'runtime' | 'config' | 'audit';
+
+interface DetailTabsProps {
+  rule: InstrumentationRule;
+  selectedApp: App | null;
+  targets: InstrumentationRuleTargetStatus[];
+  targetsLoading: boolean;
+  runtimeSnapshot: InstrumentationRuleRuntimeSnapshot | null;
+  runtimeSnapshotLoading: boolean;
+}
+
+function DetailTabs({ rule, selectedApp, targets, targetsLoading, runtimeSnapshot, runtimeSnapshotLoading }: DetailTabsProps) {
+  const [activeTab, setActiveTab] = useState<DetailTab>('targets');
+
+  const activeTargetCount = useMemo(() => targets.filter(isActiveTarget).length, [targets]);
+
+  const tabs: { key: DetailTab; label: string; icon: string; badge?: number }[] = [
+    { key: 'targets', label: 'Targets', icon: 'fas fa-crosshairs', badge: activeTargetCount || targets.length },
+    { key: 'runtime', label: 'Runtime', icon: 'fas fa-satellite-dish', badge: runtimeSnapshot?.targets.length },
+    { key: 'config', label: 'Config & Op', icon: 'fas fa-sliders-h' },
+    { key: 'audit', label: 'Audit', icon: 'fas fa-history', badge: rule.recent_audits?.length },
+  ];
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+      {/* Tab bar */}
+      <div className="flex border-b border-gray-100 bg-gray-50/50">
+        {tabs.map(tab => {
+          const isActive = activeTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`flex items-center gap-2 px-4 py-3 text-xs font-medium border-b-2 transition ${
+                isActive
+                  ? 'border-blue-500 text-blue-700 bg-white'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              <i className={`${tab.icon} text-[10px]`} />
+              {tab.label}
+              {tab.badge !== undefined && tab.badge > 0 && (
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                  isActive ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-600'
+                }`}>
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab panels */}
+      <div className="p-4">
+        {activeTab === 'targets' && (
+          <TabPanelTargets targets={targets} loading={targetsLoading} rulePaused={rule.desired_state === 'paused'} />
+        )}
+        {activeTab === 'runtime' && (
+          <TabPanelRuntime snapshot={runtimeSnapshot} loading={runtimeSnapshotLoading} />
+        )}
+        {activeTab === 'config' && (
+          <TabPanelConfig rule={rule} selectedApp={selectedApp} />
+        )}
+        {activeTab === 'audit' && (
+          <TabPanelAudit audits={rule.recent_audits} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Tab Panel: Targets ──────────────────────────────────────────────────────
+
+function TabPanelTargets({ targets, loading, rulePaused }: { targets: InstrumentationRuleTargetStatus[]; loading: boolean; rulePaused?: boolean }) {
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-12 skeleton-shimmer rounded-lg" />
+        ))}
+      </div>
+    );
+  }
+
+  if (targets.length === 0) {
+    return (
+      <div className="text-center py-8 text-gray-400 text-sm">
+        <i className="fas fa-crosshairs text-2xl mb-2 block" />
+        No targets yet
+      </div>
+    );
+  }
+
+  return <TargetStatusTable targets={targets} rulePaused={rulePaused} />;
+}
+
+// ─── Tab Panel: Runtime Snapshot ─────────────────────────────────────────────
+
+function TabPanelRuntime({ snapshot, loading }: { snapshot: InstrumentationRuleRuntimeSnapshot | null; loading: boolean }) {
+  const [showOffline, setShowOffline] = React.useState(false);
+
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-12 skeleton-shimmer rounded-lg" />
+        ))}
+      </div>
+    );
+  }
+
+  if (!snapshot) {
+    return (
+      <div className="text-center py-8 text-gray-400 text-sm">
+        <i className="fas fa-satellite-dish text-2xl mb-2 block" />
+        No runtime snapshot available
+      </div>
+    );
+  }
+
+  const { summary: s, targets: snapshotTargets } = snapshot;
+
+  // Split targets into reachable (online) vs offline groups
+  const isOfflineTarget = (t: InstrumentationRuleRuntimeSnapshotTarget) =>
+    t.controlplane_state === 'offline' || t.controlplane_state === 'expired' ||
+    (t.last_refresh_status === 'skipped' && t.last_error_message === 'agent is offline');
+
+  const reachableTargets = snapshotTargets.filter(t => !isOfflineTarget(t));
+  const offlineTargets = snapshotTargets.filter(t => isOfflineTarget(t));
+
+  return (
+    <div className="space-y-4">
+      {/* Summary metrics — scoped to reachable targets only */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <RuntimeMetric label="Reachable" value={s.reachable_targets || reachableTargets.length} />
+        <RuntimeMetric label="Effective" value={s.effective_targets} color="text-green-600" />
+        <RuntimeMetric label="Drifted" value={s.drifted_targets} color="text-amber-600" />
+        <RuntimeMetric label="Missing" value={s.missing_targets} color="text-red-600" />
+      </div>
+
+      {/* Reachable targets table */}
+      {reachableTargets.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-100 text-xs">
+            <thead className="bg-gray-50/80">
+              <tr className="text-left uppercase tracking-wide text-gray-400">
+                <th className="px-3 py-2 font-medium">Agent</th>
+                <th className="px-3 py-2 font-medium">Effective</th>
+                <th className="px-3 py-2 font-medium">Refresh</th>
+                <th className="px-3 py-2 font-medium">Drift</th>
+                <th className="px-3 py-2 font-medium">Diagnostic</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {reachableTargets.map(t => (
+                <RuntimeTargetRow key={t.agent_id} target={t} isOffline={false} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {reachableTargets.length === 0 && (
+        <div className="text-center py-4 text-gray-400 text-xs">
+          <i className="fas fa-satellite-dish mr-1" />
+          No reachable agents — all targets are offline
+        </div>
+      )}
+
+      {/* Offline targets — collapsible */}
+      {offlineTargets.length > 0 && (
+        <div className="border-t border-gray-100 pt-3">
+          <button
+            onClick={() => setShowOffline(!showOffline)}
+            className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            <i className={`fas fa-chevron-${showOffline ? 'down' : 'right'} text-[9px]`} />
+            <i className="fas fa-wifi-slash text-[10px] opacity-60" />
+            <span>Offline / Expired ({offlineTargets.length})</span>
+            <span className="text-[10px] italic ml-1">— stale data, agent unreachable</span>
+          </button>
+          {showOffline && (
+            <div className="mt-2 overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-100 text-xs opacity-60">
+                <thead className="bg-gray-50/50">
+                  <tr className="text-left uppercase tracking-wide text-gray-300">
+                    <th className="px-3 py-2 font-medium">Agent</th>
+                    <th className="px-3 py-2 font-medium">Effective</th>
+                    <th className="px-3 py-2 font-medium">Refresh</th>
+                    <th className="px-3 py-2 font-medium">Drift</th>
+                    <th className="px-3 py-2 font-medium">Diagnostic</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {offlineTargets.map(t => (
+                    <RuntimeTargetRow key={t.agent_id} target={t} isOffline={true} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RuntimeTargetRow({ target: t, isOffline }: { target: InstrumentationRuleRuntimeSnapshotTarget; isOffline: boolean }) {
+  return (
+    <tr className={isOffline ? 'opacity-70' : 'hover:bg-gray-50/50'}>
+      <td className="px-3 py-2">
+        <div className={`font-medium ${isOffline ? 'text-gray-400' : 'text-gray-700'}`}>{t.agent_id}</div>
+        <div className="text-gray-400">{t.hostname || t.ip || '-'}</div>
+      </td>
+      <td className="px-3 py-2">
+        {isOffline ? (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-50 text-gray-400 ring-1 ring-gray-200 text-[10px] font-semibold">
+            <i className="fas fa-minus text-[8px]" /> offline
+          </span>
+        ) : t.is_effective ? (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-50 text-green-700 ring-1 ring-green-200 text-[10px] font-semibold">
+            <i className="fas fa-check text-[8px]" /> yes
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 text-red-700 ring-1 ring-red-200 text-[10px] font-semibold">
+            <i className="fas fa-times text-[8px]" /> no
+          </span>
+        )}
+      </td>
+      <td className="px-3 py-2">
+        <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold ring-1 ${runtimeRefreshStatusClass(t.last_refresh_status)}`}>
+          {t.last_refresh_status || 'idle'}
+        </span>
+      </td>
+      <td className="px-3 py-2">
+        {!isOffline && t.drift_reasons && t.drift_reasons.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {t.drift_reasons.map(reason => (
+              <span key={reason} className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold ring-1 ${driftReasonClass(reason)}`}>
+                {formatDriftReason(reason)}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span className="text-gray-400">-</span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-gray-500 max-w-[200px]">
+        <div className="truncate">{t.diagnostic_message || t.last_error_message || '-'}</div>
+      </td>
+    </tr>
+  );
+}
+
+function RuntimeMetric({ label, value, color = 'text-gray-800' }: { label: string; value: number; color?: string }) {
+  return (
+    <div className="rounded-lg border border-gray-100 bg-gray-50/40 px-3 py-2 text-center">
+      <div className={`text-lg font-bold ${color}`}>{value}</div>
+      <div className="text-[10px] text-gray-400 mt-0.5">{label}</div>
+    </div>
+  );
+}
+
+// ─── Tab Panel: Config & Operation ───────────────────────────────────────────
+
+function TabPanelConfig({ rule, selectedApp }: { rule: InstrumentationRule; selectedApp: App | null }) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Rule Configuration */}
+      <div className="rounded-lg border border-gray-100 bg-gray-50/30 p-4">
+        <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">
+          <i className="fas fa-cog mr-2 text-gray-400" />Rule Configuration
+        </h4>
+        <dl className="space-y-2 text-xs">
+          <ConfigRow label="Class" value={rule.class_name} />
+          <ConfigRow label="Method" value={rule.method_name} />
+          <ConfigRow label="Type" value={rule.instrument_type} />
+          <ConfigRow label="Scope" value={rule.scope_type} />
+          {rule.span_name && <ConfigRow label="Span Name" value={rule.span_name} />}
+          {rule.parameter_types && <ConfigRow label="Params" value={rule.parameter_types} />}
+          {rule.capture_args && <ConfigRow label="Capture Args" value={rule.capture_args} />}
+          {rule.capture_return && <ConfigRow label="Capture Return" value={rule.capture_return} />}
+          {rule.force && <ConfigRow label="Force" value="Yes" />}
+          <ConfigRow label="App" value={selectedApp?.name || rule.app_id} />
+          <ConfigRow label="Service" value={rule.service_name} />
+          <ConfigRow label="Created" value={formatTimestamp(rule.created_at_millis)} />
+          <ConfigRow label="Updated" value={formatTimestamp(rule.updated_at_millis)} />
+        </dl>
+      </div>
+
+      {/* Last Operation */}
+      <div className="rounded-lg border border-gray-100 bg-gray-50/30 p-4">
+        <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">
+          <i className="fas fa-play-circle mr-2 text-gray-400" />Last Operation
+        </h4>
+        {rule.last_operation ? (
+          <dl className="space-y-2 text-xs">
+            <ConfigRow label="Type" value={rule.last_operation.type} />
+            <ConfigRow label="Status" value={rule.last_operation.status} />
+            <ConfigRow label="Started" value={formatTimestamp(rule.last_operation.started_at_millis)} />
+            {rule.last_operation.completed_at_millis && (
+              <ConfigRow label="Completed" value={formatTimestamp(rule.last_operation.completed_at_millis)} />
+            )}
+            <ConfigRow label="Total" value={String(rule.last_operation.total_targets)} />
+            <ConfigRow label="Applied" value={String(rule.last_operation.applied_targets)} />
+            <ConfigRow label="Failed" value={String(rule.last_operation.failed_targets)} />
+          </dl>
+        ) : (
+          <p className="text-gray-400 text-xs italic">No operations recorded yet.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ConfigRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start gap-2">
+      <dt className="w-24 flex-shrink-0 text-gray-400 font-medium">{label}</dt>
+      <dd className="text-gray-700 break-all">{value}</dd>
+    </div>
+  );
+}
+
+// ─── Tab Panel: Audit Log ────────────────────────────────────────────────────
+
+function TabPanelAudit({ audits }: { audits?: InstrumentationRuleAuditEntry[] }) {
+  if (!audits || audits.length === 0) {
+    return (
+      <div className="text-center py-8 text-gray-400 text-sm">
+        <i className="fas fa-history text-2xl mb-2 block" />
+        No audit entries yet
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-0.5">
+      {audits.map(entry => (
+        <div key={entry.audit_id} className="flex items-start gap-3 py-2.5 px-3 rounded-lg hover:bg-gray-50/60 transition">
+          {/* Timeline dot */}
+          <div className="flex-shrink-0 mt-1">
+            <span className={`w-2.5 h-2.5 rounded-full inline-block ring-2 ring-white ${
+              entry.status === 'success' ? 'bg-green-500' : entry.status === 'failed' ? 'bg-red-500' : 'bg-amber-400'
+            }`} />
+          </div>
+          {/* Content */}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold ring-1 ${auditStatusClass(entry.status)}`}>
+                {entry.status}
+              </span>
+              <span className="text-xs font-medium text-gray-700">{formatAuditAction(entry.action)}</span>
+              <span className="text-[10px] text-gray-400 px-1.5 py-0.5 rounded bg-gray-100">
+                {formatAuditSource(entry.source)}
+              </span>
+            </div>
+            <div className="mt-1 flex items-center gap-3 text-[11px] text-gray-400">
+              {entry.agent_id && <span><i className="fas fa-server mr-1" />{entry.agent_id}</span>}
+              <span><i className="fas fa-clock mr-1" />{formatTimestamp(entry.created_at_millis)}</span>
+            </div>
+            {entry.message && (
+              <p className="mt-1 text-xs text-gray-500 break-all">{entry.message}</p>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Helper Functions ────────────────────────────────────────────────────────
 
 function runtimeRefreshStatusClass(status?: InstrumentationRuntimeRefreshStatus): string {
   switch (status) {
@@ -917,361 +1489,18 @@ export default function InstrumentationPage() {
               </div>
 
               <div className="flex-1 overflow-y-auto p-5 space-y-5">
-                <div className="grid grid-cols-1 xl:grid-cols-4 gap-3">
-                  {[
-                    { label: 'Targets', value: selectedRule.summary.total_targets, color: 'bg-gray-50 text-gray-700' },
-                    { label: 'Applied', value: selectedRule.summary.applied_targets, color: 'bg-green-50 text-green-700' },
-                    { label: 'Pending / Running', value: selectedRule.summary.pending_targets + selectedRule.summary.running_targets, color: 'bg-blue-50 text-blue-700' },
-                    { label: 'Failed / Offline / Expired', value: selectedRule.summary.failed_targets + selectedRule.summary.offline_targets + (selectedRule.summary.expired_targets || 0), color: 'bg-red-50 text-red-700' },
-                  ].map(card => (
-                    <div key={card.label} className="rounded-xl border border-gray-200 bg-white p-4">
-                      <p className="text-xs text-gray-500">{card.label}</p>
-                      <div className="mt-2 flex items-end justify-between">
-                        <span className={`text-2xl font-bold ${card.color.split(' ')[1]}`}>{card.value}</span>
-                        <span className={`px-2 py-1 rounded-full text-[11px] font-medium ${card.color}`}>{card.label}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                {/* ===== Health Summary Bar ===== */}
+                <HealthSummaryBar rule={selectedRule} runtimeSnapshot={runtimeSnapshot} />
 
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  <section className="rounded-xl border border-gray-200 bg-white">
-                    <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-                      <i className="fas fa-sliders-h text-primary-500 text-sm" />
-                      <h4 className="text-sm font-semibold text-gray-800">Rule Configuration</h4>
-                    </div>
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                      <div>
-                        <div className="text-xs text-gray-400">Description</div>
-                        <div className="mt-1 text-gray-700 break-words">{selectedRule.description || '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Instrument Type</div>
-                        <div className="mt-1 text-gray-700">{selectedRule.instrument_type}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Parameter Types</div>
-                        <div className="mt-1 text-gray-700 break-all">{selectedRule.parameter_types || '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Method Descriptor</div>
-                        <div className="mt-1 text-gray-700 break-all">{selectedRule.method_descriptor || '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Span Name</div>
-                        <div className="mt-1 text-gray-700 break-all">{selectedRule.span_name || '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Capture Max Length</div>
-                        <div className="mt-1 text-gray-700">{selectedRule.capture_max_length || '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Capture Args</div>
-                        <div className="mt-1 text-gray-700 break-all">{selectedRule.capture_args || '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Capture Return</div>
-                        <div className="mt-1 text-gray-700 break-all">{selectedRule.capture_return || '-'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Target Agents</div>
-                        <div className="mt-1 text-gray-700 break-all">{selectedRule.target_agent_ids?.length ? selectedRule.target_agent_ids.join(', ') : 'service-wide'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-400">Force Apply</div>
-                        <div className="mt-1 text-gray-700">{selectedRule.force ? 'true' : 'false'}</div>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section className="rounded-xl border border-gray-200 bg-white">
-                    <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-                      <i className="fas fa-history text-blue-500 text-sm" />
-                      <h4 className="text-sm font-semibold text-gray-800">Last Operation</h4>
-                    </div>
-                    <div className="p-4 text-sm">
-                      {selectedRule.last_operation ? (
-                        <div className="space-y-3">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ring-1 ${ruleStatusClass(selectedRule.last_operation.status)}`}>
-                              {selectedRule.last_operation.status}
-                            </span>
-                            <span className="px-2.5 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 ring-1 ring-gray-200">
-                              {selectedRule.last_operation.type}
-                            </span>
-                            <span className="text-xs text-gray-400">{selectedRule.last_operation.operation_id}</span>
-                          </div>
-                          <div className="grid grid-cols-2 gap-3 text-sm">
-                            <div>
-                              <div className="text-xs text-gray-400">Started At</div>
-                              <div className="mt-1 text-gray-700">{formatTimestamp(selectedRule.last_operation.started_at_millis)}</div>
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-400">Completed At</div>
-                              <div className="mt-1 text-gray-700">{formatTimestamp(selectedRule.last_operation.completed_at_millis)}</div>
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-400">Applied</div>
-                              <div className="mt-1 text-gray-700">{selectedRule.last_operation.applied_targets}</div>
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-400">Failed</div>
-                              <div className="mt-1 text-gray-700">{selectedRule.last_operation.failed_targets}</div>
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-400">Pending</div>
-                              <div className="mt-1 text-gray-700">{selectedRule.last_operation.pending_targets}</div>
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-400">Offline</div>
-                              <div className="mt-1 text-gray-700">{selectedRule.last_operation.offline_targets}</div>
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-400">Expired</div>
-                              <div className="mt-1 text-gray-700">{selectedRule.last_operation.expired_targets || 0}</div>
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <EmptyState
-                          size="sm"
-                          icon="fas fa-history"
-                          iconBg="bg-blue-50"
-                          iconColor="text-blue-300"
-                          title="No operation yet"
-                          description="规则创建后会在这里展示最近一次下发动作与聚合状态。"
-                        />
-                      )}
-                    </div>
-                  </section>
-                </div>
-
-                <section className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between gap-3">
-                    <div>
-                      <h4 className="text-sm font-semibold text-gray-800">Recent Audit</h4>
-                      <p className="text-xs text-gray-400 mt-1">查看最近几次手工操作与后台 reconcile 收敛动作。</p>
-                    </div>
-                    <span className="text-xs text-gray-400">{selectedRule.recent_audits?.length ?? 0} entries</span>
-                  </div>
-
-                  {selectedRule.recent_audits?.length ? (
-                    <div className="divide-y divide-gray-100">
-                      {selectedRule.recent_audits.slice(0, 8).map((audit: InstrumentationRuleAuditEntry) => (
-                        <div key={audit.audit_id} className="px-4 py-3 flex items-start justify-between gap-4">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${auditStatusClass(audit.status)}`}>
-                                {audit.status}
-                              </span>
-                              <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 ring-1 ring-gray-200">
-                                {formatAuditSource(audit.source)}
-                              </span>
-                              <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-medium bg-blue-50 text-blue-700 ring-1 ring-blue-200">
-                                {formatAuditAction(audit.action)}
-                              </span>
-                              {audit.agent_id ? <span className="text-xs text-gray-400 break-all">agent: {audit.agent_id}</span> : null}
-                            </div>
-                            <div className="mt-2 text-sm text-gray-600 break-words">{audit.message || '-'}</div>
-                            {audit.task_id ? <div className="mt-1 text-xs text-gray-400 break-all">task: {audit.task_id}</div> : null}
-                          </div>
-                          <div className="text-xs text-gray-400 whitespace-nowrap">{formatRelativeTime(audit.created_at_millis)}</div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <EmptyState
-                      size="sm"
-                      icon="fas fa-scroll"
-                      iconBg="bg-indigo-50"
-                      iconColor="text-indigo-300"
-                      title="No audit yet"
-                      description="后端收敛动作和规则下发动作会在这里保留最近几次审计记录。"
-                    />
-                  )}
-                </section>
-
-                <section className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between gap-3">
-                    <div>
-                      <h4 className="text-sm font-semibold text-gray-800">Runtime Snapshot</h4>
-                      <p className="text-xs text-gray-400 mt-1">查看 JVM 运行时快照、freshness、能力摘要与 drift 诊断。</p>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-gray-400">
-                      {runtimeSnapshot?.generated_at_millis ? <span>generated {formatRelativeTime(runtimeSnapshot.generated_at_millis)}</span> : null}
-                      <span>{runtimeSnapshot?.targets.length ?? 0} targets</span>
-                    </div>
-                  </div>
-
-                  {runtimeSnapshotLoading ? (
-                    <div className="p-4 space-y-3">
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                        {Array.from({ length: 4 }).map((_, i) => (
-                          <div key={i} className="h-20 skeleton-shimmer rounded-xl" />
-                        ))}
-                      </div>
-                      {Array.from({ length: 3 }).map((_, i) => (
-                        <div key={i} className="h-14 skeleton-shimmer rounded-lg" />
-                      ))}
-                    </div>
-                  ) : !runtimeSnapshot ? (
-                    <EmptyState
-                      size="sm"
-                      icon="fas fa-satellite-dish"
-                      iconBg="bg-blue-50"
-                      iconColor="text-blue-300"
-                      title="No runtime snapshot yet"
-                      description="当前还没有可展示的 JVM 运行时快照，可点击 Refresh Snapshot 主动查询。"
-                      className="px-6"
-                    />
-                  ) : (
-                    <div className="p-4 space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-                        {[
-                          { label: 'Snapshot Ready', value: runtimeSnapshot.summary.snapshot_available_targets, tone: 'bg-blue-50 text-blue-700' },
-                          { label: 'Runtime Found', value: runtimeSnapshot.summary.runtime_found_targets, tone: 'bg-indigo-50 text-indigo-700' },
-                          { label: 'Effective', value: runtimeSnapshot.summary.effective_targets, tone: 'bg-green-50 text-green-700' },
-                          { label: 'Drifted', value: runtimeSnapshot.summary.drifted_targets, tone: 'bg-amber-50 text-amber-700' },
-                          { label: 'Stale / Failed', value: runtimeSnapshot.summary.stale_targets + runtimeSnapshot.summary.refresh_failed_targets, tone: 'bg-red-50 text-red-700' },
-                        ].map(card => (
-                          <div key={card.label} className="rounded-xl border border-gray-200 bg-white p-4">
-                            <p className="text-xs text-gray-500">{card.label}</p>
-                            <div className="mt-2 flex items-end justify-between gap-2">
-                              <span className={`text-2xl font-bold ${card.tone.split(' ')[1]}`}>{card.value}</span>
-                              <span className={`px-2 py-1 rounded-full text-[11px] font-medium ${card.tone}`}>{card.label}</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-gray-100 text-sm">
-                          <thead className="bg-gray-50/80">
-                            <tr className="text-left text-xs uppercase tracking-wide text-gray-400">
-                              <th className="px-4 py-3 font-medium">Agent</th>
-                              <th className="px-4 py-3 font-medium">Controlplane</th>
-                              <th className="px-4 py-3 font-medium">Runtime</th>
-                              <th className="px-4 py-3 font-medium">Drift</th>
-                              <th className="px-4 py-3 font-medium">Freshness</th>
-                              <th className="px-4 py-3 font-medium">Diagnostics</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-gray-100 bg-white">
-                            {runtimeSnapshot.targets.map((target: InstrumentationRuleRuntimeSnapshotTarget) => (
-                              <tr key={`${target.rule_id}:${target.agent_id}`} className="align-top">
-                                <td className="px-4 py-3">
-                                  <div className="font-medium text-gray-800 break-all">{target.agent_id}</div>
-                                  <div className="text-xs text-gray-400 mt-1">{target.hostname || '-'} / {target.ip || '-'}</div>
-                                </td>
-                                <td className="px-4 py-3">
-                                  <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${targetStateClass(target.controlplane_state)}`}>
-                                    {target.controlplane_state}
-                                  </span>
-                                  <div className="text-xs text-gray-400 mt-1">desired: {target.desired_state}</div>
-                                  <div className="text-xs text-gray-400 mt-1">task: {target.controlplane_task_status || '-'}</div>
-                                </td>
-                                <td className="px-4 py-3 text-gray-600">
-                                  <div className="flex flex-wrap gap-2">
-                                    <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${target.runtime_found ? 'bg-green-50 text-green-700 ring-green-200' : 'bg-gray-100 text-gray-600 ring-gray-200'}`}>
-                                      {target.runtime_found ? (target.runtime_status || 'found') : 'not_found'}
-                                    </span>
-                                    <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${target.is_effective ? 'bg-green-50 text-green-700 ring-green-200' : 'bg-gray-100 text-gray-600 ring-gray-200'}`}>
-                                      {target.is_effective ? 'effective' : 'not effective'}
-                                    </span>
-                                    {target.snapshot_available ? (
-                                      <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 bg-blue-50 text-blue-700 ring-blue-200">
-                                        snapshot ready
-                                      </span>
-                                    ) : (
-                                      <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 bg-gray-100 text-gray-600 ring-gray-200">
-                                        no snapshot
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="mt-2 text-xs text-gray-400">transformers: {target.active_transformer_count ?? 0}</div>
-                                </td>
-                                <td className="px-4 py-3">
-                                  {target.drift_reasons?.length ? (
-                                    <div className="flex flex-wrap gap-1.5 max-w-xs">
-                                      {target.drift_reasons.map(reason => (
-                                        <span key={reason} className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${driftReasonClass(reason)}`}>
-                                          {formatDriftReason(reason)}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <span className="text-xs text-gray-400">-</span>
-                                  )}
-                                </td>
-                                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
-                                  <div className="flex flex-wrap gap-1.5">
-                                    <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${runtimeRefreshStatusClass(target.last_refresh_status)}`}>
-                                      {target.last_refresh_status || 'idle'}
-                                    </span>
-                                    {target.is_stale ? (
-                                      <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 bg-amber-50 text-amber-700 ring-amber-200">stale</span>
-                                    ) : null}
-                                    {target.dirty ? (
-                                      <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 bg-orange-50 text-orange-700 ring-orange-200">dirty</span>
-                                    ) : null}
-                                  </div>
-                                  <div className="mt-2 text-xs text-gray-400">refreshed: {formatRelativeTime(target.refreshed_at_millis)}</div>
-                                  <div className="mt-1 text-xs text-gray-400">expires: {formatRelativeTime(target.expires_at_millis)}</div>
-                                </td>
-                                <td className="px-4 py-3 text-gray-500 max-w-sm">
-                                  <div className="flex flex-wrap gap-1.5 mb-2">
-                                    <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${target.instrumentation_available ? 'bg-green-50 text-green-700 ring-green-200' : 'bg-slate-100 text-slate-700 ring-slate-200'}`}>
-                                      instr {target.instrumentation_available ? 'ready' : 'unavailable'}
-                                    </span>
-                                    <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${target.enhancement_capability ? 'bg-green-50 text-green-700 ring-green-200' : 'bg-slate-100 text-slate-700 ring-slate-200'}`}>
-                                      capability {target.enhancement_capability ? 'ready' : 'missing'}
-                                    </span>
-                                  </div>
-                                  <div className="space-y-1 text-xs leading-5">
-                                    {target.instrumentation_source ? <div>source: {target.instrumentation_source}</div> : null}
-                                    {target.diagnostic_message ? <div className="break-words">diagnostic: {target.diagnostic_message}</div> : null}
-                                    {target.last_error_message ? <div className="break-words text-red-600">error: {target.last_error_message}</div> : null}
-                                    {!target.instrumentation_source && !target.diagnostic_message && !target.last_error_message ? <div>-</div> : null}
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                <section className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between gap-3">
-                    <div>
-                      <h4 className="text-sm font-semibold text-gray-800">Target Status</h4>
-                      <p className="text-xs text-gray-400 mt-1">查看每个实例上的任务状态与错误信息。</p>
-                    </div>
-                    <span className="text-xs text-gray-400">{targets.length} targets</span>
-                  </div>
-
-                  {targetsLoading ? (
-                    <div className="p-4 space-y-2">
-                      {Array.from({ length: 4 }).map((_, i) => (
-                        <div key={i} className="h-12 skeleton-shimmer rounded-lg" />
-                      ))}
-                    </div>
-                  ) : targets.length === 0 ? (
-                    <EmptyState
-                      size="sm"
-                      icon="fas fa-server"
-                      iconBg="bg-gray-50"
-                      iconColor="text-gray-300"
-                      title="No targets yet"
-                      description="当前规则还没有解析出目标实例，或目标状态尚未生成。"
-                      className="px-6"
-                    />
-                  ) : (
-                    <TargetStatusTable targets={targets} />
-                  )}
-                </section>
+                {/* ===== Detail Tabs ===== */}
+                <DetailTabs
+                  rule={selectedRule}
+                  selectedApp={selectedApp}
+                  targets={targets}
+                  targetsLoading={targetsLoading}
+                  runtimeSnapshot={runtimeSnapshot}
+                  runtimeSnapshotLoading={runtimeSnapshotLoading}
+                />
               </div>
             </>
           ) : (

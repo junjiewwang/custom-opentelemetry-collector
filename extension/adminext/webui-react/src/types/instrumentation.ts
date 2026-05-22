@@ -98,6 +98,8 @@ export type InstrumentationRuntimeDriftReason =
 
 export interface InstrumentationRuleRuntimeSnapshotSummary {
   total_targets: number;
+  reachable_targets: number;
+  offline_targets: number;
   snapshot_available_targets: number;
   runtime_found_targets: number;
   effective_targets: number;
