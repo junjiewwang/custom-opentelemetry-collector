@@ -595,14 +595,36 @@ func summarizeRuleRuntimeSnapshotTargets(targets []*RuleRuntimeSnapshotTarget) R
 		if target == nil {
 			continue
 		}
+		// Classify target as offline (unreachable) vs reachable.
+		// A target is considered offline if its controlplane state is offline/expired
+		// OR if it was skipped due to agent being offline.
+		isOffline := target.ControlplaneState == TargetStateOffline ||
+			target.ControlplaneState == TargetStateExpired ||
+			(target.LastRefreshStatus == RuntimeRefreshStatusSkipped && target.LastErrorMessage == "agent is offline")
+		if isOffline {
+			summary.OfflineTargets++
+		} else {
+			summary.ReachableTargets++
+		}
+
 		if target.SnapshotAvailable {
 			summary.SnapshotAvailableTargets++
 		}
 		if target.RuntimeFound {
 			summary.RuntimeFoundTargets++
 		}
-		if target.IsEffective {
-			summary.EffectiveTargets++
+		// Only count effective/drifted/missing for reachable targets to avoid
+		// stale cache data from offline agents inflating metrics.
+		if !isOffline {
+			if target.IsEffective {
+				summary.EffectiveTargets++
+			}
+			if containsRuntimeDriftReason(target.DriftReasons, RuntimeDriftReasonMissing) {
+				summary.MissingTargets++
+			}
+			if len(target.DriftReasons) > 0 {
+				summary.DriftedTargets++
+			}
 		}
 		if target.IsStale {
 			summary.StaleTargets++
@@ -615,12 +637,6 @@ func summarizeRuleRuntimeSnapshotTargets(targets []*RuleRuntimeSnapshotTarget) R
 		}
 		if target.SnapshotAvailable && !target.EnhancementCapability {
 			summary.EnhancementUnavailableTargets++
-		}
-		if containsRuntimeDriftReason(target.DriftReasons, RuntimeDriftReasonMissing) {
-			summary.MissingTargets++
-		}
-		if len(target.DriftReasons) > 0 {
-			summary.DriftedTargets++
 		}
 	}
 	return summary

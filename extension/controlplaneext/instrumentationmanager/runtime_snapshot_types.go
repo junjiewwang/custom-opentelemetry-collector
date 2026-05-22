@@ -34,6 +34,8 @@ type RuleRuntimeSnapshot struct {
 
 type RuleRuntimeSnapshotSummary struct {
 	TotalTargets                      int `json:"total_targets"`
+	ReachableTargets                  int `json:"reachable_targets"`
+	OfflineTargets                    int `json:"offline_targets"`
 	SnapshotAvailableTargets          int `json:"snapshot_available_targets"`
 	RuntimeFoundTargets               int `json:"runtime_found_targets"`
 	EffectiveTargets                  int `json:"effective_targets"`
