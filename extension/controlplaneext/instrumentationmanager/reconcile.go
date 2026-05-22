@@ -156,6 +156,16 @@ func (s *InstrumentationService) reconcileRule(ctx context.Context, rule *Rule) 
 
 	if refreshedRule.DesiredState == RuleDesiredStateActive {
 		for _, agent := range agentsByID {
+			// Skip offline agents: no need to create target records for newly discovered
+			// instances that are offline. They will be picked up automatically in the next
+			// reconcile cycle once they come back online.
+			if !isAgentOnline(agent) {
+				s.logger.Debug("Reconcile skipped offline new instance",
+					zap.String("rule_id", refreshedRule.ID),
+					zap.String("agent_id", agent.AgentID),
+				)
+				continue
+			}
 			next, audit, dirty := s.dispatchOperationToAgent(ctx, refreshedRule, OperationTypeApply, nil, agent, now, AuditSourceReconcile, "discovered new service instance")
 			if next != nil {
 				nextTargets = append(nextTargets, next)
@@ -335,13 +345,15 @@ func (s *InstrumentationService) dispatchOperationToAgent(ctx context.Context, r
 
 	if agent == nil || !isAgentOnline(agent) {
 		next.State = TargetStateOffline
+		// Clear stale task references so that refreshTargetStatus does not accidentally
+		// map an old task result (from a prior operation) back into an active state
+		// (e.g., a prior Remove SUCCESS being mapped to "applied" after rule resume).
+		next.TaskID = ""
+		next.TaskStatus = ""
 		if strings.TrimSpace(reason) == "" {
 			reason = "agent is offline"
 		}
 		status := AuditStatusSkipped
-		if current != nil {
-			status = AuditStatusSkipped
-		}
 		if current == nil {
 			return next, newAuditEntry(source, AuditActionTargetDiscover, status, next.AgentID, "", reason, now), false
 		}

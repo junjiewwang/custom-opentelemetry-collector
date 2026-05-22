@@ -94,6 +94,102 @@ function targetStateClass(state: InstrumentationTargetState): string {
   }
 }
 
+const OFFLINE_STATES: InstrumentationTargetState[] = ['offline', 'expired'];
+
+function isOfflineTarget(target: InstrumentationRuleTargetStatus): boolean {
+  return OFFLINE_STATES.includes(target.state);
+}
+
+/** Target Status 表格行 */
+function TargetRow({ target }: { target: InstrumentationRuleTargetStatus }) {
+  return (
+    <tr className="align-top">
+      <td className="px-4 py-3">
+        <div className="font-medium text-gray-800 break-all">{target.agent_id}</div>
+        <div className="text-xs text-gray-400 mt-1">desired: {target.desired_state}</div>
+      </td>
+      <td className="px-4 py-3 text-gray-600">
+        <div>{target.hostname || '-'}</div>
+        <div className="text-xs text-gray-400 mt-1">{target.ip || '-'}</div>
+      </td>
+      <td className="px-4 py-3">
+        <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${targetStateClass(target.state)}`}>
+          {target.state}
+        </span>
+        {target.task_status && (
+          <div className="text-xs text-gray-400 mt-1">task: {target.task_status}</div>
+        )}
+      </td>
+      <td className="px-4 py-3 text-gray-600">
+        <div>{target.task_type || '-'}</div>
+        <div className="text-xs text-gray-400 mt-1 break-all">{target.task_id || '-'}</div>
+        <div className="text-xs text-gray-400 mt-1">dispatch: {formatRelativeTime(target.last_dispatch_at_millis)}</div>
+      </td>
+      <td className="px-4 py-3 text-gray-500 max-w-xs">
+        <div className="break-words text-xs leading-5">{target.last_error_message || '-'}</div>
+      </td>
+      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+        {formatRelativeTime(target.updated_at_millis)}
+      </td>
+    </tr>
+  );
+}
+
+/** Target Status 分组表格：在线实例正常展示，离线/过期实例折叠展示 */
+function TargetStatusTable({ targets }: { targets: InstrumentationRuleTargetStatus[] }) {
+  const [offlineExpanded, setOfflineExpanded] = useState(false);
+
+  const onlineTargets = useMemo(() => targets.filter(t => !isOfflineTarget(t)), [targets]);
+  const offlineTargets = useMemo(() => targets.filter(t => isOfflineTarget(t)), [targets]);
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-gray-100 text-sm">
+        <thead className="bg-gray-50/80">
+          <tr className="text-left text-xs uppercase tracking-wide text-gray-400">
+            <th className="px-4 py-3 font-medium">Agent</th>
+            <th className="px-4 py-3 font-medium">Host</th>
+            <th className="px-4 py-3 font-medium">State</th>
+            <th className="px-4 py-3 font-medium">Task</th>
+            <th className="px-4 py-3 font-medium">Error</th>
+            <th className="px-4 py-3 font-medium">Updated</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 bg-white">
+          {onlineTargets.map(target => (
+            <TargetRow key={`${target.rule_id}:${target.agent_id}`} target={target} />
+          ))}
+
+          {offlineTargets.length > 0 && (
+            <>
+              <tr className="bg-slate-50/60">
+                <td colSpan={6} className="px-4 py-2">
+                  <button
+                    onClick={() => setOfflineExpanded(!offlineExpanded)}
+                    className="flex items-center gap-2 text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors w-full"
+                  >
+                    <i className={`fas fa-chevron-right text-[10px] transition-transform duration-200 ${offlineExpanded ? 'rotate-90' : ''}`} />
+                    <i className="fas fa-plug-circle-xmark text-slate-400" />
+                    <span>
+                      Offline / Expired Instances ({offlineTargets.length})
+                    </span>
+                    <span className="ml-auto text-slate-400 font-normal">
+                      {offlineExpanded ? 'click to collapse' : 'click to expand'}
+                    </span>
+                  </button>
+                </td>
+              </tr>
+              {offlineExpanded && offlineTargets.map(target => (
+                <TargetRow key={`${target.rule_id}:${target.agent_id}`} target={target} />
+              ))}
+            </>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function runtimeRefreshStatusClass(status?: InstrumentationRuntimeRefreshStatus): string {
   switch (status) {
     case 'success':
@@ -1173,53 +1269,7 @@ export default function InstrumentationPage() {
                       className="px-6"
                     />
                   ) : (
-                    <div className="overflow-x-auto">
-                      <table className="min-w-full divide-y divide-gray-100 text-sm">
-                        <thead className="bg-gray-50/80">
-                          <tr className="text-left text-xs uppercase tracking-wide text-gray-400">
-                            <th className="px-4 py-3 font-medium">Agent</th>
-                            <th className="px-4 py-3 font-medium">Host</th>
-                            <th className="px-4 py-3 font-medium">State</th>
-                            <th className="px-4 py-3 font-medium">Task</th>
-                            <th className="px-4 py-3 font-medium">Error</th>
-                            <th className="px-4 py-3 font-medium">Updated</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100 bg-white">
-                          {targets.map(target => (
-                            <tr key={`${target.rule_id}:${target.agent_id}`} className="align-top">
-                              <td className="px-4 py-3">
-                                <div className="font-medium text-gray-800 break-all">{target.agent_id}</div>
-                                <div className="text-xs text-gray-400 mt-1">desired: {target.desired_state}</div>
-                              </td>
-                              <td className="px-4 py-3 text-gray-600">
-                                <div>{target.hostname || '-'}</div>
-                                <div className="text-xs text-gray-400 mt-1">{target.ip || '-'}</div>
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-semibold ring-1 ${targetStateClass(target.state)}`}>
-                                  {target.state}
-                                </span>
-                                {target.task_status && (
-                                  <div className="text-xs text-gray-400 mt-1">task: {target.task_status}</div>
-                                )}
-                              </td>
-                              <td className="px-4 py-3 text-gray-600">
-                                <div>{target.task_type || '-'}</div>
-                                <div className="text-xs text-gray-400 mt-1 break-all">{target.task_id || '-'}</div>
-                                <div className="text-xs text-gray-400 mt-1">dispatch: {formatRelativeTime(target.last_dispatch_at_millis)}</div>
-                              </td>
-                              <td className="px-4 py-3 text-gray-500 max-w-xs">
-                                <div className="break-words text-xs leading-5">{target.last_error_message || '-'}</div>
-                              </td>
-                              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
-                                {formatRelativeTime(target.updated_at_millis)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    <TargetStatusTable targets={targets} />
                   )}
                 </section>
               </div>

@@ -318,6 +318,14 @@ func (s *InstrumentationService) refreshTargetStatus(ctx context.Context, rule *
 	if target == nil || target.TaskID == "" {
 		return false, nil
 	}
+	// Skip task result refresh for offline/expired targets. Their state is authoritative
+	// and should only be changed by reconcileExistingTarget when the agent comes back online.
+	// Without this guard, a stale TaskID (from a prior operation before the agent went offline)
+	// could cause mapResultStatusToTargetState to incorrectly override the offline state
+	// (e.g., mapping a prior SUCCESS to "applied" even though the agent is unreachable).
+	if target.State == TargetStateOffline || target.State == TargetStateExpired {
+		return false, nil
+	}
 	currentState := target.State
 	currentTaskStatus := target.TaskStatus
 	currentError := target.LastErrorMessage
