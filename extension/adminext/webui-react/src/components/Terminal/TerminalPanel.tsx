@@ -58,6 +58,10 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
   // 标记 relay 是否已就绪（后端发送 [+] ready 状态后为 true）
   const relayReadyRef = useRef(false);
 
+  // 无数据超时检测（应用层心跳辅助）
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const idleWarningShownRef = useRef(false);
+
   const serviceName = instance.service_name || 'unknown';
   const ip = instance.ip || instance.hostname || '';
   const tunnelAgentId = instance.arthasStatus?.tunnelAgentId || '';
@@ -177,6 +181,10 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       clearTimeout(closeRefreshTimerRef.current);
       closeRefreshTimerRef.current = null;
     }
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
     const ws = wsRef.current;
     if (ws) {
       ws.onopen = null;
@@ -250,6 +258,7 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
         setConnected(true);
         setConnecting(false);
         relayReadyRef.current = false;
+        idleWarningShownRef.current = false;
         // 注意：此时后端还在执行 connectArthas 流程（查找 agent → startTunnel → 等待 openTunnel），
         // 尚未进入 relay 模式，所以不能在这里发送 resize，否则 Arthas 收不到。
         // resize 会在检测到后端 ready 状态消息后发送。
@@ -257,7 +266,23 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
         onStatusChange?.();
       };
 
+      // Helper: 重置无数据超时检测（relay ready 后才开始）
+      const IDLE_TIMEOUT_MS = 45_000;
+      const resetIdleTimer = () => {
+        if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+        idleWarningShownRef.current = false;
+        idleTimerRef.current = setTimeout(() => {
+          if (!relayReadyRef.current) return;
+          if (idleWarningShownRef.current) return;
+          idleWarningShownRef.current = true;
+          terminal.write('\r\n\x1b[33m[!] No data received for 45s, connection may be lost. Consider closing and reconnecting.\x1b[0m\r\n');
+        }, IDLE_TIMEOUT_MS);
+      };
+
       ws.onmessage = (event) => {
+        // Reset idle timer on any incoming data.
+        if (relayReadyRef.current) resetIdleTimer();
+
         let text = '';
         if (event.data instanceof ArrayBuffer) {
           text = new TextDecoder('utf-8').decode(new Uint8Array(event.data));
@@ -287,6 +312,8 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
         // 此时后端已进入 relayWebSocketPair 模式，可以安全发送 resize 触发 Arthas banner
         if (!relayReadyRef.current && text.includes('[+]')) {
           relayReadyRef.current = true;
+          // Start idle detection now that relay is active.
+          resetIdleTimer();
           // 短暂延迟确保 relay 完全就绪
           setTimeout(() => {
             const dims = terminal.getProposedDimensions();
@@ -305,6 +332,8 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       ws.onclose = (event) => {
         setConnected(false);
         wsRef.current = null;
+        // Clear idle timer on disconnect.
+        if (idleTimerRef.current) { clearTimeout(idleTimerRef.current); idleTimerRef.current = null; }
         const reason = event.reason ? `, reason: ${event.reason}` : '';
         terminal.write(`\r\n\x1b[33m[System] Connection closed (code: ${event.code}${reason})\x1b[0m\r\n`);
 
