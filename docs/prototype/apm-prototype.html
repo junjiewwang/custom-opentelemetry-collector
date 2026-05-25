@@ -58,7 +58,6 @@
         <div class="nav-group-label">Infrastructure</div>
         <div class="nav-item" data-page="instances"><i class="fas fa-server"></i>Instances<span class="nav-badge">2</span></div>
         <div class="nav-item" data-page="instrumentation"><i class="fas fa-microscope"></i>Instrumentation</div>
-        <div class="nav-item" data-page="deployments"><i class="fas fa-rocket"></i>Deployments</div>
       </div>
       <div class="nav-group" data-tenant-only style="display:none">
         <div class="nav-group-label">Alerts</div>
@@ -2177,93 +2176,6 @@
                 <span><i class="fas fa-clock"></i> Resolved 2 days ago</span>
               </div>
             </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ===================== PAGE: Deployments ===================== -->
-      <div class="page" id="page-deployments">
-        <div class="flex items-center justify-between mb-lg">
-          <div class="flex items-center gap-md">
-            <span class="badge badge-info">6 deployments today</span>
-            <span class="badge badge-healthy">5 healthy</span>
-            <span class="badge badge-critical">1 degraded</span>
-          </div>
-          <div class="flex gap-sm">
-            <button class="btn btn-ghost"><i class="fas fa-calendar"></i> Last 7 days</button>
-          </div>
-        </div>
-
-        <!-- Deployment Timeline -->
-        <div class="card mb-lg">
-          <div class="card-header">
-            <span class="card-title"><i class="fas fa-code-branch" style="color:var(--accent-blue)"></i> Deployment Timeline</span>
-            <span class="text-xs text-tertiary">Markers show deploy events on performance graph</span>
-          </div>
-          <div class="card-body" style="position:relative">
-            <div class="chart-area" id="deploy-timeline-chart" style="height:160px"></div>
-            <!-- Deploy markers -->
-            <div class="deploy-marker deploy-marker--success" style="left:15%"><div class="deploy-marker-line"></div><div class="deploy-marker-dot"></div><span class="deploy-marker-label">v2.3.1</span></div>
-            <div class="deploy-marker deploy-marker--success" style="left:38%"><div class="deploy-marker-line"></div><div class="deploy-marker-dot"></div><span class="deploy-marker-label">v1.5.2</span></div>
-            <div class="deploy-marker deploy-marker--danger" style="left:62%"><div class="deploy-marker-line"></div><div class="deploy-marker-dot" style="background:var(--accent-red)"></div><span class="deploy-marker-label" style="color:var(--accent-red)">v1.2.4 ⚠</span></div>
-            <div class="deploy-marker deploy-marker--success" style="left:78%"><div class="deploy-marker-line"></div><div class="deploy-marker-dot"></div><span class="deploy-marker-label">v1.8.0</span></div>
-          </div>
-        </div>
-
-        <!-- Deployment List -->
-        <div class="card">
-          <div class="card-header"><span class="card-title">Recent Deployments</span></div>
-          <div class="table-container">
-            <table>
-              <thead><tr><th>Service</th><th>Version</th><th>Status</th><th>Deployed</th><th>Δ Latency</th><th>Δ Error Rate</th><th>Rollback</th></tr></thead>
-              <tbody>
-                <tr>
-                  <td><span class="font-mono" style="color:var(--accent-blue)">inventory-svc</span></td>
-                  <td><span class="font-mono">v1.2.3 → <strong style="color:var(--accent-red)">v1.2.4</strong></span></td>
-                  <td><span class="badge badge-critical"><span class="dot dot-critical"></span>Degraded</span></td>
-                  <td class="text-secondary">45 min ago</td>
-                  <td class="font-mono" style="color:var(--accent-red)">+890ms (+256%)</td>
-                  <td class="font-mono" style="color:var(--accent-red)">+7.8%</td>
-                  <td><button class="btn btn-ghost" style="color:var(--accent-red);font-size:0.7rem"><i class="fas fa-undo"></i> Rollback</button></td>
-                </tr>
-                <tr>
-                  <td><span class="font-mono" style="color:var(--accent-blue)">payment-gateway</span></td>
-                  <td><span class="font-mono">v1.7.9 → <strong>v1.8.0</strong></span></td>
-                  <td><span class="badge badge-warning"><span class="dot dot-warning"></span>Monitoring</span></td>
-                  <td class="text-secondary">1 hour ago</td>
-                  <td class="font-mono" style="color:var(--accent-yellow)">+45ms (+12%)</td>
-                  <td class="font-mono" style="color:var(--accent-yellow)">+1.1%</td>
-                  <td><button class="btn btn-ghost" style="font-size:0.7rem"><i class="fas fa-undo"></i> Rollback</button></td>
-                </tr>
-                <tr>
-                  <td><span class="font-mono" style="color:var(--accent-blue)">order-service</span></td>
-                  <td><span class="font-mono">v2.3.0 → <strong>v2.3.1</strong></span></td>
-                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td>
-                  <td class="text-secondary">3 hours ago</td>
-                  <td class="font-mono" style="color:var(--accent-green)">-12ms (-13%)</td>
-                  <td class="font-mono" style="color:var(--accent-green)">-0.05%</td>
-                  <td><span class="text-xs text-tertiary">—</span></td>
-                </tr>
-                <tr>
-                  <td><span class="font-mono" style="color:var(--accent-blue)">notification-svc</span></td>
-                  <td><span class="font-mono">v1.5.1 → <strong>v1.5.2</strong></span></td>
-                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td>
-                  <td class="text-secondary">5 hours ago</td>
-                  <td class="font-mono" style="color:var(--accent-green)">-3ms (-5%)</td>
-                  <td class="font-mono text-tertiary">0.0%</td>
-                  <td><span class="text-xs text-tertiary">—</span></td>
-                </tr>
-                <tr>
-                  <td><span class="font-mono" style="color:var(--accent-blue)">user-auth</span></td>
-                  <td><span class="font-mono">v3.0.9 → <strong>v3.1.0</strong></span></td>
-                  <td><span class="badge badge-healthy"><span class="dot dot-healthy"></span>Healthy</span></td>
-                  <td class="text-secondary">1 day ago</td>
-                  <td class="font-mono" style="color:var(--accent-green)">-8ms (-19%)</td>
-                  <td class="font-mono" style="color:var(--accent-green)">-0.02%</td>
-                  <td><span class="text-xs text-tertiary">—</span></td>
-                </tr>
-              </tbody>
-            </table>
           </div>
         </div>
       </div>
