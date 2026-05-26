@@ -1,0 +1,24 @@
+/**
+ * View: Tenants (Admin Only)
+ */
+ViewRouter.register('tenants', {
+  render: function(container) {
+    container.innerHTML = '\
+        <div class="stat-grid mb-xl">\
+          <div class="stat-card"><div class="stat-card-icon blue"><i class="fas fa-building"></i></div><div class="stat-card-label">Total Tenants</div><div class="stat-card-value">3</div><div class="stat-card-trend neutral"><i class="fas fa-minus"></i> No change</div></div>\
+          <div class="stat-card"><div class="stat-card-icon green"><i class="fas fa-plug"></i></div><div class="stat-card-label">Connected</div><div class="stat-card-value">3</div><div class="stat-card-trend up"><i class="fas fa-check"></i> All connected</div></div>\
+          <div class="stat-card"><div class="stat-card-icon yellow"><i class="fas fa-exclamation-triangle"></i></div><div class="stat-card-label">Degraded</div><div class="stat-card-value" style="color:var(--accent-yellow)">1</div><div class="stat-card-trend down"><i class="fas fa-arrow-up"></i> Gamma Ltd</div></div>\
+        </div>\
+        <div class="card">\
+          <div class="card-header"><span class="card-title"><i class="fas fa-list"></i> Tenant Directory</span><button class="btn btn-primary"><i class="fas fa-plus"></i> Add Tenant</button></div>\
+          <div class="card-body" style="padding:0"><div class="table-container"><table>\
+            <thead><tr><th>Tenant</th><th>Plan</th><th>Apps</th><th>Services</th><th>Instances</th><th>Agent Version</th><th>Onboarded</th><th>Status</th><th>Actions</th></tr></thead>\
+            <tbody>\
+              <tr><td><div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;border-radius:var(--radius-sm);background:rgba(88,166,255,0.1);display:flex;align-items:center;justify-content:center"><i class="fas fa-building" style="font-size:0.7rem;color:var(--accent-blue)"></i></div><div><strong>Acme Corp</strong><div class="text-xs text-tertiary">acme-corp-001</div></div></div></td><td><span class="badge badge-info">Enterprise</span></td><td class="font-mono">3</td><td class="font-mono">8</td><td class="font-mono">24</td><td class="font-mono text-xs">v1.8.2</td><td class="text-xs text-secondary">2025-09-15</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span> Active</span></td><td><div style="display:flex;gap:4px"><button class="btn btn-ghost text-xs" title="View as tenant" onclick="switchToTenantView(\'acme\')"><i class="fas fa-eye"></i></button><button class="btn btn-ghost text-xs" title="Settings"><i class="fas fa-cog"></i></button></div></td></tr>\
+              <tr><td><div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;border-radius:var(--radius-sm);background:rgba(63,185,80,0.1);display:flex;align-items:center;justify-content:center"><i class="fas fa-building" style="font-size:0.7rem;color:var(--accent-green)"></i></div><div><strong>Beta Inc</strong><div class="text-xs text-tertiary">beta-inc-002</div></div></div></td><td><span class="badge badge-neutral">Standard</span></td><td class="font-mono">1</td><td class="font-mono">4</td><td class="font-mono">10</td><td class="font-mono text-xs">v1.8.1</td><td class="text-xs text-secondary">2025-11-02</td><td><span class="badge badge-healthy"><span class="dot dot-healthy"></span> Active</span></td><td><div style="display:flex;gap:4px"><button class="btn btn-ghost text-xs" title="View as tenant"><i class="fas fa-eye"></i></button><button class="btn btn-ghost text-xs" title="Settings"><i class="fas fa-cog"></i></button></div></td></tr>\
+              <tr><td><div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;border-radius:var(--radius-sm);background:rgba(188,140,255,0.1);display:flex;align-items:center;justify-content:center"><i class="fas fa-building" style="font-size:0.7rem;color:var(--accent-purple)"></i></div><div><strong>Gamma Ltd</strong><div class="text-xs text-tertiary">gamma-ltd-003</div></div></div></td><td><span class="badge badge-info">Enterprise</span></td><td class="font-mono">2</td><td class="font-mono">6</td><td class="font-mono">13</td><td class="font-mono text-xs" style="color:var(--accent-yellow)">v1.7.9 \u2191</td><td class="text-xs text-secondary">2025-07-20</td><td><span class="badge badge-warning"><span class="dot dot-warning"></span> Degraded</span></td><td><div style="display:flex;gap:4px"><button class="btn btn-ghost text-xs" title="View as tenant"><i class="fas fa-eye"></i></button><button class="btn btn-ghost text-xs" title="Investigate" style="color:var(--accent-yellow)"><i class="fas fa-search"></i></button><button class="btn btn-ghost text-xs" title="Settings"><i class="fas fa-cog"></i></button></div></td></tr>\
+            </tbody>\
+          </table></div></div>\
+        </div>';
+  }
+});

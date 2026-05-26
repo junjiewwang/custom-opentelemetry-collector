@@ -1239,119 +1239,181 @@
         </div>
       </div>
 
-      <!-- ===================== DRAWER: Trace Detail ===================== -->
+      <!-- ===================== DRAWER: Trace Detail (v2 — inspired by trace_viewer.html) ===================== -->
       <div class="trace-drawer-overlay" id="trace-drawer-overlay" onclick="closeTraceDrawer()"></div>
       <div class="trace-drawer" id="trace-drawer">
-        <!-- Drawer Header -->
-        <div class="trace-drawer-header">
-          <div style="display:flex;align-items:center;gap:var(--space-md)">
-            <i class="fas fa-stream" style="color:var(--accent-blue)"></i>
-            <div>
-              <div style="font-size:0.85rem;font-weight:600;color:var(--text-primary)">Trace Detail</div>
-              <div style="font-size:0.7rem;color:var(--text-tertiary);font-family:'JetBrains Mono',monospace" id="drawer-trace-id">abc123def456</div>
-            </div>
+        <!-- Top Bar: Dark, dense, professional -->
+        <div class="trace-top-bar">
+          <span class="trace-top-id" id="drawer-trace-id-v2">abc123def456</span>
+          <span class="trace-top-badge trace-top-badge--err" id="drawer-status-badge">Error</span>
+          <div class="trace-top-meta">
+            <span class="trace-top-meta-label">Duration</span>
+            <span class="trace-top-meta-value trace-top-meta-value--highlight" id="drawer-duration-v2">1,240ms</span>
           </div>
-          <div style="display:flex;align-items:center;gap:var(--space-lg)">
-            <div style="display:flex;gap:var(--space-xl);font-size:0.75rem">
-              <span><span class="text-tertiary">Duration:</span> <span class="font-mono" style="color:var(--accent-red)" id="drawer-duration">1,240ms</span></span>
-              <span><span class="text-tertiary">Spans:</span> <span class="font-mono" id="drawer-spans">23</span></span>
-              <span><span class="text-tertiary">Services:</span> <span class="font-mono" id="drawer-services">4</span></span>
-            </div>
-            <button class="btn btn-ghost" onclick="closeTraceDrawer()" style="padding:4px 8px"><i class="fas fa-times"></i></button>
+          <div class="trace-top-meta">
+            <span class="trace-top-meta-label">Spans</span>
+            <span class="trace-top-meta-value" id="drawer-spans-v2">23</span>
+          </div>
+          <div class="trace-top-meta">
+            <span class="trace-top-meta-label">Services</span>
+            <span class="trace-top-meta-value" id="drawer-services-v2">4</span>
+          </div>
+          <div class="trace-top-meta">
+            <span class="trace-top-meta-label">Time</span>
+            <span class="trace-top-meta-value" id="drawer-time-v2">10:23:45</span>
+          </div>
+          <div class="trace-top-links">
+            <a href="#" class="trace-top-link trace-top-link--log"><i class="fas fa-file-alt"></i> Logs</a>
+            <button class="trace-top-link trace-top-link--copy" onclick="navigator.clipboard.writeText(document.getElementById('drawer-trace-id-v2').textContent)"><i class="fas fa-copy"></i></button>
+            <button class="btn btn-ghost" onclick="closeTraceDrawer()" style="padding:4px 8px;color:#94a3b8"><i class="fas fa-times"></i></button>
           </div>
         </div>
-        <!-- Drawer Body: Golden Ratio Split (62% Waterfall : 38% Span Detail) -->
+        <!-- Sub Bar -->
+        <div class="trace-sub-bar">
+          <span class="trace-sub-info">Root: <strong id="drawer-root-svc">order-service</strong></span>
+          <span class="trace-sub-info">Operation: <strong class="font-mono" id="drawer-root-op">POST /api/orders</strong></span>
+          <span class="trace-sub-info">Instance: <strong id="drawer-instance">order-pod-7x9f2</strong></span>
+        </div>
+        <!-- Body: Golden Ratio Split -->
         <div class="trace-drawer-body">
-          <!-- Left: Waterfall Timeline (62%) -->
+          <!-- Left: Waterfall with 3-col grid -->
           <div class="trace-drawer-waterfall">
-            <div style="padding:var(--space-sm) var(--space-md);border-bottom:1px solid var(--border-muted);display:flex;align-items:center;justify-content:space-between">
-              <span class="text-xs text-secondary" style="font-weight:600;text-transform:uppercase;letter-spacing:0.04em">Waterfall</span>
-              <span class="text-xs text-tertiary">Click a span for details →</span>
+            <!-- Tree Header (sticky) -->
+            <div class="tw-tree-header">
+              <div class="tw-col-name">Span</div>
+              <div class="tw-col-timeline">
+                <div class="tw-time-ruler">
+                  <span class="tw-tick" style="left:0%">0ms</span>
+                  <span class="tw-tick" style="left:25%">310ms</span>
+                  <span class="tw-tick" style="left:50%">620ms</span>
+                  <span class="tw-tick" style="left:75%">930ms</span>
+                  <span class="tw-tick" style="left:100%">1,240ms</span>
+                </div>
+              </div>
+              <div class="tw-col-dur">Duration</div>
             </div>
-            <div class="trace-drawer-waterfall-content">
-              <div class="span-row span-row--drawer" onclick="selectSpan(this, 0)">
-                <div class="span-label"><i class="fas fa-caret-down" style="color:var(--text-tertiary);font-size:0.6rem"></i><span class="font-mono">order-service</span></div>
-                <div class="span-bar-container"><div class="span-bar" style="left:0%;width:100%;background:var(--accent-blue)"></div></div>
-                <span class="span-duration">1,240ms</span>
+            <!-- Span Tree -->
+            <div class="tw-tree-body" id="tw-tree-body">
+              <!-- Root span -->
+              <div class="tw-span-row tw-span-row--selected" data-span-idx="0" onclick="selectSpanV2(this, 0)">
+                <div class="tw-cell-name">
+                  <button class="tw-toggle" data-expanded="true">▼</button>
+                  <span class="tw-dot tw-dot--err"></span>
+                  <span class="tw-svc-tag">order-service</span>
+                  <span class="tw-op-name">POST /api/orders</span>
+                </div>
+                <div class="tw-cell-timeline"><div class="tw-bar" style="left:0%;width:100%;background:var(--accent-blue)"></div></div>
+                <div class="tw-cell-dur">1,240ms</div>
               </div>
-              <div class="span-row span-row--drawer" style="padding-left:20px" onclick="selectSpan(this, 1)">
-                <div class="span-label"><span class="span-service">order-service</span><span class="font-mono">POST /api/orders</span></div>
-                <div class="span-bar-container"><div class="span-bar" style="left:0%;width:95%;background:var(--accent-blue)"></div></div>
-                <span class="span-duration">1,180ms</span>
+              <!-- Level 1: validateToken -->
+              <div class="tw-span-row" data-span-idx="1" onclick="selectSpanV2(this, 1)">
+                <div class="tw-cell-name" style="padding-left:24px">
+                  <span class="tw-toggle-spacer"></span>
+                  <span class="tw-dot tw-dot--ok"></span>
+                  <span class="tw-svc-tag tw-svc--green">user-auth</span>
+                  <span class="tw-op-name">validateToken</span>
+                </div>
+                <div class="tw-cell-timeline"><div class="tw-bar" style="left:1%;width:3%;background:var(--accent-green)"></div></div>
+                <div class="tw-cell-dur">34ms</div>
               </div>
-              <div class="span-row span-row--drawer span-row--active" style="padding-left:40px" onclick="selectSpan(this, 2)">
-                <div class="span-label"><span class="span-service">user-auth</span><span class="font-mono">validateToken</span></div>
-                <div class="span-bar-container"><div class="span-bar" style="left:2%;width:8%;background:var(--accent-green)"></div></div>
-                <span class="span-duration">34ms</span>
+              <!-- Level 1: checkStock (error, collapsible) -->
+              <div class="tw-span-row tw-span-row--error" data-span-idx="2" onclick="selectSpanV2(this, 2)">
+                <div class="tw-cell-name" style="padding-left:24px">
+                  <button class="tw-toggle" data-expanded="true">▼</button>
+                  <span class="tw-dot tw-dot--err"></span>
+                  <span class="tw-svc-tag tw-svc--orange">inventory-svc</span>
+                  <span class="tw-op-name">checkStock</span>
+                </div>
+                <div class="tw-cell-timeline"><div class="tw-bar tw-bar--err" style="left:4%;width:66%;background:var(--accent-red)"></div></div>
+                <div class="tw-cell-dur tw-dur--err">820ms</div>
               </div>
-              <div class="span-row span-row--drawer" style="padding-left:40px" onclick="selectSpan(this, 3)">
-                <div class="span-label"><span class="span-service">inventory-svc</span><span class="font-mono">checkStock</span></div>
-                <div class="span-bar-container"><div class="span-bar" style="left:12%;width:65%;background:var(--accent-red)"></div></div>
-                <span class="span-duration" style="color:var(--accent-red)">820ms ⚠</span>
+              <!-- Level 2: db.query -->
+              <div class="tw-span-row tw-span-row--error" data-span-idx="3" onclick="selectSpanV2(this, 3)">
+                <div class="tw-cell-name" style="padding-left:48px">
+                  <span class="tw-toggle-spacer"></span>
+                  <span class="tw-dot tw-dot--err"></span>
+                  <span class="tw-svc-tag tw-svc--orange">inventory-svc</span>
+                  <span class="tw-op-name">db.query</span>
+                </div>
+                <div class="tw-cell-timeline"><div class="tw-bar tw-bar--err" style="left:5%;width:63%;background:var(--accent-red);opacity:0.7"></div></div>
+                <div class="tw-cell-dur tw-dur--err">780ms</div>
               </div>
-              <div class="span-row span-row--drawer" style="padding-left:60px" onclick="selectSpan(this, 4)">
-                <div class="span-label"><span class="span-service">inventory-svc</span><span class="font-mono">db.query</span></div>
-                <div class="span-bar-container"><div class="span-bar" style="left:14%;width:60%;background:var(--accent-red);opacity:0.7"></div></div>
-                <span class="span-duration" style="color:var(--accent-red)">780ms</span>
+              <!-- Level 2: redis.get -->
+              <div class="tw-span-row" data-span-idx="4" onclick="selectSpanV2(this, 4)">
+                <div class="tw-cell-name" style="padding-left:48px">
+                  <span class="tw-toggle-spacer"></span>
+                  <span class="tw-dot tw-dot--ok"></span>
+                  <span class="tw-svc-tag tw-svc--orange">inventory-svc</span>
+                  <span class="tw-op-name">redis.get</span>
+                </div>
+                <div class="tw-cell-timeline"><div class="tw-bar" style="left:4%;width:1.5%;background:var(--accent-cyan)"></div></div>
+                <div class="tw-cell-dur">18ms</div>
               </div>
-              <div class="span-row span-row--drawer" style="padding-left:40px" onclick="selectSpan(this, 5)">
-                <div class="span-label"><span class="span-service">payment-gateway</span><span class="font-mono">charge</span></div>
-                <div class="span-bar-container"><div class="span-bar" style="left:78%;width:18%;background:var(--accent-yellow)"></div></div>
-                <span class="span-duration">210ms</span>
+              <!-- Level 1: charge -->
+              <div class="tw-span-row" data-span-idx="5" onclick="selectSpanV2(this, 5)">
+                <div class="tw-cell-name" style="padding-left:24px">
+                  <span class="tw-toggle-spacer"></span>
+                  <span class="tw-dot tw-dot--ok"></span>
+                  <span class="tw-svc-tag tw-svc--yellow">payment-gateway</span>
+                  <span class="tw-op-name">charge</span>
+                </div>
+                <div class="tw-cell-timeline"><div class="tw-bar" style="left:72%;width:17%;background:var(--accent-yellow)"></div></div>
+                <div class="tw-cell-dur">210ms</div>
               </div>
-              <div class="span-row span-row--drawer" style="padding-left:40px" onclick="selectSpan(this, 6)">
-                <div class="span-label"><span class="span-service">notification-svc</span><span class="font-mono">sendEmail</span></div>
-                <div class="span-bar-container"><div class="span-bar" style="left:96%;width:4%;background:var(--accent-purple)"></div></div>
-                <span class="span-duration">45ms</span>
+              <!-- Level 1: sendEmail -->
+              <div class="tw-span-row" data-span-idx="6" onclick="selectSpanV2(this, 6)">
+                <div class="tw-cell-name" style="padding-left:24px">
+                  <span class="tw-toggle-spacer"></span>
+                  <span class="tw-dot tw-dot--ok"></span>
+                  <span class="tw-svc-tag tw-svc--purple">notification-svc</span>
+                  <span class="tw-op-name">sendEmail</span>
+                </div>
+                <div class="tw-cell-timeline"><div class="tw-bar" style="left:90%;width:4%;background:var(--accent-purple)"></div></div>
+                <div class="tw-cell-dur">45ms</div>
               </div>
             </div>
           </div>
-          <!-- Right: Span Attributes (38%) -->
+          <!-- Right: Span Detail -->
           <div class="trace-drawer-span-detail">
-            <div style="padding:var(--space-sm) var(--space-md);border-bottom:1px solid var(--border-muted)">
-              <span class="text-xs text-secondary" style="font-weight:600;text-transform:uppercase;letter-spacing:0.04em">Span Detail</span>
-            </div>
-            <div class="trace-drawer-span-content" id="span-detail-content">
-              <!-- Span Header -->
-              <div style="margin-bottom:var(--space-lg)">
-                <div style="font-size:0.85rem;font-weight:600;color:var(--text-primary);margin-bottom:var(--space-xs)" id="span-detail-name">validateToken</div>
-                <div style="display:flex;align-items:center;gap:var(--space-md);flex-wrap:wrap">
-                  <span class="badge badge-info">user-auth</span>
-                  <span class="badge badge-healthy"><span class="dot dot-healthy"></span>OK</span>
-                  <span class="font-mono text-xs" style="color:var(--text-secondary)">34ms</span>
-                </div>
+            <div class="td-detail-title" id="td-detail-title">
+              <div class="td-detail-name">
+                <span id="td-span-name">checkStock</span>
+                <span class="td-detail-status td-detail-status--err" id="td-span-status">Error</span>
               </div>
+              <div class="td-detail-meta">
+                <span class="badge badge-info" id="td-span-svc">inventory-svc</span>
+                <span class="font-mono text-xs" style="color:var(--text-secondary)" id="td-span-dur">820ms</span>
+                <span class="font-mono text-xs" style="color:var(--text-tertiary)" id="td-span-id">span_4f8a2c</span>
+              </div>
+            </div>
+            <div class="td-detail-body" id="td-detail-body">
               <!-- Attributes Section -->
               <div class="span-attr-section">
                 <div class="span-attr-section-title"><i class="fas fa-tags"></i> Attributes</div>
                 <div class="span-attr-table">
                   <div class="span-attr-row">
-                    <span class="span-attr-key">http.method</span>
-                    <span class="span-attr-value">POST</span>
+                    <span class="span-attr-key">db.system</span>
+                    <span class="span-attr-value">mysql</span>
                   </div>
                   <div class="span-attr-row">
-                    <span class="span-attr-key">http.url</span>
-                    <span class="span-attr-value">/auth/validate</span>
+                    <span class="span-attr-key">db.statement</span>
+                    <span class="span-attr-value span-attr-value--truncated" title="Click to expand" onclick="toggleAttrExpand(this)">SELECT s.*, p.name FROM stock s JOIN products p ON s.product_id = p.id WHERE s.warehouse_id IN (?, ?, ?) AND s.quantity > 0 ORDER BY s.updated_at DESC LIMIT 100</span>
                   </div>
                   <div class="span-attr-row">
-                    <span class="span-attr-key">http.status_code</span>
-                    <span class="span-attr-value">200</span>
+                    <span class="span-attr-key">db.name</span>
+                    <span class="span-attr-value">inventory_db</span>
                   </div>
                   <div class="span-attr-row">
                     <span class="span-attr-key">net.peer.name</span>
-                    <span class="span-attr-value">10.0.2.15</span>
+                    <span class="span-attr-value">mysql-primary.prod</span>
                   </div>
                   <div class="span-attr-row">
                     <span class="span-attr-key">net.peer.port</span>
-                    <span class="span-attr-value">8443</span>
+                    <span class="span-attr-value">3306</span>
                   </div>
                   <div class="span-attr-row">
-                    <span class="span-attr-key">auth.token_type</span>
-                    <span class="span-attr-value">JWT</span>
-                  </div>
-                  <div class="span-attr-row">
-                    <span class="span-attr-key">auth.user_id</span>
-                    <span class="span-attr-value">usr_7f3a2b</span>
+                    <span class="span-attr-key">db.rows_affected</span>
+                    <span class="span-attr-value">0</span>
                   </div>
                 </div>
               </div>
@@ -1361,33 +1423,55 @@
                 <div class="span-attr-table">
                   <div class="span-attr-row">
                     <span class="span-attr-key">service.name</span>
-                    <span class="span-attr-value">user-auth</span>
+                    <span class="span-attr-value">inventory-svc</span>
                   </div>
                   <div class="span-attr-row">
                     <span class="span-attr-key">service.version</span>
-                    <span class="span-attr-value">2.1.0</span>
+                    <span class="span-attr-value">1.2.4</span>
                   </div>
                   <div class="span-attr-row">
                     <span class="span-attr-key">host.name</span>
-                    <span class="span-attr-value">auth-pod-5c8f9</span>
+                    <span class="span-attr-value">inv-pod-3k2m8</span>
                   </div>
                   <div class="span-attr-row">
-                    <span class="span-attr-key">k8s.namespace</span>
-                    <span class="span-attr-value">production</span>
+                    <span class="span-attr-key">telemetry.sdk</span>
+                    <span class="span-attr-value">opentelemetry-java 1.32.0</span>
                   </div>
                 </div>
               </div>
-              <!-- Events Section -->
+              <!-- Error Events Section -->
+              <div class="span-attr-section">
+                <div class="span-attr-section-title" style="color:var(--accent-red)"><i class="fas fa-exclamation-circle"></i> Exception</div>
+                <div class="span-attr-table">
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">exception.type</span>
+                    <span class="span-attr-value" style="color:var(--accent-red)">QueryTimeoutException</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">exception.message</span>
+                    <span class="span-attr-value span-attr-value--truncated" onclick="toggleAttrExpand(this)">Query execution exceeded timeout of 500ms: SELECT s.*, p.name FROM stock s JOIN products p...</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key">exception.stacktrace</span>
+                    <span class="span-attr-value span-attr-value--truncated" onclick="toggleAttrExpand(this)">com.mysql.jdbc.QueryTimeoutException: Query execution exceeded timeout\n    at com.mysql.jdbc.StatementImpl.execute(StatementImpl.java:842)\n    at com.zaxxer.hikari.pool.ProxyStatement.execute(ProxyStatement.java:94)\n    at com.acme.inventory.repository.StockRepository.findAvailable(StockRepository.java:67)\n    ...</span>
+                  </div>
+                </div>
+              </div>
+              <!-- Events Timeline -->
               <div class="span-attr-section">
                 <div class="span-attr-section-title"><i class="fas fa-bolt"></i> Events</div>
                 <div class="span-attr-table">
                   <div class="span-attr-row">
-                    <span class="span-attr-key" style="color:var(--text-tertiary)">10:23:45.012</span>
-                    <span class="span-attr-value">Token validation started</span>
+                    <span class="span-attr-key" style="color:var(--text-tertiary)">+0ms</span>
+                    <span class="span-attr-value">Query started</span>
                   </div>
                   <div class="span-attr-row">
-                    <span class="span-attr-key" style="color:var(--text-tertiary)">10:23:45.046</span>
-                    <span class="span-attr-value">Token validated successfully</span>
+                    <span class="span-attr-key" style="color:var(--text-tertiary)">+502ms</span>
+                    <span class="span-attr-value" style="color:var(--accent-red)">QueryTimeoutException thrown</span>
+                  </div>
+                  <div class="span-attr-row">
+                    <span class="span-attr-key" style="color:var(--text-tertiary)">+780ms</span>
+                    <span class="span-attr-value">Connection returned to pool</span>
                   </div>
                 </div>
               </div>
@@ -3094,8 +3178,8 @@ function openTraceDrawer(rowEl, traceId) {
   document.querySelectorAll('.trace-row').forEach(r => r.classList.remove('trace-row--selected'));
   rowEl.classList.add('trace-row--selected');
   
-  // Update drawer header info
-  document.getElementById('drawer-trace-id').textContent = traceId;
+  // Update drawer top bar info
+  document.getElementById('drawer-trace-id-v2').textContent = traceId;
   
   // Show overlay and drawer
   const overlay = document.getElementById('trace-drawer-overlay');
@@ -3105,11 +3189,10 @@ function openTraceDrawer(rowEl, traceId) {
   drawer.offsetHeight;
   drawer.classList.add('trace-drawer--open');
   
-  // Auto-select first span
-  const firstSpan = drawer.querySelector('.span-row--drawer');
+  // Auto-select first span in waterfall
+  const firstSpan = drawer.querySelector('.tw-span-row');
   if (firstSpan) {
-    drawer.querySelectorAll('.span-row--drawer').forEach(s => s.classList.remove('span-row--active'));
-    firstSpan.classList.add('span-row--active');
+    selectSpanV2(firstSpan, 0);
   }
 }
 
@@ -3121,42 +3204,46 @@ function closeTraceDrawer() {
   overlay.classList.remove('trace-drawer-overlay--open');
 }
 
-// ---- Select Span (in waterfall) ----
-function selectSpan(spanEl, spanIndex) {
-  // Update active state
-  const drawer = spanEl.closest('.trace-drawer');
-  drawer.querySelectorAll('.span-row--drawer').forEach(s => s.classList.remove('span-row--active'));
-  spanEl.classList.add('span-row--active');
+// ---- Select Span V2 (in waterfall grid) ----
+function selectSpanV2(spanEl, spanIndex) {
+  // Update active state in waterfall
+  const body = spanEl.closest('.tw-tree-body') || spanEl.parentElement;
+  body.querySelectorAll('.tw-span-row').forEach(r => r.classList.remove('tw-span-row--selected'));
+  spanEl.classList.add('tw-span-row--selected');
   
   // Mock span data for demonstration
   const spanData = [
-    { name: 'order-service (root)', service: 'order-service', duration: '1,240ms', status: 'Error', statusClass: 'badge-critical', attrs: { 'rpc.system': 'grpc', 'rpc.method': 'CreateOrder', 'rpc.grpc.status_code': '2' }, resource: { 'service.name': 'order-service', 'service.version': '3.2.1', 'host.name': 'order-pod-8a2c7', 'k8s.namespace': 'production' }, events: [{ time: '10:23:44.890', msg: 'Order creation started' }, { time: '10:23:46.130', msg: 'Order creation failed: inventory timeout' }] },
-    { name: 'POST /api/orders', service: 'order-service', duration: '1,180ms', status: 'Error', statusClass: 'badge-critical', attrs: { 'http.method': 'POST', 'http.url': '/api/orders', 'http.status_code': '500', 'http.request_content_length': '1024' }, resource: { 'service.name': 'order-service', 'service.version': '3.2.1', 'host.name': 'order-pod-8a2c7', 'k8s.namespace': 'production' }, events: [{ time: '10:23:44.892', msg: 'Request received' }, { time: '10:23:46.072', msg: 'Internal server error' }] },
-    { name: 'validateToken', service: 'user-auth', duration: '34ms', status: 'OK', statusClass: 'badge-healthy', attrs: { 'http.method': 'POST', 'http.url': '/auth/validate', 'http.status_code': '200', 'net.peer.name': '10.0.2.15', 'net.peer.port': '8443', 'auth.token_type': 'JWT', 'auth.user_id': 'usr_7f3a2b' }, resource: { 'service.name': 'user-auth', 'service.version': '2.1.0', 'host.name': 'auth-pod-5c8f9', 'k8s.namespace': 'production' }, events: [{ time: '10:23:45.012', msg: 'Token validation started' }, { time: '10:23:45.046', msg: 'Token validated successfully' }] },
-    { name: 'checkStock', service: 'inventory-svc', duration: '820ms', status: 'Error', statusClass: 'badge-critical', attrs: { 'http.method': 'GET', 'http.url': '/api/stock/check', 'http.status_code': '504', 'net.peer.name': '10.0.3.22', 'inventory.sku_count': '3', 'error.type': 'TimeoutError' }, resource: { 'service.name': 'inventory-svc', 'service.version': '1.8.4', 'host.name': 'inv-pod-3d4e1', 'k8s.namespace': 'production' }, events: [{ time: '10:23:45.050', msg: 'Stock check initiated' }, { time: '10:23:45.870', msg: 'Database timeout after 780ms' }] },
-    { name: 'db.query', service: 'inventory-svc', duration: '780ms', status: 'Error', statusClass: 'badge-critical', attrs: { 'db.system': 'postgresql', 'db.statement': 'SELECT stock FROM inventory WHERE sku IN ($1,$2,$3)', 'db.name': 'inventory_db', 'db.operation': 'SELECT', 'net.peer.name': 'pg-primary.internal', 'net.peer.port': '5432' }, resource: { 'service.name': 'inventory-svc', 'service.version': '1.8.4', 'host.name': 'inv-pod-3d4e1', 'k8s.namespace': 'production' }, events: [{ time: '10:23:45.052', msg: 'Query sent to database' }, { time: '10:23:45.832', msg: 'Query timeout: connection pool exhausted' }] },
-    { name: 'charge', service: 'payment-gateway', duration: '210ms', status: 'OK', statusClass: 'badge-healthy', attrs: { 'http.method': 'POST', 'http.url': '/pay/charge', 'http.status_code': '200', 'payment.provider': 'stripe', 'payment.amount': '99.50', 'payment.currency': 'USD' }, resource: { 'service.name': 'payment-gateway', 'service.version': '4.0.2', 'host.name': 'pay-pod-9b1a6', 'k8s.namespace': 'production' }, events: [{ time: '10:23:45.900', msg: 'Payment initiated' }, { time: '10:23:46.110', msg: 'Payment confirmed' }] },
-    { name: 'sendEmail', service: 'notification-svc', duration: '45ms', status: 'OK', statusClass: 'badge-healthy', attrs: { 'messaging.system': 'smtp', 'messaging.destination': 'user@example.com', 'notification.type': 'order_confirmation', 'notification.template': 'order_v2' }, resource: { 'service.name': 'notification-svc', 'service.version': '1.3.0', 'host.name': 'notify-pod-2f7d8', 'k8s.namespace': 'production' }, events: [{ time: '10:23:46.130', msg: 'Email queued' }, { time: '10:23:46.175', msg: 'Email sent successfully' }] }
+    { name: 'POST /api/orders', service: 'order-service', duration: '1,240ms', status: 'Error', spanId: 'span_a1b2c3', attrs: { 'rpc.system': 'grpc', 'rpc.method': 'CreateOrder', 'rpc.grpc.status_code': '2', 'http.method': 'POST', 'http.url': '/api/orders', 'http.status_code': '500' }, resource: { 'service.name': 'order-service', 'service.version': '3.2.1', 'host.name': 'order-pod-7x9f2', 'telemetry.sdk': 'opentelemetry-java 1.32.0' }, exception: { type: 'InventoryTimeoutException', message: 'Upstream service timeout after 820ms', stacktrace: 'com.acme.order.OrderService.createOrder(OrderService.java:127)\n    at com.acme.order.api.OrderController.create(OrderController.java:45)\n    at sun.reflect.NativeMethodAccessorImpl.invoke0(Native)\n    ...' }, events: [{ time: '+0ms', msg: 'Order creation started' }, { time: '+850ms', msg: 'Inventory check failed: timeout' }, { time: '+1,240ms', msg: 'Order creation failed' }] },
+    { name: 'validateToken', service: 'user-auth', duration: '34ms', status: 'OK', spanId: 'span_d4e5f6', attrs: { 'http.method': 'POST', 'http.url': '/auth/validate', 'http.status_code': '200', 'auth.token_type': 'JWT', 'auth.user_id': 'usr_7f3a2b' }, resource: { 'service.name': 'user-auth', 'service.version': '2.1.0', 'host.name': 'auth-pod-5c8f9', 'telemetry.sdk': 'opentelemetry-go 1.24.0' }, exception: null, events: [{ time: '+0ms', msg: 'Token validation started' }, { time: '+34ms', msg: 'Token validated successfully' }] },
+    { name: 'checkStock', service: 'inventory-svc', duration: '820ms', status: 'Error', spanId: 'span_4f8a2c', attrs: { 'db.system': 'mysql', 'db.statement': 'SELECT s.*, p.name FROM stock s JOIN products p ON s.product_id = p.id WHERE s.warehouse_id IN (?, ?, ?) AND s.quantity > 0 ORDER BY s.updated_at DESC LIMIT 100', 'db.name': 'inventory_db', 'net.peer.name': 'mysql-primary.prod', 'net.peer.port': '3306', 'db.rows_affected': '0' }, resource: { 'service.name': 'inventory-svc', 'service.version': '1.2.4', 'host.name': 'inv-pod-3k2m8', 'telemetry.sdk': 'opentelemetry-java 1.32.0' }, exception: { type: 'QueryTimeoutException', message: 'Query execution exceeded timeout of 500ms: SELECT s.*, p.name FROM stock s JOIN products p...', stacktrace: 'com.mysql.jdbc.QueryTimeoutException: Query execution exceeded timeout\n    at com.mysql.jdbc.StatementImpl.execute(StatementImpl.java:842)\n    at com.zaxxer.hikari.pool.ProxyStatement.execute(ProxyStatement.java:94)\n    at com.acme.inventory.repository.StockRepository.findAvailable(StockRepository.java:67)\n    ...' }, events: [{ time: '+0ms', msg: 'Query started' }, { time: '+502ms', msg: 'QueryTimeoutException thrown' }, { time: '+780ms', msg: 'Connection returned to pool' }] },
+    { name: 'db.query', service: 'inventory-svc', duration: '780ms', status: 'Error', spanId: 'span_7g8h9i', attrs: { 'db.system': 'mysql', 'db.statement': 'SELECT stock FROM inventory WHERE sku IN (?, ?, ?)', 'db.name': 'inventory_db', 'db.operation': 'SELECT', 'net.peer.name': 'mysql-primary.prod', 'net.peer.port': '3306' }, resource: { 'service.name': 'inventory-svc', 'service.version': '1.2.4', 'host.name': 'inv-pod-3k2m8', 'telemetry.sdk': 'opentelemetry-java 1.32.0' }, exception: { type: 'QueryTimeoutException', message: 'Connection pool exhausted', stacktrace: 'com.mysql.jdbc.QueryTimeoutException\n    at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:155)\n    ...' }, events: [{ time: '+0ms', msg: 'Query sent to database' }, { time: '+780ms', msg: 'Query timeout: connection pool exhausted' }] },
+    { name: 'redis.get', service: 'inventory-svc', duration: '18ms', status: 'OK', spanId: 'span_j1k2l3', attrs: { 'db.system': 'redis', 'db.statement': 'GET inventory:cache:sku_001', 'db.operation': 'GET', 'net.peer.name': 'redis-cluster.prod', 'net.peer.port': '6379' }, resource: { 'service.name': 'inventory-svc', 'service.version': '1.2.4', 'host.name': 'inv-pod-3k2m8', 'telemetry.sdk': 'opentelemetry-java 1.32.0' }, exception: null, events: [{ time: '+0ms', msg: 'Cache lookup' }, { time: '+18ms', msg: 'Cache hit' }] },
+    { name: 'charge', service: 'payment-gateway', duration: '210ms', status: 'OK', spanId: 'span_m4n5o6', attrs: { 'http.method': 'POST', 'http.url': '/pay/charge', 'http.status_code': '200', 'payment.provider': 'stripe', 'payment.amount': '99.50', 'payment.currency': 'USD' }, resource: { 'service.name': 'payment-gateway', 'service.version': '4.0.2', 'host.name': 'pay-pod-9b1a6', 'telemetry.sdk': 'opentelemetry-go 1.24.0' }, exception: null, events: [{ time: '+0ms', msg: 'Payment initiated' }, { time: '+210ms', msg: 'Payment confirmed' }] },
+    { name: 'sendEmail', service: 'notification-svc', duration: '45ms', status: 'OK', spanId: 'span_p7q8r9', attrs: { 'messaging.system': 'smtp', 'messaging.destination': 'user@example.com', 'notification.type': 'order_confirmation', 'notification.template': 'order_v2' }, resource: { 'service.name': 'notification-svc', 'service.version': '1.3.0', 'host.name': 'notify-pod-2f7d8', 'telemetry.sdk': 'opentelemetry-python 1.22.0' }, exception: null, events: [{ time: '+0ms', msg: 'Email queued' }, { time: '+45ms', msg: 'Email sent successfully' }] }
   ];
   
   const data = spanData[spanIndex] || spanData[0];
   
-  // Build span detail HTML
+  // Update detail title bar
+  document.getElementById('td-span-name').textContent = data.name;
+  document.getElementById('td-span-svc').textContent = data.service;
+  document.getElementById('td-span-dur').textContent = data.duration;
+  document.getElementById('td-span-id').textContent = data.spanId;
+  
+  const statusEl = document.getElementById('td-span-status');
+  statusEl.textContent = data.status;
+  statusEl.className = 'td-detail-status ' + (data.status === 'Error' ? 'td-detail-status--err' : 'td-detail-status--ok');
+  
+  // Build detail body HTML
   let html = '';
-  // Header
-  html += '<div style="margin-bottom:var(--space-lg)">';
-  html += '<div style="font-size:0.85rem;font-weight:600;color:var(--text-primary);margin-bottom:var(--space-xs)">' + data.name + '</div>';
-  html += '<div style="display:flex;align-items:center;gap:var(--space-md);flex-wrap:wrap">';
-  html += '<span class="badge badge-info">' + data.service + '</span>';
-  const dotClass = data.status === 'OK' ? 'dot-healthy' : 'dot-critical';
-  html += '<span class="badge ' + data.statusClass + '"><span class="dot ' + dotClass + '"></span>' + data.status + '</span>';
-  html += '<span class="font-mono text-xs" style="color:var(--text-secondary)">' + data.duration + '</span>';
-  html += '</div></div>';
   
   // Attributes
   html += '<div class="span-attr-section"><div class="span-attr-section-title"><i class="fas fa-tags"></i> Attributes</div><div class="span-attr-table">';
   for (const [key, val] of Object.entries(data.attrs)) {
-    html += '<div class="span-attr-row"><span class="span-attr-key">' + key + '</span><span class="span-attr-value">' + val + '</span></div>';
+    const isLong = String(val).length > 60;
+    const cls = isLong ? ' span-attr-value--truncated' : '';
+    const onclick = isLong ? ' onclick="toggleAttrExpand(this)"' : '';
+    html += '<div class="span-attr-row"><span class="span-attr-key">' + key + '</span><span class="span-attr-value' + cls + '"' + onclick + '>' + val + '</span></div>';
   }
   html += '</div></div>';
   
@@ -3167,14 +3254,35 @@ function selectSpan(spanEl, spanIndex) {
   }
   html += '</div></div>';
   
+  // Exception (if any)
+  if (data.exception) {
+    html += '<div class="span-attr-section"><div class="span-attr-section-title" style="color:var(--accent-red)"><i class="fas fa-exclamation-circle"></i> Exception</div><div class="span-attr-table">';
+    html += '<div class="span-attr-row"><span class="span-attr-key">exception.type</span><span class="span-attr-value" style="color:var(--accent-red)">' + data.exception.type + '</span></div>';
+    html += '<div class="span-attr-row"><span class="span-attr-key">exception.message</span><span class="span-attr-value span-attr-value--truncated" onclick="toggleAttrExpand(this)">' + data.exception.message + '</span></div>';
+    html += '<div class="span-attr-row"><span class="span-attr-key">exception.stacktrace</span><span class="span-attr-value span-attr-value--truncated" onclick="toggleAttrExpand(this)">' + data.exception.stacktrace + '</span></div>';
+    html += '</div></div>';
+  }
+  
   // Events
   html += '<div class="span-attr-section"><div class="span-attr-section-title"><i class="fas fa-bolt"></i> Events</div><div class="span-attr-table">';
   for (const evt of data.events) {
-    html += '<div class="span-attr-row"><span class="span-attr-key" style="color:var(--text-tertiary)">' + evt.time + '</span><span class="span-attr-value">' + evt.msg + '</span></div>';
+    const evtColor = evt.msg.toLowerCase().includes('fail') || evt.msg.toLowerCase().includes('timeout') || evt.msg.toLowerCase().includes('error') || evt.msg.toLowerCase().includes('exception') ? 'color:var(--accent-red)' : '';
+    html += '<div class="span-attr-row"><span class="span-attr-key" style="color:var(--text-tertiary)">' + evt.time + '</span><span class="span-attr-value" style="' + evtColor + '">' + evt.msg + '</span></div>';
   }
   html += '</div></div>';
   
-  document.getElementById('span-detail-content').innerHTML = html;
+  document.getElementById('td-detail-body').innerHTML = html;
+}
+
+// ---- Toggle Attribute Value Expand/Collapse ----
+function toggleAttrExpand(el) {
+  if (el.classList.contains('span-attr-value--expanded')) {
+    el.classList.remove('span-attr-value--expanded');
+    el.classList.add('span-attr-value--truncated');
+  } else {
+    el.classList.remove('span-attr-value--truncated');
+    el.classList.add('span-attr-value--expanded');
+  }
 }
 </script>
 </body>
