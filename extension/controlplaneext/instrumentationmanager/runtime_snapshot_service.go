@@ -338,10 +338,16 @@ func (s *InstrumentationService) waitForRuntimeSnapshotResult(ctx context.Contex
 	defer ticker.Stop()
 
 	for {
+		// Check task result; only return if status is terminal (success/failed/timeout/cancelled).
+		// Agent reports RUNNING first (with empty payload), then SUCCESS with actual data.
+		// Without the terminal check, we'd return the intermediate RUNNING result prematurely.
 		if result, found, err := s.taskMgr.GetTaskResult(waitCtx, taskID); err == nil && found && result != nil {
-			return result
+			if isTerminalTaskStatus(result.Status) {
+				return result
+			}
 		}
 
+		// Fallback: check task status info for terminal state.
 		if info, err := s.taskMgr.GetTaskStatus(waitCtx, taskID); err == nil && info != nil && isTerminalTaskStatus(info.Status) {
 			if info.Result != nil {
 				return info.Result
