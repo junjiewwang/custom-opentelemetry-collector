@@ -40,6 +40,8 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/mcpext"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageexporter"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/processor/tokenauthprocessor"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver"
@@ -60,6 +62,7 @@ func components() (otelcol.Factories, error) {
 		arthastunnelext.NewFactory(),
 		adminext.NewFactory(),
 		mcpext.NewFactory(),
+		observabilitystorageext.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
@@ -87,6 +90,8 @@ func components() (otelcol.Factories, error) {
 		otlphttpexporter.NewFactory(),
 		// Prometheus Remote Write exporter for metrics
 		prometheusremotewriteexporter.NewFactory(),
+		// Custom observability storage exporter (bridges pipeline → storage extension)
+		observabilitystorageexporter.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

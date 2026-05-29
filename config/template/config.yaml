@@ -139,6 +139,44 @@ extensions:
         scheme: "https"           # URL scheme (default: https)
         key_prefix: "otel-collector-artifacts/"  # Object key prefix (optional)
 
+  # Observability Storage extension - Unified storage layer for Trace/Metric/Log
+  # Replaces separate Jaeger + Prometheus backends with direct ES write
+  observability_storage:
+    type: "elasticsearch"
+    elasticsearch:
+      addresses:
+        - "http://[[.Service.elasticsearch.host]]:[[.Service.elasticsearch.port]]"
+      username: "[[.Service.elasticsearch.username]]"
+      password: "[[.Service.elasticsearch.password]]"
+      batch_size: 5000
+      flush_interval: 3s
+      max_retries: 3
+      traces:
+        index_prefix: "otel-traces"
+        index_date_format: "2006.01.02"
+        shards: 3
+        replicas: 1
+        refresh_interval: "5s"
+      metrics:
+        index_prefix: "otel-metrics"
+        index_date_format: "2006.01.02"
+        shards: 2
+        replicas: 1
+        refresh_interval: "10s"
+      logs:
+        index_prefix: "otel-logs"
+        index_date_format: "2006.01.02"
+        shards: 3
+        replicas: 1
+        refresh_interval: "5s"
+    retention:
+      default_trace: 168h
+      default_metric: 720h
+      default_log: 336h
+      max_trace: 720h
+      max_metric: 2160h
+      max_log: 720h
+
   # Control plane extension - Agent interaction interface
   # Handles: Agent registration, heartbeat, task execution, status reporting
   controlplane:
@@ -671,7 +709,6 @@ exporters:
   otlphttp/jaeger:
     endpoint: [[ .Service.otlp_jeager.url ]]
 
-
   # Prometheus Remote Write exporter for metrics
   prometheusremotewrite:
     endpoint: [[ .Service.prometheus_server.url ]]
@@ -680,10 +717,14 @@ exporters:
     resource_to_telemetry_conversion:
       enabled: true
 
+  # Observability Storage exporter - bridges pipeline to unified storage extension
+  observability_storage:
+    storage_extension: observability_storage
+
 service:
   # Extensions load order: storage must be first (dependency for others)
   # arthas_tunnel must be before admin (admin depends on it)
-  extensions: [storage, controlplane, arthas_tunnel, admin, mcp, memory_limiter, zpages]
+  extensions: [storage, controlplane, observability_storage, arthas_tunnel, admin, mcp, memory_limiter, zpages]
   
   pipelines:
     traces:
@@ -691,7 +732,7 @@ service:
       # tokenauth processor validates token from resource attributes
       # Place it before other processors for early rejection of invalid data
       processors: [tokenauth, memory_limiter, batch]
-      exporters: [otlphttp/jaeger, spanmetrics]
+      exporters: [otlphttp/jaeger, spanmetrics, observability_storage]
     
     # Metrics from spanmetrics connector
     metrics/spanmetrics:
@@ -702,12 +743,12 @@ service:
     metrics:
       receivers: [agent_gateway]
       processors: [tokenauth, memory_limiter, batch]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheusremotewrite, observability_storage]
     
-    # logs:
-    #   receivers: [enhanced_otlp]
-    #   processors: [tokenauth, memory_limiter, batch]
-    #   exporters: [debug]
+    logs:
+      receivers: [agent_gateway]
+      processors: [tokenauth, memory_limiter, batch]
+      exporters: [observability_storage]
 
   telemetry:
     logs:
