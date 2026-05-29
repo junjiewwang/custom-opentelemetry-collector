@@ -31,6 +31,7 @@
         <div class="nav-item active" data-page="platform-dashboard"><i class="fas fa-tachometer-alt"></i>Platform Dashboard</div>
         <div class="nav-item" data-page="tenants"><i class="fas fa-building"></i>Tenants<span class="nav-badge" style="background:var(--accent-blue-dim)">3</span></div>
         <div class="nav-item" data-page="resource-usage"><i class="fas fa-chart-bar"></i>Resource Usage</div>
+        <div class="nav-item" data-page="retention-settings"><i class="fas fa-hourglass-half"></i>Retention Settings</div>
         <div class="nav-item" data-page="global-errors"><i class="fas fa-exclamation-triangle"></i>Global Errors<span class="nav-badge" style="background:var(--accent-red-dim)">12</span></div>
         <div class="nav-item" data-page="global-alerts"><i class="fas fa-bell"></i>Global Alerts<span class="nav-badge">5</span></div>
         <div class="nav-item" data-page="resources"><i class="fas fa-sitemap"></i>Resource Explorer</div>
@@ -65,6 +66,7 @@
       </div>
       <div class="nav-group" id="nav-tenant-only" data-tenant-only style="display:none">
         <div class="nav-group-label">Account</div>
+        <div class="nav-item" data-page="data-retention"><i class="fas fa-hourglass-half"></i>Data Retention</div>
         <div class="nav-item" data-page="apikeys"><i class="fas fa-key"></i>API Keys</div>
         <div class="nav-item" data-page="usage"><i class="fas fa-chart-pie"></i>Usage & Billing</div>
         <div class="nav-item" data-page="team"><i class="fas fa-users"></i>Team Members</div>
@@ -199,6 +201,8 @@
 <script src="js/views/alerts.js"></script>
 <script src="js/views/errors.js"></script>
 <script src="js/views/resources.js"></script>
+<script src="js/views/retention-settings.js"></script>
+<script src="js/views/data-retention.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

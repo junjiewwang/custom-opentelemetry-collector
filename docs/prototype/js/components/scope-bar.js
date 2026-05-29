@@ -72,7 +72,7 @@ var ScopeBar = (function() {
     }
 
     // 7. If tenant was viewing admin-only page, redirect to tenant dashboard
-    var adminOnlyPages = ['platform-dashboard', 'tenants', 'resource-usage', 'global-errors', 'global-alerts', 'resources'];
+    var adminOnlyPages = ['platform-dashboard', 'tenants', 'resource-usage', 'retention-settings', 'global-errors', 'global-alerts', 'resources'];
     var current = ViewRouter.getCurrentView();
     if (isTenant && adminOnlyPages.indexOf(current) !== -1) {
       if (window.navigateToPage) window.navigateToPage('dashboard');
