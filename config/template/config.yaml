@@ -366,21 +366,19 @@ extensions:
       # reconcile_target_expire_timeout_millis: 604800000 # Auto-expire offline targets after this duration (default: 7 days)
     
     # Observability query backend configuration
-    # Configure Jaeger and Prometheus endpoints to enable Trace/Metric/ServiceMap query features.
-    # When configured, the admin API will expose:
-    #   - GET /api/v2/observability/traces/*          - Trace search & detail (proxy to Jaeger Query API)
-    #   - GET /api/v2/observability/dependencies      - Service dependencies (proxy to Jaeger Dependencies API)
-    #   - GET /api/v2/observability/metrics/*          - Metric query (proxy to Prometheus HTTP API)
-    # These endpoints are used by the React WebUI for Traces, Metrics, and Service Map pages.
+    # Two modes:
+    #   1. Storage Extension mode (recommended): structured JSON responses via unified storage layer
+    #      Set storage_extension to use TraceReader/MetricReader/LogReader from observabilitystorageext
+    #   2. Legacy Proxy mode: raw proxying to Jaeger/Prometheus (backward compatible)
+    #      Set jaeger/prometheus endpoints to proxy raw responses
+    # When storage_extension is set, jaeger/prometheus endpoints are ignored.
     observability:
+      # Preferred: use unified storage extension for all observability queries
+      storage_extension: "observability_storage"
+      # Legacy proxy endpoints (only used when storage_extension is empty)
       jaeger:
-        # Jaeger Query HTTP API base URL
-        # This is the Jaeger Query service endpoint (NOT the collector/agent endpoint)
-        # Example: "http://jaeger-query:16686"
         endpoint: "[[ .Service.jaeger_query.url ]]"
       prometheus:
-        # Prometheus HTTP API base URL
-        # Example: "http://prometheus:9090"
         endpoint: "[[ .Service.prometheus_server.query_url ]]"
     
     # NOTE: The following component configs are only used when controlplane_extension is NOT set.
