@@ -24,6 +24,7 @@ type TimeRange struct {
 
 // TraceQuery holds parameters for searching traces.
 type TraceQuery struct {
+	AppID         string // required: identifies which app's data to query
 	ServiceName   string
 	OperationName string
 	Tags          map[string]string
@@ -101,6 +102,7 @@ type Dependency struct {
 
 // LogQuery holds parameters for searching logs.
 type LogQuery struct {
+	AppID       string            // required: identifies which app's data to query
 	Query       string            // full-text search
 	ServiceName string
 	Severity    []string          // e.g. ["ERROR", "WARN"]
@@ -150,6 +152,7 @@ type LogField struct {
 
 // LogStatsQuery holds parameters for log statistics queries.
 type LogStatsQuery struct {
+	AppID       string // required: identifies which app's data to query
 	ServiceName string
 	TimeRange   TimeRange
 	GroupBy     string // e.g. "severity", "service_name"
@@ -173,6 +176,7 @@ type TimeBucket struct {
 
 // MetricQuery holds parameters for an instant metric query.
 type MetricQuery struct {
+	AppID       string // required: identifies which app's data to query
 	MetricName  string
 	Labels      map[string]string
 	ServiceName string
@@ -181,6 +185,7 @@ type MetricQuery struct {
 
 // MetricRangeQuery holds parameters for a range metric query.
 type MetricRangeQuery struct {
+	AppID       string // required: identifies which app's data to query
 	MetricName  string
 	Labels      map[string]string
 	ServiceName string

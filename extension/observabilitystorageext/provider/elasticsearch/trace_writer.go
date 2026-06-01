@@ -46,6 +46,11 @@ func (w *TraceWriter) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 		rs := resourceSpans.At(i)
 		resource := extractResourceAttributes(rs.Resource())
 		serviceName := getServiceName(rs.Resource())
+		appID := getAppID(rs.Resource())
+
+		if appID == "" {
+			return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write traces without app-level data isolation")
+		}
 
 		scopeSpans := rs.ScopeSpans()
 		for j := 0; j < scopeSpans.Len(); j++ {
@@ -54,7 +59,8 @@ func (w *TraceWriter) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 			for k := 0; k < spans.Len(); k++ {
 				span := spans.At(k)
 				doc := w.spanToDoc(span, resource, serviceName)
-				indexName := w.getIndexName(span.StartTimestamp().AsTime())
+				doc["app_id"] = appID
+				indexName := w.getIndexName(appID, span.StartTimestamp().AsTime())
 
 				if err := w.buffer.Add(indexName, doc); err != nil {
 					return fmt.Errorf("failed to buffer trace document: %w", err)
@@ -136,10 +142,12 @@ func (w *TraceWriter) spanToDoc(span ptrace.Span, resource map[string]any, servi
 	return doc
 }
 
-// getIndexName returns the date-based index name for a given timestamp.
-func (w *TraceWriter) getIndexName(t time.Time) string {
-	return fmt.Sprintf("%s-%s",
+// getIndexName returns the app-scoped, date-based index name for a given timestamp.
+// Format: {prefix}-{app_id}-{date}, e.g., "otel-traces-app001-2026.06.01"
+func (w *TraceWriter) getIndexName(appID string, t time.Time) string {
+	return fmt.Sprintf("%s-%s-%s",
 		w.config.Traces.IndexPrefix,
+		appID,
 		t.UTC().Format(w.config.Traces.IndexDateFormat),
 	)
 }

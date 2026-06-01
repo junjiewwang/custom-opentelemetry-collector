@@ -64,7 +64,14 @@ func (a *Admin) GetStatus(ctx context.Context) (map[string]any, error) {
 
 // GetIndicesStats returns statistics for observability indices.
 func (a *Admin) GetIndicesStats(ctx context.Context) (map[string]any, error) {
-	return a.client.GetIndicesStats(ctx, "otel-*")
+	// Use configured index prefixes to cover all app-scoped indices.
+	// Pattern: {prefix}-* matches both {prefix}-{appID}-{date} and legacy {prefix}-{date} formats.
+	pattern := fmt.Sprintf("%s-*,%s-*,%s-*",
+		a.config.Traces.IndexPrefix,
+		a.config.Metrics.IndexPrefix,
+		a.config.Logs.IndexPrefix,
+	)
+	return a.client.GetIndicesStats(ctx, pattern)
 }
 
 // SetRetention updates the ILM policy for the given signal type's index.
@@ -114,8 +121,11 @@ func (a *Admin) Purge(ctx context.Context, indexPrefix string, timestampField st
 }
 
 // PurgeByApp deletes documents for a specific app_id older than `before`.
+// Uses app-scoped index pattern for better performance.
 func (a *Admin) PurgeByApp(ctx context.Context, indexPrefix string, timestampField string, appID string, before time.Time) (int64, error) {
-	indexPattern := indexPrefix + "-*"
+	// Use app-scoped index pattern to limit search scope.
+	sanitizedAppID := sanitizeAppID(appID)
+	indexPattern := indexPrefix + "-" + sanitizedAppID + "-*"
 	a.logger.Info("Purging data by app",
 		zap.String("index_pattern", indexPattern),
 		zap.String("app_id", appID),
@@ -216,6 +226,7 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 					"start_time":      map[string]any{"type": "date_nanos"},
 					"end_time":        map[string]any{"type": "date_nanos"},
 					"duration_us":     map[string]any{"type": "long"},
+					"app_id":          map[string]any{"type": "keyword"},
 					"attributes":      map[string]any{"type": "object", "dynamic": true},
 					"resource": map[string]any{
 						"properties": map[string]any{

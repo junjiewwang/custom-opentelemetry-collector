@@ -33,6 +33,10 @@ func NewMetricReader(client *Client, config *Config, logger *zap.Logger) *Metric
 
 // Query executes an instant metric query, returning the latest value(s) before the given time.
 func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricResult, error) {
+	if query.AppID == "" {
+		return nil, errMissingMetricAppID
+	}
+
 	esQuery := r.buildMetricQuery(query.MetricName, query.Labels, query.ServiceName)
 
 	// For instant query, we look for the latest data point at or before query.Time.
@@ -72,7 +76,7 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric query failed: %w", err)
 	}
@@ -80,7 +84,7 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 	// Fallback: if aggregation doesn't work well with object fields,
 	// use a direct query approach.
 	if resp.Aggregations == nil || len(resp.Aggregations) == 0 {
-		return r.queryDirect(ctx, esQuery)
+		return r.queryDirect(ctx, query.AppID, esQuery)
 	}
 
 	result := &MetricResult{}
@@ -108,7 +112,7 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 }
 
 // queryDirect performs a direct search as fallback when aggregation on object fields fails.
-func (r *MetricReader) queryDirect(ctx context.Context, query map[string]any) (*MetricResult, error) {
+func (r *MetricReader) queryDirect(ctx context.Context, appID string, query map[string]any) (*MetricResult, error) {
 	searchReq := &SearchRequest{
 		Query: query,
 		Size:  100,
@@ -117,7 +121,7 @@ func (r *MetricReader) queryDirect(ctx context.Context, query map[string]any) (*
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.client.Search(ctx, r.indexPattern(appID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric direct query failed: %w", err)
 	}
@@ -131,6 +135,10 @@ func (r *MetricReader) queryDirect(ctx context.Context, query map[string]any) (*
 
 // QueryRange executes a range metric query, returning time series data.
 func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (*MetricRangeResult, error) {
+	if query.AppID == "" {
+		return nil, errMissingMetricAppID
+	}
+
 	esQuery := r.buildMetricQuery(query.MetricName, query.Labels, query.ServiceName)
 
 	// Add time range filter.
@@ -172,7 +180,7 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric range query failed: %w", err)
 	}
@@ -333,9 +341,16 @@ func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRa
 // ==================== Internal Helpers ====================
 
 // indexPattern returns the ES index pattern for metrics.
-func (r *MetricReader) indexPattern() string {
+// When appID is provided, returns an app-scoped pattern; otherwise falls back to global wildcard.
+func (r *MetricReader) indexPattern(appID ...string) string {
+	if len(appID) > 0 && appID[0] != "" {
+		return r.config.Metrics.IndexPrefix + "-" + appID[0] + "-*"
+	}
 	return r.config.Metrics.IndexPrefix + "-*"
 }
+
+// errMissingMetricAppID is returned when AppID is not provided in a metric query.
+var errMissingMetricAppID = fmt.Errorf("app_id is required for metric queries (app-level data isolation)")
 
 // buildMetricQuery constructs the ES query for metric search.
 func (r *MetricReader) buildMetricQuery(metricName string, labels map[string]string, serviceName string) map[string]any {

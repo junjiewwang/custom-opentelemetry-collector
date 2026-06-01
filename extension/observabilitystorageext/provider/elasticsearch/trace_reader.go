@@ -33,6 +33,10 @@ func NewTraceReader(client *Client, config *Config, logger *zap.Logger) *TraceRe
 
 // SearchTraces searches for traces matching the query parameters.
 func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*TraceSearchResult, error) {
+	if query.AppID == "" {
+		return nil, errMissingTraceAppID
+	}
+
 	esQuery := r.buildTraceSearchQuery(query)
 
 	limit := query.Limit
@@ -63,7 +67,7 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("trace search failed: %w", err)
 	}
@@ -79,7 +83,7 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 	}
 
 	// Step 2: Fetch all spans for the matching trace_ids.
-	traces, err := r.fetchTracesByIDs(ctx, traceIDs)
+	traces, err := r.fetchTracesByIDs(ctx, traceIDs, query.AppID)
 	if err != nil {
 		return nil, err
 	}
@@ -193,9 +197,16 @@ func (r *TraceReader) GetDependencies(ctx context.Context, timeRange TimeRange) 
 // ==================== Internal Helpers ====================
 
 // indexPattern returns the ES index pattern for traces.
-func (r *TraceReader) indexPattern() string {
+// When appID is provided, returns an app-scoped pattern; otherwise falls back to global wildcard.
+func (r *TraceReader) indexPattern(appID ...string) string {
+	if len(appID) > 0 && appID[0] != "" {
+		return r.config.Traces.IndexPrefix + "-" + appID[0] + "-*"
+	}
 	return r.config.Traces.IndexPrefix + "-*"
 }
+
+// errMissingTraceAppID is returned when AppID is not provided in a query.
+var errMissingTraceAppID = fmt.Errorf("app_id is required for trace queries (app-level data isolation)")
 
 // buildTraceSearchQuery constructs the ES query from TraceQuery parameters.
 func (r *TraceReader) buildTraceSearchQuery(query TraceQuery) map[string]any {
@@ -325,7 +336,7 @@ func (r *TraceReader) parseTraceAggregation(resp *SearchResponse, offset, limit 
 }
 
 // fetchTracesByIDs fetches all spans for the given trace IDs and assembles them into Trace objects.
-func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string) ([]Trace, error) {
+func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, appID string) ([]Trace, error) {
 	searchReq := &SearchRequest{
 		Query: map[string]any{
 			"terms": map[string]any{"trace_id": traceIDs},
@@ -337,7 +348,7 @@ func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string) (
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.client.Search(ctx, r.indexPattern(appID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("fetch traces by IDs failed: %w", err)
 	}

@@ -4,6 +4,7 @@
 package elasticsearch
 
 import (
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -45,6 +46,43 @@ func getServiceNameFromResourceLogs(res pcommon.Resource) string {
 		return val.AsString()
 	}
 	return "unknown"
+}
+
+// getAppID extracts the app ID from resource attributes.
+// Checks "app_id" first, then "app.id". Returns empty string if not found.
+func getAppID(res pcommon.Resource) string {
+	if val, ok := res.Attributes().Get("app_id"); ok {
+		if id := val.AsString(); id != "" {
+			return sanitizeAppID(id)
+		}
+	}
+	if val, ok := res.Attributes().Get("app.id"); ok {
+		if id := val.AsString(); id != "" {
+			return sanitizeAppID(id)
+		}
+	}
+	return ""
+}
+
+// sanitizeAppID makes an app ID safe for use in ES index names.
+// ES index names must be lowercase, cannot contain spaces or special characters
+// like \, /, *, ?, ", <, >, |, #, comma.
+func sanitizeAppID(id string) string {
+	id = strings.ToLower(id)
+	replacer := strings.NewReplacer(
+		" ", "-",
+		"/", "-",
+		"\\", "-",
+		"*", "-",
+		"?", "-",
+		"\"", "",
+		"<", "",
+		">", "",
+		"|", "-",
+		"#", "-",
+		",", "-",
+	)
+	return replacer.Replace(id)
 }
 
 // attributesToMap converts pcommon.Map to a Go map[string]any.

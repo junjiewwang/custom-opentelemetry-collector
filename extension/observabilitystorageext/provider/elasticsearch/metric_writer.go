@@ -46,6 +46,11 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 		rm := resourceMetrics.At(i)
 		resource := extractResourceAttributes(rm.Resource())
 		serviceName := getServiceNameFromResource(rm.Resource())
+		appID := getAppID(rm.Resource())
+
+		if appID == "" {
+			return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write metrics without app-level data isolation")
+		}
 
 		scopeMetrics := rm.ScopeMetrics()
 		for j := 0; j < scopeMetrics.Len(); j++ {
@@ -55,12 +60,13 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 				metric := metrics.At(k)
 				docs := w.metricToDocs(metric, resource, serviceName)
 			for _, doc := range docs {
+				doc["app_id"] = appID
 				ts, _ := doc["@timestamp"].(string)
 				t, _ := time.Parse(esTimestampFormat, ts)
 				if t.IsZero() {
 					t = time.Now()
 				}
-					indexName := w.getIndexName(t)
+					indexName := w.getIndexName(appID, t)
 					if err := w.buffer.Add(indexName, doc); err != nil {
 						return fmt.Errorf("failed to buffer metric document: %w", err)
 					}
@@ -118,9 +124,6 @@ func (w *MetricWriter) gaugeToDoc(metric pmetric.Metric, resource map[string]any
 		case pmetric.NumberDataPointValueTypeInt:
 			doc["value"] = float64(dp.IntValue())
 		}
-		if appID, ok := resource["app_id"]; ok {
-			doc["app_id"] = appID
-		}
 		docs = append(docs, doc)
 	}
 	return docs
@@ -144,9 +147,6 @@ func (w *MetricWriter) sumToDoc(metric pmetric.Metric, resource map[string]any, 
 			doc["value"] = dp.DoubleValue()
 		case pmetric.NumberDataPointValueTypeInt:
 			doc["value"] = float64(dp.IntValue())
-		}
-		if appID, ok := resource["app_id"]; ok {
-			doc["app_id"] = appID
 		}
 		docs = append(docs, doc)
 	}
@@ -185,9 +185,6 @@ func (w *MetricWriter) histogramToDoc(metric pmetric.Metric, resource map[string
 				"values": bounds,
 			}
 		}
-		if appID, ok := resource["app_id"]; ok {
-			doc["app_id"] = appID
-		}
 		docs = append(docs, doc)
 	}
 	return docs
@@ -207,18 +204,17 @@ func (w *MetricWriter) summaryToDoc(metric pmetric.Metric, resource map[string]a
 			"labels":       attributesToMap(dp.Attributes()),
 			"value":        dp.Sum(),
 		}
-		if appID, ok := resource["app_id"]; ok {
-			doc["app_id"] = appID
-		}
 		docs = append(docs, doc)
 	}
 	return docs
 }
 
-// getIndexName returns the date-based index name for a given timestamp.
-func (w *MetricWriter) getIndexName(t time.Time) string {
-	return fmt.Sprintf("%s-%s",
+// getIndexName returns the app-scoped, date-based index name for a given timestamp.
+// Format: {prefix}-{app_id}-{date}, e.g., "otel-metrics-app001-2026.06.01"
+func (w *MetricWriter) getIndexName(appID string, t time.Time) string {
+	return fmt.Sprintf("%s-%s-%s",
 		w.config.Metrics.IndexPrefix,
+		appID,
 		t.UTC().Format(w.config.Metrics.IndexDateFormat),
 	)
 }

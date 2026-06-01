@@ -47,6 +47,11 @@ func (w *LogWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 		rl := resourceLogs.At(i)
 		resource := extractResourceAttributes(rl.Resource())
 		serviceName := getServiceNameFromResourceLogs(rl.Resource())
+		appID := getAppID(rl.Resource())
+
+		if appID == "" {
+			return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write logs without app-level data isolation")
+		}
 
 		scopeLogs := rl.ScopeLogs()
 		for j := 0; j < scopeLogs.Len(); j++ {
@@ -55,7 +60,8 @@ func (w *LogWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 			for k := 0; k < logRecords.Len(); k++ {
 				lr := logRecords.At(k)
 				doc := w.logRecordToDoc(lr, resource, serviceName)
-				indexName := w.getIndexName(lr.Timestamp().AsTime())
+				doc["app_id"] = appID
+				indexName := w.getIndexName(appID, lr.Timestamp().AsTime())
 
 				if err := w.buffer.Add(indexName, doc); err != nil {
 					return fmt.Errorf("failed to buffer log document: %w", err)
@@ -103,21 +109,18 @@ func (w *LogWriter) logRecordToDoc(lr plog.LogRecord, resource map[string]any, s
 		doc["attributes"] = attrs
 	}
 
-	// App ID from resource
-	if appID, ok := resource["app_id"]; ok {
-		doc["app_id"] = appID
-	}
-
 	return doc
 }
 
-// getIndexName returns the date-based index name for a given timestamp.
-func (w *LogWriter) getIndexName(t time.Time) string {
+// getIndexName returns the app-scoped, date-based index name for a given timestamp.
+// Format: {prefix}-{app_id}-{date}, e.g., "otel-logs-app001-2026.06.01"
+func (w *LogWriter) getIndexName(appID string, t time.Time) string {
 	if t.IsZero() {
 		t = time.Now()
 	}
-	return fmt.Sprintf("%s-%s",
+	return fmt.Sprintf("%s-%s-%s",
 		w.config.Logs.IndexPrefix,
+		appID,
 		t.UTC().Format(w.config.Logs.IndexDateFormat),
 	)
 }

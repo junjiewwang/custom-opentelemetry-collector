@@ -30,6 +30,10 @@ func NewLogReader(client *Client, config *Config, logger *zap.Logger) *LogReader
 
 // SearchLogs searches for logs matching the query parameters.
 func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error) {
+	if query.AppID == "" {
+		return nil, errMissingLogAppID
+	}
+
 	esQuery := r.buildLogSearchQuery(query)
 
 	limit := query.Limit
@@ -46,7 +50,7 @@ func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchR
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("log search failed: %w", err)
 	}
@@ -211,6 +215,10 @@ func (r *LogReader) ListLogFields(ctx context.Context, timeRange TimeRange) ([]L
 
 // GetLogStats returns log statistics (counts, severity distribution, etc.).
 func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogStats, error) {
+	if query.AppID == "" {
+		return nil, errMissingLogAppID
+	}
+
 	var must []map[string]any
 	must = append(must, r.timeRangeFilter(query.TimeRange))
 
@@ -248,7 +256,7 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("log stats query failed: %w", err)
 	}
@@ -315,9 +323,16 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 // ==================== Internal Helpers ====================
 
 // indexPattern returns the ES index pattern for logs.
-func (r *LogReader) indexPattern() string {
+// When appID is provided, returns an app-scoped pattern; otherwise falls back to global wildcard.
+func (r *LogReader) indexPattern(appID ...string) string {
+	if len(appID) > 0 && appID[0] != "" {
+		return r.config.Logs.IndexPrefix + "-" + appID[0] + "-*"
+	}
 	return r.config.Logs.IndexPrefix + "-*"
 }
+
+// errMissingLogAppID is returned when AppID is not provided in a log query.
+var errMissingLogAppID = fmt.Errorf("app_id is required for log queries (app-level data isolation)")
 
 // buildLogSearchQuery constructs the ES query from LogQuery parameters.
 func (r *LogReader) buildLogSearchQuery(query LogQuery) map[string]any {
