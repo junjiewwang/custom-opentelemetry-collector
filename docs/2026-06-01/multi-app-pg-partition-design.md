@@ -121,7 +121,7 @@ PG 15+ 在 10K~20K 表内性能稳定 → ✅ 安全
 ### 3.1 全局管理表 (public schema)
 
 ```sql
--- Migration 005: Multi-tenant support
+-- Migration 005: Multi-app isolation support
 
 -- App 注册表
 CREATE TABLE public.app_registry (
@@ -177,11 +177,11 @@ extension/observabilitystorageext/provider/postgresql/
 ├── schema_manager_test.go
 ├── retention_manager.go       ← 保留策略执行
 ├── retention_manager_test.go
-├── multi_tenant_writer.go     ← 多租户写入路由
-├── multi_tenant_reader.go     ← 多租户读取路由
+├── multi_app_writer.go        ← 多应用写入路由
+├── multi_app_reader.go        ← 多应用读取路由
 ├── migrations/
-│   └── 000005_multi_tenant_support.up.sql
-│   └── 000005_multi_tenant_support.down.sql
+│   └── 000005_multi_app_isolation.up.sql
+│   └── 000005_multi_app_isolation.down.sql
 └── schema_migrations/         ← App schema 内部的 migration SQL
     ├── 000001_create_tables.up.sql    (合并 001-004)
     └── 000001_create_tables.down.sql
@@ -603,10 +603,10 @@ func parsePartitionInterval(interval string) time.Duration {
 }
 ```
 
-### 4.4 MultiTenantWriter
+### 4.4 MultiAppWriter
 
 ```go
-// multi_tenant_writer.go
+// multi_app_writer.go
 
 package postgresql
 
@@ -623,8 +623,8 @@ import (
     "go.uber.org/zap"
 )
 
-// MultiTenantWriter routes write operations to the correct app schema.
-type MultiTenantWriter struct {
+// MultiAppWriter routes write operations to the correct app schema.
+type MultiAppWriter struct {
     client        *Client
     schemaManager *SchemaManager
     config        *Config
@@ -636,8 +636,8 @@ type MultiTenantWriter struct {
     logWriters    sync.Map  // schemaName -> *LogWriter
 }
 
-func NewMultiTenantWriter(client *Client, schemaManager *SchemaManager, config *Config, logger *zap.Logger) *MultiTenantWriter {
-    return &MultiTenantWriter{
+func NewMultiAppWriter(client *Client, schemaManager *SchemaManager, config *Config, logger *zap.Logger) *MultiAppWriter {
+    return &MultiAppWriter{
         client:        client,
         schemaManager: schemaManager,
         config:        config,
@@ -646,7 +646,7 @@ func NewMultiTenantWriter(client *Client, schemaManager *SchemaManager, config *
 }
 
 // WriteTraces groups traces by app_id and writes to the corresponding schema.
-func (w *MultiTenantWriter) WriteTraces(ctx context.Context, td ptrace.Traces) error {
+func (w *MultiAppWriter) WriteTraces(ctx context.Context, td ptrace.Traces) error {
     groups := groupTracesByApp(td)
     for appID, traces := range groups {
         schema, err := w.schemaManager.EnsureAppSchema(ctx, appID)
@@ -662,7 +662,7 @@ func (w *MultiTenantWriter) WriteTraces(ctx context.Context, td ptrace.Traces) e
 }
 
 // WriteMetrics groups metrics by app_id and writes to the corresponding schema.
-func (w *MultiTenantWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
+func (w *MultiAppWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
     groups := groupMetricsByApp(md)
     for appID, metrics := range groups {
         schema, err := w.schemaManager.EnsureAppSchema(ctx, appID)
@@ -678,7 +678,7 @@ func (w *MultiTenantWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics
 }
 
 // WriteLogs groups logs by app_id and writes to the corresponding schema.
-func (w *MultiTenantWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
+func (w *MultiAppWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
     groups := groupLogsByApp(ld)
     for appID, logs := range groups {
         schema, err := w.schemaManager.EnsureAppSchema(ctx, appID)
@@ -694,7 +694,7 @@ func (w *MultiTenantWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 }
 
 // FlushAll flushes all active writers across all schemas.
-func (w *MultiTenantWriter) FlushAll(ctx context.Context) error {
+func (w *MultiAppWriter) FlushAll(ctx context.Context) error {
     var errs []error
     w.traceWriters.Range(func(_, val any) bool {
         if err := val.(*TraceWriter).Flush(ctx); err != nil {
@@ -721,7 +721,7 @@ func (w *MultiTenantWriter) FlushAll(ctx context.Context) error {
 }
 
 // getTraceWriter returns (or creates) a TraceWriter for the given schema.
-func (w *MultiTenantWriter) getTraceWriter(schema string) *TraceWriter {
+func (w *MultiAppWriter) getTraceWriter(schema string) *TraceWriter {
     if writer, ok := w.traceWriters.Load(schema); ok {
         return writer.(*TraceWriter)
     }
@@ -735,7 +735,7 @@ func (w *MultiTenantWriter) getTraceWriter(schema string) *TraceWriter {
 }
 
 // getMetricWriter returns (or creates) a MetricWriter for the given schema.
-func (w *MultiTenantWriter) getMetricWriter(schema string) *MetricWriter {
+func (w *MultiAppWriter) getMetricWriter(schema string) *MetricWriter {
     if writer, ok := w.metricWriters.Load(schema); ok {
         return writer.(*MetricWriter)
     }
@@ -748,7 +748,7 @@ func (w *MultiTenantWriter) getMetricWriter(schema string) *MetricWriter {
 }
 
 // getLogWriter returns (or creates) a LogWriter for the given schema.
-func (w *MultiTenantWriter) getLogWriter(schema string) *LogWriter {
+func (w *MultiAppWriter) getLogWriter(schema string) *LogWriter {
     if writer, ok := w.logWriters.Load(schema); ok {
         return writer.(*LogWriter)
     }
@@ -824,10 +824,10 @@ func extractAppIDFromResource(resource pcommon.Resource) string {
 }
 ```
 
-### 4.5 MultiTenantReader
+### 4.5 MultiAppReader
 
 ```go
-// multi_tenant_reader.go
+// multi_app_reader.go
 
 package postgresql
 
@@ -838,16 +838,16 @@ import (
     "go.uber.org/zap"
 )
 
-// MultiTenantReader routes read operations to the correct app schema.
-type MultiTenantReader struct {
+// MultiAppReader routes read operations to the correct app schema.
+type MultiAppReader struct {
     client        *Client
     schemaManager *SchemaManager
     config        *Config
     logger        *zap.Logger
 }
 
-func NewMultiTenantReader(client *Client, schemaManager *SchemaManager, config *Config, logger *zap.Logger) *MultiTenantReader {
-    return &MultiTenantReader{
+func NewMultiAppReader(client *Client, schemaManager *SchemaManager, config *Config, logger *zap.Logger) *MultiAppReader {
+    return &MultiAppReader{
         client:        client,
         schemaManager: schemaManager,
         config:        config,
@@ -856,7 +856,7 @@ func NewMultiTenantReader(client *Client, schemaManager *SchemaManager, config *
 }
 
 // TraceReaderForApp returns a TraceReader scoped to a specific app's schema.
-func (r *MultiTenantReader) TraceReaderForApp(ctx context.Context, appID string) (*TraceReader, error) {
+func (r *MultiAppReader) TraceReaderForApp(ctx context.Context, appID string) (*TraceReader, error) {
     schema, err := r.schemaManager.ResolveSchema(ctx, appID)
     if err != nil {
         return nil, fmt.Errorf("resolve schema for app %s: %w", appID, err)
@@ -867,7 +867,7 @@ func (r *MultiTenantReader) TraceReaderForApp(ctx context.Context, appID string)
 }
 
 // MetricReaderForApp returns a MetricReader scoped to a specific app's schema.
-func (r *MultiTenantReader) MetricReaderForApp(ctx context.Context, appID string) (*MetricReader, error) {
+func (r *MultiAppReader) MetricReaderForApp(ctx context.Context, appID string) (*MetricReader, error) {
     schema, err := r.schemaManager.ResolveSchema(ctx, appID)
     if err != nil {
         return nil, fmt.Errorf("resolve schema for app %s: %w", appID, err)
@@ -878,7 +878,7 @@ func (r *MultiTenantReader) MetricReaderForApp(ctx context.Context, appID string
 }
 
 // LogReaderForApp returns a LogReader scoped to a specific app's schema.
-func (r *MultiTenantReader) LogReaderForApp(ctx context.Context, appID string) (*LogReader, error) {
+func (r *MultiAppReader) LogReaderForApp(ctx context.Context, appID string) (*LogReader, error) {
     schema, err := r.schemaManager.ResolveSchema(ctx, appID)
     if err != nil {
         return nil, fmt.Errorf("resolve schema for app %s: %w", appID, err)
@@ -889,7 +889,7 @@ func (r *MultiTenantReader) LogReaderForApp(ctx context.Context, appID string) (
 }
 
 // AdminForApp returns an Admin scoped to a specific app's schema.
-func (r *MultiTenantReader) AdminForApp(ctx context.Context, appID string) (*Admin, error) {
+func (r *MultiAppReader) AdminForApp(ctx context.Context, appID string) (*Admin, error) {
     schema, err := r.schemaManager.ResolveSchema(ctx, appID)
     if err != nil {
         return nil, fmt.Errorf("resolve schema for app %s: %w", appID, err)
@@ -907,20 +907,20 @@ func (r *MultiTenantReader) AdminForApp(ctx context.Context, appID string) (*Adm
 ```go
 // 新增到 extension/observabilitystorageext/config.go
 
-// MultiTenantConfig holds multi-tenant specific configuration.
-type MultiTenantConfig struct {
+// MultiAppConfig holds multi-app isolation specific configuration.
+type MultiAppConfig struct {
     // Enabled activates schema-per-app isolation.
     Enabled bool `mapstructure:"enabled"`
 
     // DefaultRetention is the default retention policy for new apps.
-    DefaultRetention MultiTenantRetention `mapstructure:"default_retention"`
+    DefaultRetention MultiAppRetention `mapstructure:"default_retention"`
 
     // RetentionCheckInterval is how often the retention cron runs.
     RetentionCheckInterval time.Duration `mapstructure:"retention_check_interval"`
 }
 
-// MultiTenantRetention holds per-signal default retention config.
-type MultiTenantRetention struct {
+// MultiAppRetention holds per-signal default retention config.
+type MultiAppRetention struct {
     Traces  SignalRetentionConfig `mapstructure:"traces"`
     Metrics SignalRetentionConfig `mapstructure:"metrics"`
     Logs    SignalRetentionConfig `mapstructure:"logs"`
@@ -949,8 +949,8 @@ observability_storage:
     batch_size: 5000
     flush_interval: 3s
     
-    # 多租户模式
-    multi_tenant:
+    # 多应用隔离模式
+    multi_app:
       enabled: true
       retention_check_interval: 1h  # 每小时检查过期分区
       
@@ -1001,20 +1001,20 @@ GET /api/admin/apps/payment-service/retention
 | 3 | 实现 schema 内部 migration (合并 001-004 为单文件) | 1h |
 | 4 | 单元测试 (Schema 创建/删除/幂等性) | 1h |
 
-### Phase 4.2: 写入路由 (MultiTenantWriter)
+### Phase 4.2: 写入路由 (MultiAppWriter)
 
 | 步骤 | 内容 | 预计耗时 |
 |------|------|----------|
-| 1 | 实现 `MultiTenantWriter` (groupByApp + schema routing) | 2h |
-| 2 | 改造 `Provider.Start()` 支持 multi_tenant 模式 | 1h |
+| 1 | 实现 `MultiAppWriter` (groupByApp + schema routing) | 2h |
+| 2 | 改造 `Provider.Start()` 支持 multi_app 模式 | 1h |
 | 3 | Per-schema partition 创建逻辑 | 1h |
 | 4 | 集成测试 (多 App 写入 + 验证 schema 隔离) | 1.5h |
 
-### Phase 4.3: 读取路由 (MultiTenantReader)
+### Phase 4.3: 读取路由 (MultiAppReader)
 
 | 步骤 | 内容 | 预计耗时 |
 |------|------|----------|
-| 1 | 实现 `MultiTenantReader` (ForApp 方法) | 1.5h |
+| 1 | 实现 `MultiAppReader` (ForApp 方法) | 1.5h |
 | 2 | 适配 Extension 层 GetXxxReader (增加 appID 参数) | 1h |
 | 3 | 集成测试 (跨 schema 读取验证) | 1h |
 
@@ -1031,7 +1031,7 @@ GET /api/admin/apps/payment-service/retention
 
 | 步骤 | 内容 | 预计耗时 |
 |------|------|----------|
-| 1 | `multi_tenant.enabled = false` 时完全走旧逻辑 | 0.5h |
+| 1 | `multi_app.enabled = false` 时完全走旧逻辑 | 0.5h |
 | 2 | 数据迁移工具: 从旧单表按 app_id 拆分到对应 schema | 2h |
 | 3 | Feature flag + 灰度切换 | 0.5h |
 
@@ -1059,17 +1059,17 @@ GET /api/admin/apps/payment-service/retention
 | Schema 命名 | `app_{id}` / `app_{hash}` | **app_{hash8}** | 避免特殊字符、固定长度、确定性 |
 | 分区维度 | 时间 / App+时间 / 纯 App | **Schema(App) + 时间分区** | 两层解耦，各自独立管理 |
 | 保留粒度 | 全局统一 / per-App / per-App-Signal | **per-App-Signal** | 最灵活，符合实际业务需求 |
-| 兼容模式 | 强制迁移 / Feature Flag | **Feature Flag** | `multi_tenant.enabled` 渐进式 |
+| 兼容模式 | 强制迁移 / Feature Flag | **Feature Flag** | `multi_app.enabled` 渐进式 |
 
 ---
 
 ## 9. 验收标准
 
-- [ ] `multi_tenant.enabled=true` 时，写入自动按 app_id 路由到对应 schema
+- [ ] `multi_app.enabled=true` 时，写入自动按 app_id 路由到对应 schema
 - [ ] 新 App 首次写入自动创建 schema + 表 + 分区
 - [ ] `DROP SCHEMA CASCADE` 可在 <100ms 内删除任意 App 的全量数据
 - [ ] 三种信号的保留策略独立配置、独立清理
 - [ ] Retention cron 正确 DROP 过期分区（不影响其他 App）
-- [ ] `multi_tenant.enabled=false` 时完全走旧逻辑，无 regression
+- [ ] `multi_app.enabled=false` 时完全走旧逻辑，无 regression
 - [ ] 200 App 场景下 pg_class 行数 < 10,000
 - [ ] 写入吞吐不低于单表模式的 80%（Schema 路由开销可控）
