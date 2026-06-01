@@ -191,46 +191,78 @@ func (e *Extension) newRouter() http.Handler {
 		})
 
 		// ============================================================================
-		// Observability Query Proxy (Trace + Metric)
+		// Observability Query API (Trace + Metric + Log + Admin)
+		//
+		// Two modes:
+		//   1. Storage Extension mode (preferred): structured JSON responses from ES Reader
+		//   2. Legacy Proxy mode: raw proxying to Jaeger/Prometheus (backward compatible)
 		// ============================================================================
-		if e.traceReader != nil || e.metricReader != nil {
-			r.Route("/observability", func(r chi.Router) {
-				// --- Trace 查询 (via TraceReader) ---
-				if e.traceReader != nil {
-					r.Route("/traces", func(r chi.Router) {
-						// 搜索 Traces
-						r.Get("/", e.handleSearchTraces)
-						// 获取所有 Service 列表
-						r.Get("/services", e.handleGetTraceServices)
-						// 获取指定 Service 的 Operations
-						r.Get("/services/{service}/operations", e.handleGetTraceOperations)
-						// 获取单个 Trace 详情
-						r.Get("/{traceID}", e.handleGetTrace)
-					})
+		r.Route("/observability", func(r chi.Router) {
+			// --- Trace 查询 ---
+			if e.storageTraceReader != nil {
+				// V2 mode: structured responses from storage extension
+				r.Route("/traces", func(r chi.Router) {
+					r.Get("/", e.handleSearchTracesV2)
+					r.Get("/services", e.handleGetTraceServicesV2)
+					r.Get("/services/{service}/operations", e.handleGetTraceOperationsV2)
+					r.Get("/{traceID}", e.handleGetTraceV2)
+				})
+				r.Get("/dependencies", e.handleGetDependenciesV2)
+			} else if e.traceReader != nil {
+				// Legacy mode: raw proxy to Jaeger
+				r.Route("/traces", func(r chi.Router) {
+					r.Get("/", e.handleSearchTraces)
+					r.Get("/services", e.handleGetTraceServices)
+					r.Get("/services/{service}/operations", e.handleGetTraceOperations)
+					r.Get("/{traceID}", e.handleGetTrace)
+				})
+				r.Get("/dependencies", e.handleGetDependencies)
+			}
 
-					// --- 服务依赖关系 (Dependencies，用于 Service Map) ---
-					r.Get("/dependencies", e.handleGetDependencies)
-				}
+			// --- Metric 查询 ---
+			if e.storageMetricReader != nil {
+				// V2 mode: structured responses from storage extension
+				r.Route("/metrics", func(r chi.Router) {
+					r.Get("/query", e.handleMetricQueryV2)
+					r.Get("/query_range", e.handleMetricQueryRangeV2)
+					r.Get("/names", e.handleMetricNamesV2)
+					r.Get("/labels", e.handleMetricLabelsV2)
+					r.Get("/labels/{labelName}/values", e.handleMetricLabelValuesV2)
+				})
+			} else if e.metricReader != nil {
+				// Legacy mode: raw proxy to Prometheus
+				r.Route("/metrics", func(r chi.Router) {
+					r.Get("/query", e.handleMetricQuery)
+					r.Get("/query_range", e.handleMetricQueryRange)
+					r.Get("/labels", e.handleMetricLabels)
+					r.Get("/labels/{labelName}/values", e.handleMetricLabelValues)
+					r.Get("/series", e.handleMetricSeries)
+					r.Get("/metadata", e.handleMetricMetadata)
+				})
+			}
 
-				// --- Metric 查询 (via MetricReader) ---
-				if e.metricReader != nil {
-					r.Route("/metrics", func(r chi.Router) {
-						// Instant query
-						r.Get("/query", e.handleMetricQuery)
-						// Range query
-						r.Get("/query_range", e.handleMetricQueryRange)
-						// Label 名称列表
-						r.Get("/labels", e.handleMetricLabels)
-						// Label 值列表
-						r.Get("/labels/{labelName}/values", e.handleMetricLabelValues)
-						// Series 元数据
-						r.Get("/series", e.handleMetricSeries)
-						// Metric 元数据
-						r.Get("/metadata", e.handleMetricMetadata)
-					})
-				}
-			})
-		}
+			// --- Log 查询 (仅 storage extension 模式) ---
+			if e.storageLogReader != nil {
+				r.Route("/logs", func(r chi.Router) {
+					r.Get("/", e.handleSearchLogs)
+					r.Get("/fields", e.handleListLogFields)
+					r.Get("/stats", e.handleGetLogStats)
+					r.Get("/{logID}/context", e.handleGetLogContext)
+				})
+			}
+
+			// --- Storage Admin (仅 storage extension 模式) ---
+			if e.storageAdmin != nil {
+				r.Route("/admin", func(r chi.Router) {
+					r.Get("/status", e.handleStorageStatus)
+					r.Get("/health", e.handleStorageHealth)
+					r.Get("/retention", e.handleStorageRetention)
+					r.Put("/retention/{signal}", e.handleSetStorageRetention)
+					r.Post("/purge/{signal}", e.handleStoragePurge)
+					r.Get("/disk-usage", e.handleStorageDiskUsage)
+				})
+			}
+		})
 
 		// ============================================================================
 		// Arthas Tunnel (if enabled)

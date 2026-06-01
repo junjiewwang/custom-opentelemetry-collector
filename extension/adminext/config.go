@@ -16,11 +16,20 @@ import (
 )
 
 // ObservabilityConfig defines the configuration for observability query backends.
+// When StorageExtension is set, the new unified storage Reader interfaces are used
+// (structured JSON responses). Otherwise, falls back to legacy Jaeger/Prometheus proxying.
 type ObservabilityConfig struct {
-	// Jaeger query backend configuration.
+	// StorageExtension is the name of the observability_storage extension to use for Reader interfaces.
+	// When set, TraceReader/MetricReader/LogReader are obtained from this extension.
+	// This is the recommended approach (replaces legacy Jaeger/Prometheus proxy mode).
+	StorageExtension string `mapstructure:"storage_extension"`
+
+	// Jaeger query backend configuration (legacy proxy mode).
+	// Only used when StorageExtension is not set.
 	Jaeger JaegerQueryConfig `mapstructure:"jaeger"`
 
-	// Prometheus query backend configuration.
+	// Prometheus query backend configuration (legacy proxy mode).
+	// Only used when StorageExtension is not set.
 	Prometheus PrometheusQueryConfig `mapstructure:"prometheus"`
 }
 

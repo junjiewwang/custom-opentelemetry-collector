@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
@@ -68,9 +69,16 @@ type Extension struct {
 	// WebSocket token manager for secure WS authentication
 	wsTokenMgr WSTokenManager
 
-	// Observability query interfaces (Trace + Metric)
+	// Observability query interfaces (Trace + Metric) — Legacy proxy mode
 	traceReader  observability.TraceReader
 	metricReader observability.MetricReader
+
+	// Observability storage extension — New unified mode (structured responses)
+	observabilityStorage *observabilitystorageext.ObservabilityStorage
+	storageTraceReader   observabilitystorageext.TraceReader
+	storageMetricReader  observabilitystorageext.MetricReader
+	storageLogReader     observabilitystorageext.LogReader
+	storageAdmin         observabilitystorageext.StorageAdmin
 
 	// Notification components (from controlplane extension)
 	notificationStore notification.Store
@@ -134,18 +142,10 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		}
 	}
 
-	// Initialize Observability query readers if configured
-	if e.config.Observability.Jaeger.Endpoint != "" {
-		e.traceReader = observability.NewJaegerTraceReader(e.logger, e.config.Observability.Jaeger.Endpoint)
-		e.logger.Info("Trace reader initialized (Jaeger)",
-			zap.String("endpoint", e.config.Observability.Jaeger.Endpoint),
-		)
-	}
-	if e.config.Observability.Prometheus.Endpoint != "" {
-		e.metricReader = observability.NewPrometheusMetricReader(e.logger, e.config.Observability.Prometheus.Endpoint)
-		e.logger.Info("Metric reader initialized (Prometheus)",
-			zap.String("endpoint", e.config.Observability.Prometheus.Endpoint),
-		)
+	// Initialize Observability query readers
+	if err := e.initObservability(host); err != nil {
+		e.logger.Warn("Failed to initialize observability readers", zap.Error(err))
+		// Don't fail startup — observability is optional
 	}
 
 	if err := e.initInstrumentationManager(ctx, host); err != nil {
@@ -492,6 +492,50 @@ func (e *Extension) GetArthasTunnel() arthastunnelext.ArthasTunnel {
 	return e.arthasTunnel
 }
 
+// initObservability initializes observability readers from either the unified storage extension
+// (preferred) or legacy proxy mode (Jaeger/Prometheus endpoints).
+func (e *Extension) initObservability(host component.Host) error {
+	// Preferred: use observability_storage extension for structured Reader interfaces
+	if e.config.Observability.StorageExtension != "" {
+		storageType := component.MustNewType(e.config.Observability.StorageExtension)
+		for id, ext := range host.GetExtensions() {
+			if id.Type() == storageType {
+				if storage, ok := ext.(*observabilitystorageext.ObservabilityStorage); ok {
+					e.observabilityStorage = storage
+					e.storageTraceReader = storage.GetTraceReader()
+					e.storageMetricReader = storage.GetMetricReader()
+					e.storageLogReader = storage.GetLogReader()
+					e.storageAdmin = storage.GetStorageAdmin()
+					e.logger.Info("Observability readers initialized from storage extension",
+						zap.String("extension", e.config.Observability.StorageExtension),
+						zap.Bool("trace_reader", e.storageTraceReader != nil),
+						zap.Bool("metric_reader", e.storageMetricReader != nil),
+						zap.Bool("log_reader", e.storageLogReader != nil),
+						zap.Bool("admin", e.storageAdmin != nil),
+					)
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("observability storage extension %q not found", e.config.Observability.StorageExtension)
+	}
+
+	// Fallback: legacy proxy mode (Jaeger + Prometheus)
+	if e.config.Observability.Jaeger.Endpoint != "" {
+		e.traceReader = observability.NewJaegerTraceReader(e.logger, e.config.Observability.Jaeger.Endpoint)
+		e.logger.Info("Trace reader initialized (Jaeger legacy proxy)",
+			zap.String("endpoint", e.config.Observability.Jaeger.Endpoint),
+		)
+	}
+	if e.config.Observability.Prometheus.Endpoint != "" {
+		e.metricReader = observability.NewPrometheusMetricReader(e.logger, e.config.Observability.Prometheus.Endpoint)
+		e.logger.Info("Metric reader initialized (Prometheus legacy proxy)",
+			zap.String("endpoint", e.config.Observability.Prometheus.Endpoint),
+		)
+	}
+	return nil
+}
+
 // Dependencies implements extensioncapabilities.Dependent.
 // This ensures the storage extension and controlplane extension are started before this extension.
 func (e *Extension) Dependencies() []component.ID {
@@ -508,6 +552,11 @@ func (e *Extension) Dependencies() []component.ID {
 	// If using arthas tunnel extension, depend on it
 	if e.config.ArthasTunnelExtension != "" {
 		deps = append(deps, component.MustNewID(e.config.ArthasTunnelExtension))
+	}
+
+	// If using observability storage extension, depend on it
+	if e.config.Observability.StorageExtension != "" {
+		deps = append(deps, component.MustNewID(e.config.Observability.StorageExtension))
 	}
 
 	return deps
