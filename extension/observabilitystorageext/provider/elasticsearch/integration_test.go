@@ -903,3 +903,171 @@ func truncate(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
+
+// ==================== Admin Tests ====================
+
+func TestIntegration_Admin_SetRetention(t *testing.T) {
+	client, cfg := setupTestClient(t)
+	logger := zaptest.NewLogger(t)
+	ctx := context.Background()
+
+	admin := NewAdmin(client, cfg, logger)
+
+	// InitSchema first to create ILM policies
+	err := admin.InitSchema(ctx)
+	require.NoError(t, err, "InitSchema should succeed")
+
+	// SetRetention: update trace retention to 14 days
+	err = admin.SetRetention(ctx, cfg.Traces.IndexPrefix, 14*24*time.Hour)
+	require.NoError(t, err, "SetRetention should succeed for traces")
+	t.Log("✅ SetRetention(traces, 14d) succeeded")
+
+	// SetRetention: update metric retention to 60 days
+	err = admin.SetRetention(ctx, cfg.Metrics.IndexPrefix, 60*24*time.Hour)
+	require.NoError(t, err, "SetRetention should succeed for metrics")
+	t.Log("✅ SetRetention(metrics, 60d) succeeded")
+
+	// SetRetention: update log retention to 7 days
+	err = admin.SetRetention(ctx, cfg.Logs.IndexPrefix, 7*24*time.Hour)
+	require.NoError(t, err, "SetRetention should succeed for logs")
+	t.Log("✅ SetRetention(logs, 7d) succeeded")
+
+	// Invalid retention should fail
+	err = admin.SetRetention(ctx, cfg.Traces.IndexPrefix, -1*time.Hour)
+	assert.Error(t, err, "SetRetention with negative duration should fail")
+	t.Log("✅ SetRetention(negative duration) correctly rejected")
+}
+
+func TestIntegration_Admin_Purge(t *testing.T) {
+	client, cfg := setupTestClient(t)
+	logger := zaptest.NewLogger(t)
+	ctx := context.Background()
+
+	// Clean up first
+	indexPrefix := envOrDefault("ES_INDEX_PREFIX", "test-otel")
+	_ = client.DeleteIndicesByPattern(ctx, indexPrefix+"-traces-*")
+
+	admin := NewAdmin(client, cfg, logger)
+	err := admin.InitSchema(ctx)
+	require.NoError(t, err)
+
+	// Write some test trace data
+	writer := NewTraceWriter(client, cfg, logger)
+	td := buildTestTraces("purge-test-svc", "purge-test-app")
+	err = writer.WriteTraces(ctx, td)
+	require.NoError(t, err)
+	err = writer.Flush(ctx)
+	require.NoError(t, err)
+
+	// Wait for ES to index the data
+	err = client.RefreshIndex(ctx, cfg.Traces.IndexPrefix+"-*")
+	require.NoError(t, err)
+
+	// Count documents before purge
+	countBefore, err := client.Count(ctx, cfg.Traces.IndexPrefix+"-*", nil)
+	require.NoError(t, err)
+	t.Logf("📊 Documents before purge: %d", countBefore)
+	require.Greater(t, countBefore, int64(0), "should have written some documents")
+
+	// Purge with a future timestamp (should delete all docs)
+	futureTime := time.Now().Add(1 * time.Hour)
+	deleted, err := admin.Purge(ctx, cfg.Traces.IndexPrefix, "start_time", futureTime)
+	require.NoError(t, err)
+	t.Logf("🗑️ Purge deleted %d documents", deleted)
+	assert.Equal(t, countBefore, deleted, "Purge should delete all documents when before is in the future")
+
+	// Refresh and verify count is 0
+	_ = client.RefreshIndex(ctx, cfg.Traces.IndexPrefix+"-*")
+	countAfter, err := client.Count(ctx, cfg.Traces.IndexPrefix+"-*", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), countAfter, "all documents should be purged")
+	t.Log("✅ Purge verified: all documents deleted")
+}
+
+func TestIntegration_Admin_PurgeByApp(t *testing.T) {
+	client, cfg := setupTestClient(t)
+	logger := zaptest.NewLogger(t)
+	ctx := context.Background()
+
+	// Clean up first
+	indexPrefix := envOrDefault("ES_INDEX_PREFIX", "test-otel")
+	_ = client.DeleteIndicesByPattern(ctx, indexPrefix+"-logs-*")
+
+	admin := NewAdmin(client, cfg, logger)
+	err := admin.InitSchema(ctx)
+	require.NoError(t, err)
+
+	// Write test log data with two different app_ids
+	writer := NewLogWriter(client, cfg, logger)
+	ld1 := buildTestLogs("purge-app-svc", "app-to-purge")
+	ld2 := buildTestLogs("purge-app-svc", "app-to-keep")
+	err = writer.WriteLogs(ctx, ld1)
+	require.NoError(t, err)
+	err = writer.WriteLogs(ctx, ld2)
+	require.NoError(t, err)
+	err = writer.Flush(ctx)
+	require.NoError(t, err)
+
+	// Wait for ES to index
+	err = client.RefreshIndex(ctx, cfg.Logs.IndexPrefix+"-*")
+	require.NoError(t, err)
+
+	// Count total documents
+	countBefore, err := client.Count(ctx, cfg.Logs.IndexPrefix+"-*", nil)
+	require.NoError(t, err)
+	t.Logf("📊 Total log documents before purge: %d", countBefore)
+	require.Greater(t, countBefore, int64(0))
+
+	// Count documents for "app-to-purge"
+	appQuery := map[string]any{"term": map[string]any{"app_id": "app-to-purge"}}
+	countApp, err := client.Count(ctx, cfg.Logs.IndexPrefix+"-*", appQuery)
+	require.NoError(t, err)
+	t.Logf("📊 Documents for app-to-purge: %d", countApp)
+
+	// PurgeByApp: delete only "app-to-purge" data
+	futureTime := time.Now().Add(1 * time.Hour)
+	deleted, err := admin.PurgeByApp(ctx, cfg.Logs.IndexPrefix, "timestamp", "app-to-purge", futureTime)
+	require.NoError(t, err)
+	t.Logf("🗑️ PurgeByApp deleted %d documents", deleted)
+	assert.Equal(t, countApp, deleted, "should delete only app-to-purge documents")
+
+	// Verify "app-to-keep" documents still exist
+	_ = client.RefreshIndex(ctx, cfg.Logs.IndexPrefix+"-*")
+	keepQuery := map[string]any{"term": map[string]any{"app_id": "app-to-keep"}}
+	countKeep, err := client.Count(ctx, cfg.Logs.IndexPrefix+"-*", keepQuery)
+	require.NoError(t, err)
+	assert.Greater(t, countKeep, int64(0), "app-to-keep documents should still exist")
+	t.Logf("✅ PurgeByApp verified: app-to-keep still has %d documents", countKeep)
+}
+
+func TestIntegration_Admin_GetStatus(t *testing.T) {
+	client, cfg := setupTestClient(t)
+	logger := zaptest.NewLogger(t)
+	ctx := context.Background()
+
+	admin := NewAdmin(client, cfg, logger)
+	status, err := admin.GetStatus(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, status)
+
+	clusterName, _ := status["cluster_name"].(string)
+	clusterStatus, _ := status["status"].(string)
+	t.Logf("✅ GetStatus: cluster=%s, status=%s", clusterName, clusterStatus)
+	assert.Contains(t, []string{"green", "yellow", "red"}, clusterStatus)
+}
+
+func TestIntegration_Admin_GetDiskUsage(t *testing.T) {
+	client, cfg := setupTestClient(t)
+	logger := zaptest.NewLogger(t)
+	ctx := context.Background()
+
+	admin := NewAdmin(client, cfg, logger)
+
+	// Make sure we have some data
+	_ = admin.InitSchema(ctx)
+
+	stats, err := admin.GetIndicesStats(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, stats)
+	t.Logf("✅ GetIndicesStats returned data")
+}
