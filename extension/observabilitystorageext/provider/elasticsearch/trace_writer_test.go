@@ -198,8 +198,8 @@ func TestTraceWriter_GetIndexName(t *testing.T) {
 	writer := NewTraceWriter(client, cfg, zaptest.NewLogger(t))
 
 	ts := time.Date(2026, 5, 29, 15, 30, 0, 0, time.UTC)
-	indexName := writer.getIndexName(ts)
-	assert.Equal(t, "otel-traces-2026.05.29", indexName)
+	indexName := writer.getIndexName("payment-app", ts)
+	assert.Equal(t, "otel-traces-payment-app-2026.05.29", indexName)
 }
 
 func TestTraceWriter_WriteTraces_EndToEnd(t *testing.T) {
@@ -229,6 +229,7 @@ func TestTraceWriter_WriteTraces_EndToEnd(t *testing.T) {
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "payment-svc")
+	rs.Resource().Attributes().PutStr("app_id", "payment-app")
 
 	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
 	span.SetTraceID(pcommon.TraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}))
@@ -249,7 +250,7 @@ func TestTraceWriter_WriteTraces_EndToEnd(t *testing.T) {
 	var action map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &action))
 	indexAction := action["index"].(map[string]any)
-	assert.Equal(t, "otel-traces-2026.05.29", indexAction["_index"])
+	assert.Equal(t, "otel-traces-payment-app-2026.05.29", indexAction["_index"])
 
 	// Verify document line
 	var doc map[string]any
@@ -284,6 +285,7 @@ func TestTraceWriter_WriteTraces_MultipleSpans(t *testing.T) {
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "multi-svc")
+	rs.Resource().Attributes().PutStr("app_id", "multi-app")
 
 	ss := rs.ScopeSpans().AppendEmpty()
 	for i := 0; i < 3; i++ {
@@ -302,4 +304,31 @@ func TestTraceWriter_WriteTraces_MultipleSpans(t *testing.T) {
 	// Flush remaining
 	require.NoError(t, writer.Flush(context.Background()))
 	assert.Equal(t, 2, bulkCount)
+}
+
+func TestTraceWriter_WriteTraces_RejectsWithoutAppID(t *testing.T) {
+	server := newMockESServer(t, nil)
+	defer server.Close()
+
+	cfg := newTestConfig([]string{server.URL})
+	client, err := NewClient(cfg, zaptest.NewLogger(t))
+	require.NoError(t, err)
+
+	writer := NewTraceWriter(client, cfg, zaptest.NewLogger(t))
+
+	// Create trace without app_id in resource attributes
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("service.name", "payment-svc")
+	// No app_id set
+
+	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	span.SetName("process-payment")
+	span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)))
+	span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 1, 0, time.UTC)))
+
+	err = writer.WriteTraces(context.Background(), td)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_id is required")
+	assert.Contains(t, err.Error(), "app-level data isolation")
 }

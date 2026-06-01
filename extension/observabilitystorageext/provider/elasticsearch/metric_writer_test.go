@@ -55,7 +55,11 @@ func TestMetricWriter_GaugeToDoc(t *testing.T) {
 	assert.Equal(t, "gauge", doc["metric_type"])
 	assert.Equal(t, "cpu-monitor", doc["service_name"])
 	assert.Equal(t, 0.75, doc["value"])
-	assert.Equal(t, "app-001", doc["app_id"])
+
+	// app_id is set at WriteMetrics level, not in gaugeToDoc;
+	// however it is still present in the resource map
+	res := doc["resource"].(map[string]any)
+	assert.Equal(t, "app-001", res["app_id"])
 
 	labels := doc["labels"].(map[string]any)
 	assert.Equal(t, "cpu0", labels["cpu"])
@@ -221,8 +225,8 @@ func TestMetricWriter_GetIndexName(t *testing.T) {
 	writer := NewMetricWriter(client, cfg, zaptest.NewLogger(t))
 
 	ts := time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC)
-	indexName := writer.getIndexName(ts)
-	assert.Equal(t, "otel-metrics-2026.12.31", indexName)
+	indexName := writer.getIndexName("monitor-app", ts)
+	assert.Equal(t, "otel-metrics-monitor-app-2026.12.31", indexName)
 }
 
 func TestMetricWriter_WriteMetrics_EndToEnd(t *testing.T) {
@@ -252,6 +256,7 @@ func TestMetricWriter_WriteMetrics_EndToEnd(t *testing.T) {
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
 	rm.Resource().Attributes().PutStr("service.name", "test-svc")
+	rm.Resource().Attributes().PutStr("app_id", "test-app")
 
 	metric := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
 	metric.SetName("test.gauge")
@@ -272,7 +277,7 @@ func TestMetricWriter_WriteMetrics_EndToEnd(t *testing.T) {
 	var action map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &action))
 	indexAction := action["index"].(map[string]any)
-	assert.Equal(t, "otel-metrics-2026.05.29", indexAction["_index"])
+	assert.Equal(t, "otel-metrics-test-app-2026.05.29", indexAction["_index"])
 
 	var doc map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[1]), &doc))
@@ -305,6 +310,7 @@ func TestMetricWriter_MultipleDataPoints(t *testing.T) {
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
 	rm.Resource().Attributes().PutStr("service.name", "multi-dp")
+	rm.Resource().Attributes().PutStr("app_id", "multi-dp-app")
 
 	metric := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
 	metric.SetName("cpu.usage")
@@ -330,10 +336,22 @@ func TestMetricWriter_MultipleDataPoints(t *testing.T) {
 }
 
 func TestMetricWriter_AppIDExtracted(t *testing.T) {
-	server := newMockESServer(t, nil)
+	var receivedBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_bulk" {
+			body := make([]byte, r.ContentLength)
+			r.Body.Read(body)
+			receivedBody = body
+		}
+		resp := BulkResponse{Took: 5, Errors: false}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
 	defer server.Close()
 
 	cfg := newTestConfig([]string{server.URL})
+	cfg.BatchSize = 1
 	client, err := NewClient(cfg, zaptest.NewLogger(t))
 	require.NoError(t, err)
 
@@ -349,12 +367,54 @@ func TestMetricWriter_AppIDExtracted(t *testing.T) {
 	metric.SetName("test.metric")
 	metric.SetEmptyGauge()
 	dp := metric.Gauge().DataPoints().AppendEmpty()
-	dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+	dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)))
 	dp.SetDoubleValue(1.0)
 
-	resource := extractResourceAttributes(rm.Resource())
-	docs := writer.gaugeToDoc(metric, resource, "svc")
+	err = writer.WriteMetrics(context.Background(), md)
+	require.NoError(t, err)
 
-	require.Len(t, docs, 1)
-	assert.Equal(t, "my-app-123", docs[0]["app_id"])
+	// Verify app_id is set in the bulk document
+	require.NotEmpty(t, receivedBody)
+	lines := strings.Split(strings.TrimSpace(string(receivedBody)), "\n")
+	require.Len(t, lines, 2)
+
+	// Verify action line has app-scoped index name
+	var action map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &action))
+	indexAction := action["index"].(map[string]any)
+	assert.Equal(t, "otel-metrics-my-app-123-2026.05.29", indexAction["_index"])
+
+	// Verify document has app_id field
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &doc))
+	assert.Equal(t, "my-app-123", doc["app_id"])
+}
+
+func TestMetricWriter_WriteMetrics_RejectsWithoutAppID(t *testing.T) {
+	server := newMockESServer(t, nil)
+	defer server.Close()
+
+	cfg := newTestConfig([]string{server.URL})
+	client, err := NewClient(cfg, zaptest.NewLogger(t))
+	require.NoError(t, err)
+
+	writer := NewMetricWriter(client, cfg, zaptest.NewLogger(t))
+
+	// Create metric without app_id in resource attributes
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	rm.Resource().Attributes().PutStr("service.name", "test-svc")
+	// No app_id set
+
+	metric := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	metric.SetName("test.gauge")
+	metric.SetEmptyGauge()
+	dp := metric.Gauge().DataPoints().AppendEmpty()
+	dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)))
+	dp.SetDoubleValue(42.0)
+
+	err = writer.WriteMetrics(context.Background(), md)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_id is required")
+	assert.Contains(t, err.Error(), "app-level data isolation")
 }

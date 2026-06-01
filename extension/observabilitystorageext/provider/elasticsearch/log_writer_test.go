@@ -55,7 +55,11 @@ func TestLogWriter_LogRecordToDoc_BasicFields(t *testing.T) {
 	assert.Equal(t, int32(17), doc["severity_number"]) // SeverityNumberError = 17
 	assert.Equal(t, "auth-service", doc["service_name"])
 	assert.Equal(t, "User login failed: invalid credentials", doc["body"])
-	assert.Equal(t, "app-auth", doc["app_id"])
+
+	// app_id is set at WriteLogs level, not in logRecordToDoc;
+	// however it is still present in the resource map
+	res := doc["resource"].(map[string]any)
+	assert.Equal(t, "app-auth", res["app_id"])
 
 	// Trace context
 	assert.Equal(t, "0102030405060708090a0b0c0d0e0f10", doc["trace_id"])
@@ -160,8 +164,8 @@ func TestLogWriter_GetIndexName(t *testing.T) {
 	writer := NewLogWriter(client, cfg, zaptest.NewLogger(t))
 
 	ts := time.Date(2026, 1, 15, 8, 30, 0, 0, time.UTC)
-	indexName := writer.getIndexName(ts)
-	assert.Equal(t, "otel-logs-2026.01.15", indexName)
+	indexName := writer.getIndexName("auth-app", ts)
+	assert.Equal(t, "otel-logs-auth-app-2026.01.15", indexName)
 }
 
 func TestLogWriter_GetIndexName_ZeroTime(t *testing.T) {
@@ -175,8 +179,8 @@ func TestLogWriter_GetIndexName_ZeroTime(t *testing.T) {
 	writer := NewLogWriter(client, cfg, zaptest.NewLogger(t))
 
 	// Zero time should use current time (not panic)
-	indexName := writer.getIndexName(time.Time{})
-	assert.Contains(t, indexName, "otel-logs-")
+	indexName := writer.getIndexName("fallback-app", time.Time{})
+	assert.Contains(t, indexName, "otel-logs-fallback-app-")
 	// Should be today's date
 	today := time.Now().UTC().Format("2006.01.02")
 	assert.Contains(t, indexName, today)
@@ -209,6 +213,7 @@ func TestLogWriter_WriteLogs_EndToEnd(t *testing.T) {
 	ld := plog.NewLogs()
 	rl := ld.ResourceLogs().AppendEmpty()
 	rl.Resource().Attributes().PutStr("service.name", "web-server")
+	rl.Resource().Attributes().PutStr("app_id", "web-app")
 
 	lr := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
 	lr.SetTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)))
@@ -226,7 +231,7 @@ func TestLogWriter_WriteLogs_EndToEnd(t *testing.T) {
 	var action map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &action))
 	indexAction := action["index"].(map[string]any)
-	assert.Equal(t, "otel-logs-2026.05.29", indexAction["_index"])
+	assert.Equal(t, "otel-logs-web-app-2026.05.29", indexAction["_index"])
 
 	var doc map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[1]), &doc))
@@ -260,6 +265,7 @@ func TestLogWriter_WriteLogs_MultipleRecords(t *testing.T) {
 	ld := plog.NewLogs()
 	rl := ld.ResourceLogs().AppendEmpty()
 	rl.Resource().Attributes().PutStr("service.name", "multi-log")
+	rl.Resource().Attributes().PutStr("app_id", "multi-log-app")
 
 	sl := rl.ScopeLogs().AppendEmpty()
 	for i := 0; i < 5; i++ {
@@ -305,4 +311,31 @@ func TestLogWriter_ServiceNameDefault(t *testing.T) {
 
 	// Should default to "unknown"
 	assert.Equal(t, "unknown", doc["service_name"])
+}
+
+func TestLogWriter_WriteLogs_RejectsWithoutAppID(t *testing.T) {
+	server := newMockESServer(t, nil)
+	defer server.Close()
+
+	cfg := newTestConfig([]string{server.URL})
+	client, err := NewClient(cfg, zaptest.NewLogger(t))
+	require.NoError(t, err)
+
+	writer := NewLogWriter(client, cfg, zaptest.NewLogger(t))
+
+	// Create log without app_id in resource attributes
+	ld := plog.NewLogs()
+	rl := ld.ResourceLogs().AppendEmpty()
+	rl.Resource().Attributes().PutStr("service.name", "web-server")
+	// No app_id set
+
+	lr := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
+	lr.SetTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)))
+	lr.SetSeverityText("WARN")
+	lr.Body().SetStr("High memory usage detected")
+
+	err = writer.WriteLogs(context.Background(), ld)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_id is required")
+	assert.Contains(t, err.Error(), "app-level data isolation")
 }
