@@ -28,7 +28,9 @@ const MENU_GROUPS = [
     items: [
       { id: 'traces', label: 'Traces', icon: 'fas fa-route', path: '/traces' },
       { id: 'metrics', label: 'Metrics', icon: 'fas fa-chart-line', path: '/metrics' },
+      { id: 'logs', label: 'Logs', icon: 'fas fa-file-alt', path: '/logs' },
       { id: 'instrumentation', label: 'Instrumentation', icon: 'fas fa-wave-square', path: '/instrumentation' },
+      { id: 'storage', label: 'Storage', icon: 'fas fa-database', path: '/storage' },
     ],
   },
 ];

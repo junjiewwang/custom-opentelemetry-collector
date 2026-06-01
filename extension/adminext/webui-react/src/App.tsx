@@ -22,6 +22,8 @@ import InstrumentationPage from '@/pages/InstrumentationPage';
 const TracesPage = lazy(() => import('@/pages/TracesPage'));
 const TraceComparePage = lazy(() => import('@/pages/TraceComparePage'));
 const MetricsPage = lazy(() => import('@/pages/MetricsPage'));
+const LogsPage = lazy(() => import('@/pages/LogsPage'));
+const StorageAdminPage = lazy(() => import('@/pages/StorageAdminPage'));
 
 /**
  * 受保护路由 - 未认证时重定向到登录页
@@ -53,6 +55,8 @@ function ProtectedRoutes() {
           <Route path="traces/compare" element={<TraceComparePage />} />
           <Route path="traces" element={<TracesPage />} />
           <Route path="metrics" element={<MetricsPage />} />
+          <Route path="logs" element={<LogsPage />} />
+          <Route path="storage" element={<StorageAdminPage />} />
 
           {/* 兜底 - 未匹配路由重定向到 Dashboard */}
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

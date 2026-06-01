@@ -47,6 +47,24 @@ import type {
   ListInstrumentationRulesParams,
 } from '@/types/instrumentation';
 
+import type {
+  LogSearchResult,
+  LogContext,
+  LogField,
+  LogStats,
+  LogSearchParams,
+  LogStatsParams,
+} from '@/types/log';
+
+import type {
+  StorageStatus,
+  StorageHealth,
+  RetentionPolicies,
+  DiskUsage,
+  PurgeResult,
+  SignalType,
+} from '@/types/storage';
+
 interface InstrumentationRuleMutationResponse {
   success: boolean;
   message: string;
@@ -437,6 +455,91 @@ class ApiClient {
   getMetricMetadata(metric?: string): Promise<PrometheusMetadataResponse> {
     const params = metric ? `?metric=${encodeURIComponent(metric)}` : '';
     return this.request<PrometheusMetadataResponse>('GET', `/observability/metrics/metadata${params}`);
+  }
+
+  // ========================================================================
+  // Observability - Log Query (V2 — Structured)
+  // ========================================================================
+
+  /** 搜索日志 */
+  searchLogs(params: LogSearchParams): Promise<LogSearchResult> {
+    const query = new URLSearchParams();
+    if (params.query) query.set('query', params.query);
+    if (params.service) query.set('service', params.service);
+    if (params.severity) query.set('severity', params.severity);
+    if (params.traceId) query.set('traceId', params.traceId);
+    if (params.spanId) query.set('spanId', params.spanId);
+    if (params.attributes) query.set('attributes', params.attributes);
+    if (params.start) query.set('start', String(params.start));
+    if (params.end) query.set('end', String(params.end));
+    if (params.limit) query.set('limit', String(params.limit));
+    if (params.offset) query.set('offset', String(params.offset));
+    return this.request<LogSearchResult>('GET', `/observability/logs?${query.toString()}`);
+  }
+
+  /** 获取日志上下文 */
+  getLogContext(logID: string, lines: number = 10): Promise<LogContext> {
+    return this.request<LogContext>(
+      'GET',
+      `/observability/logs/${encodeURIComponent(logID)}/context?lines=${lines}`,
+    );
+  }
+
+  /** 获取可用日志字段 */
+  getLogFields(start?: number, end?: number): Promise<LogField[]> {
+    const query = new URLSearchParams();
+    if (start) query.set('start', String(start));
+    if (end) query.set('end', String(end));
+    const qs = query.toString();
+    return this.request<{ data: LogField[] }>('GET', `/observability/logs/fields${qs ? '?' + qs : ''}`)
+      .then(res => res.data || []);
+  }
+
+  /** 获取日志统计 */
+  getLogStats(params: LogStatsParams): Promise<LogStats> {
+    const query = new URLSearchParams();
+    if (params.service) query.set('service', params.service);
+    if (params.start) query.set('start', String(params.start));
+    if (params.end) query.set('end', String(params.end));
+    if (params.groupBy) query.set('groupBy', params.groupBy);
+    return this.request<LogStats>('GET', `/observability/logs/stats?${query.toString()}`);
+  }
+
+  // ========================================================================
+  // Observability - Storage Admin (V2)
+  // ========================================================================
+
+  /** 获取存储状态 */
+  getStorageStatus(): Promise<StorageStatus> {
+    return this.request<StorageStatus>('GET', '/observability/admin/status');
+  }
+
+  /** 获取存储健康状态 */
+  getStorageHealth(): Promise<StorageHealth> {
+    return this.request<StorageHealth>('GET', '/observability/admin/health');
+  }
+
+  /** 获取保留策略 */
+  getStorageRetention(): Promise<RetentionPolicies> {
+    return this.request<RetentionPolicies>('GET', '/observability/admin/retention');
+  }
+
+  /** 设置保留策略 */
+  setStorageRetention(signal: SignalType, duration: string): Promise<void> {
+    return this.request<void>('PUT', `/observability/admin/retention/${signal}`, { duration });
+  }
+
+  /** 触发数据清除 */
+  purgeStorage(signal: SignalType, before: string): Promise<PurgeResult> {
+    return this.request<PurgeResult>(
+      'POST',
+      `/observability/admin/purge/${signal}?before=${encodeURIComponent(before)}`,
+    );
+  }
+
+  /** 获取磁盘使用情况 */
+  getStorageDiskUsage(): Promise<DiskUsage> {
+    return this.request<DiskUsage>('GET', '/observability/admin/disk-usage');
   }
 }
 
