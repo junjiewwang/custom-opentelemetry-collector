@@ -5,6 +5,8 @@ package observabilitystorageext
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
 )
@@ -321,4 +323,150 @@ func convertMetricRangeResult(src *elasticsearch.MetricRangeResult) *MetricRange
 		series[i] = MetricSeries{Labels: s.Labels, Values: values}
 	}
 	return &MetricRangeResult{Data: series}
+}
+
+// ==================== Storage Admin Adapter ====================
+
+// storageAdminAdapter adapts the ES Admin to the public StorageAdmin interface.
+type storageAdminAdapter struct {
+	inner  *elasticsearch.Admin
+	config *Config
+}
+
+var _ StorageAdmin = (*storageAdminAdapter)(nil)
+
+func (a *storageAdminAdapter) GetStatus(ctx context.Context) (*StorageStatus, error) {
+	info, err := a.inner.GetStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	healthy := true
+	if status, ok := info["status"].(string); ok && status == "red" {
+		healthy = false
+	}
+	version := ""
+	if v, ok := info["cluster_name"].(string); ok {
+		version = v
+	}
+	return &StorageStatus{
+		Provider: "elasticsearch",
+		Healthy:  healthy,
+		Version:  version,
+		Details:  info,
+	}, nil
+}
+
+func (a *storageAdminAdapter) InitSchema(ctx context.Context) error {
+	return a.inner.InitSchema(ctx)
+}
+
+func (a *storageAdminAdapter) GetRetention(_ context.Context) (map[SignalType]RetentionPolicy, error) {
+	result := make(map[SignalType]RetentionPolicy)
+	if a.config != nil && a.config.Elasticsearch.Traces.Retention > 0 {
+		result[SignalTrace] = RetentionPolicy{Duration: a.config.Elasticsearch.Traces.Retention}
+	}
+	if a.config != nil && a.config.Elasticsearch.Metrics.Retention > 0 {
+		result[SignalMetric] = RetentionPolicy{Duration: a.config.Elasticsearch.Metrics.Retention}
+	}
+	if a.config != nil && a.config.Elasticsearch.Logs.Retention > 0 {
+		result[SignalLog] = RetentionPolicy{Duration: a.config.Elasticsearch.Logs.Retention}
+	}
+	return result, nil
+}
+
+func (a *storageAdminAdapter) SetRetention(ctx context.Context, signal SignalType, policy RetentionPolicy) error {
+	indexPrefix, err := a.indexPrefixForSignal(signal)
+	if err != nil {
+		return err
+	}
+	return a.inner.SetRetention(ctx, indexPrefix, policy.Duration)
+}
+
+func (a *storageAdminAdapter) Purge(ctx context.Context, signal SignalType, before time.Time) (*PurgeResult, error) {
+	indexPrefix, err := a.indexPrefixForSignal(signal)
+	if err != nil {
+		return nil, err
+	}
+	timestampField := a.timestampFieldForSignal(signal)
+
+	deleted, err := a.inner.Purge(ctx, indexPrefix, timestampField, before)
+	if err != nil {
+		return nil, err
+	}
+	return &PurgeResult{
+		DeletedCount: deleted,
+		Message:      fmt.Sprintf("Purged %d documents from %s-* before %s", deleted, indexPrefix, before.Format(time.RFC3339)),
+	}, nil
+}
+
+func (a *storageAdminAdapter) PurgeByApp(ctx context.Context, appID string, signal SignalType, before time.Time) (*PurgeResult, error) {
+	indexPrefix, err := a.indexPrefixForSignal(signal)
+	if err != nil {
+		return nil, err
+	}
+	timestampField := a.timestampFieldForSignal(signal)
+
+	deleted, err := a.inner.PurgeByApp(ctx, indexPrefix, timestampField, appID, before)
+	if err != nil {
+		return nil, err
+	}
+	return &PurgeResult{
+		DeletedCount: deleted,
+		Message:      fmt.Sprintf("Purged %d documents for app %s from %s-* before %s", deleted, appID, indexPrefix, before.Format(time.RFC3339)),
+	}, nil
+}
+
+// indexPrefixForSignal returns the ES index prefix for the given signal type.
+func (a *storageAdminAdapter) indexPrefixForSignal(signal SignalType) (string, error) {
+	if a.config == nil || a.config.Elasticsearch == nil {
+		return "", fmt.Errorf("elasticsearch config is not available")
+	}
+	switch signal {
+	case SignalTrace:
+		return a.config.Elasticsearch.Traces.IndexPrefix, nil
+	case SignalMetric:
+		return a.config.Elasticsearch.Metrics.IndexPrefix, nil
+	case SignalLog:
+		return a.config.Elasticsearch.Logs.IndexPrefix, nil
+	default:
+		return "", fmt.Errorf("unknown signal type: %s", signal)
+	}
+}
+
+// timestampFieldForSignal returns the timestamp field name used in ES documents for the given signal.
+func (a *storageAdminAdapter) timestampFieldForSignal(signal SignalType) string {
+	switch signal {
+	case SignalTrace:
+		return "start_time"
+	case SignalMetric:
+		return "@timestamp"
+	case SignalLog:
+		return "timestamp"
+	default:
+		return "@timestamp"
+	}
+}
+
+func (a *storageAdminAdapter) GetDiskUsage(ctx context.Context) (*DiskUsage, error) {
+	stats, err := a.inner.GetIndicesStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	usage := &DiskUsage{
+		BySignal: make(map[SignalType]int64),
+	}
+
+	// Parse the indices stats response
+	if all, ok := stats["_all"].(map[string]any); ok {
+		if total, ok := all["total"].(map[string]any); ok {
+			if store, ok := total["store"].(map[string]any); ok {
+				if sizeBytes, ok := store["size_in_bytes"].(float64); ok {
+					usage.UsedBytes = int64(sizeBytes)
+				}
+			}
+		}
+	}
+
+	return usage, nil
 }

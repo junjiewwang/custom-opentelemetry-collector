@@ -137,6 +137,14 @@ func (e *ObservabilityStorage) GetProvider() *elasticsearch.Provider {
 	return e.provider
 }
 
+// GetStorageAdmin returns the StorageAdmin interface.
+func (e *ObservabilityStorage) GetStorageAdmin() StorageAdmin {
+	if e.provider == nil || e.provider.Admin() == nil {
+		return nil
+	}
+	return &storageAdminAdapter{inner: e.provider.Admin(), config: e.config}
+}
+
 // GetTraceReader returns the TraceReader interface.
 func (e *ObservabilityStorage) GetTraceReader() TraceReader {
 	if e.provider == nil || e.provider.TraceReader() == nil {

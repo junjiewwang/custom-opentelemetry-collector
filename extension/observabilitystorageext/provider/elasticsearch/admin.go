@@ -67,6 +67,93 @@ func (a *Admin) GetIndicesStats(ctx context.Context) (map[string]any, error) {
 	return a.client.GetIndicesStats(ctx, "otel-*")
 }
 
+// SetRetention updates the ILM policy for the given signal type's index.
+// It modifies the delete phase min_age to the new retention duration.
+func (a *Admin) SetRetention(ctx context.Context, indexPrefix string, retention time.Duration) error {
+	if retention <= 0 {
+		return fmt.Errorf("retention must be positive, got %v", retention)
+	}
+
+	policyName := indexPrefix + "-policy"
+	a.logger.Info("Updating ILM retention policy",
+		zap.String("policy", policyName),
+		zap.Duration("retention", retention),
+	)
+
+	return a.createILMPolicy(ctx, policyName, retention)
+}
+
+// Purge deletes all documents older than `before` in the indices matching the given prefix.
+// It uses delete_by_query with a timestamp range filter.
+func (a *Admin) Purge(ctx context.Context, indexPrefix string, timestampField string, before time.Time) (int64, error) {
+	indexPattern := indexPrefix + "-*"
+	a.logger.Info("Purging data",
+		zap.String("index_pattern", indexPattern),
+		zap.String("timestamp_field", timestampField),
+		zap.Time("before", before),
+	)
+
+	query := map[string]any{
+		"range": map[string]any{
+			timestampField: map[string]any{
+				"lt": before.Format(time.RFC3339Nano),
+			},
+		},
+	}
+
+	deleted, err := a.client.DeleteByQuery(ctx, indexPattern, query)
+	if err != nil {
+		return 0, fmt.Errorf("purge delete_by_query failed: %w", err)
+	}
+
+	a.logger.Info("Purge completed",
+		zap.String("index_pattern", indexPattern),
+		zap.Int64("deleted_count", deleted),
+	)
+	return deleted, nil
+}
+
+// PurgeByApp deletes documents for a specific app_id older than `before`.
+func (a *Admin) PurgeByApp(ctx context.Context, indexPrefix string, timestampField string, appID string, before time.Time) (int64, error) {
+	indexPattern := indexPrefix + "-*"
+	a.logger.Info("Purging data by app",
+		zap.String("index_pattern", indexPattern),
+		zap.String("app_id", appID),
+		zap.Time("before", before),
+	)
+
+	query := map[string]any{
+		"bool": map[string]any{
+			"must": []map[string]any{
+				{
+					"range": map[string]any{
+						timestampField: map[string]any{
+							"lt": before.Format(time.RFC3339Nano),
+						},
+					},
+				},
+				{
+					"term": map[string]any{
+						"app_id": appID,
+					},
+				},
+			},
+		},
+	}
+
+	deleted, err := a.client.DeleteByQuery(ctx, indexPattern, query)
+	if err != nil {
+		return 0, fmt.Errorf("purge by app delete_by_query failed: %w", err)
+	}
+
+	a.logger.Info("Purge by app completed",
+		zap.String("index_pattern", indexPattern),
+		zap.String("app_id", appID),
+		zap.Int64("deleted_count", deleted),
+	)
+	return deleted, nil
+}
+
 // createILMPolicy creates an ILM policy with the given retention.
 func (a *Admin) createILMPolicy(ctx context.Context, name string, retention time.Duration) error {
 	if retention <= 0 {
