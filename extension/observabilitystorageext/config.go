@@ -17,6 +17,12 @@ type Config struct {
 	// Elasticsearch holds the ES provider configuration.
 	Elasticsearch *ElasticsearchConfig `mapstructure:"elasticsearch,omitempty"`
 
+	// PostgreSQL holds the PG provider configuration.
+	PostgreSQL *PostgreSQLConfig `mapstructure:"postgresql,omitempty"`
+
+	// Hybrid holds the Hybrid provider routing configuration.
+	Hybrid *HybridConfig `mapstructure:"hybrid,omitempty"`
+
 	// Retention holds the platform-level retention configuration.
 	Retention RetentionConfig `mapstructure:"retention"`
 }
@@ -97,7 +103,17 @@ func (cfg *Config) Validate() error {
 			return errors.New("elasticsearch config is required when type is 'elasticsearch'")
 		}
 		return cfg.Elasticsearch.Validate()
-	case "postgresql", "mongodb", "hybrid":
+	case "postgresql":
+		if cfg.PostgreSQL == nil {
+			return errors.New("postgresql config is required when type is 'postgresql'")
+		}
+		return cfg.PostgreSQL.Validate()
+	case "hybrid":
+		if cfg.Hybrid == nil {
+			return errors.New("hybrid config is required when type is 'hybrid'")
+		}
+		return cfg.Hybrid.Validate(cfg)
+	case "mongodb":
 		return fmt.Errorf("provider type %q is not yet implemented", cfg.Type)
 	case "":
 		return errors.New("type is required")
@@ -127,6 +143,12 @@ func (cfg *Config) ApplyDefaults() {
 	cfg.Retention.ApplyDefaults()
 	if cfg.Elasticsearch != nil {
 		cfg.Elasticsearch.ApplyDefaults()
+	}
+	if cfg.PostgreSQL != nil {
+		cfg.PostgreSQL.ApplyDefaults()
+	}
+	if cfg.Hybrid != nil {
+		cfg.Hybrid.ApplyDefaults()
 	}
 }
 
@@ -194,4 +216,185 @@ func createDefaultConfig() *Config {
 	}
 	cfg.ApplyDefaults()
 	return cfg
+}
+
+// ═══════════════════════════════════════════════════
+// PostgreSQL Configuration
+// ═══════════════════════════════════════════════════
+
+// PostgreSQLConfig holds the PostgreSQL provider configuration.
+type PostgreSQLConfig struct {
+	// DSN is the PostgreSQL connection string.
+	// Format: postgres://user:password@host:port/dbname?sslmode=disable
+	DSN string `mapstructure:"dsn"`
+
+	// MaxConns is the maximum number of connections in the pool.
+	MaxConns int32 `mapstructure:"max_conns"`
+
+	// MinConns is the minimum number of idle connections in the pool.
+	MinConns int32 `mapstructure:"min_conns"`
+
+	// MaxConnLifetime is the maximum amount of time a connection may be reused.
+	MaxConnLifetime time.Duration `mapstructure:"max_conn_lifetime"`
+
+	// MaxConnIdleTime is the maximum amount of time a connection may be idle.
+	MaxConnIdleTime time.Duration `mapstructure:"max_conn_idle_time"`
+
+	// BatchSize is the number of rows per COPY batch.
+	BatchSize int `mapstructure:"batch_size"`
+
+	// FlushInterval is the max time between batch flushes.
+	FlushInterval time.Duration `mapstructure:"flush_interval"`
+
+	// MaxRetries is the number of retry attempts for failed operations.
+	MaxRetries int `mapstructure:"max_retries"`
+
+	// UseTimescaleDB enables TimescaleDB hypertable features for metrics.
+	UseTimescaleDB bool `mapstructure:"use_timescaledb"`
+
+	// Traces holds trace table configuration.
+	Traces PGTableConfig `mapstructure:"traces"`
+
+	// Metrics holds metric table configuration.
+	Metrics PGTableConfig `mapstructure:"metrics"`
+
+	// Logs holds log table configuration.
+	Logs PGTableConfig `mapstructure:"logs"`
+}
+
+// PGTableConfig holds configuration for a single signal's table.
+type PGTableConfig struct {
+	// TableName is the base table name (e.g., "otel_traces").
+	TableName string `mapstructure:"table_name"`
+
+	// Retention is the data retention duration for this signal.
+	Retention time.Duration `mapstructure:"retention"`
+
+	// PartitionInterval is the interval for time-based partitioning.
+	PartitionInterval time.Duration `mapstructure:"partition_interval"`
+}
+
+// Validate checks if the PostgreSQL configuration is valid.
+func (cfg *PostgreSQLConfig) Validate() error {
+	if cfg.DSN == "" {
+		return errors.New("postgresql.dsn is required")
+	}
+	return nil
+}
+
+// ApplyDefaults sets default values for PostgreSQLConfig.
+func (cfg *PostgreSQLConfig) ApplyDefaults() {
+	if cfg.MaxConns <= 0 {
+		cfg.MaxConns = 20
+	}
+	if cfg.MinConns <= 0 {
+		cfg.MinConns = 5
+	}
+	if cfg.MaxConnLifetime <= 0 {
+		cfg.MaxConnLifetime = 30 * time.Minute
+	}
+	if cfg.MaxConnIdleTime <= 0 {
+		cfg.MaxConnIdleTime = 5 * time.Minute
+	}
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 5000
+	}
+	if cfg.FlushInterval <= 0 {
+		cfg.FlushInterval = 3 * time.Second
+	}
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = 3
+	}
+	cfg.Traces.applyDefaults("otel_traces", 24*time.Hour)
+	cfg.Metrics.applyDefaults("otel_metrics", 6*time.Hour)
+	cfg.Logs.applyDefaults("otel_logs", 24*time.Hour)
+}
+
+func (cfg *PGTableConfig) applyDefaults(tableName string, partitionInterval time.Duration) {
+	if cfg.TableName == "" {
+		cfg.TableName = tableName
+	}
+	if cfg.PartitionInterval <= 0 {
+		cfg.PartitionInterval = partitionInterval
+	}
+}
+
+// ═══════════════════════════════════════════════════
+// Hybrid Configuration
+// ═══════════════════════════════════════════════════
+
+// HybridConfig holds the routing configuration for the Hybrid provider.
+// Each signal can be routed independently to "elasticsearch" or "postgresql".
+type HybridConfig struct {
+	// Trace specifies which backend to use for traces: "elasticsearch" or "postgresql".
+	Trace string `mapstructure:"trace"`
+
+	// Metric specifies which backend to use for metrics.
+	Metric string `mapstructure:"metric"`
+
+	// Log specifies which backend to use for logs.
+	Log string `mapstructure:"log"`
+
+	// Admin specifies which backend to use for admin operations.
+	Admin string `mapstructure:"admin"`
+}
+
+// Validate checks if the HybridConfig is valid and ensures dependent provider configs exist.
+func (cfg *HybridConfig) Validate(parent *Config) error {
+	validBackends := map[string]bool{"elasticsearch": true, "postgresql": true}
+
+	routes := map[string]string{
+		"trace":  cfg.Trace,
+		"metric": cfg.Metric,
+		"log":    cfg.Log,
+		"admin":  cfg.Admin,
+	}
+	for signal, backend := range routes {
+		if !validBackends[backend] {
+			return fmt.Errorf("hybrid.%s: invalid backend %q (must be 'elasticsearch' or 'postgresql')", signal, backend)
+		}
+	}
+
+	// Check that required sub-provider configs are present
+	needsES := cfg.Trace == "elasticsearch" || cfg.Metric == "elasticsearch" ||
+		cfg.Log == "elasticsearch" || cfg.Admin == "elasticsearch"
+	needsPG := cfg.Trace == "postgresql" || cfg.Metric == "postgresql" ||
+		cfg.Log == "postgresql" || cfg.Admin == "postgresql"
+
+	if needsES && parent.Elasticsearch == nil {
+		return errors.New("hybrid routing requires elasticsearch config but 'elasticsearch' section is missing")
+	}
+	if needsPG && parent.PostgreSQL == nil {
+		return errors.New("hybrid routing requires postgresql config but 'postgresql' section is missing")
+	}
+
+	// Validate sub-provider configs
+	if needsES {
+		if err := parent.Elasticsearch.Validate(); err != nil {
+			return fmt.Errorf("hybrid: elasticsearch config invalid: %w", err)
+		}
+	}
+	if needsPG {
+		if err := parent.PostgreSQL.Validate(); err != nil {
+			return fmt.Errorf("hybrid: postgresql config invalid: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ApplyDefaults sets default values for HybridConfig.
+func (cfg *HybridConfig) ApplyDefaults() {
+	if cfg.Trace == "" {
+		cfg.Trace = "elasticsearch"
+	}
+	if cfg.Metric == "" {
+		cfg.Metric = "postgresql"
+	}
+	if cfg.Log == "" {
+		cfg.Log = "elasticsearch"
+	}
+	if cfg.Admin == "" {
+		cfg.Admin = "postgresql"
+	}
 }

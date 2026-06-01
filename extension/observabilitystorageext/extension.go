@@ -15,14 +15,36 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/hybrid"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
 )
 
+// internalProvider is the internal interface that both ES and PG providers implement.
+// It decouples the extension from specific provider implementations.
+type internalProvider interface {
+	Name() string
+	Start(ctx context.Context) error
+	Shutdown(ctx context.Context) error
+	HealthCheck(ctx context.Context) (bool, string, map[string]any)
+	WriteTraces(ctx context.Context, td ptrace.Traces) error
+	WriteMetrics(ctx context.Context, md pmetric.Metrics) error
+	WriteLogs(ctx context.Context, ld plog.Logs) error
+	FlushTraces(ctx context.Context) error
+	FlushMetrics(ctx context.Context) error
+	FlushLogs(ctx context.Context) error
+}
+
 // ObservabilityStorage is the extension that manages the observability data storage provider.
-// It holds a single ES Provider instance and exposes Writer/Admin interfaces to other components.
+// It holds a provider instance and exposes Writer/Admin interfaces to other components.
 type ObservabilityStorage struct {
 	config   *Config
 	logger   *zap.Logger
-	provider *elasticsearch.Provider
+	provider internalProvider
+
+	// Concrete providers (only one is non-nil based on config.Type)
+	esProvider     *elasticsearch.Provider
+	pgProvider     *postgresql.Provider
+	hybridProvider *hybrid.Provider
 }
 
 // Ensure the extension implements the required interfaces.
@@ -133,48 +155,121 @@ func (e *ObservabilityStorage) HealthCheck(ctx context.Context) (*HealthStatus, 
 }
 
 // GetProvider returns the underlying ES provider for admin operations.
+// Deprecated: Use GetStorageAdmin/GetTraceReader/etc. instead.
 func (e *ObservabilityStorage) GetProvider() *elasticsearch.Provider {
-	return e.provider
+	return e.esProvider
 }
 
 // GetStorageAdmin returns the StorageAdmin interface.
 func (e *ObservabilityStorage) GetStorageAdmin() StorageAdmin {
-	if e.provider == nil || e.provider.Admin() == nil {
+	switch e.config.Type {
+	case "elasticsearch":
+		if e.esProvider == nil || e.esProvider.Admin() == nil {
+			return nil
+		}
+		return &storageAdminAdapter{inner: e.esProvider.Admin(), config: e.config}
+	case "postgresql":
+		if e.pgProvider == nil || e.pgProvider.Admin() == nil {
+			return nil
+		}
+		return &pgStorageAdminAdapter{inner: e.pgProvider.Admin(), config: e.config}
+	case "hybrid":
+		return e.getHybridStorageAdmin()
+	default:
 		return nil
 	}
-	return &storageAdminAdapter{inner: e.provider.Admin(), config: e.config}
 }
 
 // GetTraceReader returns the TraceReader interface.
 func (e *ObservabilityStorage) GetTraceReader() TraceReader {
-	if e.provider == nil || e.provider.TraceReader() == nil {
+	switch e.config.Type {
+	case "elasticsearch":
+		if e.esProvider == nil || e.esProvider.TraceReader() == nil {
+			return nil
+		}
+		return &traceReaderAdapter{inner: e.esProvider.TraceReader()}
+	case "postgresql":
+		if e.pgProvider == nil || e.pgProvider.TraceReader() == nil {
+			return nil
+		}
+		return &pgTraceReaderAdapter{inner: e.pgProvider.TraceReader()}
+	case "hybrid":
+		return e.getHybridTraceReader()
+	default:
 		return nil
 	}
-	return &traceReaderAdapter{inner: e.provider.TraceReader()}
 }
 
 // GetMetricReader returns the MetricReader interface.
 func (e *ObservabilityStorage) GetMetricReader() MetricReader {
-	if e.provider == nil || e.provider.MetricReader() == nil {
+	switch e.config.Type {
+	case "elasticsearch":
+		if e.esProvider == nil || e.esProvider.MetricReader() == nil {
+			return nil
+		}
+		return &metricReaderAdapter{inner: e.esProvider.MetricReader()}
+	case "postgresql":
+		if e.pgProvider == nil || e.pgProvider.MetricReader() == nil {
+			return nil
+		}
+		return &pgMetricReaderAdapter{inner: e.pgProvider.MetricReader()}
+	case "hybrid":
+		return e.getHybridMetricReader()
+	default:
 		return nil
 	}
-	return &metricReaderAdapter{inner: e.provider.MetricReader()}
 }
 
 // GetLogReader returns the LogReader interface.
 func (e *ObservabilityStorage) GetLogReader() LogReader {
-	if e.provider == nil || e.provider.LogReader() == nil {
+	switch e.config.Type {
+	case "elasticsearch":
+		if e.esProvider == nil || e.esProvider.LogReader() == nil {
+			return nil
+		}
+		return &logReaderAdapter{inner: e.esProvider.LogReader()}
+	case "postgresql":
+		if e.pgProvider == nil || e.pgProvider.LogReader() == nil {
+			return nil
+		}
+		return &pgLogReaderAdapter{inner: e.pgProvider.LogReader()}
+	case "hybrid":
+		return e.getHybridLogReader()
+	default:
 		return nil
 	}
-	return &logReaderAdapter{inner: e.provider.LogReader()}
 }
 
 // createProvider creates the appropriate provider based on configuration.
-func (e *ObservabilityStorage) createProvider() (*elasticsearch.Provider, error) {
+func (e *ObservabilityStorage) createProvider() (internalProvider, error) {
 	switch e.config.Type {
 	case "elasticsearch":
 		esCfg := e.convertESConfig()
-		return elasticsearch.NewProvider(esCfg, e.logger)
+		p, err := elasticsearch.NewProvider(esCfg, e.logger)
+		if err != nil {
+			return nil, err
+		}
+		e.esProvider = p
+		return p, nil
+	case "postgresql":
+		pgCfg := e.convertPGConfig()
+		p, err := postgresql.NewProvider(pgCfg, e.logger)
+		if err != nil {
+			return nil, err
+		}
+		e.pgProvider = p
+		return p, nil
+	case "hybrid":
+		hybridCfg := e.convertHybridConfig()
+		p, err := hybrid.NewProvider(hybridCfg, e.logger)
+		if err != nil {
+			return nil, err
+		}
+		e.hybridProvider = p
+		// Expose sub-providers for Reader/Admin access
+		e.esProvider = p.ESProvider()
+		e.pgProvider = p.PGProvider()
+		return p, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %q", e.config.Type)
 	}
@@ -214,5 +309,144 @@ func (e *ObservabilityStorage) convertESConfig() *elasticsearch.Config {
 			Retention:       src.Logs.Retention,
 			RefreshInterval: src.Logs.RefreshInterval,
 		},
+	}
+}
+
+// convertPGConfig converts the extension config to PG provider's internal config.
+func (e *ObservabilityStorage) convertPGConfig() *postgresql.Config {
+	src := e.config.PostgreSQL
+	return &postgresql.Config{
+		DSN:             src.DSN,
+		MaxConns:        src.MaxConns,
+		MinConns:        src.MinConns,
+		MaxConnLifetime: src.MaxConnLifetime,
+		MaxConnIdleTime: src.MaxConnIdleTime,
+		BatchSize:       src.BatchSize,
+		FlushInterval:   src.FlushInterval,
+		MaxRetries:      src.MaxRetries,
+		UseTimescaleDB:  src.UseTimescaleDB,
+		Traces: postgresql.TableConfig{
+			TableName:         src.Traces.TableName,
+			Retention:         src.Traces.Retention,
+			PartitionInterval: src.Traces.PartitionInterval,
+		},
+		Metrics: postgresql.TableConfig{
+			TableName:         src.Metrics.TableName,
+			Retention:         src.Metrics.Retention,
+			PartitionInterval: src.Metrics.PartitionInterval,
+		},
+		Logs: postgresql.TableConfig{
+			TableName:         src.Logs.TableName,
+			Retention:         src.Logs.Retention,
+			PartitionInterval: src.Logs.PartitionInterval,
+		},
+	}
+}
+
+// convertHybridConfig converts the extension config to Hybrid provider's internal config.
+func (e *ObservabilityStorage) convertHybridConfig() *hybrid.Config {
+	src := e.config.Hybrid
+	cfg := &hybrid.Config{
+		Trace:  src.Trace,
+		Metric: src.Metric,
+		Log:    src.Log,
+		Admin:  src.Admin,
+	}
+
+	// Attach sub-provider configs only if present
+	if e.config.Elasticsearch != nil {
+		cfg.ES = e.convertESConfig()
+	}
+	if e.config.PostgreSQL != nil {
+		cfg.PG = e.convertPGConfig()
+	}
+	return cfg
+}
+
+// ══════════════════════════════════════════════
+// Hybrid routing helpers for Reader/Admin
+// ══════════════════════════════════════════════
+
+// getHybridTraceReader returns the appropriate TraceReader based on hybrid routing.
+func (e *ObservabilityStorage) getHybridTraceReader() TraceReader {
+	if e.hybridProvider == nil {
+		return nil
+	}
+	switch e.hybridProvider.TraceBackend() {
+	case "elasticsearch":
+		if e.esProvider == nil || e.esProvider.TraceReader() == nil {
+			return nil
+		}
+		return &traceReaderAdapter{inner: e.esProvider.TraceReader()}
+	case "postgresql":
+		if e.pgProvider == nil || e.pgProvider.TraceReader() == nil {
+			return nil
+		}
+		return &pgTraceReaderAdapter{inner: e.pgProvider.TraceReader()}
+	default:
+		return nil
+	}
+}
+
+// getHybridMetricReader returns the appropriate MetricReader based on hybrid routing.
+func (e *ObservabilityStorage) getHybridMetricReader() MetricReader {
+	if e.hybridProvider == nil {
+		return nil
+	}
+	switch e.hybridProvider.MetricBackend() {
+	case "elasticsearch":
+		if e.esProvider == nil || e.esProvider.MetricReader() == nil {
+			return nil
+		}
+		return &metricReaderAdapter{inner: e.esProvider.MetricReader()}
+	case "postgresql":
+		if e.pgProvider == nil || e.pgProvider.MetricReader() == nil {
+			return nil
+		}
+		return &pgMetricReaderAdapter{inner: e.pgProvider.MetricReader()}
+	default:
+		return nil
+	}
+}
+
+// getHybridLogReader returns the appropriate LogReader based on hybrid routing.
+func (e *ObservabilityStorage) getHybridLogReader() LogReader {
+	if e.hybridProvider == nil {
+		return nil
+	}
+	switch e.hybridProvider.LogBackend() {
+	case "elasticsearch":
+		if e.esProvider == nil || e.esProvider.LogReader() == nil {
+			return nil
+		}
+		return &logReaderAdapter{inner: e.esProvider.LogReader()}
+	case "postgresql":
+		if e.pgProvider == nil || e.pgProvider.LogReader() == nil {
+			return nil
+		}
+		return &pgLogReaderAdapter{inner: e.pgProvider.LogReader()}
+	default:
+		return nil
+	}
+}
+
+// getHybridStorageAdmin returns the appropriate StorageAdmin based on hybrid routing.
+func (e *ObservabilityStorage) getHybridStorageAdmin() StorageAdmin {
+	if e.hybridProvider == nil {
+		return nil
+	}
+	switch e.hybridProvider.AdminBackend() {
+	case "elasticsearch":
+		if e.esProvider == nil || e.esProvider.Admin() == nil {
+			return nil
+		}
+		return &storageAdminAdapter{inner: e.esProvider.Admin(), config: e.config}
+	case "postgresql":
+		if e.pgProvider == nil || e.pgProvider.Admin() == nil {
+			return nil
+		}
+		return &pgStorageAdminAdapter{inner: e.pgProvider.Admin(), config: e.config}
+	default:
+		return nil
 	}
 }
