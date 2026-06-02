@@ -13,6 +13,31 @@ import (
 	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
+// StaleTaskReaperConfig configures the stale task reaper.
+type StaleTaskReaperConfig struct {
+	// Enabled controls whether the reaper is active.
+	Enabled bool `mapstructure:"enabled"`
+
+	// ScanInterval is how often the reaper scans for stale tasks.
+	// Default: 30s
+	ScanInterval time.Duration `mapstructure:"scan_interval"`
+
+	// RunningTimeout is the default timeout for a RUNNING task before being
+	// considered stale and marked as TIMEOUT. Default: 120s.
+	// If a task has its own TimeoutMillis, that value is used instead
+	// (whichever is larger).
+	RunningTimeout time.Duration `mapstructure:"running_timeout"`
+}
+
+// DefaultStaleTaskReaperConfig returns the default reaper configuration.
+func DefaultStaleTaskReaperConfig() StaleTaskReaperConfig {
+	return StaleTaskReaperConfig{
+		Enabled:        true,
+		ScanInterval:   30 * time.Second,
+		RunningTimeout: 120 * time.Second,
+	}
+}
+
 // StaleTaskReaperEngine periodically scans for stale RUNNING tasks in the
 // unified task engine and marks them as TIMEOUT. It replaces the legacy
 // StaleTaskReaper that operated directly on store.TaskStore.

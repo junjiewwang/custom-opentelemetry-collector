@@ -200,3 +200,14 @@ func (h *TaskHelper) MarkTaskInfoCancelled(info *TaskInfo) {
 func (h *TaskHelper) ErrTaskNotFound(taskID string) error {
 	return errors.New("task not found: " + taskID)
 }
+
+// isTerminal returns true if the status is a terminal state (no further transitions allowed).
+func isTerminal(status model.TaskStatus) bool {
+	switch status {
+	case model.TaskStatusSuccess, model.TaskStatusFailed,
+		model.TaskStatusTimeout, model.TaskStatusCancelled, model.TaskStatusResultTooLarge:
+		return true
+	default:
+		return false
+	}
+}

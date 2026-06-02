@@ -96,41 +96,18 @@ func (f *ComponentFactory) CreateConfigManagerWithOnDemand(cfg configmanager.Con
 }
 
 // CreateTaskManager creates the appropriate TaskManager based on config.
-// Uses the new service/store architecture for better separation of concerns.
+// All types now use the unified taskengine.Engine backend.
 //
 // Supported types:
-//   - "memory" or "": in-process task store (single node, no persistence)
-//   - "redis": Redis-backed legacy store via store.TaskStore
-//   - "engine": unified taskengine.Engine backend (recommended for new deployments)
+//   - "memory" or "": in-process MemoryStore (single node, no persistence)
+//   - "redis": Redis-backed store (production)
+//   - "engine": explicit engine mode (same as "redis" when storage is available)
 func (f *ComponentFactory) CreateTaskManager(cfg taskmanager.Config) (taskmanager.TaskManager, error) {
-	// Engine mode: use the unified taskengine.Engine as backend
-	if cfg.Type == "engine" {
-		engine, err := f.createTaskEngine(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create task engine: %w", err)
-		}
-		return taskmanager.NewTaskManagerWithEngine(f.logger, cfg, engine)
+	engine, err := f.createTaskEngine(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create task engine: %w", err)
 	}
-
-	// Legacy mode: memory or redis via store.TaskStore
-	var redisClient taskmanager.RedisClient
-
-	if cfg.Type == "redis" {
-		if f.storage == nil {
-			return nil, fmt.Errorf("storage extension required for redis task manager")
-		}
-		redisName := cfg.RedisName
-		if redisName == "" {
-			redisName = "default"
-		}
-		client, err := f.storage.GetRedis(redisName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
-		}
-		redisClient = client
-	}
-
-	return taskmanager.NewTaskManager(f.logger, cfg, redisClient)
+	return taskmanager.NewTaskManager(f.logger, cfg, engine)
 }
 
 // createTaskEngine creates a taskengine.Engine based on the TaskManager config.
