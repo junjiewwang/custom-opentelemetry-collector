@@ -2,7 +2,8 @@
 
 > 日期: 2026-06-01
 > 需求文档: `docs/2026-05-29/unified-observability-storage-design.md`
-> 状态: ✅ Phase 3 核心完成
+> 状态: ✅ Phase 3 核心完成（PG/Hybrid 代码已就绪，但按 ES-First 策略暂缓启用）
+> 策略说明: 当前优先通过 ES 验证完整链路，PG/MongoDB/Hybrid 作为后续插件扩展。详见 `next-steps-es-first-pipeline.md`
 
 ## 已完成任务
 
