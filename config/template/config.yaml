@@ -176,6 +176,50 @@ extensions:
       max_trace: 720h
       max_metric: 2160h
       max_log: 720h
+    # Data lifecycle scheduler - automatic purge of expired data
+    # When enabled, periodically scans for expired data and deletes it.
+    # Supports both single-node and distributed (multi-node cooperative) purge modes.
+    scheduler:
+      enabled: true
+      # How often to check for expired data
+      interval: 1h
+      # Preview deletions without executing (set to true for initial verification)
+      dry_run: false
+      # Storage usage alert thresholds
+      usage_warning_ratio: 0.75
+      usage_critical_ratio: 0.90
+      # Number of usage snapshots to keep for trend analysis
+      trend_buffer_size: 168
+      # ─── Distributed Purge (multi-node cooperative mode) ───
+      # When enabled, multiple collector nodes cooperate to purge expired data
+      # using the unified Task Engine for distributed coordination.
+      # Engine resolution order:
+      #   1. Share from controlplane extension (if same process and type="engine")
+      #   2. Create a local engine instance (using Redis from storage extension)
+      # Falls back to single-node mode only if Redis is completely unavailable.
+      distributed: true
+      # (Optional) Reference to controlplane extension for engine sharing.
+      # When controlplaneext is in the same process with task_manager.type="engine",
+      # the scheduler reuses its engine instance (zero extra cost).
+      # If not set or not available, a local engine is created automatically.
+      controlplane_extension: controlplane
+      # Storage extension for Redis access (required for distributed mode)
+      storage_extension: storage
+      redis_name: default
+      # Only use distributed mode when expired index count exceeds this threshold
+      distributed_threshold: 50
+      # Max concurrent delete operations per node
+      worker_concurrency: 10
+      # Max time for a single delete task before timeout
+      task_timeout: 30s
+      # Max retry attempts for failed tasks
+      max_retries: 3
+      # Max time leader waits for verification
+      verify_timeout: 2m
+      # Polling interval during verification
+      verify_poll_interval: 2s
+      # Unique node ID (auto-generated from POD_NAME/hostname if empty)
+      node_id: ""
 
   # Control plane extension - Agent interaction interface
   # Handles: Agent registration, heartbeat, task execution, status reporting
@@ -215,8 +259,13 @@ extensions:
       stats_cache_ttl: 5s
     
     # Task manager configuration
+    # Supported types:
+    #   - "memory": in-process store (single node, no persistence)
+    #   - "redis": Redis-backed legacy store (backward compatible)
+    #   - "engine": unified taskengine backend (recommended for new deployments)
+    #              Uses Redis for distributed coordination when storage extension is available.
     task_manager:
-      type: redis  # "memory" or "redis"
+      type: engine  # "memory", "redis", or "engine" (engine: unified taskengine, recommended)
       redis_name: default
       key_prefix: "otel:tasks"
       result_ttl: 24h  # TTL for task results

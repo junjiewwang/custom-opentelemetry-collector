@@ -13,6 +13,10 @@ base_images:
       amd64: "mirrors.tencent.com/tcs-infra/tceforqci_x86_go23:v1.0.0"
       arm64: "mirrors.tencent.com/tcs-infra/tceforqci_arm_go23:v1.0.0"
 
+    go_1.25: 
+        amd64:  "golang:1.25-bookworm"
+        arm64:  "golang:1.25-bookworm"
+   
 
   # 运行时镜像预设
   runtimes:
@@ -123,7 +127,7 @@ build:
   # 构建基础镜像（引用 base_images 中的预设）
   # 使用 @category.name 格式引用预设镜像
   # 示例：@builders.go_1.21 引用 base_images.builders.go_1.21
-  builder_image: "@builders.go_1.23"
+  builder_image: "@builders.go_1.25"
 
   # 运行时基础镜像（引用 base_images 中的预设）
   # 示例：@runtimes.tencentos_minimal 引用 base_images.runtimes.tencentos_minimal
