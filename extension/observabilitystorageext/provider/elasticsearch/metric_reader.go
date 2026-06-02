@@ -32,11 +32,8 @@ func NewMetricReader(client *Client, config *Config, logger *zap.Logger) *Metric
 }
 
 // Query executes an instant metric query, returning the latest value(s) before the given time.
+// AppID is optional: when empty, queries all app indices (admin mode).
 func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricResult, error) {
-	if query.AppID == "" {
-		return nil, errMissingMetricAppID
-	}
-
 	esQuery := r.buildMetricQuery(query.MetricName, query.Labels, query.ServiceName)
 
 	// For instant query, we look for the latest data point at or before query.Time.
@@ -134,11 +131,8 @@ func (r *MetricReader) queryDirect(ctx context.Context, appID string, query map[
 }
 
 // QueryRange executes a range metric query, returning time series data.
+// AppID is optional: when empty, queries all app indices (admin mode).
 func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (*MetricRangeResult, error) {
-	if query.AppID == "" {
-		return nil, errMissingMetricAppID
-	}
-
 	esQuery := r.buildMetricQuery(query.MetricName, query.Labels, query.ServiceName)
 
 	// Add time range filter.

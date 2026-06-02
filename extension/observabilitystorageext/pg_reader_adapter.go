@@ -6,6 +6,7 @@ package observabilitystorageext
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
@@ -13,7 +14,7 @@ import (
 
 // ═══════════════════════════════════════════════════
 // PostgreSQL Reader/Admin Adapters
-// Converts between PG-internal types and the public interface types.
+// Converts between PG-internal types and the public OTel-standard types.
 // ═══════════════════════════════════════════════════
 
 // --- TraceReader Adapter ---
@@ -71,7 +72,7 @@ func (a *pgTraceReaderAdapter) GetOperations(ctx context.Context, service string
 	}
 	ops := make([]Operation, len(result))
 	for i, op := range result {
-		ops[i] = Operation{Name: op.Name, SpanKind: op.SpanKind}
+		ops[i] = Operation{Name: op.Name, SpanKind: NormalizeSpanKind(op.SpanKind)}
 	}
 	return ops, nil
 }
@@ -111,9 +112,9 @@ func (a *pgMetricReaderAdapter) Query(ctx context.Context, query MetricQuery) (*
 	data := make([]MetricDataPoint, len(result.Samples))
 	for i, s := range result.Samples {
 		data[i] = MetricDataPoint{
-			Labels: s.Labels,
-			Value:  s.Value,
-			Time:   s.Timestamp,
+			Labels:       s.Labels,
+			Value:        s.Value,
+			TimeUnixNano: TimeToUnixNano(s.Timestamp),
 		}
 	}
 	return &MetricResult{Data: data}, nil
@@ -133,9 +134,12 @@ func (a *pgMetricReaderAdapter) QueryRange(ctx context.Context, query MetricRang
 	}
 	data := make([]MetricSeries, len(result.Series))
 	for i, s := range result.Series {
-		values := make([]MetricDataPoint, len(s.DataPoints))
+		values := make([]MetricTimeValue, len(s.DataPoints))
 		for j, dp := range s.DataPoints {
-			values[j] = MetricDataPoint{Time: dp.Timestamp, Value: dp.Value}
+			values[j] = MetricTimeValue{
+				TimeUnixNano: TimeToUnixNano(dp.Timestamp),
+				Value:        dp.Value,
+			}
 		}
 		data[i] = MetricSeries{Labels: s.Labels, Values: values}
 	}
@@ -181,18 +185,7 @@ func (a *pgLogReaderAdapter) SearchLogs(ctx context.Context, query LogQuery) (*L
 	}
 	logs := make([]LogRecord, len(result.Logs))
 	for i, l := range result.Logs {
-		logs[i] = LogRecord{
-			ID:             fmt.Sprintf("%d", l.ID),
-			Timestamp:      l.Timestamp,
-			Severity:       l.SeverityText,
-			SeverityNumber: int32(l.SeverityNumber),
-			Body:           l.Body,
-			ServiceName:    l.ServiceName,
-			TraceID:        l.TraceID,
-			SpanID:         l.SpanID,
-			Attributes:     l.Attributes,
-			Resource:       l.Resource,
-		}
+		logs[i] = convertPGLogRecord(l)
 	}
 	return &LogSearchResult{Logs: logs, Total: result.Total}, nil
 }
@@ -366,24 +359,32 @@ func (a *pgStorageAdminAdapter) timestampFieldForSignal(signal SignalType) strin
 	}
 }
 
-// --- Conversion helpers ---
+// --- PG Conversion helpers ---
 
 func convertPGTraceSearchResult(result *postgresql.TraceSearchResult) *TraceSearchResult {
 	traces := make([]Trace, len(result.Traces))
 	for i, t := range result.Traces {
-		traces[i] = Trace{
-			TraceID:  t.TraceID,
-			Duration: int64(t.Duration * 1000), // ms → µs
-			Spans: []Span{
-				{
-					TraceID:       t.TraceID,
-					ServiceName:   t.RootService,
-					OperationName: t.RootOperation,
-					StartTime:     t.StartTime,
-					StatusCode:    t.StatusCode,
-					DurationUS:    int64(t.Duration * 1000),
-				},
+		// Build a summary span for the root from TraceSummary
+		durationNano := strconv.FormatInt(int64(t.Duration*1000*1000), 10) // ms → ns
+		rootSpan := Span{
+			TraceID:           t.TraceID,
+			Name:              t.RootOperation,
+			Kind:              SpanKindUnspecified,
+			StartTimeUnixNano: TimeToUnixNano(t.StartTime),
+			Status: SpanStatus{
+				Code: NormalizeStatusCode(t.StatusCode),
 			},
+			ServiceName:  t.RootService,
+			DurationNano: durationNano,
+		}
+		traces[i] = Trace{
+			TraceID:         t.TraceID,
+			Spans:           []Span{rootSpan},
+			DurationNano:    durationNano,
+			SpanCount:       t.SpanCount,
+			ServiceCount:    len(t.Services),
+			RootServiceName: t.RootService,
+			RootSpanName:    t.RootOperation,
 		}
 	}
 	return &TraceSearchResult{Traces: traces, Total: result.Total}
@@ -391,37 +392,119 @@ func convertPGTraceSearchResult(result *postgresql.TraceSearchResult) *TraceSear
 
 func convertPGTrace(result *postgresql.Trace) *Trace {
 	spans := make([]Span, len(result.Spans))
+	serviceSet := make(map[string]struct{})
+	var rootServiceName, rootSpanName string
+
 	for i, s := range result.Spans {
-		spans[i] = Span{
-			TraceID:       s.TraceID,
-			SpanID:        s.SpanID,
-			ParentSpanID:  s.ParentSpanID,
-			OperationName: s.OperationName,
-			ServiceName:   s.ServiceName,
-			SpanKind:      s.SpanKind,
-			StatusCode:    s.StatusCode,
-			StatusMessage: s.StatusMessage,
-			StartTime:     s.StartTime,
-			EndTime:       s.EndTime,
-			DurationUS:    int64(s.DurationMs * 1000), // ms → µs
-			Attributes:    s.Attributes,
-			Resource:      s.Resource,
+		spans[i] = convertPGSpan(s)
+		if s.ServiceName != "" {
+			serviceSet[s.ServiceName] = struct{}{}
+		}
+		if s.ParentSpanID == "" {
+			rootServiceName = s.ServiceName
+			rootSpanName = s.OperationName
 		}
 	}
-	return &Trace{TraceID: result.TraceID, Spans: spans}
+
+	// Compute total duration from root span or first/last
+	var durationNano string
+	if len(spans) > 0 {
+		if spans[0].DurationNano != "" {
+			durationNano = spans[0].DurationNano
+		}
+		// Find root span duration for the trace
+		for _, sp := range spans {
+			if sp.ParentSpanID == "" && sp.DurationNano != "" {
+				durationNano = sp.DurationNano
+				break
+			}
+		}
+	}
+
+	return &Trace{
+		TraceID:         result.TraceID,
+		Spans:           spans,
+		DurationNano:    durationNano,
+		SpanCount:       len(spans),
+		ServiceCount:    len(serviceSet),
+		RootServiceName: rootServiceName,
+		RootSpanName:    rootSpanName,
+	}
+}
+
+func convertPGSpan(src postgresql.Span) Span {
+	span := Span{
+		TraceID:           src.TraceID,
+		SpanID:            src.SpanID,
+		ParentSpanID:      src.ParentSpanID,
+		Name:              src.OperationName,
+		Kind:              NormalizeSpanKind(src.SpanKind),
+		StartTimeUnixNano: TimeToUnixNano(src.StartTime),
+		EndTimeUnixNano:   TimeToUnixNano(src.EndTime),
+		Status: SpanStatus{
+			Code:    NormalizeStatusCode(src.StatusCode),
+			Message: src.StatusMessage,
+		},
+		ServiceName:  src.ServiceName,
+		DurationNano: computeDurationNano(src.StartTime, src.EndTime, int64(src.DurationMs*1000)), // ms → µs for the helper
+		Attributes:   MapToKeyValues(src.Attributes),
+		Resource:     MapToKeyValues(src.Resource),
+	}
+
+	// Convert events from []map[string]any
+	if len(src.Events) > 0 {
+		span.Events = make([]SpanEvent, len(src.Events))
+		for i, e := range src.Events {
+			name, _ := e["name"].(string)
+			var timeNano string
+			if ts, ok := e["timestamp"].(time.Time); ok {
+				timeNano = TimeToUnixNano(ts)
+			}
+			var attrs []KeyValue
+			if a, ok := e["attributes"].(map[string]any); ok {
+				attrs = MapToKeyValues(a)
+			}
+			span.Events[i] = SpanEvent{
+				Name:         name,
+				TimeUnixNano: timeNano,
+				Attributes:   attrs,
+			}
+		}
+	}
+
+	// Convert links from []map[string]any
+	if len(src.Links) > 0 {
+		span.Links = make([]SpanLink, len(src.Links))
+		for i, l := range src.Links {
+			traceID, _ := l["trace_id"].(string)
+			spanID, _ := l["span_id"].(string)
+			var attrs []KeyValue
+			if a, ok := l["attributes"].(map[string]any); ok {
+				attrs = MapToKeyValues(a)
+			}
+			span.Links[i] = SpanLink{
+				TraceID:    traceID,
+				SpanID:     spanID,
+				Attributes: attrs,
+			}
+		}
+	}
+
+	return span
 }
 
 func convertPGLogRecord(l postgresql.LogRecord) LogRecord {
 	return LogRecord{
-		ID:             fmt.Sprintf("%d", l.ID),
-		Timestamp:      l.Timestamp,
-		Severity:       l.SeverityText,
-		SeverityNumber: int32(l.SeverityNumber),
-		Body:           l.Body,
-		ServiceName:    l.ServiceName,
-		TraceID:        l.TraceID,
-		SpanID:         l.SpanID,
-		Attributes:     l.Attributes,
-		Resource:       l.Resource,
+		ID:                   fmt.Sprintf("%d", l.ID),
+		TimeUnixNano:         TimeToUnixNano(l.Timestamp),
+		ObservedTimeUnixNano: "", // PG doesn't store observed time separately
+		TraceID:              l.TraceID,
+		SpanID:               l.SpanID,
+		SeverityNumber:       int32(l.SeverityNumber),
+		SeverityText:         l.SeverityText,
+		Body:                 l.Body,
+		Attributes:           MapToKeyValues(l.Attributes),
+		Resource:             MapToKeyValues(l.Resource),
+		ServiceName:          l.ServiceName,
 	}
 }

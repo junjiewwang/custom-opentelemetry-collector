@@ -29,11 +29,8 @@ func NewLogReader(client *Client, config *Config, logger *zap.Logger) *LogReader
 }
 
 // SearchLogs searches for logs matching the query parameters.
+// AppID is optional: when empty, queries all app indices (admin mode).
 func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error) {
-	if query.AppID == "" {
-		return nil, errMissingLogAppID
-	}
-
 	esQuery := r.buildLogSearchQuery(query)
 
 	limit := query.Limit
@@ -214,11 +211,8 @@ func (r *LogReader) ListLogFields(ctx context.Context, timeRange TimeRange) ([]L
 }
 
 // GetLogStats returns log statistics (counts, severity distribution, etc.).
+// AppID is optional: when empty, queries all app indices (admin mode).
 func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogStats, error) {
-	if query.AppID == "" {
-		return nil, errMissingLogAppID
-	}
-
 	var must []map[string]any
 	must = append(must, r.timeRangeFilter(query.TimeRange))
 

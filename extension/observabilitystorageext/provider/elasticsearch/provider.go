@@ -219,3 +219,8 @@ func (p *Provider) MetricReader() *MetricReader {
 func (p *Provider) LogReader() *LogReader {
 	return p.logReader
 }
+
+// GetClient returns the underlying ES client for lifecycle management components.
+func (p *Provider) GetClient() *Client {
+	return p.client
+}

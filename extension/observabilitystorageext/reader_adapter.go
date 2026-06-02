@@ -6,6 +6,7 @@ package observabilitystorageext
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
@@ -13,7 +14,7 @@ import (
 
 // ═══════════════════════════════════════════════════
 // Reader Adapter — converts between ES-internal types
-// and the public interface types defined in types.go.
+// and the public OTel-standard types defined in types.go.
 // This avoids circular imports while keeping a clean
 // public API for consumers (e.g., adminext handlers).
 // ═══════════════════════════════════════════════════
@@ -27,6 +28,7 @@ var _ TraceReader = (*traceReaderAdapter)(nil)
 
 func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery) (*TraceSearchResult, error) {
 	esQuery := elasticsearch.TraceQuery{
+		AppID:         query.AppID,
 		ServiceName:   query.ServiceName,
 		OperationName: query.OperationName,
 		Tags:          query.Tags,
@@ -73,7 +75,7 @@ func (a *traceReaderAdapter) GetOperations(ctx context.Context, service string, 
 	}
 	ops := make([]Operation, len(result))
 	for i, o := range result {
-		ops[i] = Operation{Name: o.Name, SpanKind: o.SpanKind}
+		ops[i] = Operation{Name: o.Name, SpanKind: NormalizeSpanKind(o.SpanKind)}
 	}
 	return ops, nil
 }
@@ -100,6 +102,7 @@ var _ LogReader = (*logReaderAdapter)(nil)
 
 func (a *logReaderAdapter) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error) {
 	esQuery := elasticsearch.LogQuery{
+		AppID:       query.AppID,
 		Query:       query.Query,
 		ServiceName: query.ServiceName,
 		Severity:    query.Severity,
@@ -140,6 +143,7 @@ func (a *logReaderAdapter) ListLogFields(ctx context.Context, timeRange TimeRang
 
 func (a *logReaderAdapter) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogStats, error) {
 	esQuery := elasticsearch.LogStatsQuery{
+		AppID:       query.AppID,
 		ServiceName: query.ServiceName,
 		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
 		GroupBy:     query.GroupBy,
@@ -160,6 +164,7 @@ var _ MetricReader = (*metricReaderAdapter)(nil)
 
 func (a *metricReaderAdapter) Query(ctx context.Context, query MetricQuery) (*MetricResult, error) {
 	esQuery := elasticsearch.MetricQuery{
+		AppID:       query.AppID,
 		MetricName:  query.MetricName,
 		Labels:      query.Labels,
 		ServiceName: query.ServiceName,
@@ -174,6 +179,7 @@ func (a *metricReaderAdapter) Query(ctx context.Context, query MetricQuery) (*Me
 
 func (a *metricReaderAdapter) QueryRange(ctx context.Context, query MetricRangeQuery) (*MetricRangeResult, error) {
 	esQuery := elasticsearch.MetricRangeQuery{
+		AppID:       query.AppID,
 		MetricName:  query.MetricName,
 		Labels:      query.Labels,
 		ServiceName: query.ServiceName,
@@ -202,7 +208,9 @@ func (a *metricReaderAdapter) ListLabelValues(ctx context.Context, label string,
 	return a.inner.ListLabelValues(ctx, label, esTimeRange)
 }
 
-// ==================== Type Conversion Helpers ====================
+// ═══════════════════════════════════════════════════
+// Type Conversion Helpers — ES internal → OTel standard
+// ═══════════════════════════════════════════════════
 
 func convertTraceSearchResult(src *elasticsearch.TraceSearchResult) *TraceSearchResult {
 	traces := make([]Trace, len(src.Traces))
@@ -217,38 +225,93 @@ func convertTrace(src elasticsearch.Trace) Trace {
 	for i, s := range src.Spans {
 		spans[i] = convertSpan(s)
 	}
-	return Trace{TraceID: src.TraceID, Spans: spans, Duration: src.Duration}
+
+	// Compute derived fields
+	trace := Trace{
+		TraceID: src.TraceID,
+		Spans:   spans,
+	}
+
+	// Duration: convert from microseconds to nanoseconds
+	if src.Duration > 0 {
+		trace.DurationNano = strconv.FormatInt(src.Duration*1000, 10)
+	}
+
+	// Compute span/service counts and root span info
+	trace.SpanCount = len(spans)
+	serviceSet := make(map[string]struct{})
+	for _, s := range spans {
+		if s.ServiceName != "" {
+			serviceSet[s.ServiceName] = struct{}{}
+		}
+		// Root span: no parent
+		if s.ParentSpanID == "" {
+			trace.RootServiceName = s.ServiceName
+			trace.RootSpanName = s.Name
+		}
+	}
+	trace.ServiceCount = len(serviceSet)
+
+	return trace
 }
 
 func convertSpan(src elasticsearch.Span) Span {
 	span := Span{
-		TraceID:       src.TraceID,
-		SpanID:        src.SpanID,
-		ParentSpanID:  src.ParentSpanID,
-		OperationName: src.OperationName,
-		ServiceName:   src.ServiceName,
-		SpanKind:      src.SpanKind,
-		StatusCode:    src.StatusCode,
-		StatusMessage: src.StatusMessage,
-		StartTime:     src.StartTime,
-		EndTime:       src.EndTime,
-		DurationUS:    src.DurationUS,
-		Attributes:    src.Attributes,
-		Resource:      src.Resource,
+		TraceID:           src.TraceID,
+		SpanID:            src.SpanID,
+		ParentSpanID:      src.ParentSpanID,
+		Name:              src.OperationName,
+		Kind:              NormalizeSpanKind(src.SpanKind),
+		StartTimeUnixNano: TimeToUnixNano(src.StartTime),
+		EndTimeUnixNano:   TimeToUnixNano(src.EndTime),
+		Status: SpanStatus{
+			Code:    NormalizeStatusCode(src.StatusCode),
+			Message: src.StatusMessage,
+		},
+		ServiceName:  src.ServiceName,
+		DurationNano: computeDurationNano(src.StartTime, src.EndTime, src.DurationUS),
+		Attributes:   MapToKeyValues(src.Attributes),
+		Resource:     MapToKeyValues(src.Resource),
 	}
+
 	if len(src.Events) > 0 {
 		span.Events = make([]SpanEvent, len(src.Events))
 		for i, e := range src.Events {
-			span.Events[i] = SpanEvent{Name: e.Name, Timestamp: e.Timestamp, Attributes: e.Attributes}
+			span.Events[i] = SpanEvent{
+				Name:         e.Name,
+				TimeUnixNano: TimeToUnixNano(e.Timestamp),
+				Attributes:   MapToKeyValues(e.Attributes),
+			}
 		}
 	}
+
 	if len(src.Links) > 0 {
 		span.Links = make([]SpanLink, len(src.Links))
 		for i, l := range src.Links {
-			span.Links[i] = SpanLink{TraceID: l.TraceID, SpanID: l.SpanID}
+			span.Links[i] = SpanLink{
+				TraceID: l.TraceID,
+				SpanID:  l.SpanID,
+			}
 		}
 	}
+
 	return span
+}
+
+// computeDurationNano computes the duration in nanoseconds.
+// Prefers computing from start/end times; falls back to DurationUS (microseconds) if available.
+func computeDurationNano(start, end time.Time, durationUS int64) string {
+	if !start.IsZero() && !end.IsZero() {
+		nanos := end.Sub(start).Nanoseconds()
+		if nanos > 0 {
+			return strconv.FormatInt(nanos, 10)
+		}
+	}
+	if durationUS > 0 {
+		// Convert microseconds to nanoseconds
+		return strconv.FormatInt(durationUS*1000, 10)
+	}
+	return "0"
 }
 
 func convertLogSearchResult(src *elasticsearch.LogSearchResult) *LogSearchResult {
@@ -261,18 +324,18 @@ func convertLogSearchResult(src *elasticsearch.LogSearchResult) *LogSearchResult
 
 func convertLogRecord(src elasticsearch.LogRecord) LogRecord {
 	return LogRecord{
-		ID:             src.ID,
-		Timestamp:      src.Timestamp,
-		ObservedTime:   src.ObservedTime,
-		TraceID:        src.TraceID,
-		SpanID:         src.SpanID,
-		Severity:       src.Severity,
-		SeverityNumber: src.SeverityNumber,
-		Body:           src.Body,
-		ServiceName:    src.ServiceName,
-		AppID:          src.AppID,
-		Attributes:     src.Attributes,
-		Resource:       src.Resource,
+		ID:                   src.ID,
+		TimeUnixNano:         TimeToUnixNano(src.Timestamp),
+		ObservedTimeUnixNano: TimeToUnixNano(src.ObservedTime),
+		TraceID:              src.TraceID,
+		SpanID:               src.SpanID,
+		SeverityNumber:       src.SeverityNumber,
+		SeverityText:         src.Severity,
+		Body:                 src.Body,
+		Attributes:           MapToKeyValues(src.Attributes),
+		Resource:             MapToKeyValues(src.Resource),
+		ServiceName:          src.ServiceName,
+		AppID:                src.AppID,
 	}
 }
 
@@ -295,7 +358,10 @@ func convertLogContext(src *elasticsearch.LogContext) *LogContext {
 func convertLogStats(src *elasticsearch.LogStats) *LogStats {
 	timeBuckets := make([]TimeBucket, len(src.TimeHistogram))
 	for i, b := range src.TimeHistogram {
-		timeBuckets[i] = TimeBucket{Time: b.Time, Count: b.Count}
+		timeBuckets[i] = TimeBucket{
+			TimeUnixNano: TimeToUnixNano(b.Time),
+			Count:        b.Count,
+		}
 	}
 	return &LogStats{
 		TotalCount:     src.TotalCount,
@@ -308,7 +374,11 @@ func convertLogStats(src *elasticsearch.LogStats) *LogStats {
 func convertMetricResult(src *elasticsearch.MetricResult) *MetricResult {
 	data := make([]MetricDataPoint, len(src.Data))
 	for i, d := range src.Data {
-		data[i] = MetricDataPoint{Labels: d.Labels, Value: d.Value, Time: d.Time}
+		data[i] = MetricDataPoint{
+			Labels:       d.Labels,
+			Value:        d.Value,
+			TimeUnixNano: TimeToUnixNano(d.Time),
+		}
 	}
 	return &MetricResult{Data: data}
 }
@@ -316,16 +386,21 @@ func convertMetricResult(src *elasticsearch.MetricResult) *MetricResult {
 func convertMetricRangeResult(src *elasticsearch.MetricRangeResult) *MetricRangeResult {
 	series := make([]MetricSeries, len(src.Data))
 	for i, s := range src.Data {
-		values := make([]MetricDataPoint, len(s.Values))
+		values := make([]MetricTimeValue, len(s.Values))
 		for j, v := range s.Values {
-			values[j] = MetricDataPoint{Labels: v.Labels, Value: v.Value, Time: v.Time}
+			values[j] = MetricTimeValue{
+				TimeUnixNano: TimeToUnixNano(v.Time),
+				Value:        v.Value,
+			}
 		}
 		series[i] = MetricSeries{Labels: s.Labels, Values: values}
 	}
 	return &MetricRangeResult{Data: series}
 }
 
-// ==================== Storage Admin Adapter ====================
+// ═══════════════════════════════════════════════════
+// Storage Admin Adapter
+// ═══════════════════════════════════════════════════
 
 // storageAdminAdapter adapts the ES Admin to the public StorageAdmin interface.
 type storageAdminAdapter struct {

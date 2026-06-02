@@ -32,10 +32,8 @@ func NewTraceReader(client *Client, config *Config, logger *zap.Logger) *TraceRe
 }
 
 // SearchTraces searches for traces matching the query parameters.
+// AppID is optional: when empty, queries all app indices (admin mode).
 func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*TraceSearchResult, error) {
-	if query.AppID == "" {
-		return nil, errMissingTraceAppID
-	}
 
 	esQuery := r.buildTraceSearchQuery(query)
 
