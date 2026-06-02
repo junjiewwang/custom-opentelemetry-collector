@@ -180,7 +180,7 @@ func TestConfig_Validate(t *testing.T) {
 				TaskManager: taskmanager.Config{Type: "invalid"},
 			},
 			wantErr: true,
-			errMsg:  "task_manager.type must be 'memory' or 'redis'",
+			errMsg:  "task_manager.type must be 'memory', 'redis', or 'engine'",
 		},
 		{
 			name: "redis task_manager without storage extension",

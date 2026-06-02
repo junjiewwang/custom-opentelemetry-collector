@@ -368,12 +368,12 @@ func ValidateComponentConfigs(cfg ComponentConfigs) error {
 	}
 
 	// Validate TaskManager
-	if cfg.TaskManager.Type != "" && cfg.TaskManager.Type != "memory" && cfg.TaskManager.Type != "redis" {
-		return errors.New("task_manager.type must be 'memory' or 'redis'")
+	if cfg.TaskManager.Type != "" && cfg.TaskManager.Type != "memory" && cfg.TaskManager.Type != "redis" && cfg.TaskManager.Type != "engine" {
+		return errors.New("task_manager.type must be 'memory', 'redis', or 'engine'")
 	}
 
-	if cfg.TaskManager.Type == "redis" && cfg.StorageExtension == "" {
-		return errors.New("storage_extension is required when task_manager.type is 'redis'")
+	if (cfg.TaskManager.Type == "redis" || cfg.TaskManager.Type == "engine") && cfg.StorageExtension == "" {
+		return errors.New("storage_extension is required when task_manager.type is 'redis' or 'engine'")
 	}
 
 	// Validate AgentRegistry
