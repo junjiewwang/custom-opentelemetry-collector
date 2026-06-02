@@ -6,7 +6,9 @@ package observabilitystorageext
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -14,9 +16,11 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/lifecycle"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/hybrid"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
+	"go.opentelemetry.io/collector/custom/extension/storageext"
 )
 
 // internalProvider is the internal interface that both ES and PG providers implement.
@@ -45,6 +49,10 @@ type ObservabilityStorage struct {
 	esProvider     *elasticsearch.Provider
 	pgProvider     *postgresql.Provider
 	hybridProvider *hybrid.Provider
+
+	// Lifecycle management
+	scheduler      *lifecycle.LifecycleScheduler
+	retentionStore lifecycle.RetentionStore
 }
 
 // Ensure the extension implements the required interfaces.
@@ -63,7 +71,7 @@ func newObservabilityStorageExtension(
 }
 
 // Start initializes the storage provider and its backend connections.
-func (e *ObservabilityStorage) Start(ctx context.Context, _ component.Host) error {
+func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) error {
 	e.logger.Info("Starting observability storage extension",
 		zap.String("provider_type", e.config.Type),
 	)
@@ -81,11 +89,25 @@ func (e *ObservabilityStorage) Start(ctx context.Context, _ component.Host) erro
 	e.logger.Info("Observability storage extension started successfully",
 		zap.String("provider", provider.Name()),
 	)
+
+	// Start lifecycle scheduler if enabled
+	if e.config.Scheduler.Enabled {
+		e.scheduler = e.buildLifecycleScheduler(host)
+		e.scheduler.Start(ctx)
+		e.logger.Info("Lifecycle scheduler started")
+	}
+
 	return nil
 }
 
 // Shutdown gracefully stops the storage provider.
 func (e *ObservabilityStorage) Shutdown(ctx context.Context) error {
+	// Stop lifecycle scheduler first (it depends on provider)
+	if e.scheduler != nil {
+		e.scheduler.Stop()
+		e.logger.Info("Lifecycle scheduler stopped")
+	}
+
 	if e.provider == nil {
 		return nil
 	}
@@ -449,4 +471,161 @@ func (e *ObservabilityStorage) getHybridStorageAdmin() StorageAdmin {
 	default:
 		return nil
 	}
+}
+
+// ══════════════════════════════════════════════
+// Lifecycle Scheduler Integration
+// ══════════════════════════════════════════════
+
+// buildLifecycleScheduler constructs the scheduler by wiring all dependencies.
+// It uses the Strategy Pattern: the specific purger/reporter implementations are
+// chosen based on the active provider type (DIP — depend on abstractions).
+func (e *ObservabilityStorage) buildLifecycleScheduler(host component.Host) *lifecycle.LifecycleScheduler {
+	// Initialize the in-memory retention store (shared with API layer for future use)
+	e.retentionStore = lifecycle.NewInMemoryRetentionStore()
+
+	// Convert extension config to lifecycle domain types
+	defaults := lifecycle.RetentionDefaults{
+		Trace:  e.config.Retention.DefaultTrace,
+		Metric: e.config.Retention.DefaultMetric,
+		Log:    e.config.Retention.DefaultLog,
+	}
+	limits := lifecycle.RetentionLimits{
+		MaxTrace:  e.config.Retention.MaxTrace,
+		MaxMetric: e.config.Retention.MaxMetric,
+		MaxLog:    e.config.Retention.MaxLog,
+	}
+
+	// Build scheduler config from extension-level config
+	schedulerCfg := lifecycle.SchedulerConfig{
+		Enabled:              e.config.Scheduler.Enabled,
+		Interval:             e.config.Scheduler.Interval,
+		DryRun:               e.config.Scheduler.DryRun,
+		UsageWarningRatio:    e.config.Scheduler.UsageWarningRatio,
+		UsageCriticalRatio:   e.config.Scheduler.UsageCriticalRatio,
+		TrendBufferSize:      e.config.Scheduler.TrendBufferSize,
+		Distributed:          e.config.Scheduler.Distributed,
+		DistributedThreshold: e.config.Scheduler.DistributedThreshold,
+		WorkerConcurrency:    e.config.Scheduler.WorkerConcurrency,
+		TaskTimeout:          e.config.Scheduler.TaskTimeout,
+		MaxRetries:           e.config.Scheduler.MaxRetries,
+		VerifyTimeout:        e.config.Scheduler.VerifyTimeout,
+		VerifyPollInterval:   e.config.Scheduler.VerifyPollInterval,
+		NodeID:               e.config.Scheduler.NodeID,
+	}
+
+	// Build the scheduler options (functional options pattern)
+	opts := []lifecycle.SchedulerOption{
+		lifecycle.WithResolver(lifecycle.NewRetentionResolver(e.retentionStore, defaults, limits)),
+		lifecycle.WithAuditEmitter(lifecycle.NewZapAuditEmitter(e.logger)),
+		lifecycle.WithConfig(schedulerCfg),
+		lifecycle.WithLogger(e.logger.Named("lifecycle")),
+	}
+
+	// Wire provider-specific purger and usage reporter (Strategy Pattern)
+	switch e.config.Type {
+	case "elasticsearch":
+		if e.esProvider != nil && e.esProvider.GetClient() != nil {
+			esCfg := e.convertESConfig()
+			opts = append(opts,
+				lifecycle.WithPurger(elasticsearch.NewPurger(e.esProvider.GetClient(), esCfg, e.logger)),
+				lifecycle.WithUsageReporter(elasticsearch.NewUsageReporter(e.esProvider.GetClient(), esCfg, e.logger)),
+			)
+		}
+	case "hybrid":
+		// For hybrid, use ES purger/reporter if ES provider is available
+		if e.esProvider != nil && e.esProvider.GetClient() != nil {
+			esCfg := e.convertESConfig()
+			opts = append(opts,
+				lifecycle.WithPurger(elasticsearch.NewPurger(e.esProvider.GetClient(), esCfg, e.logger)),
+				lifecycle.WithUsageReporter(elasticsearch.NewUsageReporter(e.esProvider.GetClient(), esCfg, e.logger)),
+			)
+		}
+		// TODO: Add PG purger support when postgresql.Purger is implemented (Sprint 2)
+	case "postgresql":
+		// TODO: Add PG purger/reporter when postgresql lifecycle support is implemented (Sprint 2)
+		e.logger.Warn("Lifecycle scheduler: PostgreSQL purger not yet implemented, purge will be skipped")
+	}
+
+	// Wire distributed coordinator if configured
+	if e.config.Scheduler.Distributed {
+		coordinator := e.buildCoordinator(host)
+		if coordinator != nil {
+			opts = append(opts, lifecycle.WithCoordinator(coordinator))
+		}
+	}
+
+	return lifecycle.NewScheduler(opts...)
+}
+
+// buildCoordinator attempts to build a distributed TaskCoordinator from Redis.
+// Returns nil if Redis is unavailable (graceful degradation to single-node mode).
+func (e *ObservabilityStorage) buildCoordinator(host component.Host) lifecycle.TaskCoordinator {
+	storageExtName := e.config.Scheduler.StorageExtension
+	if storageExtName == "" {
+		e.logger.Warn("Distributed purge enabled but storage_extension not configured, using local mode")
+		return nil
+	}
+
+	// Find the storage extension from the host
+	storageType := component.MustNewType(storageExtName)
+	var storage storageext.Storage
+	for id, ext := range host.GetExtensions() {
+		if id.Type() == storageType {
+			if s, ok := ext.(storageext.Storage); ok {
+				storage = s
+				break
+			}
+		}
+	}
+
+	if storage == nil {
+		e.logger.Warn("Storage extension not found, distributed purge falling back to local mode",
+			zap.String("storage_extension", storageExtName),
+		)
+		return nil
+	}
+
+	// Get Redis client
+	redisName := e.config.Scheduler.RedisName
+	var redisClient redis.UniversalClient
+	var err error
+	if redisName == "" || redisName == "default" {
+		redisClient, err = storage.GetDefaultRedis()
+	} else {
+		redisClient, err = storage.GetRedis(redisName)
+	}
+
+	if err != nil {
+		e.logger.Warn("Failed to get Redis client for distributed purge, falling back to local mode",
+			zap.String("redis_name", redisName),
+			zap.Error(err),
+		)
+		return nil
+	}
+
+	// Determine nodeID
+	nodeID := e.config.Scheduler.NodeID
+	if nodeID == "" {
+		nodeID = fmt.Sprintf("node-%d", time.Now().UnixNano())
+	}
+
+	e.logger.Info("Distributed purge coordinator initialized",
+		zap.String("node_id", nodeID),
+		zap.String("redis_name", redisName),
+	)
+
+	return lifecycle.NewRedisCoordinator(redisClient, nodeID, e.logger)
+}
+
+// GetLifecycleScheduler returns the lifecycle scheduler for API access (usage trends, etc.).
+// Returns nil if the scheduler is not enabled.
+func (e *ObservabilityStorage) GetLifecycleScheduler() *lifecycle.LifecycleScheduler {
+	return e.scheduler
+}
+
+// GetRetentionStore returns the retention store for API access (per-app overrides).
+// Returns nil if the scheduler is not enabled.
+func (e *ObservabilityStorage) GetRetentionStore() lifecycle.RetentionStore {
+	return e.retentionStore
 }

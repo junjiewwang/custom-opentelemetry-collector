@@ -25,6 +25,71 @@ type Config struct {
 
 	// Retention holds the platform-level retention configuration.
 	Retention RetentionConfig `mapstructure:"retention"`
+
+	// Scheduler holds the lifecycle scheduler configuration.
+	Scheduler SchedulerConfig `mapstructure:"scheduler"`
+}
+
+// SchedulerConfig holds the data lifecycle scheduler configuration.
+// This is a thin wrapper that maps to lifecycle.SchedulerConfig.
+type SchedulerConfig struct {
+	// Enabled controls whether the scheduler is active.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Interval is the check frequency (default: 1h).
+	Interval time.Duration `mapstructure:"interval"`
+
+	// DryRun previews what would be deleted without executing.
+	DryRun bool `mapstructure:"dry_run"`
+
+	// UsageWarningRatio triggers WARN-level alerts (default: 0.75).
+	UsageWarningRatio float64 `mapstructure:"usage_warning_ratio"`
+
+	// UsageCriticalRatio triggers ERROR-level alerts (default: 0.90).
+	UsageCriticalRatio float64 `mapstructure:"usage_critical_ratio"`
+
+	// TrendBufferSize is how many usage snapshots to keep (default: 168 = 7d @ 1h).
+	TrendBufferSize int `mapstructure:"trend_buffer_size"`
+
+	// ─── Distributed Purge Configuration ───
+
+	// Distributed enables multi-node cooperative purge mode.
+	// Requires a storage extension with Redis. Falls back to local mode if unavailable.
+	Distributed bool `mapstructure:"distributed"`
+
+	// StorageExtension is the component type name of the storageext extension
+	// used to obtain Redis client for distributed coordination.
+	// Required when Distributed=true. Example: "storageext"
+	StorageExtension string `mapstructure:"storage_extension"`
+
+	// RedisName is the named Redis connection to use for distributed coordination.
+	// Default: "default" (uses storageext.GetDefaultRedis).
+	RedisName string `mapstructure:"redis_name"`
+
+	// DistributedThreshold: only use distributed mode when expired index count
+	// exceeds this value. Below this, single-node is more efficient. Default: 50.
+	DistributedThreshold int `mapstructure:"distributed_threshold"`
+
+	// WorkerConcurrency: max concurrent delete operations per node per cycle.
+	// Controls ES pressure. Default: 10.
+	WorkerConcurrency int `mapstructure:"worker_concurrency"`
+
+	// TaskTimeout: max time a single task can take before considered timed-out.
+	// Default: 30s.
+	TaskTimeout time.Duration `mapstructure:"task_timeout"`
+
+	// MaxRetries: max retry attempts for a failed task. Default: 3.
+	MaxRetries int `mapstructure:"max_retries"`
+
+	// VerifyTimeout: max time the leader waits for all tasks to complete
+	// during the verification phase. Default: 2m.
+	VerifyTimeout time.Duration `mapstructure:"verify_timeout"`
+
+	// VerifyPollInterval: polling interval during verification. Default: 2s.
+	VerifyPollInterval time.Duration `mapstructure:"verify_poll_interval"`
+
+	// NodeID: unique identifier for this node. Auto-generated if empty.
+	NodeID string `mapstructure:"node_id"`
 }
 
 // RetentionConfig holds the platform-level retention defaults and constraints.
