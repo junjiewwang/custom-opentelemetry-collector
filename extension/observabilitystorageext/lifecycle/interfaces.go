@@ -122,47 +122,6 @@ type AuditEmitter interface {
 }
 
 // ═══════════════════════════════════════════════════
-// TaskCoordinator — Distributed Purge Coordination
-// ═══════════════════════════════════════════════════
-
-// TaskCoordinator abstracts the distributed task coordination mechanism.
-// Two implementations:
-//   - LocalCoordinator: single-node in-process (no Redis needed)
-//   - RedisCoordinator: multi-node work-stealing via Redis LIST + HASH
-//
-// Design: Strategy Pattern — Scheduler doesn't know if it's running in single-node
-// or distributed mode. It always calls the same interface.
-type TaskCoordinator interface {
-	// TryBecomeLeader attempts to acquire leader role (non-blocking).
-	// Returns true if this node is the leader for the current cycle.
-	TryBecomeLeader(ctx context.Context) (bool, error)
-
-	// ReleaseLeader explicitly releases leader role.
-	ReleaseLeader(ctx context.Context) error
-
-	// SubmitTasks publishes a batch of purge tasks for distributed execution.
-	// Only the leader calls this. Tasks are stored in a queue keyed by epoch.
-	SubmitTasks(ctx context.Context, epoch int64, tasks []PurgeTask) error
-
-	// ClaimTask atomically claims one task from the pool (RPOP semantics).
-	// Returns nil when pool is empty. All nodes call this.
-	ClaimTask(ctx context.Context, epoch int64) (*PurgeTask, error)
-
-	// ReportResult records the outcome of a single task execution.
-	ReportResult(ctx context.Context, epoch int64, taskID string, result TaskResult) error
-
-	// GetProgress returns the current epoch's execution progress.
-	// Only the leader calls this for verification.
-	GetProgress(ctx context.Context, epoch int64) (*PurgeProgress, error)
-
-	// GetActiveEpoch returns the current in-progress epoch, or 0 if none.
-	GetActiveEpoch(ctx context.Context) (int64, error)
-
-	// CompleteEpoch marks the epoch as done and schedules key cleanup/expiry.
-	CompleteEpoch(ctx context.Context, epoch int64) error
-}
-
-// ═══════════════════════════════════════════════════
 // IndexLister — Read-Only Index Scanning
 // ═══════════════════════════════════════════════════
 
@@ -191,18 +150,4 @@ type SingleIndexPurger interface {
 	DeleteSingleIndex(ctx context.Context, indexName string) error
 }
 
-// ═══════════════════════════════════════════════════
-// RetryableCoordinator — Optional Retry Support
-// ═══════════════════════════════════════════════════
 
-// RetryableCoordinator extends TaskCoordinator with the ability to enumerate
-// failed tasks for retry. Coordinators that support this allow the leader
-// to re-enqueue failed tasks with incremented retry count.
-//
-// This is an optional interface — if the coordinator implements it, the scheduler
-// uses it for automatic retry. Otherwise, failed tasks are logged but not retried.
-type RetryableCoordinator interface {
-	// GetFailedTasks returns tasks that failed and are eligible for retry
-	// (i.e., retry count < maxRetries).
-	GetFailedTasks(ctx context.Context, epoch int64, maxRetries int) ([]PurgeTask, error)
-}
