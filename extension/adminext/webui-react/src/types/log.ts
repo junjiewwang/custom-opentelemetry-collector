@@ -1,72 +1,78 @@
 /**
- * Log Query API 类型定义
+ * OTel Standard Log Types
  *
- * 对应后端 observabilitystorageext Log 数据模型。
+ * Aligned with OpenTelemetry OTLP Log data model (camelCase JSON encoding).
+ * Reference: opentelemetry.proto.logs.v1.LogRecord
  */
 
+import type { KeyValue } from './trace';
+
 // ============================================================================
-// Log 数据模型
+// Log Data Model — aligned with OTLP proto
 // ============================================================================
 
-/** 单条日志记录 */
+/** Single log record — aligned with opentelemetry.proto.logs.v1.LogRecord */
 export interface LogRecord {
   id: string;
-  timestamp: string;           // ISO 8601
-  observed_time?: string;      // ISO 8601
-  trace_id?: string;
-  span_id?: string;
-  severity: string;            // e.g. "ERROR", "WARN", "INFO", "DEBUG"
-  severity_number: number;
+  /** Nanosecond Unix timestamp as string */
+  timeUnixNano: string;
+  observedTimeUnixNano?: string;
+  traceId?: string;
+  spanId?: string;
+  severityNumber: number;
+  severityText: string;
   body: string;
-  service_name: string;
-  app_id?: string;
-  attributes?: Record<string, unknown>;
-  resource?: Record<string, unknown>;
+  attributes?: KeyValue[];
+  resource?: KeyValue[];
+  /** Derived: extracted from resource["service.name"] */
+  serviceName: string;
+  appId?: string;
 }
 
-/** 日志搜索结果 */
+/** Log search result */
 export interface LogSearchResult {
   logs: LogRecord[];
   total: number;
 }
 
-/** 日志上下文（前后行） */
+/** Log context (surrounding lines) */
 export interface LogContext {
   before: LogRecord[];
   target: LogRecord;
   after: LogRecord[];
 }
 
-/** 日志可用字段 */
+/** Available log field for filtering */
 export interface LogField {
   name: string;
   type: string;   // "keyword", "text", "number"
   count: number;
 }
 
-/** 日志统计结果 */
+/** Log statistics result */
 export interface LogStats {
-  total_count: number;
-  severity_counts?: Record<string, number>;
-  service_counts?: Record<string, number>;
-  time_histogram?: TimeBucket[];
+  totalCount: number;
+  severityCounts?: Record<string, number>;
+  serviceCounts?: Record<string, number>;
+  timeHistogram?: TimeBucket[];
 }
 
-/** 时间桶（用于直方图） */
+/** Time bucket for histogram */
 export interface TimeBucket {
-  time: string;    // ISO 8601
+  /** Nanosecond Unix timestamp as string */
+  timeUnixNano: string;
   count: number;
 }
 
 // ============================================================================
-// 查询参数
+// Query Parameters
 // ============================================================================
 
-/** 日志搜索参数 */
+/** Log search parameters */
 export interface LogSearchParams {
   query?: string;
   service?: string;
-  severity?: string;      // 逗号分隔: "ERROR,WARN"
+  severity?: string;      // comma-separated: "ERROR,WARN"
   traceId?: string;
   spanId?: string;
   attributes?: string;    // key:value,key:value
@@ -76,7 +82,7 @@ export interface LogSearchParams {
   offset?: number;
 }
 
-/** 日志统计参数 */
+/** Log stats query parameters */
 export interface LogStatsParams {
   service?: string;
   start?: number;
@@ -85,10 +91,10 @@ export interface LogStatsParams {
 }
 
 // ============================================================================
-// 前端展示用派生类型
+// Frontend Display Constants
 // ============================================================================
 
-/** 严重级别颜色映射 */
+/** Severity level color mapping */
 export const SEVERITY_COLORS: Record<string, string> = {
   FATAL: '#dc2626',
   ERROR: '#ef4444',
@@ -98,7 +104,7 @@ export const SEVERITY_COLORS: Record<string, string> = {
   TRACE: '#9ca3af',
 };
 
-/** 严重级别排序权重（越高越严重） */
+/** Severity level sort weight (higher = more severe) */
 export const SEVERITY_WEIGHTS: Record<string, number> = {
   FATAL: 6,
   ERROR: 5,

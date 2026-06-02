@@ -4,17 +4,24 @@
  * 功能：
  * - 展示完整的 Span 树形结构（虚拟滚动）
  * - 时间轴 bar 可视化每个 Span 的相对起始时间和持续时长
- * - 展开/收起 Span 详情（参考 Jaeger UI 设计的 Accordion 面板）
+ * - 展开/收起 Span 详情（Accordion 面板）
  * - 颜色按 Service 区分
- * - Span 搜索过滤（operationName、serviceName、tags）
+ * - Span 搜索过滤（name、serviceName、attributes）
  * - 视图 Tab 切换预留（Timeline / Statistics / Table / Flamegraph / Graph）
  */
 
 import { useState, useMemo, useRef, useCallback, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { buildSpanTree, formatDuration, formatTimestamp, getServiceColor } from '@/utils/trace';
-import type { JaegerTrace, JaegerKeyValue, SpanTreeNode } from '@/types/trace';
+import {
+  buildSpanTree,
+  formatDuration,
+  formatTimestamp,
+  formatSpanKind,
+  getServiceColor,
+  anyValueToDisplay,
+} from '@/utils/trace';
+import type { OTelTrace, OTelSpan, SpanTreeNode, KeyValue } from '@/types/trace';
 import TraceStatisticsView from './TraceStatisticsView';
 import TraceSpanTableView from './TraceSpanTableView';
 import TraceFlamegraphView from './TraceFlamegraphView';
@@ -25,7 +32,7 @@ import TraceGraphView from './TraceGraphView';
 // ============================================================================
 
 interface TraceDetailProps {
-  trace: JaegerTrace;
+  trace: OTelTrace;
   onClose: () => void;
 }
 
@@ -49,7 +56,7 @@ function flattenTree(nodes: SpanTreeNode[], collapsedIds: Set<string>): SpanTree
   function walk(nodeList: SpanTreeNode[]) {
     for (const node of nodeList) {
       result.push(node);
-      if (!collapsedIds.has(node.span.spanID) && node.children.length > 0) {
+      if (!collapsedIds.has(node.span.spanId) && node.children.length > 0) {
         walk(node.children);
       }
     }
@@ -62,16 +69,24 @@ function flattenTree(nodes: SpanTreeNode[], collapsedIds: Set<string>): SpanTree
 function spanMatchesSearch(node: SpanTreeNode, query: string): boolean {
   if (!query) return false;
   const q = query.toLowerCase();
-  // 匹配 operationName
-  if (node.span.operationName.toLowerCase().includes(q)) return true;
+  // 匹配 operation name
+  if (node.span.name.toLowerCase().includes(q)) return true;
   // 匹配 serviceName
-  if (node.process.serviceName.toLowerCase().includes(q)) return true;
-  // 匹配 tags 的 key 和 value
-  for (const tag of node.span.tags) {
-    if (tag.key.toLowerCase().includes(q)) return true;
-    if (String(tag.value).toLowerCase().includes(q)) return true;
+  if (node.span.serviceName.toLowerCase().includes(q)) return true;
+  // 匹配 attributes 的 key 和 value
+  if (node.span.attributes) {
+    for (const attr of node.span.attributes) {
+      if (attr.key.toLowerCase().includes(q)) return true;
+      const val = String(anyValueToDisplay(attr.value));
+      if (val.toLowerCase().includes(q)) return true;
+    }
   }
   return false;
+}
+
+/** 判断 span 是否有错误 */
+function isSpanError(span: OTelSpan): boolean {
+  return span.status?.code === 'STATUS_CODE_ERROR';
 }
 
 // ============================================================================
@@ -98,20 +113,22 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
   // 虚拟滚动容器 ref
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // 计算 trace 总时长（微秒）
-  const traceDuration = useMemo(() => {
+  // 计算 trace 总时长（纳秒）
+  const traceDurationNano = useMemo(() => {
     let minStart = Infinity;
     let maxEnd = 0;
     for (const span of trace.spans) {
-      minStart = Math.min(minStart, span.startTime);
-      maxEnd = Math.max(maxEnd, span.startTime + span.duration);
+      const start = Number(span.startTimeUnixNano);
+      const end = Number(span.endTimeUnixNano);
+      minStart = Math.min(minStart, start);
+      maxEnd = Math.max(maxEnd, end);
     }
     return maxEnd - minStart;
   }, [trace]);
 
-  // trace 起始时间
-  const traceStartTime = useMemo(
-    () => trace.spans.reduce((min, s) => Math.min(min, s.startTime), Infinity),
+  // trace 起始时间（纳秒）
+  const traceStartNano = useMemo(
+    () => trace.spans.reduce((min, s) => Math.min(min, Number(s.startTimeUnixNano)), Infinity),
     [trace],
   );
 
@@ -119,25 +136,18 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
   const serviceStats = useMemo(() => {
     const map = new Map<string, number>();
     for (const span of trace.spans) {
-      const proc = trace.processes[span.processID];
-      if (proc) {
-        map.set(proc.serviceName, (map.get(proc.serviceName) ?? 0) + 1);
-      }
+      const svc = span.serviceName || 'unknown';
+      map.set(svc, (map.get(svc) ?? 0) + 1);
     }
     return Array.from(map.entries()).map(([name, count]) => ({ name, count }));
   }, [trace]);
 
   const rootNode = spanTree[0] ?? null;
-  const rootServiceName = rootNode?.process.serviceName ?? serviceStats[0]?.name ?? 'unknown';
-  const rootOperationName = rootNode?.span.operationName ?? 'unknown';
+  const rootServiceName = trace.rootServiceName ?? rootNode?.span.serviceName ?? serviceStats[0]?.name ?? 'unknown';
+  const rootOperationName = trace.rootSpanName ?? rootNode?.span.name ?? 'unknown';
 
   const errorSpanCount = useMemo(
-    () => trace.spans.filter(span =>
-      span.tags.some(tag =>
-        (tag.key === 'error' && tag.value === true) ||
-        (tag.key === 'otel.status_code' && tag.value === 'ERROR'),
-      ),
-    ).length,
+    () => trace.spans.filter(span => isSpanError(span)).length,
     [trace],
   );
 
@@ -161,7 +171,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: (index) => {
       const node = flattenedSpans[index];
-      if (node && expandedSpanIDs.has(node.span.spanID)) {
+      if (node && expandedSpanIDs.has(node.span.spanId)) {
         return 336; // SpanRow(36) + SpanDetail(~300)
       }
       return 36;
@@ -170,26 +180,26 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
   });
 
   // 切换树节点折叠/展开
-  const toggleCollapse = useCallback((spanID: string) => {
+  const toggleCollapse = useCallback((spanId: string) => {
     setCollapsedSpanIDs(prev => {
       const next = new Set(prev);
-      if (next.has(spanID)) {
-        next.delete(spanID);
+      if (next.has(spanId)) {
+        next.delete(spanId);
       } else {
-        next.add(spanID);
+        next.add(spanId);
       }
       return next;
     });
   }, []);
 
   // 切换 span 详情展开
-  const toggleDetail = useCallback((spanID: string) => {
+  const toggleDetail = useCallback((spanId: string) => {
     setExpandedSpanIDs(prev => {
       const next = new Set(prev);
-      if (next.has(spanID)) {
-        next.delete(spanID);
+      if (next.has(spanId)) {
+        next.delete(spanId);
       } else {
-        next.add(spanID);
+        next.add(spanId);
       }
       return next;
     });
@@ -224,7 +234,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
     const set = new Set<string>();
     for (const idx of matchedIndices) {
       const node = flattenedSpans[idx];
-      if (node) set.add(node.span.spanID);
+      if (node) set.add(node.span.spanId);
     }
     return set;
   }, [matchedIndices, flattenedSpans]);
@@ -233,7 +243,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
   const currentFocusedSpanID = useMemo(() => {
     if (matchedIndices.length === 0) return null;
     const idx = matchedIndices[currentMatchIndex];
-    return idx !== undefined ? flattenedSpans[idx]?.span.spanID ?? null : null;
+    return idx !== undefined ? flattenedSpans[idx]?.span.spanId ?? null : null;
   }, [matchedIndices, currentMatchIndex, flattenedSpans]);
 
   const searchSummary = searchQuery.trim()
@@ -257,7 +267,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
                 <span className="text-slate-600">{rootOperationName}</span>
               </h3>
               <span className="inline-flex items-center rounded-full bg-primary-50 px-2.5 py-1 text-[11px] font-semibold text-primary-700">
-                {formatDuration(traceDuration)}
+                {formatDuration(traceDurationNano)}
               </span>
               {errorSpanCount > 0 && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-red-600">
@@ -268,7 +278,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
             </div>
             <div className="mt-2 flex items-center gap-2 flex-wrap text-xs text-slate-500">
               <span className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-[11px] text-slate-600 max-w-full truncate">
-                {trace.traceID}
+                {trace.traceId}
               </span>
               <span className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1">
                 <i className="fas fa-bolt text-[10px] text-slate-400" />
@@ -280,7 +290,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
               </span>
               <span className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1">
                 <i className="fas fa-clock text-[10px] text-slate-400" />
-                {formatTimestamp(traceStartTime)}
+                {formatTimestamp(traceStartNano)}
               </span>
             </div>
             {serviceStats.length > 0 && (
@@ -364,7 +374,7 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
                   type="text"
                   value={searchQuery}
                   onChange={e => handleSearchChange(e.target.value)}
-                  placeholder="Search service, operation, tags..."
+                  placeholder="Search service, operation, attributes..."
                   className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition bg-white"
                 />
               </div>
@@ -417,10 +427,10 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
               <div className="w-[340px] xl:w-[380px] flex-shrink-0 pr-4">Service / Operation</div>
               <div className="flex-1 grid grid-cols-5 items-center text-right">
                 <span className="text-left">0</span>
-                <span>{formatDuration(traceDuration / 4)}</span>
-                <span>{formatDuration(traceDuration / 2)}</span>
-                <span>{formatDuration(traceDuration * 3 / 4)}</span>
-                <span>{formatDuration(traceDuration)}</span>
+                <span>{formatDuration(traceDurationNano / 4)}</span>
+                <span>{formatDuration(traceDurationNano / 2)}</span>
+                <span>{formatDuration(traceDurationNano * 3 / 4)}</span>
+                <span>{formatDuration(traceDurationNano)}</span>
               </div>
             </div>
 
@@ -436,14 +446,14 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
                 {virtualizer.getVirtualItems().map(virtualRow => {
                   const node = flattenedSpans[virtualRow.index];
                   if (!node) return null;
-                  const isDetailExpanded = expandedSpanIDs.has(node.span.spanID);
-                  const isCollapsed = collapsedSpanIDs.has(node.span.spanID);
-                  const isMatched = matchedSpanIDs.has(node.span.spanID);
-                  const isFocused = currentFocusedSpanID === node.span.spanID;
+                  const isDetailExpanded = expandedSpanIDs.has(node.span.spanId);
+                  const isCollapsed = collapsedSpanIDs.has(node.span.spanId);
+                  const isMatched = matchedSpanIDs.has(node.span.spanId);
+                  const isFocused = currentFocusedSpanID === node.span.spanId;
 
                   return (
                     <div
-                      key={node.span.spanID}
+                      key={node.span.spanId}
                       data-index={virtualRow.index}
                       ref={virtualizer.measureElement}
                       style={{
@@ -456,8 +466,8 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
                     >
                       <VirtualSpanRow
                         node={node}
-                        traceDuration={traceDuration}
-                        traceStartTime={traceStartTime}
+                        traceDurationNano={traceDurationNano}
+                        traceStartNano={traceStartNano}
                         isDetailExpanded={isDetailExpanded}
                         isCollapsed={isCollapsed}
                         hasChildren={node.children.length > 0}
@@ -503,26 +513,26 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
 }
 
 // ============================================================================
-// VirtualSpanRow 组件 - 虚拟滚动中的单个 Span 行（不再递归）
+// VirtualSpanRow 组件 - 虚拟滚动中的单个 Span 行
 // ============================================================================
 
 interface VirtualSpanRowProps {
   node: SpanTreeNode;
-  traceDuration: number;
-  traceStartTime: number;
+  traceDurationNano: number;
+  traceStartNano: number;
   isDetailExpanded: boolean;
   isCollapsed: boolean;
   hasChildren: boolean;
   isMatched: boolean;
   isFocused: boolean;
-  onToggleCollapse: (spanID: string) => void;
-  onToggleDetail: (spanID: string) => void;
+  onToggleCollapse: (spanId: string) => void;
+  onToggleDetail: (spanId: string) => void;
 }
 
 function VirtualSpanRow({
   node,
-  traceDuration,
-  traceStartTime,
+  traceDurationNano,
+  traceStartNano,
   isDetailExpanded,
   isCollapsed,
   hasChildren,
@@ -531,20 +541,20 @@ function VirtualSpanRow({
   onToggleCollapse,
   onToggleDetail,
 }: VirtualSpanRowProps) {
-  const { span, process, depth } = node;
+  const { span, depth } = node;
 
-  const serviceColor = getServiceColor(process.serviceName);
-  const hasError = span.tags.some(t =>
-    (t.key === 'error' && t.value === true) ||
-    (t.key === 'otel.status_code' && t.value === 'ERROR'),
-  );
+  const serviceColor = getServiceColor(span.serviceName);
+  const hasError = isSpanError(span);
 
-  // 计算时间轴位置
-  const offsetPercent = traceDuration > 0
-    ? ((span.startTime - traceStartTime) / traceDuration) * 100
+  // 计算时间轴位置（纳秒）
+  const spanStartNano = Number(span.startTimeUnixNano);
+  const spanDurationNano = Number(span.durationNano) || (Number(span.endTimeUnixNano) - spanStartNano);
+
+  const offsetPercent = traceDurationNano > 0
+    ? ((spanStartNano - traceStartNano) / traceDurationNano) * 100
     : 0;
-  const widthPercent = traceDuration > 0
-    ? Math.max((span.duration / traceDuration) * 100, 0.3)
+  const widthPercent = traceDurationNano > 0
+    ? Math.max((spanDurationNano / traceDurationNano) * 100, 0.3)
     : 0;
   const showDurationLabel = widthPercent >= 8;
 
@@ -563,7 +573,7 @@ function VirtualSpanRow({
       {/* Span Bar Row */}
       <div
         className={`flex items-center border-b border-slate-100 hover:bg-slate-50/80 cursor-pointer transition-colors ${rowBgClass}`}
-        onClick={() => onToggleDetail(span.spanID)}
+        onClick={() => onToggleDetail(span.spanId)}
       >
         {/* Left: Service / Operation */}
         <div
@@ -574,7 +584,7 @@ function VirtualSpanRow({
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onToggleCollapse(span.spanID);
+                onToggleCollapse(span.spanId);
               }}
               className="w-5 h-5 rounded-md inline-flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 flex-shrink-0 transition"
               aria-label={isCollapsed ? 'Expand span children' : 'Collapse span children'}
@@ -589,12 +599,12 @@ function VirtualSpanRow({
             style={{ backgroundColor: serviceColor }}
           />
           <div className="min-w-0 flex items-center gap-1.5 truncate">
-            <span className="font-semibold text-slate-700 truncate max-w-[140px]" title={process.serviceName}>
-              {process.serviceName}
+            <span className="font-semibold text-slate-700 truncate max-w-[140px]" title={span.serviceName}>
+              {span.serviceName}
             </span>
             <span className="text-slate-300">/</span>
-            <span className="text-slate-500 truncate" title={span.operationName}>
-              {span.operationName}
+            <span className="text-slate-500 truncate" title={span.name}>
+              {span.name}
             </span>
           </div>
           {hasError && (
@@ -618,10 +628,10 @@ function VirtualSpanRow({
             >
               {showDurationLabel ? (
                 <span className="text-white text-[10px] font-medium whitespace-nowrap drop-shadow-sm">
-                  {formatDuration(span.duration)}
+                  {formatDuration(spanDurationNano)}
                 </span>
               ) : (
-                <span className="sr-only">{formatDuration(span.duration)}</span>
+                <span className="sr-only">{formatDuration(spanDurationNano)}</span>
               )}
             </div>
           </div>
@@ -631,7 +641,7 @@ function VirtualSpanRow({
       {/* Expanded Detail */}
       {isDetailExpanded && (
         <div className="border-b border-slate-200 bg-slate-50/70 px-4 lg:px-6 py-4">
-          <SpanDetail span={span} process={process} traceStartTime={traceStartTime} />
+          <SpanDetail span={span} traceStartNano={traceStartNano} />
         </div>
       )}
     </>
@@ -639,22 +649,24 @@ function VirtualSpanRow({
 }
 
 // ============================================================================
-// SpanDetail 组件 - Jaeger 风格的 Span 详情面板（内联展开）
+// SpanDetail 组件 - Span 详情面板（内联展开）
 // ============================================================================
 
 interface SpanDetailProps {
-  span: SpanTreeNode['span'];
-  process: SpanTreeNode['process'];
-  traceStartTime: number;
+  span: OTelSpan;
+  traceStartNano: number;
 }
 
-function SpanDetail({ span, process, traceStartTime }: SpanDetailProps) {
-  const serviceColor = getServiceColor(process.serviceName);
-  const hasReferences = span.references.length > 0;
-  const hasWarnings = span.warnings && span.warnings.length > 0;
-  const hasEvents = span.logs.length > 0;
-  const hasProcessTags = process.tags.length > 0;
-  const relativeStartTime = span.startTime - traceStartTime;
+function SpanDetail({ span, traceStartNano }: SpanDetailProps) {
+  const serviceColor = getServiceColor(span.serviceName);
+  const hasLinks = (span.links?.length ?? 0) > 0;
+  const hasEvents = (span.events?.length ?? 0) > 0;
+  const hasResource = (span.resource?.length ?? 0) > 0;
+  const hasAttributes = (span.attributes?.length ?? 0) > 0;
+
+  const spanStartNano = Number(span.startTimeUnixNano);
+  const spanDurationNano = Number(span.durationNano) || (Number(span.endTimeUnixNano) - spanStartNano);
+  const relativeStartNano = spanStartNano - traceStartNano;
 
   // 复制到剪贴板
   const copyToClipboard = (text: string) => {
@@ -669,98 +681,97 @@ function SpanDetail({ span, process, traceStartTime }: SpanDetailProps) {
         style={{ borderTopWidth: '3px', borderTopColor: serviceColor }}
       >
         <div className="px-4 py-3 bg-white">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2">
-            <OverviewItem label="Service" value={process.serviceName} />
-            <OverviewItem label="Duration" value={formatDuration(span.duration)} bold />
-            <OverviewItem label="Start Time" value={formatDuration(relativeStartTime)} />
-            <OverviewItem label="Absolute Time" value={formatTimestamp(span.startTime)} small />
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-x-6 gap-y-2">
+            <OverviewItem label="Service" value={span.serviceName} />
+            <OverviewItem label="Duration" value={formatDuration(spanDurationNano)} bold />
+            <OverviewItem label="Start Time" value={formatDuration(relativeStartNano)} />
+            <OverviewItem label="Kind" value={formatSpanKind(span.kind)} />
+            <OverviewItem label="Absolute Time" value={formatTimestamp(spanStartNano)} small />
           </div>
         </div>
       </div>
 
+      {/* Status */}
+      {span.status && (
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-gray-500 font-medium">Status:</span>
+          <span className={`px-2 py-0.5 rounded-full font-semibold text-[10px] ${
+            span.status.code === 'STATUS_CODE_ERROR'
+              ? 'bg-red-100 text-red-700'
+              : span.status.code === 'STATUS_CODE_OK'
+                ? 'bg-green-100 text-green-700'
+                : 'bg-gray-100 text-gray-600'
+          }`}>
+            {span.status.code.replace('STATUS_CODE_', '')}
+          </span>
+          {span.status.message && (
+            <span className="text-gray-500 truncate">{span.status.message}</span>
+          )}
+        </div>
+      )}
+
       {/* Accordion 区域 */}
       <div className="space-y-2">
-        {/* Attributes (Tags) — 默认展开 */}
-        {span.tags.length > 0 && (
+        {/* Attributes */}
+        {hasAttributes && (
           <AccordionSection
             title="Attributes"
             icon="fa-tags"
-            count={span.tags.length}
+            count={span.attributes!.length}
             defaultOpen={true}
-            summary={<TagsSummary tags={span.tags} />}
+            summary={<AttributesSummary attributes={span.attributes!} />}
           >
-            <KeyValueTable items={span.tags} />
+            <KeyValueTable items={span.attributes!} />
           </AccordionSection>
         )}
 
-        {/* Events (Logs) */}
+        {/* Events */}
         {hasEvents && (
           <AccordionSection
             title="Events"
             icon="fa-list-ol"
-            count={span.logs.length}
+            count={span.events!.length}
             defaultOpen={false}
           >
-            <EventsList events={span.logs} traceStartTime={traceStartTime} />
+            <EventsList events={span.events!} traceStartNano={traceStartNano} />
           </AccordionSection>
         )}
 
-        {/* Process / Resource */}
-        {hasProcessTags && (
+        {/* Resource */}
+        {hasResource && (
           <AccordionSection
             title="Resource"
             icon="fa-server"
-            count={process.tags.length}
+            count={span.resource!.length}
             defaultOpen={false}
-            summary={<TagsSummary tags={process.tags} maxItems={3} />}
+            summary={<AttributesSummary attributes={span.resource!} maxItems={3} />}
           >
-            <KeyValueTable items={process.tags} />
+            <KeyValueTable items={span.resource!} />
           </AccordionSection>
         )}
 
-        {/* References / Links */}
-        {hasReferences && (
+        {/* Links */}
+        {hasLinks && (
           <AccordionSection
-            title="References"
+            title="Links"
             icon="fa-link"
-            count={span.references.length}
+            count={span.links!.length}
             defaultOpen={false}
           >
             <div className="space-y-1.5">
-              {span.references.map((ref, i) => (
+              {span.links!.map((link, i) => (
                 <div key={i} className="flex items-center gap-2 text-xs py-1">
-                  <span
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                      ref.refType === 'CHILD_OF'
-                        ? 'bg-blue-50 text-blue-600 border border-blue-200'
-                        : 'bg-purple-50 text-purple-600 border border-purple-200'
-                    }`}
-                  >
-                    {ref.refType}
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-600 border border-blue-200">
+                    LINK
                   </span>
-                  <span className="font-mono text-gray-500 truncate" title={ref.spanID}>
-                    {ref.spanID}
+                  <span className="font-mono text-gray-500 truncate" title={`trace:${link.traceId} span:${link.spanId}`}>
+                    {link.traceId.substring(0, 8)}...:{link.spanId.substring(0, 8)}...
                   </span>
-                </div>
-              ))}
-            </div>
-          </AccordionSection>
-        )}
-
-        {/* Warnings */}
-        {hasWarnings && (
-          <AccordionSection
-            title="Warnings"
-            icon="fa-exclamation-triangle"
-            count={span.warnings!.length}
-            defaultOpen={true}
-            variant="warning"
-          >
-            <div className="space-y-1.5">
-              {span.warnings!.map((warning, i) => (
-                <div key={i} className="text-xs text-amber-700 flex items-start gap-2 py-1">
-                  <i className="fas fa-exclamation-circle text-amber-500 mt-0.5 flex-shrink-0 text-[10px]" />
-                  <span>{warning}</span>
+                  {link.attributes && link.attributes.length > 0 && (
+                    <span className="text-gray-400 text-[10px]">
+                      ({link.attributes.length} attrs)
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -768,15 +779,22 @@ function SpanDetail({ span, process, traceStartTime }: SpanDetailProps) {
         )}
       </div>
 
-      {/* Footer - Debug Info（参考 Jaeger） */}
+      {/* Footer - Debug Info */}
       <div className="flex items-center justify-between px-1 pt-1">
         <div className="text-xs text-gray-400 flex items-center gap-1.5 min-w-0">
           <span className="text-gray-500 font-medium flex-shrink-0">SpanID:</span>
-          <span className="font-mono truncate" title={span.spanID}>{span.spanID}</span>
+          <span className="font-mono truncate" title={span.spanId}>{span.spanId}</span>
+          {span.parentSpanId && (
+            <>
+              <span className="text-gray-300 mx-1">|</span>
+              <span className="text-gray-500 font-medium flex-shrink-0">Parent:</span>
+              <span className="font-mono truncate" title={span.parentSpanId}>{span.parentSpanId.substring(0, 8)}...</span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0 ml-3">
           <button
-            onClick={(e) => { e.stopPropagation(); copyToClipboard(span.spanID); }}
+            onClick={(e) => { e.stopPropagation(); copyToClipboard(span.spanId); }}
             className="px-2.5 py-1 text-[11px] text-gray-500 hover:text-gray-700 bg-white border border-gray-200 hover:border-gray-300 rounded-md transition flex items-center gap-1.5"
             title="Copy Span ID"
           >
@@ -786,7 +804,7 @@ function SpanDetail({ span, process, traceStartTime }: SpanDetailProps) {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              const deepLink = `${window.location.origin}${window.location.pathname}?uiFind=${span.spanID}`;
+              const deepLink = `${window.location.origin}${window.location.pathname}?uiFind=${span.spanId}`;
               copyToClipboard(deepLink);
             }}
             className="px-2.5 py-1 text-[11px] text-gray-500 hover:text-gray-700 bg-white border border-gray-200 hover:border-gray-300 rounded-md transition flex items-center gap-1.5"
@@ -831,7 +849,7 @@ function OverviewItem({
 }
 
 // ============================================================================
-// AccordionSection - 可折叠的内容区域（Jaeger 风格）
+// AccordionSection - 可折叠的内容区域
 // ============================================================================
 
 interface AccordionSectionProps {
@@ -909,32 +927,35 @@ function AccordionSection({
 }
 
 // ============================================================================
-// TagsSummary - 折叠时的 Tags 摘要（参考 Jaeger 的 AttributesSummary）
+// AttributesSummary - 折叠时的 Attributes 摘要
 // ============================================================================
 
-function TagsSummary({
-  tags,
+function AttributesSummary({
+  attributes,
   maxItems = 5,
 }: {
-  tags: JaegerKeyValue[];
+  attributes: KeyValue[];
   maxItems?: number;
 }) {
-  const displayTags = tags.slice(0, maxItems);
-  const remaining = tags.length - maxItems;
+  const displayAttrs = attributes.slice(0, maxItems);
+  const remaining = attributes.length - maxItems;
 
   return (
     <div className="flex flex-wrap gap-1">
-      {displayTags.map((tag, i) => (
-        <span
-          key={i}
-          className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-gray-100 text-gray-600 font-mono max-w-[200px] truncate"
-          title={`${tag.key}=${String(tag.value)}`}
-        >
-          <span className="text-gray-400">{tag.key}</span>
-          <span className="text-gray-300 mx-0.5">=</span>
-          <span className="truncate">{String(tag.value)}</span>
-        </span>
-      ))}
+      {displayAttrs.map((attr, i) => {
+        const displayVal = String(anyValueToDisplay(attr.value));
+        return (
+          <span
+            key={i}
+            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-gray-100 text-gray-600 font-mono max-w-[200px] truncate"
+            title={`${attr.key}=${displayVal}`}
+          >
+            <span className="text-gray-400">{attr.key}</span>
+            <span className="text-gray-300 mx-0.5">=</span>
+            <span className="truncate">{displayVal}</span>
+          </span>
+        );
+      })}
       {remaining > 0 && (
         <span className="text-[10px] text-gray-400 self-center">
           +{remaining} more
@@ -948,7 +969,7 @@ function TagsSummary({
 // KeyValueTable - 通用 key-value 表格（带 hover 复制按钮）
 // ============================================================================
 
-function KeyValueTable({ items }: { items: JaegerKeyValue[] }) {
+function KeyValueTable({ items }: { items: KeyValue[] }) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   const handleCopy = useCallback((value: string, index: number) => {
@@ -961,30 +982,33 @@ function KeyValueTable({ items }: { items: JaegerKeyValue[] }) {
     <div className="rounded border border-gray-200 overflow-hidden">
       <table className="w-full text-xs">
         <tbody>
-          {items.map((tag, i) => (
-            <tr
-              key={i}
-              className={`group ${i % 2 === 0 ? 'bg-gray-50/50' : 'bg-white'} hover:bg-blue-50/30 transition-colors`}
-            >
-              <td className="px-2.5 py-1.5 font-mono text-gray-500 w-2/5 align-top">
-                {tag.key}
-              </td>
-              <td className="px-2.5 py-1.5 text-gray-800 align-top">
-                <div className="flex items-start justify-between gap-1">
-                  <span className="break-all">
-                    <TagValue tag={tag} />
-                  </span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleCopy(String(tag.value), i); }}
-                    className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-300 hover:text-gray-500 transition flex-shrink-0"
-                    title="Copy value"
-                  >
-                    <i className={`fas ${copiedIndex === i ? 'fa-check text-green-500' : 'fa-copy'} text-[9px]`} />
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
+          {items.map((attr, i) => {
+            const displayVal = String(anyValueToDisplay(attr.value));
+            return (
+              <tr
+                key={i}
+                className={`group ${i % 2 === 0 ? 'bg-gray-50/50' : 'bg-white'} hover:bg-blue-50/30 transition-colors`}
+              >
+                <td className="px-2.5 py-1.5 font-mono text-gray-500 w-2/5 align-top">
+                  {attr.key}
+                </td>
+                <td className="px-2.5 py-1.5 text-gray-800 align-top">
+                  <div className="flex items-start justify-between gap-1">
+                    <span className="break-all">
+                      <AttributeValue attr={attr} />
+                    </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleCopy(displayVal, i); }}
+                      className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-300 hover:text-gray-500 transition flex-shrink-0"
+                      title="Copy value"
+                    >
+                      <i className={`fas ${copiedIndex === i ? 'fa-check text-green-500' : 'fa-copy'} text-[9px]`} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -992,41 +1016,42 @@ function KeyValueTable({ items }: { items: JaegerKeyValue[] }) {
 }
 
 // ============================================================================
-// TagValue - 格式化 Tag 值显示
+// AttributeValue - 格式化 Attribute 值显示
 // ============================================================================
 
-function TagValue({ tag }: { tag: JaegerKeyValue }) {
-  const val = String(tag.value);
+function AttributeValue({ attr }: { attr: KeyValue }) {
+  const val = anyValueToDisplay(attr.value);
+  const strVal = String(val);
 
-  // 错误标签高亮
-  if (tag.key === 'error' && tag.value === true) {
+  // 错误状态高亮
+  if (attr.key === 'error' && attr.value.boolValue === true) {
     return <span className="text-red-600 font-semibold">true</span>;
   }
-  if (tag.key === 'otel.status_code' && tag.value === 'ERROR') {
+  if (attr.key === 'otel.status_code' && attr.value.stringValue === 'ERROR') {
     return <span className="text-red-600 font-semibold">ERROR</span>;
   }
-  if (tag.key === 'http.status_code') {
-    const code = Number(val);
+  if (attr.key === 'http.status_code' || attr.key === 'http.response.status_code') {
+    const code = Number(strVal);
     if (code >= 400) {
-      return <span className="text-red-600 font-semibold">{val}</span>;
+      return <span className="text-red-600 font-semibold">{strVal}</span>;
     }
     if (code >= 300) {
-      return <span className="text-yellow-600">{val}</span>;
+      return <span className="text-yellow-600">{strVal}</span>;
     }
-    return <span className="text-green-600">{val}</span>;
+    return <span className="text-green-600">{strVal}</span>;
   }
 
   // 布尔值
-  if (typeof tag.value === 'boolean') {
-    return <span className={tag.value ? 'text-green-600' : 'text-gray-400'}>{val}</span>;
+  if (attr.value.boolValue !== undefined) {
+    return <span className={attr.value.boolValue ? 'text-green-600' : 'text-gray-400'}>{strVal}</span>;
   }
 
-  // 长文本（如 JSON）尝试格式化
-  if (typeof tag.value === 'string' && tag.value.length > 100) {
-    return <LongValueDisplay value={tag.value} />;
+  // 长文本尝试格式化
+  if (typeof val === 'string' && val.length > 100) {
+    return <LongValueDisplay value={val} />;
   }
 
-  return <span className="break-all">{val}</span>;
+  return <span className="break-all">{strVal}</span>;
 }
 
 // ============================================================================
@@ -1054,15 +1079,15 @@ function LongValueDisplay({ value }: { value: string }) {
 }
 
 // ============================================================================
-// EventsList - Events/Logs 列表
+// EventsList - Events 列表
 // ============================================================================
 
 function EventsList({
   events,
-  traceStartTime,
+  traceStartNano,
 }: {
-  events: SpanTreeNode['span']['logs'];
-  traceStartTime: number;
+  events: OTelSpan['events'] & {};
+  traceStartNano: number;
 }) {
   const [expandedEvents, setExpandedEvents] = useState<Set<number>>(new Set());
 
@@ -1080,9 +1105,10 @@ function EventsList({
 
   return (
     <div className="space-y-1.5">
-      {events.map((log, i) => {
+      {events.map((event, i) => {
         const isExpanded = expandedEvents.has(i);
-        const relativeTime = log.timestamp - traceStartTime;
+        const eventTimeNano = Number(event.timeUnixNano);
+        const relativeNano = eventTimeNano - traceStartNano;
 
         return (
           <div
@@ -1100,32 +1126,30 @@ function EventsList({
                 }`}
               />
               <span className="font-mono text-gray-500">
-                {formatDuration(relativeTime)}
+                {formatDuration(relativeNano)}
               </span>
-              {/* 显示第一个 field 作为摘要 */}
-              {log.fields.length > 0 && log.fields[0] && (
-                <span className="text-gray-400 truncate">
-                  {log.fields[0].key}: {String(log.fields[0].value).substring(0, 50)}
-                  {String(log.fields[0].value).length > 50 ? '...' : ''}
+              <span className="text-gray-600 font-medium truncate">
+                {event.name}
+              </span>
+              {event.attributes && event.attributes.length > 0 && (
+                <span className="ml-auto text-[10px] text-gray-300 flex-shrink-0">
+                  {event.attributes.length} attr{event.attributes.length !== 1 ? 's' : ''}
                 </span>
               )}
-              <span className="ml-auto text-[10px] text-gray-300 flex-shrink-0">
-                {log.fields.length} field{log.fields.length !== 1 ? 's' : ''}
-              </span>
             </button>
 
-            {/* Event Fields */}
-            {isExpanded && (
+            {/* Event Attributes */}
+            {isExpanded && event.attributes && event.attributes.length > 0 && (
               <div className="border-t border-gray-100 bg-white">
                 <table className="w-full text-xs">
                   <tbody>
-                    {log.fields.map((field, j) => (
+                    {event.attributes.map((attr, j) => (
                       <tr key={j} className={j % 2 === 0 ? 'bg-gray-50/30' : ''}>
                         <td className="px-2.5 py-1 font-mono text-gray-500 w-1/3 align-top">
-                          {field.key}
+                          {attr.key}
                         </td>
                         <td className="px-2.5 py-1 text-gray-700 break-all align-top">
-                          {String(field.value)}
+                          {String(anyValueToDisplay(attr.value))}
                         </td>
                       </tr>
                     ))}

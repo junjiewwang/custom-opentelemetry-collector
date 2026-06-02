@@ -1,32 +1,30 @@
 /**
  * Metric 数据工具函数
  *
- * 从 Prometheus API 响应数据中提取和转换前端展示用数据。
+ * 从 OTel V2 API 响应数据中提取和转换前端展示用数据。
  */
 
 import type {
-  PrometheusMatrixResult,
-  PrometheusQueryResult,
+  MetricRangeResult,
   ChartSeries,
   TimeRangePreset,
   MetricPanel,
 } from '@/types/metric';
 
 /**
- * 将 Prometheus Matrix 结果转换为 ECharts 图表系列数据。
+ * 将 MetricRangeResult 转换为 ECharts 图表系列数据。
  */
-export function matrixToChartSeries(result: PrometheusQueryResult): ChartSeries[] {
-  if (result.resultType !== 'matrix') return [];
+export function seriesToChartSeries(result: MetricRangeResult): ChartSeries[] {
+  if (!result.data || result.data.length === 0) return [];
 
-  const matrixResults = result.result as PrometheusMatrixResult[];
-  return matrixResults.map((item) => {
-    const name = formatMetricLabels(item.metric);
+  return result.data.map((series) => {
+    const name = formatMetricLabels(series.labels);
     return {
       name,
-      labels: item.metric,
-      data: item.values.map(([timestamp, value]) => ({
-        time: timestamp * 1000, // 秒转毫秒
-        value: parseFloat(value),
+      labels: series.labels,
+      data: series.values.map((tv) => ({
+        time: Number(tv.timeUnixNano) / 1_000_000, // 纳秒转毫秒
+        value: tv.value,
       })),
     };
   });
@@ -36,12 +34,11 @@ export function matrixToChartSeries(result: PrometheusQueryResult): ChartSeries[
  * 格式化 Metric labels 为人类可读字符串。
  */
 export function formatMetricLabels(labels: Record<string, string>): string {
-  // 排除 __name__ 后的标签
-  const filtered = Object.entries(labels).filter(([k]) => k !== '__name__');
+  const filtered = Object.entries(labels).filter(([k]) => k !== '__name__' && k !== 'metric');
   if (filtered.length === 0) {
-    return labels['__name__'] ?? 'unknown';
+    return labels['__name__'] ?? labels['metric'] ?? 'unknown';
   }
-  const metricName = labels['__name__'] ?? '';
+  const metricName = labels['__name__'] ?? labels['metric'] ?? '';
   const labelStr = filtered.map(([k, v]) => `${k}="${v}"`).join(', ');
   return metricName ? `${metricName}{${labelStr}}` : `{${labelStr}}`;
 }
@@ -101,15 +98,14 @@ export const TIME_RANGE_PRESETS: TimeRangePreset[] = [
 /**
  * 预设的 RED 指标面板（Rate / Error / Duration）。
  *
- * 使用 $service 变量占位，运行时替换为实际 service 名称。
+ * 使用 OTel metric names + service filter。
  */
 export const RED_PANELS: MetricPanel[] = [
   {
     id: 'request_rate',
     title: 'Request Rate',
     description: '每秒请求数 (QPS)',
-    query: 'sum(rate(http_server_request_duration_seconds_count{service_name="$service"}[5m]))',
-    variables: [{ name: '$service', label: 'Service' }],
+    metric: 'http_server_request_duration_seconds_count',
     chartType: 'area',
     unit: 'ops',
   },
@@ -117,8 +113,7 @@ export const RED_PANELS: MetricPanel[] = [
     id: 'error_rate',
     title: 'Error Rate',
     description: '错误率百分比',
-    query: 'sum(rate(http_server_request_duration_seconds_count{service_name="$service",http_response_status_code=~"5.."}[5m])) / sum(rate(http_server_request_duration_seconds_count{service_name="$service"}[5m])) * 100',
-    variables: [{ name: '$service', label: 'Service' }],
+    metric: 'http_server_request_error_count',
     chartType: 'area',
     unit: 'percent',
   },
@@ -126,8 +121,7 @@ export const RED_PANELS: MetricPanel[] = [
     id: 'latency_p50',
     title: 'Latency P50',
     description: '50th percentile 延迟',
-    query: 'histogram_quantile(0.50, sum(rate(http_server_request_duration_seconds_bucket{service_name="$service"}[5m])) by (le))',
-    variables: [{ name: '$service', label: 'Service' }],
+    metric: 'http_server_request_duration_seconds_p50',
     chartType: 'line',
     unit: 'seconds',
   },
@@ -135,8 +129,7 @@ export const RED_PANELS: MetricPanel[] = [
     id: 'latency_p95',
     title: 'Latency P95',
     description: '95th percentile 延迟',
-    query: 'histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{service_name="$service"}[5m])) by (le))',
-    variables: [{ name: '$service', label: 'Service' }],
+    metric: 'http_server_request_duration_seconds_p95',
     chartType: 'line',
     unit: 'seconds',
   },
@@ -144,8 +137,7 @@ export const RED_PANELS: MetricPanel[] = [
     id: 'latency_p99',
     title: 'Latency P99',
     description: '99th percentile 延迟',
-    query: 'histogram_quantile(0.99, sum(rate(http_server_request_duration_seconds_bucket{service_name="$service"}[5m])) by (le))',
-    variables: [{ name: '$service', label: 'Service' }],
+    metric: 'http_server_request_duration_seconds_p99',
     chartType: 'line',
     unit: 'seconds',
   },
@@ -153,23 +145,12 @@ export const RED_PANELS: MetricPanel[] = [
     id: 'request_by_status',
     title: 'Requests by Status Code',
     description: '按 HTTP 状态码分组的请求速率',
-    query: 'sum(rate(http_server_request_duration_seconds_count{service_name="$service"}[5m])) by (http_response_status_code)',
-    variables: [{ name: '$service', label: 'Service' }],
+    metric: 'http_server_request_duration_seconds_count',
+    labels: { http_response_status_code: '*' },
     chartType: 'area',
     unit: 'ops',
   },
 ];
-
-/**
- * 替换 PromQL 查询中的变量。
- */
-export function resolveQuery(query: string, variables: Record<string, string>): string {
-  let resolved = query;
-  for (const [key, value] of Object.entries(variables)) {
-    resolved = resolved.replaceAll(key, value);
-  }
-  return resolved;
-}
 
 /**
  * 图表颜色调色板。

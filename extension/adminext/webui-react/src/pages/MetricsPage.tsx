@@ -1,8 +1,8 @@
 /**
- * Metrics 页面 - Prometheus 指标数据查询与可视化
+ * Metrics 页面 - 指标数据查询与可视化
  *
  * 功能：
- * - PromQL 查询输入（支持自定义查询 + 预设面板）
+ * - 指标名称查询（支持自定义 metric + 预设面板）
  * - 时间范围选择器
  * - ECharts 时间序列图表（折线/面积）
  * - 预设 RED Dashboard 面板（Rate / Error / Duration）
@@ -15,11 +15,10 @@ import { apiClient } from '@/api/client';
 import TimeSeriesChart from '@/components/TimeSeriesChart';
 import type { ChartSeries } from '@/types/metric';
 import {
-  matrixToChartSeries,
+  seriesToChartSeries,
   calculateStep,
   TIME_RANGE_PRESETS,
   RED_PANELS,
-  resolveQuery,
 } from '@/utils/metric';
 
 /** 查询面板 Tab 类型 */
@@ -33,8 +32,9 @@ export default function MetricsPage() {
   // Tab 切换
   const [activeTab, setActiveTab] = useState<TabType>('query');
 
-  // PromQL 查询面板
-  const [queryInput, setQueryInput] = useState('');
+  // Metric 查询面板
+  const [metricInput, setMetricInput] = useState('');
+  const [serviceFilter, setServiceFilter] = useState('');
   const [timeRange, setTimeRange] = useState('1h');
   const [chartSeries, setChartSeries] = useState<ChartSeries[]>([]);
   const [queryLoading, setQueryLoading] = useState(false);
@@ -45,8 +45,11 @@ export default function MetricsPage() {
   const [services, setServices] = useState<string[]>([]);
   const [redPanelData, setRedPanelData] = useState<Record<string, { series: ChartSeries[]; loading: boolean; error: string }>>({});
 
-  // Prometheus 可用性
-  const [prometheusAvailable, setPrometheusAvailable] = useState<boolean | null>(null);
+  // Metric backend 可用性
+  const [metricsAvailable, setMetricsAvailable] = useState<boolean | null>(null);
+
+  // Metric names (autocomplete)
+  const [metricNames, setMetricNames] = useState<string[]>([]);
 
   // 路由
   const navigate = useNavigate();
@@ -65,48 +68,57 @@ export default function MetricsPage() {
   }, [searchParams]);
 
   // ========================================================================
-  // 检查 Prometheus 可用性
+  // 检查 Metric backend 可用性
   // ========================================================================
 
   useEffect(() => {
-    checkPrometheusAvailability();
+    checkMetricsAvailability();
   }, []);
 
-  const checkPrometheusAvailability = async () => {
+  const checkMetricsAvailability = async () => {
     try {
       await apiClient.getMetricLabels();
-      setPrometheusAvailable(true);
+      setMetricsAvailable(true);
     } catch {
-      setPrometheusAvailable(false);
+      setMetricsAvailable(false);
     }
   };
 
   // ========================================================================
-  // 加载 Service 列表（从 Trace Services 复用，或从 Prometheus label 获取）
+  // 加载 Service 列表 + Metric Names
   // ========================================================================
 
   useEffect(() => {
-    if (prometheusAvailable) {
+    if (metricsAvailable) {
       loadServices();
+      loadMetricNames();
     }
-  }, [prometheusAvailable]);
+  }, [metricsAvailable]);
 
   const loadServices = async () => {
     try {
-      // 优先从 Prometheus 的 service_name label 获取
       const resp = await apiClient.getMetricLabelValues('service_name');
-      if (resp.status === 'success' && resp.data) {
+      if (resp.data) {
         setServices(resp.data.sort());
         return;
       }
     } catch {
-      // 降级尝试从 Jaeger 获取
+      // 降级尝试从 Trace API 获取
       try {
         const resp = await apiClient.getTraceServices();
-        setServices(resp.data?.sort() ?? []);
+        setServices(resp.data.map(s => s.name).sort());
       } catch {
         setServices([]);
       }
+    }
+  };
+
+  const loadMetricNames = async () => {
+    try {
+      const resp = await apiClient.getMetricNames();
+      setMetricNames(resp.data ?? []);
+    } catch {
+      setMetricNames([]);
     }
   };
 
@@ -117,19 +129,19 @@ export default function MetricsPage() {
   const getTimeParams = useCallback(() => {
     const preset = TIME_RANGE_PRESETS.find(p => p.value === timeRange);
     const seconds = preset?.seconds ?? 3600;
-    const end = Math.floor(Date.now() / 1000);
-    const start = end - seconds;
+    const end = Date.now();  // Unix ms
+    const start = end - seconds * 1000;
     const step = calculateStep(seconds);
     return { start, end, step, seconds };
   }, [timeRange]);
 
   // ========================================================================
-  // 执行 PromQL 查询
+  // 执行 Metric 查询
   // ========================================================================
 
   const executeQuery = useCallback(async () => {
-    if (!queryInput.trim()) {
-      setQueryError('Please enter a PromQL query');
+    if (!metricInput.trim()) {
+      setQueryError('Please enter a metric name');
       return;
     }
 
@@ -138,15 +150,15 @@ export default function MetricsPage() {
 
     try {
       const { start, end, step } = getTimeParams();
-      const resp = await apiClient.metricQueryRange(queryInput.trim(), start, end, step);
+      const resp = await apiClient.metricQueryRange({
+        metric: metricInput.trim(),
+        service: serviceFilter || undefined,
+        start,
+        end,
+        step,
+      });
 
-      if (resp.status !== 'success') {
-        setQueryError(resp.error ?? 'Query failed');
-        setChartSeries([]);
-        return;
-      }
-
-      const series = matrixToChartSeries(resp.data);
+      const series = seriesToChartSeries(resp);
       setChartSeries(series);
 
       if (series.length === 0) {
@@ -159,7 +171,7 @@ export default function MetricsPage() {
     } finally {
       setQueryLoading(false);
     }
-  }, [queryInput, getTimeParams]);
+  }, [metricInput, serviceFilter, getTimeParams]);
 
   // ========================================================================
   // 加载 RED Dashboard 面板数据
@@ -181,18 +193,18 @@ export default function MetricsPage() {
     await Promise.all(
       RED_PANELS.map(async (panel) => {
         try {
-          const resolvedQuery = resolveQuery(panel.query, { '$service': redService });
-          const resp = await apiClient.metricQueryRange(resolvedQuery, start, end, step);
+          const resp = await apiClient.metricQueryRange({
+            metric: panel.metric,
+            service: redService,
+            labels: panel.labels
+              ? Object.entries(panel.labels).map(([k, v]) => `${k}:${v}`).join(',')
+              : undefined,
+            start,
+            end,
+            step,
+          });
 
-          if (resp.status !== 'success') {
-            setRedPanelData(prev => ({
-              ...prev,
-              [panel.id]: { series: [], loading: false, error: resp.error ?? 'Query failed' },
-            }));
-            return;
-          }
-
-          const series = matrixToChartSeries(resp.data);
+          const series = seriesToChartSeries(resp);
           setRedPanelData(prev => ({
             ...prev,
             [panel.id]: { series, loading: false, error: '' },
@@ -216,15 +228,15 @@ export default function MetricsPage() {
   }, [redService, activeTab, loadRedPanels]);
 
   // ========================================================================
-  // 示例 PromQL 查询
+  // 示例 Metric 查询
   // ========================================================================
 
-  const exampleQueries = [
-    { label: 'CPU Usage', query: 'process_cpu_seconds_total' },
-    { label: 'Memory Usage', query: 'process_resident_memory_bytes' },
-    { label: 'HTTP Requests Rate', query: 'sum(rate(http_server_request_duration_seconds_count[5m])) by (service_name)' },
-    { label: 'Go Goroutines', query: 'go_goroutines' },
-    { label: 'Up Status', query: 'up' },
+  const exampleMetrics = [
+    { label: 'HTTP Request Duration', metric: 'http_server_request_duration_seconds' },
+    { label: 'HTTP Request Count', metric: 'http_server_request_duration_seconds_count' },
+    { label: 'CPU Usage', metric: 'process_cpu_seconds_total' },
+    { label: 'Memory Usage', metric: 'process_resident_memory_bytes' },
+    { label: 'Go Goroutines', metric: 'go_goroutines' },
   ];
 
   // ========================================================================
@@ -240,25 +252,25 @@ export default function MetricsPage() {
           Metrics
         </h2>
         <p className="text-gray-500 mt-1">
-          查询和可视化 Prometheus 指标数据
+          查询和可视化 OTel 指标数据
         </p>
       </div>
 
-      {/* Prometheus Not Available */}
-      {prometheusAvailable === false && (
+      {/* Metrics Not Available */}
+      {metricsAvailable === false && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
           <div className="w-16 h-16 bg-yellow-50 rounded-full flex items-center justify-center mx-auto mb-4">
             <i className="fas fa-exclamation-triangle text-yellow-500 text-xl" />
           </div>
-          <h3 className="text-lg font-semibold text-gray-700 mb-2">Prometheus Backend Not Available</h3>
+          <h3 className="text-lg font-semibold text-gray-700 mb-2">Metric Storage Not Available</h3>
           <p className="text-gray-500 text-sm max-w-md mx-auto">
-            请在 Collector 配置中设置 <code className="bg-gray-100 px-1 rounded">admin.observability.prometheus.endpoint</code> 以启用 Metric 查询功能。
+            请在 Collector 配置中启用 Observability Storage Extension 以启用 Metric 查询功能。
           </p>
         </div>
       )}
 
       {/* Main Content */}
-      {prometheusAvailable === true && (
+      {metricsAvailable === true && (
         <>
           {/* Tab Switcher */}
           <div className="flex items-center gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
@@ -271,7 +283,7 @@ export default function MetricsPage() {
               }`}
             >
               <i className="fas fa-terminal mr-2" />
-              PromQL Query
+              Metric Query
             </button>
             <button
               onClick={() => setActiveTab('red')}
@@ -309,42 +321,55 @@ export default function MetricsPage() {
             </div>
           </div>
 
-          {/* ===================== PromQL Query Tab ===================== */}
+          {/* ===================== Metric Query Tab ===================== */}
           {activeTab === 'query' && (
             <div>
               {/* Query Input */}
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
                 <div className="flex items-center gap-3">
                   <div className="flex-1">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">PromQL Expression</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Metric Name</label>
                     <div className="flex gap-2">
                       <input
                         type="text"
-                        value={queryInput}
-                        onChange={(e) => setQueryInput(e.target.value)}
+                        value={metricInput}
+                        onChange={(e) => setMetricInput(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && executeQuery()}
-                        placeholder='e.g. rate(http_server_request_duration_seconds_count[5m])'
+                        placeholder='e.g. http_server_request_duration_seconds'
+                        list="metric-names-datalist"
                         className="flex-1 px-4 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                      />
+                      <datalist id="metric-names-datalist">
+                        {metricNames.slice(0, 50).map(name => (
+                          <option key={name} value={name} />
+                        ))}
+                      </datalist>
+                      <input
+                        type="text"
+                        value={serviceFilter}
+                        onChange={(e) => setServiceFilter(e.target.value)}
+                        placeholder="Service filter (optional)"
+                        className="w-48 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                       />
                       <button
                         onClick={executeQuery}
-                        disabled={queryLoading || !queryInput.trim()}
+                        disabled={queryLoading || !metricInput.trim()}
                         className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition flex items-center gap-2 disabled:opacity-50"
                       >
                         {queryLoading ? <i className="fas fa-spinner fa-spin" /> : <i className="fas fa-play" />}
-                        <span>Execute</span>
+                        <span>Query</span>
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Example Queries */}
+                {/* Example Metrics */}
                 <div className="mt-3 flex items-center gap-2 flex-wrap">
                   <span className="text-xs text-gray-400">Examples:</span>
-                  {exampleQueries.map(eq => (
+                  {exampleMetrics.map(eq => (
                     <button
                       key={eq.label}
-                      onClick={() => setQueryInput(eq.query)}
+                      onClick={() => setMetricInput(eq.metric)}
                       className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded hover:bg-gray-200 transition"
                     >
                       {eq.label}
@@ -470,10 +495,10 @@ export default function MetricsPage() {
       )}
 
       {/* Loading State */}
-      {prometheusAvailable === null && (
+      {metricsAvailable === null && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
           <i className="fas fa-spinner fa-spin text-primary-400 text-2xl mb-4" />
-          <p className="text-gray-500">Checking Prometheus backend...</p>
+          <p className="text-gray-500">Checking metric backend...</p>
         </div>
       )}
     </div>

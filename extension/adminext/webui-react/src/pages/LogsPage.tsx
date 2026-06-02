@@ -17,9 +17,9 @@ import type {
   LogSearchResult,
   LogSearchParams,
   LogStats,
-  LogField,
 } from '@/types/log';
 import { SEVERITY_COLORS } from '@/types/log';
+import { formatTimestamp, anyValueToDisplay } from '@/utils/trace';
 
 // ============================================================================
 // 常量
@@ -71,7 +71,6 @@ export default function LogsPage() {
 
   // Available services (from trace services endpoint or log fields)
   const [services, setServices] = useState<string[]>([]);
-  const [fields, setFields] = useState<LogField[]>([]);
 
   // Availability check
   const [logsAvailable, setLogsAvailable] = useState<boolean | null>(null);
@@ -87,7 +86,7 @@ export default function LogsPage() {
     apiClient.getTraceServices()
       .then(res => {
         if (res.data) {
-          setServices(res.data);
+          setServices(res.data.map(s => s.name));
         }
         setLogsAvailable(true);
       })
@@ -95,11 +94,6 @@ export default function LogsPage() {
         // Fallback: try log fields
         setLogsAvailable(true);
       });
-
-    // Load available fields
-    apiClient.getLogFields()
-      .then(setFields)
-      .catch(() => { /* ignore */ });
   }, []);
 
   // ========================================================================
@@ -209,7 +203,7 @@ export default function LogsPage() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">日志查询</h1>
         {stats && (
           <div className="text-sm text-gray-500">
-            共 {stats.total_count.toLocaleString()} 条日志
+            共 {stats.totalCount.toLocaleString()} 条日志
           </div>
         )}
       </div>
@@ -318,11 +312,11 @@ export default function LogsPage() {
       </div>
 
       {/* Stats Bar */}
-      {stats && stats.severity_counts && Object.keys(stats.severity_counts).length > 0 && (
+      {stats && stats.severityCounts && Object.keys(stats.severityCounts).length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-3">
           <div className="flex items-center gap-4 text-sm">
             <span className="text-gray-500 font-medium">Severity 分布:</span>
-            {Object.entries(stats.severity_counts)
+            {Object.entries(stats.severityCounts)
               .sort(([a], [b]) => (SEVERITY_OPTIONS.indexOf(a) - SEVERITY_OPTIONS.indexOf(b)))
               .map(([sev, count]) => (
                 <span
@@ -418,14 +412,7 @@ interface LogRowProps {
 }
 
 function LogRow({ log, expanded, onToggle }: LogRowProps) {
-  const timestamp = new Date(log.timestamp).toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    fractionalSecondDigits: 3,
-  } as Intl.DateTimeFormatOptions);
+  const timestamp = formatTimestamp(log.timeUnixNano);
 
   return (
     <div className="group">
@@ -437,9 +424,9 @@ function LogRow({ log, expanded, onToggle }: LogRowProps) {
         {/* Severity badge */}
         <span
           className="flex-shrink-0 px-1.5 py-0.5 text-[10px] font-bold rounded text-white mt-0.5"
-          style={{ backgroundColor: SEVERITY_COLORS[log.severity] || '#6b7280' }}
+          style={{ backgroundColor: SEVERITY_COLORS[log.severityText] || '#6b7280' }}
         >
-          {log.severity}
+          {log.severityText}
         </span>
 
         {/* Timestamp */}
@@ -449,7 +436,7 @@ function LogRow({ log, expanded, onToggle }: LogRowProps) {
 
         {/* Service */}
         <span className="flex-shrink-0 text-xs text-blue-600 dark:text-blue-400 font-medium mt-0.5 w-32 truncate">
-          {log.service_name}
+          {log.serviceName}
         </span>
 
         {/* Body */}
@@ -472,12 +459,12 @@ function LogRow({ log, expanded, onToggle }: LogRowProps) {
               <h4 className="font-medium text-gray-700 dark:text-gray-300">元数据</h4>
               <dl className="space-y-1">
                 <LogDetailField label="Log ID" value={log.id} mono />
-                <LogDetailField label="Timestamp" value={log.timestamp} />
-                <LogDetailField label="Service" value={log.service_name} />
-                <LogDetailField label="Severity" value={`${log.severity} (${log.severity_number})`} />
-                {log.trace_id && <LogDetailField label="Trace ID" value={log.trace_id} mono link={`/traces?traceID=${log.trace_id}`} />}
-                {log.span_id && <LogDetailField label="Span ID" value={log.span_id} mono />}
-                {log.app_id && <LogDetailField label="App ID" value={log.app_id} />}
+                <LogDetailField label="Timestamp" value={timestamp} />
+                <LogDetailField label="Service" value={log.serviceName} />
+                <LogDetailField label="Severity" value={`${log.severityText} (${log.severityNumber})`} />
+                {log.traceId && <LogDetailField label="Trace ID" value={log.traceId} mono link={`/traces?traceID=${log.traceId}`} />}
+                {log.spanId && <LogDetailField label="Span ID" value={log.spanId} mono />}
+                {log.appId && <LogDetailField label="App ID" value={log.appId} />}
               </dl>
             </div>
 
@@ -491,17 +478,17 @@ function LogRow({ log, expanded, onToggle }: LogRowProps) {
           </div>
 
           {/* Attributes */}
-          {log.attributes && Object.keys(log.attributes).length > 0 && (
+          {log.attributes && log.attributes.length > 0 && (
             <div className="mt-3 space-y-1">
               <h4 className="font-medium text-gray-700 dark:text-gray-300 text-sm">Attributes</h4>
               <div className="flex flex-wrap gap-1">
-                {Object.entries(log.attributes).map(([key, value]) => (
+                {log.attributes.map(attr => (
                   <span
-                    key={key}
+                    key={attr.key}
                     className="inline-flex items-center px-2 py-0.5 text-xs bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded"
                   >
-                    <span className="font-medium">{key}:</span>
-                    <span className="ml-1">{String(value)}</span>
+                    <span className="font-medium">{attr.key}:</span>
+                    <span className="ml-1">{String(anyValueToDisplay(attr.value))}</span>
                   </span>
                 ))}
               </div>
@@ -509,17 +496,17 @@ function LogRow({ log, expanded, onToggle }: LogRowProps) {
           )}
 
           {/* Resource */}
-          {log.resource && Object.keys(log.resource).length > 0 && (
+          {log.resource && log.resource.length > 0 && (
             <div className="mt-3 space-y-1">
               <h4 className="font-medium text-gray-700 dark:text-gray-300 text-sm">Resource</h4>
               <div className="flex flex-wrap gap-1">
-                {Object.entries(log.resource).map(([key, value]) => (
+                {log.resource.map(attr => (
                   <span
-                    key={key}
+                    key={attr.key}
                     className="inline-flex items-center px-2 py-0.5 text-xs bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded"
                   >
-                    <span className="font-medium">{key}:</span>
-                    <span className="ml-1">{String(value)}</span>
+                    <span className="font-medium">{attr.key}:</span>
+                    <span className="ml-1">{String(anyValueToDisplay(attr.value))}</span>
                   </span>
                 ))}
               </div>

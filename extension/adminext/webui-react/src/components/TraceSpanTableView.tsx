@@ -4,20 +4,20 @@
  * 功能：
  * - 所有 spans 以平铺表格展示
  * - 支持按 Duration / Start Time 排序（点击表头切换 asc/desc）
- * - 搜索过滤框：过滤 service, operation, tag keys/values
+ * - 搜索过滤框：过滤 service, operation, attribute keys/values
  * - Status badge（OK / ERROR）
- * - Tags 列：前 3 个 tag，hover tooltip 显示全部
+ * - Attributes 列：前 3 个 attribute，hover tooltip 显示全部
  * - 行点击高亮
  * - 使用 @tanstack/react-virtual 虚拟滚动
  */
 
 import { useState, useMemo, useRef, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { JaegerTrace, JaegerSpan } from '@/types/trace';
-import { formatDuration, formatTimestamp, getServiceColor } from '@/utils/trace';
+import type { OTelTrace, OTelSpan } from '@/types/trace';
+import { formatDuration, formatTimestamp, getServiceColor, anyValueToDisplay } from '@/utils/trace';
 
 interface TraceViewProps {
-  trace: JaegerTrace;
+  trace: OTelTrace;
 }
 
 // ============================================================================
@@ -29,31 +29,32 @@ type SortOrder = 'asc' | 'desc';
 
 interface FlatSpan {
   index: number;
-  span: JaegerSpan;
+  span: OTelSpan;
   serviceName: string;
   hasError: boolean;
+  durationNano: number;
+  startNano: number;
 }
 
 // ============================================================================
 // 工具函数
 // ============================================================================
 
-function isSpanError(span: JaegerSpan): boolean {
-  return span.tags.some(
-    (t) =>
-      (t.key === 'error' && t.value === true) ||
-      (t.key === 'otel.status_code' && t.value === 'ERROR'),
-  );
+function isSpanError(span: OTelSpan): boolean {
+  return span.status?.code === 'STATUS_CODE_ERROR';
 }
 
 /** 检查 span 是否匹配搜索词 */
 function matchesSearch(item: FlatSpan, query: string): boolean {
   const q = query.toLowerCase();
   if (item.serviceName.toLowerCase().includes(q)) return true;
-  if (item.span.operationName.toLowerCase().includes(q)) return true;
-  for (const tag of item.span.tags) {
-    if (tag.key.toLowerCase().includes(q)) return true;
-    if (String(tag.value).toLowerCase().includes(q)) return true;
+  if (item.span.name.toLowerCase().includes(q)) return true;
+  if (item.span.attributes) {
+    for (const attr of item.span.attributes) {
+      if (attr.key.toLowerCase().includes(q)) return true;
+      const val = String(anyValueToDisplay(attr.value));
+      if (val.toLowerCase().includes(q)) return true;
+    }
   }
   return false;
 }
@@ -74,12 +75,14 @@ export default function TraceSpanTableView({ trace }: TraceViewProps) {
   // 扁平化 spans 列表（含 service 信息）
   const flatSpans = useMemo<FlatSpan[]>(() => {
     return trace.spans.map((span, index) => {
-      const proc = trace.processes[span.processID];
+      const durationNano = Number(span.durationNano) || (Number(span.endTimeUnixNano) - Number(span.startTimeUnixNano));
       return {
         index: index + 1,
         span,
-        serviceName: proc?.serviceName ?? 'unknown',
+        serviceName: span.serviceName || 'unknown',
         hasError: isSpanError(span),
+        durationNano,
+        startNano: Number(span.startTimeUnixNano),
       };
     });
   }, [trace]);
@@ -95,8 +98,8 @@ export default function TraceSpanTableView({ trace }: TraceViewProps) {
 
     // 排序
     result = [...result].sort((a, b) => {
-      const valA = sortField === 'duration' ? a.span.duration : a.span.startTime;
-      const valB = sortField === 'duration' ? b.span.duration : b.span.startTime;
+      const valA = sortField === 'duration' ? a.durationNano : a.startNano;
+      const valB = sortField === 'duration' ? b.durationNano : b.startNano;
       return sortOrder === 'asc' ? valA - valB : valB - valA;
     });
 
@@ -143,7 +146,7 @@ export default function TraceSpanTableView({ trace }: TraceViewProps) {
           <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs" />
           <input
             type="text"
-            placeholder="Filter by service, operation, or tag..."
+            placeholder="Filter by service, operation, or attribute..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-400 transition"
@@ -185,7 +188,7 @@ export default function TraceSpanTableView({ trace }: TraceViewProps) {
             width="w-[170px]"
           />
           <div className="w-[80px] px-3 py-2.5 text-center">Status</div>
-          <div className="w-[220px] px-3 py-2.5">Tags</div>
+          <div className="w-[220px] px-3 py-2.5">Attributes</div>
         </div>
 
         {/* 虚拟滚动容器 */}
@@ -195,11 +198,12 @@ export default function TraceSpanTableView({ trace }: TraceViewProps) {
           >
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = filteredSpans[virtualRow.index]!;
-              const isSelected = selectedSpanId === item.span.spanID;
+              const isSelected = selectedSpanId === item.span.spanId;
+              const attrs = item.span.attributes ?? [];
 
               return (
                 <div
-                  key={item.span.spanID}
+                  key={item.span.spanId}
                   data-index={virtualRow.index}
                   ref={virtualizer.measureElement}
                   className={`flex items-center border-b border-gray-50 text-sm cursor-pointer transition-colors ${
@@ -219,7 +223,7 @@ export default function TraceSpanTableView({ trace }: TraceViewProps) {
                   }}
                   onClick={() =>
                     setSelectedSpanId((prev) =>
-                      prev === item.span.spanID ? null : item.span.spanID,
+                      prev === item.span.spanId ? null : item.span.spanId,
                     )
                   }
                 >
@@ -241,17 +245,17 @@ export default function TraceSpanTableView({ trace }: TraceViewProps) {
 
                   {/* Operation */}
                   <div className="flex-1 px-3 py-2 truncate text-gray-600 font-mono text-xs">
-                    {item.span.operationName}
+                    {item.span.name}
                   </div>
 
                   {/* Duration */}
                   <div className="w-[110px] px-3 py-2 text-right tabular-nums text-gray-700 font-medium">
-                    {formatDuration(item.span.duration)}
+                    {formatDuration(item.durationNano)}
                   </div>
 
                   {/* Start Time */}
                   <div className="w-[170px] px-3 py-2 text-right text-xs text-gray-500 tabular-nums">
-                    {formatTimestamp(item.span.startTime)}
+                    {formatTimestamp(item.startNano)}
                   </div>
 
                   {/* Status */}
@@ -267,30 +271,33 @@ export default function TraceSpanTableView({ trace }: TraceViewProps) {
                     )}
                   </div>
 
-                  {/* Tags */}
+                  {/* Attributes */}
                   <div className="w-[220px] px-3 py-2 group relative">
                     <div className="flex flex-wrap gap-1">
-                      {item.span.tags.slice(0, 3).map((tag, i) => (
-                        <span
-                          key={i}
-                          className="inline-block px-1.5 py-0.5 text-[10px] bg-gray-100 text-gray-600 rounded truncate max-w-[100px]"
-                          title={`${tag.key}=${tag.value}`}
-                        >
-                          {tag.key}={String(tag.value)}
-                        </span>
-                      ))}
-                      {item.span.tags.length > 3 && (
+                      {attrs.slice(0, 3).map((attr, i) => {
+                        const val = String(anyValueToDisplay(attr.value));
+                        return (
+                          <span
+                            key={i}
+                            className="inline-block px-1.5 py-0.5 text-[10px] bg-gray-100 text-gray-600 rounded truncate max-w-[100px]"
+                            title={`${attr.key}=${val}`}
+                          >
+                            {attr.key}={val}
+                          </span>
+                        );
+                      })}
+                      {attrs.length > 3 && (
                         <span className="text-[10px] text-gray-400">
-                          +{item.span.tags.length - 3}
+                          +{attrs.length - 3}
                         </span>
                       )}
                     </div>
                     {/* Tooltip on hover */}
-                    {item.span.tags.length > 3 && (
+                    {attrs.length > 3 && (
                       <div className="hidden group-hover:block absolute right-0 top-full z-20 bg-gray-900 text-white text-[10px] rounded-lg p-2 shadow-lg max-w-xs whitespace-pre-wrap">
-                        {item.span.tags.map((tag, i) => (
+                        {attrs.map((attr, i) => (
                           <div key={i}>
-                            {tag.key}={String(tag.value)}
+                            {attr.key}={String(anyValueToDisplay(attr.value))}
                           </div>
                         ))}
                       </div>

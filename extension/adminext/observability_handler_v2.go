@@ -560,6 +560,7 @@ func parseTimeParam(s string, fallback time.Time) time.Time {
 func parseTraceQuery(r *http.Request) observabilitystorageext.TraceQuery {
 	q := r.URL.Query()
 	query := observabilitystorageext.TraceQuery{
+		AppID:         q.Get("app_id"),
 		ServiceName:   q.Get("service"),
 		OperationName: q.Get("operation"),
 		TimeRange:     parseTimeRange(r),
@@ -609,6 +610,7 @@ func parseTraceQuery(r *http.Request) observabilitystorageext.TraceQuery {
 func parseMetricQuery(r *http.Request) observabilitystorageext.MetricQuery {
 	q := r.URL.Query()
 	query := observabilitystorageext.MetricQuery{
+		AppID:       q.Get("app_id"),
 		MetricName:  q.Get("metric"),
 		ServiceName: q.Get("service"),
 	}
@@ -632,6 +634,7 @@ func parseMetricQuery(r *http.Request) observabilitystorageext.MetricQuery {
 func parseMetricRangeQuery(r *http.Request) observabilitystorageext.MetricRangeQuery {
 	q := r.URL.Query()
 	query := observabilitystorageext.MetricRangeQuery{
+		AppID:       q.Get("app_id"),
 		MetricName:  q.Get("metric"),
 		ServiceName: q.Get("service"),
 		TimeRange:   parseTimeRange(r),
@@ -666,6 +669,7 @@ func parseMetricRangeQuery(r *http.Request) observabilitystorageext.MetricRangeQ
 func parseLogQuery(r *http.Request) observabilitystorageext.LogQuery {
 	q := r.URL.Query()
 	query := observabilitystorageext.LogQuery{
+		AppID:       q.Get("app_id"),
 		Query:       q.Get("query"),
 		ServiceName: q.Get("service"),
 		TraceID:     q.Get("traceId"),

@@ -5,41 +5,40 @@
  * - 双列对比布局：左右各占 50%，分别显示 Trace A / B 的 span 瀑布图
  * - Diff Header：展示两侧 Trace 概要 + 差异摘要
  * - Service 差异高亮：新增(绿)/删除(红)/不变(普通)
- * - Span 匹配算法：按 operationName + serviceName 匹配，显示 duration diff
+ * - Span 匹配算法：按 name + serviceName 匹配，显示 duration diff
  * - 统计面板：Duration Diff、Span Count Diff、Per-Service duration comparison
  */
 
 import { useMemo } from 'react';
-import type { JaegerTrace, JaegerSpan } from '@/types/trace';
+import type { OTelTrace, OTelSpan, SpanTreeNode } from '@/types/trace';
 import { buildSpanTree, formatDuration, getServiceColor } from '@/utils/trace';
-import type { SpanTreeNode } from '@/types/trace';
 
 // ============================================================================
 // Types
 // ============================================================================
 
 interface TraceDiffViewProps {
-  traceA: JaegerTrace;
-  traceB: JaegerTrace;
+  traceA: OTelTrace;
+  traceB: OTelTrace;
   onClose: () => void;
 }
 
 /** 匹配后的 span 对 */
 interface MatchedSpanPair {
-  key: string; // serviceName::operationName
-  spanA: JaegerSpan | null;
-  spanB: JaegerSpan | null;
+  key: string; // serviceName::spanName
+  spanA: OTelSpan | null;
+  spanB: OTelSpan | null;
   serviceNameA: string;
   serviceNameB: string;
-  durationDiff: number; // B - A (微秒)
+  durationDiffNano: number; // B - A (nanoseconds)
   status: 'matched' | 'added' | 'removed';
 }
 
 /** 每个 service 的聚合统计 */
 interface ServiceDiffStat {
   serviceName: string;
-  durationA: number;
-  durationB: number;
+  durationNanoA: number;
+  durationNanoB: number;
   spanCountA: number;
   spanCountB: number;
   status: 'both' | 'only-a' | 'only-b';
@@ -49,41 +48,44 @@ interface ServiceDiffStat {
 // Helpers
 // ============================================================================
 
-/** 计算 trace 总时长 */
-function calcTraceDuration(trace: JaegerTrace): number {
+/** 获取 span 的 duration（纳秒） */
+function getSpanDurationNano(span: OTelSpan): number {
+  if (span.durationNano) return Number(span.durationNano);
+  return Number(span.endTimeUnixNano) - Number(span.startTimeUnixNano);
+}
+
+/** 计算 trace 总时长（纳秒） */
+function calcTraceDurationNano(trace: OTelTrace): number {
   let minStart = Infinity;
   let maxEnd = 0;
   for (const span of trace.spans) {
-    minStart = Math.min(minStart, span.startTime);
-    maxEnd = Math.max(maxEnd, span.startTime + span.duration);
+    const start = Number(span.startTimeUnixNano);
+    const end = Number(span.endTimeUnixNano);
+    if (start < minStart) minStart = start;
+    if (end > maxEnd) maxEnd = end;
   }
   return maxEnd - minStart;
 }
 
-/** 获取 span 的 service name */
-function getSpanService(span: JaegerSpan, trace: JaegerTrace): string {
-  return trace.processes[span.processID]?.serviceName ?? 'unknown';
-}
-
-/** 生成 span 匹配 key: serviceName::operationName */
-function spanMatchKey(span: JaegerSpan, trace: JaegerTrace): string {
-  return `${getSpanService(span, trace)}::${span.operationName}`;
+/** 生成 span 匹配 key: serviceName::name */
+function spanMatchKey(span: OTelSpan): string {
+  return `${span.serviceName || 'unknown'}::${span.name}`;
 }
 
 /** 匹配两个 trace 的 span 列表 */
-function matchSpans(traceA: JaegerTrace, traceB: JaegerTrace): MatchedSpanPair[] {
-  // 按 key 分组 A 侧 spans（取第一个匹配）
-  const mapA = new Map<string, JaegerSpan[]>();
+function matchSpans(traceA: OTelTrace, traceB: OTelTrace): MatchedSpanPair[] {
+  // 按 key 分组 A 侧 spans
+  const mapA = new Map<string, OTelSpan[]>();
   for (const span of traceA.spans) {
-    const key = spanMatchKey(span, traceA);
+    const key = spanMatchKey(span);
     const arr = mapA.get(key) ?? [];
     arr.push(span);
     mapA.set(key, arr);
   }
 
-  const mapB = new Map<string, JaegerSpan[]>();
+  const mapB = new Map<string, OTelSpan[]>();
   for (const span of traceB.spans) {
-    const key = spanMatchKey(span, traceB);
+    const key = spanMatchKey(span);
     const arr = mapB.get(key) ?? [];
     arr.push(span);
     mapB.set(key, arr);
@@ -101,12 +103,15 @@ function matchSpans(traceA: JaegerTrace, traceB: JaegerTrace): MatchedSpanPair[]
       const sA = spansA[i] ?? null;
       const sB = spansB[i] ?? null;
 
-      const serviceA = sA ? getSpanService(sA, traceA) : '';
-      const serviceB = sB ? getSpanService(sB, traceB) : '';
+      const serviceA = sA?.serviceName || '';
+      const serviceB = sB?.serviceName || '';
 
       let status: MatchedSpanPair['status'] = 'matched';
       if (!sA) status = 'added';
       else if (!sB) status = 'removed';
+
+      const durationA = sA ? getSpanDurationNano(sA) : 0;
+      const durationB = sB ? getSpanDurationNano(sB) : 0;
 
       results.push({
         key: `${key}#${i}`,
@@ -114,7 +119,7 @@ function matchSpans(traceA: JaegerTrace, traceB: JaegerTrace): MatchedSpanPair[]
         spanB: sB,
         serviceNameA: serviceA,
         serviceNameB: serviceB,
-        durationDiff: (sB?.duration ?? 0) - (sA?.duration ?? 0),
+        durationDiffNano: durationB - durationA,
         status,
       });
     }
@@ -128,21 +133,21 @@ function matchSpans(traceA: JaegerTrace, traceB: JaegerTrace): MatchedSpanPair[]
 }
 
 /** 计算 per-service 差异统计 */
-function calcServiceDiffStats(traceA: JaegerTrace, traceB: JaegerTrace): ServiceDiffStat[] {
-  const statsA = new Map<string, { duration: number; count: number }>();
+function calcServiceDiffStats(traceA: OTelTrace, traceB: OTelTrace): ServiceDiffStat[] {
+  const statsA = new Map<string, { durationNano: number; count: number }>();
   for (const span of traceA.spans) {
-    const svc = getSpanService(span, traceA);
-    const prev = statsA.get(svc) ?? { duration: 0, count: 0 };
-    prev.duration += span.duration;
+    const svc = span.serviceName || 'unknown';
+    const prev = statsA.get(svc) ?? { durationNano: 0, count: 0 };
+    prev.durationNano += getSpanDurationNano(span);
     prev.count += 1;
     statsA.set(svc, prev);
   }
 
-  const statsB = new Map<string, { duration: number; count: number }>();
+  const statsB = new Map<string, { durationNano: number; count: number }>();
   for (const span of traceB.spans) {
-    const svc = getSpanService(span, traceB);
-    const prev = statsB.get(svc) ?? { duration: 0, count: 0 };
-    prev.duration += span.duration;
+    const svc = span.serviceName || 'unknown';
+    const prev = statsB.get(svc) ?? { durationNano: 0, count: 0 };
+    prev.durationNano += getSpanDurationNano(span);
     prev.count += 1;
     statsB.set(svc, prev);
   }
@@ -155,8 +160,8 @@ function calcServiceDiffStats(traceA: JaegerTrace, traceB: JaegerTrace): Service
     const b = statsB.get(svc);
     results.push({
       serviceName: svc,
-      durationA: a?.duration ?? 0,
-      durationB: b?.duration ?? 0,
+      durationNanoA: a?.durationNano ?? 0,
+      durationNanoB: b?.durationNano ?? 0,
       spanCountA: a?.count ?? 0,
       spanCountB: b?.count ?? 0,
       status: a && b ? 'both' : a ? 'only-a' : 'only-b',
@@ -164,7 +169,7 @@ function calcServiceDiffStats(traceA: JaegerTrace, traceB: JaegerTrace): Service
   }
 
   // 按总 duration 降序
-  results.sort((a, b) => Math.max(b.durationA, b.durationB) - Math.max(a.durationA, a.durationB));
+  results.sort((a, b) => Math.max(b.durationNanoA, b.durationNanoB) - Math.max(a.durationNanoA, a.durationNanoB));
   return results;
 }
 
@@ -173,9 +178,9 @@ function calcServiceDiffStats(traceA: JaegerTrace, traceB: JaegerTrace): Service
 // ============================================================================
 
 export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffViewProps) {
-  const durationA = useMemo(() => calcTraceDuration(traceA), [traceA]);
-  const durationB = useMemo(() => calcTraceDuration(traceB), [traceB]);
-  const durationDiff = durationB - durationA;
+  const durationNanoA = useMemo(() => calcTraceDurationNano(traceA), [traceA]);
+  const durationNanoB = useMemo(() => calcTraceDurationNano(traceB), [traceB]);
+  const durationDiffNano = durationNanoB - durationNanoA;
 
   const spanTreeA = useMemo(() => buildSpanTree(traceA), [traceA]);
   const spanTreeB = useMemo(() => buildSpanTree(traceB), [traceB]);
@@ -191,7 +196,7 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
     for (const pair of matchedPairs) {
       if (pair.status === 'added') added++;
       else if (pair.status === 'removed') removed++;
-      else if (pair.durationDiff !== 0) changed++;
+      else if (pair.durationDiffNano !== 0) changed++;
     }
     return { added, removed, changed };
   }, [matchedPairs]);
@@ -229,11 +234,11 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
           {/* Trace A info */}
           <div className="bg-blue-50 rounded-lg px-4 py-3">
             <div className="text-xs text-blue-500 font-semibold mb-1">Trace A</div>
-            <div className="font-mono text-blue-700 text-xs truncate" title={traceA.traceID}>
-              {traceA.traceID.substring(0, 8)}…
+            <div className="font-mono text-blue-700 text-xs truncate" title={traceA.traceId}>
+              {traceA.traceId.substring(0, 8)}…
             </div>
             <div className="flex items-center gap-3 mt-1 text-xs text-blue-600">
-              <span>{formatDuration(durationA)}</span>
+              <span>{formatDuration(durationNanoA)}</span>
               <span>{traceA.spans.length} spans</span>
             </div>
           </div>
@@ -262,19 +267,19 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
                 </span>
               )}
             </div>
-            <div className={`mt-1 font-semibold ${durationDiff < 0 ? 'text-green-600' : durationDiff > 0 ? 'text-red-600' : 'text-gray-500'}`}>
-              {durationDiff < 0 ? '' : durationDiff > 0 ? '+' : '±'}{formatDuration(Math.abs(durationDiff))}
+            <div className={`mt-1 font-semibold ${durationDiffNano < 0 ? 'text-green-600' : durationDiffNano > 0 ? 'text-red-600' : 'text-gray-500'}`}>
+              {durationDiffNano < 0 ? '' : durationDiffNano > 0 ? '+' : '±'}{formatDuration(Math.abs(durationDiffNano))}
             </div>
           </div>
 
           {/* Trace B info */}
           <div className="bg-purple-50 rounded-lg px-4 py-3">
             <div className="text-xs text-purple-500 font-semibold mb-1">Trace B</div>
-            <div className="font-mono text-purple-700 text-xs truncate" title={traceB.traceID}>
-              {traceB.traceID.substring(0, 8)}…
+            <div className="font-mono text-purple-700 text-xs truncate" title={traceB.traceId}>
+              {traceB.traceId.substring(0, 8)}…
             </div>
             <div className="flex items-center gap-3 mt-1 text-xs text-purple-600">
-              <span>{formatDuration(durationB)}</span>
+              <span>{formatDuration(durationNanoB)}</span>
               <span>{traceB.spans.length} spans</span>
             </div>
           </div>
@@ -316,21 +321,20 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
         {/* Trace A Column */}
         <div>
           <div className="px-4 py-2 bg-blue-50/50 border-b border-gray-100 text-xs font-semibold text-blue-600">
-            Trace A — {traceA.traceID.substring(0, 8)}
+            Trace A — {traceA.traceId.substring(0, 8)}
           </div>
           <div className="max-h-[400px] overflow-y-auto">
             {spanTreeA.length > 0 ? (
               spanTreeA.map(node => (
                 <DiffSpanRow
-                  key={node.span.spanID}
+                  key={node.span.spanId}
                   node={node}
-                  traceDuration={durationA}
-                  traceStartTime={traceA.spans.reduce((min, s) => Math.min(min, s.startTime), Infinity)}
+                  traceDurationNano={durationNanoA}
+                  traceStartNano={traceA.spans.reduce((min, s) => Math.min(min, Number(s.startTimeUnixNano)), Infinity)}
                   side="a"
                   servicesOnlyThis={servicesOnlyA}
                   servicesOnlyOther={servicesOnlyB}
                   matchedPairs={matchedPairs}
-                  trace={traceA}
                 />
               ))
             ) : (
@@ -342,21 +346,20 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
         {/* Trace B Column */}
         <div>
           <div className="px-4 py-2 bg-purple-50/50 border-b border-gray-100 text-xs font-semibold text-purple-600">
-            Trace B — {traceB.traceID.substring(0, 8)}
+            Trace B — {traceB.traceId.substring(0, 8)}
           </div>
           <div className="max-h-[400px] overflow-y-auto">
             {spanTreeB.length > 0 ? (
               spanTreeB.map(node => (
                 <DiffSpanRow
-                  key={node.span.spanID}
+                  key={node.span.spanId}
                   node={node}
-                  traceDuration={durationB}
-                  traceStartTime={traceB.spans.reduce((min, s) => Math.min(min, s.startTime), Infinity)}
+                  traceDurationNano={durationNanoB}
+                  traceStartNano={traceB.spans.reduce((min, s) => Math.min(min, Number(s.startTimeUnixNano)), Infinity)}
                   side="b"
                   servicesOnlyThis={servicesOnlyB}
                   servicesOnlyOther={servicesOnlyA}
                   matchedPairs={matchedPairs}
-                  trace={traceB}
                 />
               ))
             ) : (
@@ -390,7 +393,9 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
             <tbody>
               {matchedPairs.map(pair => {
                 const svc = pair.serviceNameA || pair.serviceNameB;
-                const op = pair.spanA?.operationName ?? pair.spanB?.operationName ?? '';
+                const op = pair.spanA?.name ?? pair.spanB?.name ?? '';
+                const durationNanoA = pair.spanA ? getSpanDurationNano(pair.spanA) : 0;
+                const durationNanoB = pair.spanB ? getSpanDurationNano(pair.spanB) : 0;
                 return (
                   <tr
                     key={pair.key}
@@ -399,7 +404,7 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
                         ? 'bg-green-50/50'
                         : pair.status === 'removed'
                           ? 'bg-red-50/50'
-                          : pair.durationDiff !== 0
+                          : pair.durationDiffNano !== 0
                             ? 'bg-yellow-50/30'
                             : ''
                     }`}
@@ -410,22 +415,22 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
                       <span className="truncate">{op}</span>
                     </td>
                     <td className="px-4 py-2 text-right font-mono text-gray-600">
-                      {pair.spanA ? formatDuration(pair.spanA.duration) : '—'}
+                      {pair.spanA ? formatDuration(durationNanoA) : '—'}
                     </td>
                     <td className="px-4 py-2 text-right font-mono text-gray-600">
-                      {pair.spanB ? formatDuration(pair.spanB.duration) : '—'}
+                      {pair.spanB ? formatDuration(durationNanoB) : '—'}
                     </td>
                     <td className={`px-4 py-2 text-right font-mono font-semibold ${
                       pair.status !== 'matched'
                         ? 'text-gray-400'
-                        : pair.durationDiff < 0
+                        : pair.durationDiffNano < 0
                           ? 'text-green-600'
-                          : pair.durationDiff > 0
+                          : pair.durationDiffNano > 0
                             ? 'text-red-600'
                             : 'text-gray-400'
                     }`}>
                       {pair.status === 'matched'
-                        ? `${pair.durationDiff >= 0 ? '+' : ''}${formatDuration(Math.abs(pair.durationDiff))}`
+                        ? `${pair.durationDiffNano >= 0 ? '+' : ''}${formatDuration(Math.abs(pair.durationDiffNano))}`
                         : '—'}
                     </td>
                     <td className="px-4 py-2 text-center">
@@ -439,12 +444,12 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
                           DEL
                         </span>
                       )}
-                      {pair.status === 'matched' && pair.durationDiff !== 0 && (
+                      {pair.status === 'matched' && pair.durationDiffNano !== 0 && (
                         <span className="px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded-full text-[10px] font-semibold">
                           CHG
                         </span>
                       )}
-                      {pair.status === 'matched' && pair.durationDiff === 0 && (
+                      {pair.status === 'matched' && pair.durationDiffNano === 0 && (
                         <span className="px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full text-[10px]">
                           OK
                         </span>
@@ -472,13 +477,13 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <div className="text-xs text-gray-500 mb-1">Total Duration Diff</div>
             <div className={`text-xl font-bold ${
-              durationDiff < 0 ? 'text-green-600' : durationDiff > 0 ? 'text-red-600' : 'text-gray-500'
+              durationDiffNano < 0 ? 'text-green-600' : durationDiffNano > 0 ? 'text-red-600' : 'text-gray-500'
             }`}>
-              {durationDiff < 0 ? '' : durationDiff > 0 ? '+' : '±'}
-              {formatDuration(Math.abs(durationDiff))}
+              {durationDiffNano < 0 ? '' : durationDiffNano > 0 ? '+' : '±'}
+              {formatDuration(Math.abs(durationDiffNano))}
             </div>
             <div className="text-xs text-gray-400 mt-1">
-              {durationDiff < 0 ? 'B is faster' : durationDiff > 0 ? 'B is slower' : 'Same duration'}
+              {durationDiffNano < 0 ? 'B is faster' : durationDiffNano > 0 ? 'B is slower' : 'Same duration'}
             </div>
           </div>
 
@@ -502,9 +507,9 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
           <div className="bg-white rounded-lg border border-gray-200 p-4">
             <div className="text-xs text-gray-500 mb-1">Service Count Diff</div>
             <div className="text-xl font-bold text-gray-800">
-              {new Set(traceA.spans.map(s => getSpanService(s, traceA))).size}
+              {new Set(traceA.spans.map(s => s.serviceName || 'unknown')).size}
               {' → '}
-              {new Set(traceB.spans.map(s => getSpanService(s, traceB))).size}
+              {new Set(traceB.spans.map(s => s.serviceName || 'unknown')).size}
             </div>
             <div className="text-xs text-gray-400 mt-1">
               {servicesOnlyB.size > 0 && <span className="text-green-600">+{servicesOnlyB.size} new </span>}
@@ -520,11 +525,11 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
           <div className="space-y-2">
             {serviceDiffStats.map(svc => {
               const maxDuration = Math.max(
-                ...serviceDiffStats.map(s => Math.max(s.durationA, s.durationB)),
+                ...serviceDiffStats.map(s => Math.max(s.durationNanoA, s.durationNanoB)),
                 1,
               );
-              const widthA = (svc.durationA / maxDuration) * 100;
-              const widthB = (svc.durationB / maxDuration) * 100;
+              const widthA = (svc.durationNanoA / maxDuration) * 100;
+              const widthB = (svc.durationNanoB / maxDuration) * 100;
 
               return (
                 <div key={svc.serviceName} className="flex items-center gap-3">
@@ -546,7 +551,7 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
                         />
                       </div>
                       <span className="text-[10px] text-gray-500 w-16 text-right flex-shrink-0">
-                        {formatDuration(svc.durationA)}
+                        {formatDuration(svc.durationNanoA)}
                       </span>
                     </div>
                     {/* B bar */}
@@ -559,7 +564,7 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
                         />
                       </div>
                       <span className="text-[10px] text-gray-500 w-16 text-right flex-shrink-0">
-                        {formatDuration(svc.durationB)}
+                        {formatDuration(svc.durationNanoB)}
                       </span>
                     </div>
                   </div>
@@ -579,33 +584,32 @@ export default function TraceDiffView({ traceA, traceB, onClose }: TraceDiffView
 
 interface DiffSpanRowProps {
   node: SpanTreeNode;
-  traceDuration: number;
-  traceStartTime: number;
+  traceDurationNano: number;
+  traceStartNano: number;
   side: 'a' | 'b';
   servicesOnlyThis: Set<string>;
   servicesOnlyOther: Set<string>;
   matchedPairs: MatchedSpanPair[];
-  trace: JaegerTrace;
 }
 
 function DiffSpanRow({
   node,
-  traceDuration,
-  traceStartTime,
+  traceDurationNano,
+  traceStartNano,
   side,
   servicesOnlyThis,
   servicesOnlyOther,
   matchedPairs,
-  trace,
 }: DiffSpanRowProps) {
-  const { span, process, children, depth } = node;
-  const serviceColor = getServiceColor(process.serviceName);
-  const isOnlyThis = servicesOnlyThis.has(process.serviceName);
+  const { span, children, depth } = node;
+  const serviceName = span.serviceName || 'unknown';
+  const serviceColor = getServiceColor(serviceName);
+  const isOnlyThis = servicesOnlyThis.has(serviceName);
 
   // 找到此 span 的匹配对
   const pair = matchedPairs.find(p => {
-    if (side === 'a') return p.spanA?.spanID === span.spanID;
-    return p.spanB?.spanID === span.spanID;
+    if (side === 'a') return p.spanA?.spanId === span.spanId;
+    return p.spanB?.spanId === span.spanId;
   });
 
   // 确定 diff 背景
@@ -619,11 +623,13 @@ function DiffSpanRow({
   }
 
   // 时间轴位置
-  const offsetPercent = traceDuration > 0
-    ? ((span.startTime - traceStartTime) / traceDuration) * 100
+  const spanStartNano = Number(span.startTimeUnixNano);
+  const spanDurationNano = getSpanDurationNano(span);
+  const offsetPercent = traceDurationNano > 0
+    ? ((spanStartNano - traceStartNano) / traceDurationNano) * 100
     : 0;
-  const widthPercent = traceDuration > 0
-    ? Math.max((span.duration / traceDuration) * 100, 0.5)
+  const widthPercent = traceDurationNano > 0
+    ? Math.max((spanDurationNano / traceDurationNano) * 100, 0.5)
     : 0;
 
   return (
@@ -638,10 +644,10 @@ function DiffSpanRow({
             className="w-2 h-2 rounded-full flex-shrink-0"
             style={{ backgroundColor: serviceColor }}
           />
-          <span className="truncate text-gray-600" title={`${process.serviceName}::${span.operationName}`}>
-            <span className="font-medium">{process.serviceName}</span>
+          <span className="truncate text-gray-600" title={`${serviceName}::${span.name}`}>
+            <span className="font-medium">{serviceName}</span>
             <span className="text-gray-300">::</span>
-            {span.operationName}
+            {span.name}
           </span>
         </div>
 
@@ -660,11 +666,11 @@ function DiffSpanRow({
 
         {/* Duration + Diff */}
         <div className="w-20 flex-shrink-0 px-2 py-1.5 text-right text-gray-600">
-          {formatDuration(span.duration)}
-          {pair?.status === 'matched' && pair.durationDiff !== 0 && (
-            <div className={`text-[9px] ${pair.durationDiff < 0 ? 'text-green-600' : 'text-red-500'}`}>
+          {formatDuration(spanDurationNano)}
+          {pair?.status === 'matched' && pair.durationDiffNano !== 0 && (
+            <div className={`text-[9px] ${pair.durationDiffNano < 0 ? 'text-green-600' : 'text-red-500'}`}>
               {side === 'b'
-                ? `${pair.durationDiff >= 0 ? '+' : ''}${formatDuration(Math.abs(pair.durationDiff))}`
+                ? `${pair.durationDiffNano >= 0 ? '+' : ''}${formatDuration(Math.abs(pair.durationDiffNano))}`
                 : ''}
             </div>
           )}
@@ -674,15 +680,14 @@ function DiffSpanRow({
       {/* Children */}
       {children.map(child => (
         <DiffSpanRow
-          key={child.span.spanID}
+          key={child.span.spanId}
           node={child}
-          traceDuration={traceDuration}
-          traceStartTime={traceStartTime}
+          traceDurationNano={traceDurationNano}
+          traceStartNano={traceStartNano}
           side={side}
           servicesOnlyThis={servicesOnlyThis}
           servicesOnlyOther={servicesOnlyOther}
           matchedPairs={matchedPairs}
-          trace={trace}
         />
       ))}
     </>

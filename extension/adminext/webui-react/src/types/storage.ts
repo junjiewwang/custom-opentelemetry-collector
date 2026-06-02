@@ -91,7 +91,7 @@ export function formatBytes(bytes: number): string {
 export function formatRetention(duration: string): string {
   // Go duration: "720h0m0s" → parse hours
   const match = duration.match(/^(\d+)h/);
-  if (match) {
+  if (match && match[1]) {
     const hours = parseInt(match[1], 10);
     if (hours >= 24) {
       const days = Math.floor(hours / 24);

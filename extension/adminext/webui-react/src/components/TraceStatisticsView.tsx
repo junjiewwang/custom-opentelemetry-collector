@@ -10,11 +10,11 @@
  */
 
 import { useState, useMemo } from 'react';
-import type { JaegerTrace, JaegerSpan } from '@/types/trace';
+import type { OTelTrace, OTelSpan } from '@/types/trace';
 import { formatDuration, getServiceColor } from '@/utils/trace';
 
 interface TraceViewProps {
-  trace: JaegerTrace;
+  trace: OTelTrace;
 }
 
 // ============================================================================
@@ -50,12 +50,13 @@ type TabType = 'service' | 'operation';
 // ============================================================================
 
 /** 判断 span 是否有错误 */
-function isSpanError(span: JaegerSpan): boolean {
-  return span.tags.some(
-    (t) =>
-      (t.key === 'error' && t.value === true) ||
-      (t.key === 'otel.status_code' && t.value === 'ERROR'),
-  );
+function isSpanError(span: OTelSpan): boolean {
+  return span.status?.code === 'STATUS_CODE_ERROR';
+}
+
+/** 获取 span 的 duration 纳秒值 */
+function getSpanDurationNano(span: OTelSpan): number {
+  return Number(span.durationNano) || (Number(span.endTimeUnixNano) - Number(span.startTimeUnixNano));
 }
 
 // ============================================================================
@@ -73,9 +74,8 @@ export default function TraceStatisticsView({ trace }: TraceViewProps) {
     >();
 
     for (const span of trace.spans) {
-      const proc = trace.processes[span.processID];
-      if (!proc) continue;
-      const svc = proc.serviceName;
+      const svc = span.serviceName || 'unknown';
+      const duration = getSpanDurationNano(span);
 
       const entry = map.get(svc) ?? {
         count: 0,
@@ -86,9 +86,9 @@ export default function TraceStatisticsView({ trace }: TraceViewProps) {
       };
 
       entry.count++;
-      entry.total += span.duration;
-      entry.min = Math.min(entry.min, span.duration);
-      entry.max = Math.max(entry.max, span.duration);
+      entry.total += duration;
+      entry.min = Math.min(entry.min, duration);
+      entry.max = Math.max(entry.max, duration);
       if (isSpanError(span)) entry.errors++;
 
       map.set(svc, entry);
@@ -116,13 +116,13 @@ export default function TraceStatisticsView({ trace }: TraceViewProps) {
     >();
 
     for (const span of trace.spans) {
-      const proc = trace.processes[span.processID];
-      if (!proc) continue;
-      const key = `${proc.serviceName}::${span.operationName}`;
+      const svc = span.serviceName || 'unknown';
+      const key = `${svc}::${span.name}`;
+      const duration = getSpanDurationNano(span);
 
       const entry = map.get(key) ?? {
-        service: proc.serviceName,
-        operation: span.operationName,
+        service: svc,
+        operation: span.name,
         count: 0,
         total: 0,
         min: Infinity,
@@ -131,9 +131,9 @@ export default function TraceStatisticsView({ trace }: TraceViewProps) {
       };
 
       entry.count++;
-      entry.total += span.duration;
-      entry.min = Math.min(entry.min, span.duration);
-      entry.max = Math.max(entry.max, span.duration);
+      entry.total += duration;
+      entry.min = Math.min(entry.min, duration);
+      entry.max = Math.max(entry.max, duration);
       if (isSpanError(span)) entry.errors++;
 
       map.set(key, entry);

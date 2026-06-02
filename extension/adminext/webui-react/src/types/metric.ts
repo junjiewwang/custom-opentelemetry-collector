@@ -1,110 +1,100 @@
 /**
- * Prometheus HTTP API 响应类型定义
+ * OTel Standard Metric Types
  *
- * 参考: https://prometheus.io/docs/prometheus/latest/querying/api/
+ * Aligned with the V2 backend metric API response format.
+ * The backend stores OTel metrics and returns structured results.
  */
 
 // ============================================================================
-// 通用响应包装
+// Metric API Response Types
 // ============================================================================
 
-/** Prometheus API 标准响应 */
-export interface PrometheusResponse<T> {
-  status: 'success' | 'error';
-  data: T;
-  errorType?: string;
-  error?: string;
-  warnings?: string[];
+/** Metric instant query result */
+export interface MetricResult {
+  data: MetricDataPoint[];
+}
+
+/** Metric range query result */
+export interface MetricRangeResult {
+  data: MetricSeries[];
+}
+
+/** Single metric value at a point in time */
+export interface MetricDataPoint {
+  metric?: string;
+  labels: Record<string, string>;
+  value: number;
+  /** Nanosecond Unix timestamp as string */
+  timeUnixNano: string;
+}
+
+/** Metric time series */
+export interface MetricSeries {
+  metric?: string;
+  labels: Record<string, string>;
+  values: MetricTimeValue[];
+}
+
+/** Single time-value pair in a metric series */
+export interface MetricTimeValue {
+  /** Nanosecond Unix timestamp as string */
+  timeUnixNano: string;
+  value: number;
 }
 
 // ============================================================================
-// Query 结果数据模型
+// Query Parameters
 // ============================================================================
 
-/** Query 结果包装 */
-export interface PrometheusQueryResult {
-  resultType: 'matrix' | 'vector' | 'scalar' | 'string';
-  result: PrometheusMatrixResult[] | PrometheusVectorResult[] | PrometheusScalarResult;
-}
-
-/** Range Query 结果（矩阵类型） */
-export interface PrometheusMatrixResult {
-  metric: Record<string, string>;
-  values: [number, string][]; // [timestamp, value][]
-}
-
-/** Instant Query 结果（向量类型） */
-export interface PrometheusVectorResult {
-  metric: Record<string, string>;
-  value: [number, string]; // [timestamp, value]
-}
-
-/** 标量结果 */
-export type PrometheusScalarResult = [number, string]; // [timestamp, value]
-
-// ============================================================================
-// Labels / Series / Metadata
-// ============================================================================
-
-/** Label 名称列表响应 */
-export type PrometheusLabelsResponse = PrometheusResponse<string[]>;
-
-/** Label 值列表响应 */
-export type PrometheusLabelValuesResponse = PrometheusResponse<string[]>;
-
-/** Series 响应 */
-export type PrometheusSeriesResponse = PrometheusResponse<Record<string, string>[]>;
-
-/** Metric metadata */
-export interface PrometheusMetadataEntry {
-  type: 'counter' | 'gauge' | 'histogram' | 'summary' | 'unknown';
-  help: string;
-  unit: string;
-}
-
-/** Metadata 响应 */
-export type PrometheusMetadataResponse = PrometheusResponse<Record<string, PrometheusMetadataEntry[]>>;
-
-// ============================================================================
-// 前端查询参数
-// ============================================================================
-
-/** Metric 查询参数 */
+/** Metric instant query parameters */
 export interface MetricQueryParams {
-  query: string;
-  start: number;   // Unix 时间戳（秒）
-  end: number;     // Unix 时间戳（秒）
-  step: string;    // 例如 "15s", "1m", "5m"
+  metric: string;
+  service?: string;
+  labels?: string;    // key:value,key:value
+  time?: number;      // Unix ms
 }
 
-/** 时间范围快捷选项 */
+/** Metric range query parameters */
+export interface MetricRangeQueryParams {
+  metric: string;
+  service?: string;
+  labels?: string;    // key:value,key:value
+  start: number;      // Unix ms
+  end: number;        // Unix ms
+  step: string;       // e.g. "15s", "1m", "5m"
+}
+
+// ============================================================================
+// Frontend Display Types
+// ============================================================================
+
+/** Time range quick preset option */
 export interface TimeRangePreset {
   label: string;
   value: string;
   seconds: number;
 }
 
-/** 预设面板定义 */
-export interface MetricPanel {
-  id: string;
-  title: string;
-  description: string;
-  query: string;
-  /** 查询中需要替换的变量 */
-  variables?: { name: string; label: string; labelValue?: string }[];
-  /** 图表类型 */
-  chartType?: 'line' | 'area';
-  /** Y 轴单位 */
-  unit?: 'percent' | 'seconds' | 'bytes' | 'ops' | 'none';
-}
-
-// ============================================================================
-// 前端展示用派生类型
-// ============================================================================
-
-/** 图表系列数据（从 PrometheusMatrixResult 派生） */
+/** Chart series data (derived from MetricSeries for rendering) */
 export interface ChartSeries {
   name: string;
   labels: Record<string, string>;
   data: { time: number; value: number }[];
+}
+
+/** Metric panel definition (for RED dashboard etc.) */
+export interface MetricPanel {
+  id: string;
+  title: string;
+  description: string;
+  /** Metric name to query */
+  metric: string;
+  /** Service filter */
+  service?: string;
+  /** Additional label filters */
+  labels?: Record<string, string>;
+  /** Chart type */
+  chartType?: 'line' | 'area';
+  /** Y axis unit */
+  unit?: 'percent' | 'seconds' | 'bytes' | 'ops' | 'none';
 }

@@ -1,143 +1,183 @@
 /**
- * Jaeger Query API 响应类型定义
+ * OTel Standard Trace Types
  *
- * 基于 Jaeger HTTP JSON API 格式。
- * 参考: https://www.jaegertracing.io/docs/apis/#http-json
+ * Aligned with OpenTelemetry OTLP JSON Protobuf Encoding.
+ * Reference: https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding
  */
 
 // ============================================================================
-// Jaeger 通用
+// OTel Common Types
 // ============================================================================
 
-/** Jaeger API 标准响应包装 */
-export interface JaegerResponse<T> {
-  data: T;
-  total: number;
-  limit: number;
-  offset: number;
-  errors: JaegerError[] | null;
-}
-
-export interface JaegerError {
-  code: number;
-  msg: string;
-}
-
-// ============================================================================
-// Trace 数据模型
-// ============================================================================
-
-/** Jaeger Trace */
-export interface JaegerTrace {
-  traceID: string;
-  spans: JaegerSpan[];
-  processes: Record<string, JaegerProcess>;
-  warnings: string[] | null;
-}
-
-/** Jaeger Span */
-export interface JaegerSpan {
-  traceID: string;
-  spanID: string;
-  operationName: string;
-  references: JaegerReference[];
-  startTime: number; // 微秒
-  duration: number;  // 微秒
-  tags: JaegerKeyValue[];
-  logs: JaegerLog[];
-  processID: string;
-  warnings: string[] | null;
-}
-
-/** Jaeger Reference（父子关系） */
-export interface JaegerReference {
-  refType: 'CHILD_OF' | 'FOLLOWS_FROM';
-  traceID: string;
-  spanID: string;
-}
-
-/** Jaeger Process（服务信息） */
-export interface JaegerProcess {
-  serviceName: string;
-  tags: JaegerKeyValue[];
-}
-
-/** Jaeger 键值对 */
-export interface JaegerKeyValue {
+/** OTel KeyValue attribute (typed) */
+export interface KeyValue {
   key: string;
-  type: string;
-  value: string | number | boolean;
+  value: AnyValue;
 }
 
-/** Jaeger Log */
-export interface JaegerLog {
-  timestamp: number;
-  fields: JaegerKeyValue[];
+/** OTel AnyValue — typed attribute value */
+export interface AnyValue {
+  stringValue?: string;
+  intValue?: string;      // int64 as string for precision
+  doubleValue?: number;
+  boolValue?: boolean;
+  arrayValue?: { values: AnyValue[] };
+  kvlistValue?: { values: KeyValue[] };
+  bytesValue?: string;    // base64 encoded
 }
 
 // ============================================================================
-// Operation 数据模型
+// Span Enums
 // ============================================================================
 
-/** Jaeger Operation */
-export interface JaegerOperation {
+/** OTel SpanKind enum values */
+export type SpanKind =
+  | 'SPAN_KIND_UNSPECIFIED'
+  | 'SPAN_KIND_INTERNAL'
+  | 'SPAN_KIND_SERVER'
+  | 'SPAN_KIND_CLIENT'
+  | 'SPAN_KIND_PRODUCER'
+  | 'SPAN_KIND_CONSUMER';
+
+/** OTel StatusCode enum values */
+export type StatusCode =
+  | 'STATUS_CODE_UNSET'
+  | 'STATUS_CODE_OK'
+  | 'STATUS_CODE_ERROR';
+
+/** OTel Span Status */
+export interface SpanStatus {
+  code: StatusCode;
+  message?: string;
+}
+
+// ============================================================================
+// Trace Data Model — aligned with OTLP proto
+// ============================================================================
+
+/** Trace (with derived fields for UI convenience) */
+export interface OTelTrace {
+  traceId: string;
+  spans: OTelSpan[];
+  /** Nanoseconds as string */
+  durationNano: string;
+  spanCount: number;
+  serviceCount: number;
+  rootServiceName?: string;
+  rootSpanName?: string;
+}
+
+/** Span — aligned with opentelemetry.proto.trace.v1.Span */
+export interface OTelSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  traceState?: string;
+  /** Operation name (OTel uses "name") */
   name: string;
-  spanKind: string;
+  kind: SpanKind;
+  /** Nanosecond Unix timestamp as string */
+  startTimeUnixNano: string;
+  endTimeUnixNano: string;
+  attributes?: KeyValue[];
+  events?: SpanEvent[];
+  links?: SpanLink[];
+  status: SpanStatus;
+  /** Derived: extracted from resource["service.name"] */
+  serviceName: string;
+  /** Derived: endTime - startTime in nanoseconds */
+  durationNano: string;
+  /** Resource attributes */
+  resource?: KeyValue[];
+}
+
+/** Span Event — aligned with opentelemetry.proto.trace.v1.Span.Event */
+export interface SpanEvent {
+  timeUnixNano: string;
+  name: string;
+  attributes?: KeyValue[];
+}
+
+/** Span Link — aligned with opentelemetry.proto.trace.v1.Span.Link */
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  traceState?: string;
+  attributes?: KeyValue[];
 }
 
 // ============================================================================
-// 搜索参数
+// Service & Operation
 // ============================================================================
 
-/** Trace 搜索参数 */
+/** Service info */
+export interface Service {
+  name: string;
+  spanCount?: number;
+}
+
+/** Operation info */
+export interface Operation {
+  name: string;
+  spanKind?: SpanKind;
+}
+
+/** Service dependency link */
+export interface DependencyLink {
+  parent: string;
+  child: string;
+  callCount: number;
+}
+
+// ============================================================================
+// Search Types
+// ============================================================================
+
+/** Trace search result from V2 API */
+export interface TraceSearchResult {
+  traces: OTelTrace[];
+  total: number;
+}
+
+/** Trace search parameters */
 export interface TraceSearchParams {
-  service: string;
+  service?: string;
   operation?: string;
-  tags?: string;        // JSON 格式: {"key":"value"}
+  tags?: string;
   limit?: number;
-  start?: number;       // 微秒时间戳
-  end?: number;         // 微秒时间戳
-  minDuration?: string; // 例如 "1.2s", "100ms", "500us"
+  start?: number;       // Unix ms
+  end?: number;         // Unix ms
+  minDuration?: string; // e.g. "1.2s", "100ms"
   maxDuration?: string;
-  lookback?: string;    // 例如 "1h", "2d"
+  lookback?: string;    // e.g. "1h", "2d"
 }
 
 // ============================================================================
-// 前端展示用派生类型
+// Frontend Display Derived Types
 // ============================================================================
 
-/** Trace 列表展示项（从 JaegerTrace 派生） */
+/** Trace list display item (derived from OTelTrace) */
 export interface TraceListItem {
-  traceID: string;
+  traceId: string;
   rootServiceName: string;
-  rootOperationName: string;
-  startTime: number;   // 微秒
-  duration: number;    // 微秒
+  rootSpanName: string;
+  /** Start time in milliseconds (for display) */
+  startTimeMs: number;
+  /** Duration in microseconds (for display) */
+  durationUs: number;
   spanCount: number;
   serviceCount: number;
   hasError: boolean;
   services: { name: string; count: number }[];
 }
 
-/** Span 树节点（带层级信息，用于时间轴渲染） */
+/** Span tree node (with hierarchy info for timeline rendering) */
 export interface SpanTreeNode {
-  span: JaegerSpan;
-  process: JaegerProcess;
+  span: OTelSpan;
   children: SpanTreeNode[];
   depth: number;
-  /** 相对于 Trace 起始时间的偏移量（微秒） */
-  relativeStartTime: number;
-  /** 在总 Trace 时间中的占比 */
+  /** Relative offset from trace start (nanoseconds) */
+  relativeStartNano: number;
+  /** Percentage of total trace duration */
   percentOfTrace: number;
-}
-
-// ============================================================================
-// Service Dependencies（用于 Service Map）
-// ============================================================================
-
-/** Jaeger 服务依赖关系 */
-export interface JaegerDependencyLink {
-  parent: string;
-  child: string;
-  callCount: number;
 }

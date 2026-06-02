@@ -4,7 +4,7 @@
  * 功能：
  * - 使用 ECharts graph（force 布局）展示 Trace 中服务间的调用关系
  * - 节点 = 每个 service（去重），大小与 span count 成比例
- * - 边 = service A 的 span 调用了 service B 的 span，权重 = 调用次数
+ * - 边 = 通过 parentSpanId 推断 service A 调用 service B，权重 = 调用次数
  * - 节点颜色 = getServiceColor
  * - 支持拖拽和缩放
  * - Tooltip: service name, span count, error count
@@ -12,11 +12,11 @@
 
 import { useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
-import type { JaegerTrace, JaegerSpan } from '@/types/trace';
+import type { OTelTrace, OTelSpan } from '@/types/trace';
 import { getServiceColor } from '@/utils/trace';
 
 interface TraceViewProps {
-  trace: JaegerTrace;
+  trace: OTelTrace;
 }
 
 // ============================================================================
@@ -35,30 +35,25 @@ interface ServiceEdge {
   callCount: number;
 }
 
-function isSpanError(span: JaegerSpan): boolean {
-  return span.tags.some(
-    (t) =>
-      (t.key === 'error' && t.value === true) ||
-      (t.key === 'otel.status_code' && t.value === 'ERROR'),
-  );
+function isSpanError(span: OTelSpan): boolean {
+  return span.status?.code === 'STATUS_CODE_ERROR';
 }
 
-function extractGraphData(trace: JaegerTrace): {
+function extractGraphData(trace: OTelTrace): {
   nodes: ServiceNode[];
   edges: ServiceEdge[];
 } {
-  const { spans, processes } = trace;
+  const { spans } = trace;
 
   // 统计每个 service 的 span 信息
   const serviceMap = new Map<string, { spanCount: number; errorCount: number }>();
 
-  // spanID → serviceName 映射
+  // spanId → serviceName 映射
   const spanServiceMap = new Map<string, string>();
 
   for (const span of spans) {
-    const proc = processes[span.processID];
-    const svc = proc?.serviceName ?? 'unknown';
-    spanServiceMap.set(span.spanID, svc);
+    const svc = span.serviceName || 'unknown';
+    spanServiceMap.set(span.spanId, svc);
 
     const entry = serviceMap.get(svc) ?? { spanCount: 0, errorCount: 0 };
     entry.spanCount++;
@@ -66,21 +61,17 @@ function extractGraphData(trace: JaegerTrace): {
     serviceMap.set(svc, entry);
   }
 
-  // 提取边: parent-child 关系推断服务间调用
+  // 提取边: 通过 parentSpanId 推断服务间调用关系
   const edgeMap = new Map<string, number>();
 
   for (const span of spans) {
-    const childService = spanServiceMap.get(span.spanID);
-    if (!childService) continue;
+    if (!span.parentSpanId) continue;
+    const childService = spanServiceMap.get(span.spanId);
+    const parentService = spanServiceMap.get(span.parentSpanId);
+    if (!childService || !parentService || parentService === childService) continue;
 
-    for (const ref of span.references) {
-      if (ref.refType !== 'CHILD_OF') continue;
-      const parentService = spanServiceMap.get(ref.spanID);
-      if (!parentService || parentService === childService) continue;
-
-      const edgeKey = `${parentService}→${childService}`;
-      edgeMap.set(edgeKey, (edgeMap.get(edgeKey) ?? 0) + 1);
-    }
+    const edgeKey = `${parentService}→${childService}`;
+    edgeMap.set(edgeKey, (edgeMap.get(edgeKey) ?? 0) + 1);
   }
 
   const nodes: ServiceNode[] = Array.from(serviceMap.entries()).map(([name, stats]) => ({

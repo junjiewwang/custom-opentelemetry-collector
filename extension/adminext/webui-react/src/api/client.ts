@@ -23,19 +23,19 @@ import type {
 } from '@/types/api';
 
 import type {
-  JaegerResponse,
-  JaegerTrace,
-  JaegerOperation,
-  JaegerDependencyLink,
+  OTelTrace,
+  TraceSearchResult,
   TraceSearchParams,
+  Service,
+  Operation,
+  DependencyLink,
 } from '@/types/trace';
 
 import type {
-  PrometheusResponse,
-  PrometheusQueryResult,
-  PrometheusLabelsResponse,
-  PrometheusLabelValuesResponse,
-  PrometheusMetadataResponse,
+  MetricResult,
+  MetricRangeResult,
+  MetricQueryParams,
+  MetricRangeQueryParams,
 } from '@/types/metric';
 
 import type {
@@ -366,26 +366,26 @@ class ApiClient {
   }
 
   // ========================================================================
-  // Observability - Trace Query (Jaeger)
+  // Observability - Trace Query (OTel V2)
   // ========================================================================
 
   /** 获取所有可用的 Service 列表 */
-  getTraceServices(): Promise<JaegerResponse<string[]>> {
-    return this.request<JaegerResponse<string[]>>('GET', '/observability/traces/services');
+  getTraceServices(): Promise<{ data: Service[] }> {
+    return this.request<{ data: Service[] }>('GET', '/observability/traces/services');
   }
 
   /** 获取指定 Service 的所有 Operation */
-  getTraceOperations(service: string): Promise<JaegerResponse<JaegerOperation[]>> {
-    return this.request<JaegerResponse<JaegerOperation[]>>(
+  getTraceOperations(service: string): Promise<{ data: Operation[] }> {
+    return this.request<{ data: Operation[] }>(
       'GET',
       `/observability/traces/services/${encodeURIComponent(service)}/operations`,
     );
   }
 
   /** 搜索 Traces */
-  searchTraces(params: TraceSearchParams): Promise<JaegerResponse<JaegerTrace[]>> {
+  searchTraces(params: TraceSearchParams): Promise<TraceSearchResult> {
     const query = new URLSearchParams();
-    query.set('service', params.service);
+    if (params.service) query.set('service', params.service);
     if (params.operation) query.set('operation', params.operation);
     if (params.tags) query.set('tags', params.tags);
     if (params.limit) query.set('limit', String(params.limit));
@@ -394,67 +394,70 @@ class ApiClient {
     if (params.minDuration) query.set('minDuration', params.minDuration);
     if (params.maxDuration) query.set('maxDuration', params.maxDuration);
     if (params.lookback) query.set('lookback', params.lookback);
-    return this.request<JaegerResponse<JaegerTrace[]>>('GET', `/observability/traces?${query.toString()}`);
+    return this.request<TraceSearchResult>('GET', `/observability/traces?${query.toString()}`);
   }
 
   /** 获取单个 Trace 的详细信息 */
-  getTrace(traceID: string): Promise<JaegerResponse<JaegerTrace[]>> {
-    return this.request<JaegerResponse<JaegerTrace[]>>(
+  getTrace(traceID: string): Promise<OTelTrace> {
+    return this.request<OTelTrace>(
       'GET',
       `/observability/traces/${encodeURIComponent(traceID)}`,
     );
   }
 
   /** 获取服务间依赖关系（用于 Service Map） */
-  getDependencies(endTs: number, lookback: number): Promise<JaegerResponse<JaegerDependencyLink[]>> {
+  getDependencies(endTs: number, lookback: number): Promise<{ data: DependencyLink[] }> {
     const params = new URLSearchParams();
     params.set('endTs', String(endTs));
     params.set('lookback', String(lookback));
-    return this.request<JaegerResponse<JaegerDependencyLink[]>>(
+    return this.request<{ data: DependencyLink[] }>(
       'GET',
       `/observability/dependencies?${params.toString()}`,
     );
   }
 
   // ========================================================================
-  // Observability - Metric Query (Prometheus)
+  // Observability - Metric Query (OTel V2)
   // ========================================================================
 
-  /** Prometheus instant query */
-  metricQuery(query: string, time?: number): Promise<PrometheusResponse<PrometheusQueryResult>> {
-    const params = new URLSearchParams();
-    params.set('query', query);
-    if (time) params.set('time', String(time));
-    return this.request<PrometheusResponse<PrometheusQueryResult>>('GET', `/observability/metrics/query?${params.toString()}`);
+  /** Metric instant query */
+  metricQuery(params: MetricQueryParams): Promise<MetricResult> {
+    const query = new URLSearchParams();
+    query.set('metric', params.metric);
+    if (params.service) query.set('service', params.service);
+    if (params.labels) query.set('labels', params.labels);
+    if (params.time) query.set('time', String(params.time));
+    return this.request<MetricResult>('GET', `/observability/metrics/query?${query.toString()}`);
   }
 
-  /** Prometheus range query */
-  metricQueryRange(query: string, start: number, end: number, step: string): Promise<PrometheusResponse<PrometheusQueryResult>> {
-    const params = new URLSearchParams();
-    params.set('query', query);
-    params.set('start', String(start));
-    params.set('end', String(end));
-    params.set('step', step);
-    return this.request<PrometheusResponse<PrometheusQueryResult>>('GET', `/observability/metrics/query_range?${params.toString()}`);
+  /** Metric range query */
+  metricQueryRange(params: MetricRangeQueryParams): Promise<MetricRangeResult> {
+    const query = new URLSearchParams();
+    query.set('metric', params.metric);
+    if (params.service) query.set('service', params.service);
+    if (params.labels) query.set('labels', params.labels);
+    query.set('start', String(params.start));
+    query.set('end', String(params.end));
+    query.set('step', params.step);
+    return this.request<MetricRangeResult>('GET', `/observability/metrics/query_range?${query.toString()}`);
+  }
+
+  /** 获取所有 metric 名称 */
+  getMetricNames(): Promise<{ data: string[] }> {
+    return this.request<{ data: string[] }>('GET', '/observability/metrics/names');
   }
 
   /** 获取所有 label 名称 */
-  getMetricLabels(): Promise<PrometheusLabelsResponse> {
-    return this.request<PrometheusLabelsResponse>('GET', '/observability/metrics/labels');
+  getMetricLabels(): Promise<{ data: string[] }> {
+    return this.request<{ data: string[] }>('GET', '/observability/metrics/labels');
   }
 
   /** 获取指定 label 的值 */
-  getMetricLabelValues(labelName: string): Promise<PrometheusLabelValuesResponse> {
-    return this.request<PrometheusLabelValuesResponse>(
+  getMetricLabelValues(labelName: string): Promise<{ data: string[] }> {
+    return this.request<{ data: string[] }>(
       'GET',
       `/observability/metrics/labels/${encodeURIComponent(labelName)}/values`,
     );
-  }
-
-  /** 查询 metric 元数据 */
-  getMetricMetadata(metric?: string): Promise<PrometheusMetadataResponse> {
-    const params = metric ? `?metric=${encodeURIComponent(metric)}` : '';
-    return this.request<PrometheusMetadataResponse>('GET', `/observability/metrics/metadata${params}`);
   }
 
   // ========================================================================

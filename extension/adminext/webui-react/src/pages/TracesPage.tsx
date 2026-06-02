@@ -12,7 +12,7 @@ import { useSearchParams } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
 import { apiClient } from '@/api/client';
 import { traceToListItem, formatDuration, formatTimestamp, getServiceColor } from '@/utils/trace';
-import type { JaegerTrace, TraceListItem, TraceSearchParams } from '@/types/trace';
+import type { OTelTrace, TraceListItem, TraceSearchParams } from '@/types/trace';
 import TraceDetail from '@/components/TraceDetail';
 import DetailDrawer from '@/components/DetailDrawer';
 import EmptyState from '@/components/EmptyState';
@@ -32,9 +32,9 @@ const SORT_OPTIONS: { value: SortOrder; label: string }[] = [
 ];
 
 const SORT_COMPARATORS: Record<SortOrder, (a: TraceListItem, b: TraceListItem) => number> = {
-  'most-recent': (a, b) => b.startTime - a.startTime,
-  'longest': (a, b) => b.duration - a.duration,
-  'shortest': (a, b) => a.duration - b.duration,
+  'most-recent': (a, b) => b.startTimeMs - a.startTimeMs,
+  'longest': (a, b) => b.durationUs - a.durationUs,
+  'shortest': (a, b) => a.durationUs - b.durationUs,
   'most-spans': (a, b) => b.spanCount - a.spanCount,
   'least-spans': (a, b) => a.spanCount - b.spanCount,
 };
@@ -69,7 +69,7 @@ export default function TracesPage() {
 
   // 结果
   const [traces, setTraces] = useState<TraceListItem[]>([]);
-  const [rawTraces, setRawTraces] = useState<JaegerTrace[]>([]);
+  const [rawTraces, setRawTraces] = useState<OTelTrace[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -90,7 +90,7 @@ export default function TracesPage() {
   const loadServices = async () => {
     try {
       const resp = await apiClient.getTraceServices();
-      const svcList = resp.data?.sort() ?? [];
+      const svcList = (resp.data ?? []).map(s => s.name).sort();
       setServices(svcList);
 
       // 如果有待执行的自动搜索（URL 参数触发），在 services 加载完后执行
@@ -98,7 +98,7 @@ export default function TracesPage() {
         pendingAutoSearch.current = false;
       }
     } catch {
-      // Jaeger 未配置或不可用，静默处理
+      // Storage backend 未配置或不可用，静默处理
       setServices([]);
     }
   };
@@ -168,8 +168,8 @@ export default function TracesPage() {
   const loadOperations = async (service: string) => {
     try {
       const resp = await apiClient.getTraceOperations(service);
-      const ops = resp.data?.map(op => (typeof op === 'string' ? op : op.name)) ?? [];
-      setOperations(ops.sort());
+      const ops = (resp.data ?? []).map(op => op.name).sort();
+      setOperations(ops);
     } catch {
       setOperations([]);
     }
@@ -190,20 +190,20 @@ export default function TracesPage() {
     setSelectedTraceID(null);
 
     try {
-      // 计算时间范围
-      const now = Date.now() * 1000; // 转微秒
+      // 计算时间范围（毫秒）
+      const now = Date.now();
       const lookbackMap: Record<string, number> = {
-        '15m': 15 * 60 * 1_000_000,
-        '30m': 30 * 60 * 1_000_000,
-        '1h': 60 * 60 * 1_000_000,
-        '3h': 3 * 60 * 60 * 1_000_000,
-        '6h': 6 * 60 * 60 * 1_000_000,
-        '12h': 12 * 60 * 60 * 1_000_000,
-        '24h': 24 * 60 * 60 * 1_000_000,
-        '2d': 2 * 24 * 60 * 60 * 1_000_000,
-        '7d': 7 * 24 * 60 * 60 * 1_000_000,
+        '15m': 15 * 60 * 1000,
+        '30m': 30 * 60 * 1000,
+        '1h': 60 * 60 * 1000,
+        '3h': 3 * 60 * 60 * 1000,
+        '6h': 6 * 60 * 60 * 1000,
+        '12h': 12 * 60 * 60 * 1000,
+        '24h': 24 * 60 * 60 * 1000,
+        '2d': 2 * 24 * 60 * 60 * 1000,
+        '7d': 7 * 24 * 60 * 60 * 1000,
       };
-      const lookbackDuration = lookbackMap[lookback] ?? 60 * 60 * 1_000_000;
+      const lookbackDuration = lookbackMap[lookback] ?? 60 * 60 * 1000;
 
       const params: TraceSearchParams = {
         service: selectedService,
@@ -217,10 +217,10 @@ export default function TracesPage() {
       if (maxDuration.trim()) params.maxDuration = maxDuration.trim();
 
       const resp = await apiClient.searchTraces(params);
-      const data = resp.data ?? [];
+      const data = resp.traces ?? [];
 
       setRawTraces(data);
-      setTraces(data.map(traceToListItem).sort((a, b) => b.startTime - a.startTime));
+      setTraces(data.map(traceToListItem).sort((a, b) => b.startTimeMs - a.startTimeMs));
     } catch (err: unknown) {
       const apiErr = err as { message?: string };
       setError(apiErr.message ?? 'Search failed');
@@ -249,11 +249,11 @@ export default function TracesPage() {
 
     const data = traces.map(t => ({
       value: [
-        t.startTime / 1000, // 微秒 → 毫秒（ECharts 时间轴用毫秒）
-        t.duration / 1000,  // 微秒 → 毫秒显示
+        t.startTimeMs,            // 毫秒（ECharts 时间轴用毫秒）
+        t.durationUs / 1000,      // 微秒 → 毫秒显示
         Math.log2(t.spanCount + 1) * 5,
         t.hasError,
-        t.traceID,
+        t.traceId,
         t.rootServiceName,
         t.spanCount,
       ],
@@ -267,7 +267,7 @@ export default function TracesPage() {
           return [
             `<b>${traceID.substring(0, 8)}...</b>`,
             `Service: ${svc}`,
-            `Duration: ${formatDuration(dur * 1000)}`,
+            `Duration: ${formatDuration(dur * 1_000_000)}`,
             `Spans: ${spans}`,
           ].join('<br/>');
         },
@@ -333,7 +333,7 @@ export default function TracesPage() {
   // 获取选中的 Trace 原始数据
   // ========================================================================
 
-  const selectedTrace = rawTraces.find(t => t.traceID === selectedTraceID) ?? null;
+  const selectedTrace = rawTraces.find(t => t.traceId === selectedTraceID) ?? null;
 
   // ========================================================================
   // 渲染
@@ -551,11 +551,11 @@ export default function TracesPage() {
         <div className="space-y-3">
           {sortedTraces.map((item) => (
             <TraceListRow
-              key={item.traceID}
+              key={item.traceId}
               item={item}
-              isSelected={selectedTraceID === item.traceID}
+              isSelected={selectedTraceID === item.traceId}
               onClick={() => setSelectedTraceID(
-                selectedTraceID === item.traceID ? null : item.traceID,
+                selectedTraceID === item.traceId ? null : item.traceId,
               )}
             />
           ))}
@@ -581,10 +581,10 @@ export default function TracesPage() {
             icon="fas fa-exclamation-triangle"
             iconColor="text-yellow-500"
             iconBg="bg-yellow-50"
-            title="Jaeger Backend Not Available"
+            title="Trace Storage Not Available"
             description={
               <span>
-                Please configure <code className="bg-gray-100 px-1 rounded">admin.observability.jaeger.endpoint</code> in Collector settings to enable Trace querying.
+                Please configure <code className="bg-gray-100 px-1 rounded">observability_storage</code> extension to enable Trace querying.
               </span>
             }
             size="lg"
@@ -624,7 +624,7 @@ function TraceListRow({ item, isSelected, onClick }: TraceListRowProps) {
             <div className="min-w-0">
               <span className="font-semibold text-gray-800">{item.rootServiceName}</span>
               <span className="text-gray-400 mx-2">::</span>
-              <span className="text-gray-600 truncate">{item.rootOperationName}</span>
+              <span className="text-gray-600 truncate">{item.rootSpanName}</span>
             </div>
           </div>
 
@@ -636,7 +636,7 @@ function TraceListRow({ item, isSelected, onClick }: TraceListRowProps) {
               </span>
             )}
             <span className="text-lg font-bold text-gray-800">
-              {formatDuration(item.duration)}
+              {formatDuration(item.durationUs * 1000)}
             </span>
           </div>
         </div>
@@ -644,11 +644,11 @@ function TraceListRow({ item, isSelected, onClick }: TraceListRowProps) {
         <div className="flex items-center justify-between text-sm text-gray-500">
           <div className="flex items-center gap-4">
             {/* Trace ID */}
-            <span className="font-mono text-xs text-gray-400" title={item.traceID}>
-              {item.traceID.substring(0, 8)}...
+            <span className="font-mono text-xs text-gray-400" title={item.traceId}>
+              {item.traceId.substring(0, 8)}...
             </span>
             {/* Timestamp */}
-            <span>{formatTimestamp(item.startTime)}</span>
+            <span>{formatTimestamp(item.startTimeMs * 1_000_000)}</span>
             {/* Span count */}
             <span>{item.spanCount} Spans</span>
             {/* Service count */}

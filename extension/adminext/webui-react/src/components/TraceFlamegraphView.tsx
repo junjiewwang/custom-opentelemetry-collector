@@ -4,8 +4,8 @@
  * 功能：
  * - 使用 div 绝对定位实现横向堆叠火焰图
  * - 每层一行，span 按 startTime 排列
- * - 宽度 = duration / traceDuration * 100%
- * - 左偏移 = (startTime - traceStartTime) / traceDuration * 100%
+ * - 宽度 = durationNano / traceDurationNano * 100%
+ * - 左偏移 = (startTimeNano - traceStartNano) / traceDurationNano * 100%
  * - 颜色按 service 着色（getServiceColor）
  * - 错误 span 红色边框标记
  * - Tooltip: Service::Operation, Duration, Status
@@ -13,12 +13,12 @@
  */
 
 import { useMemo, useState, useRef, useCallback } from 'react';
-import type { JaegerTrace, JaegerSpan } from '@/types/trace';
+import type { OTelTrace, OTelSpan } from '@/types/trace';
 import { buildSpanTree, formatDuration, getServiceColor } from '@/utils/trace';
 import type { SpanTreeNode } from '@/types/trace';
 
 interface TraceViewProps {
-  trace: JaegerTrace;
+  trace: OTelTrace;
 }
 
 // ============================================================================
@@ -26,7 +26,7 @@ interface TraceViewProps {
 // ============================================================================
 
 interface FlatRow {
-  span: JaegerSpan;
+  span: OTelSpan;
   serviceName: string;
   depth: number;
   offsetPercent: number;
@@ -39,7 +39,7 @@ interface TooltipData {
   y: number;
   serviceName: string;
   operationName: string;
-  duration: number;
+  durationNano: number;
   hasError: boolean;
 }
 
@@ -50,36 +50,33 @@ interface TooltipData {
 const ROW_HEIGHT = 24;
 const ROW_GAP = 2;
 
-function isSpanError(span: JaegerSpan): boolean {
-  return span.tags.some(
-    (t) =>
-      (t.key === 'error' && t.value === true) ||
-      (t.key === 'otel.status_code' && t.value === 'ERROR'),
-  );
+function isSpanError(span: OTelSpan): boolean {
+  return span.status?.code === 'STATUS_CODE_ERROR';
 }
 
 /** 将 span 树扁平化为行数据 */
 function flattenTree(
   nodes: SpanTreeNode[],
-  traceStartTime: number,
-  traceDuration: number,
-  processes: JaegerTrace['processes'],
+  traceStartNano: number,
+  traceDurationNano: number,
 ): FlatRow[] {
   const rows: FlatRow[] = [];
 
   function walk(node: SpanTreeNode) {
-    const proc = processes[node.span.processID];
+    const spanStartNano = Number(node.span.startTimeUnixNano);
+    const spanDurationNano = Number(node.span.durationNano) || (Number(node.span.endTimeUnixNano) - spanStartNano);
+
     rows.push({
       span: node.span,
-      serviceName: proc?.serviceName ?? 'unknown',
+      serviceName: node.span.serviceName || 'unknown',
       depth: node.depth,
       offsetPercent:
-        traceDuration > 0
-          ? ((node.span.startTime - traceStartTime) / traceDuration) * 100
+        traceDurationNano > 0
+          ? ((spanStartNano - traceStartNano) / traceDurationNano) * 100
           : 0,
       widthPercent:
-        traceDuration > 0
-          ? Math.max((node.span.duration / traceDuration) * 100, 0.2) // 最小 0.2% 保证可见
+        traceDurationNano > 0
+          ? Math.max((spanDurationNano / traceDurationNano) * 100, 0.2) // 最小 0.2% 保证可见
           : 0,
       hasError: isSpanError(node.span),
     });
@@ -105,21 +102,23 @@ export default function TraceFlamegraphView({ trace }: TraceViewProps) {
 
   const spanTree = useMemo(() => buildSpanTree(trace), [trace]);
 
-  // 计算 trace 时间范围
-  const { traceStartTime, traceDuration } = useMemo(() => {
+  // 计算 trace 时间范围（纳秒）
+  const { traceStartNano, traceDurationNano } = useMemo(() => {
     let start = Infinity;
     let end = 0;
     for (const span of trace.spans) {
-      start = Math.min(start, span.startTime);
-      end = Math.max(end, span.startTime + span.duration);
+      const spanStart = Number(span.startTimeUnixNano);
+      const spanEnd = Number(span.endTimeUnixNano);
+      start = Math.min(start, spanStart);
+      end = Math.max(end, spanEnd);
     }
-    return { traceStartTime: start, traceDuration: end - start };
+    return { traceStartNano: start, traceDurationNano: end - start };
   }, [trace]);
 
   // 扁平化行数据
   const rows = useMemo(
-    () => flattenTree(spanTree, traceStartTime, traceDuration, trace.processes),
-    [spanTree, traceStartTime, traceDuration, trace.processes],
+    () => flattenTree(spanTree, traceStartNano, traceDurationNano),
+    [spanTree, traceStartNano, traceDurationNano],
   );
 
   // 计算最大深度
@@ -135,12 +134,14 @@ export default function TraceFlamegraphView({ trace }: TraceViewProps) {
     (row: FlatRow, e: React.MouseEvent) => {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
+      const spanStartNano = Number(row.span.startTimeUnixNano);
+      const durationNano = Number(row.span.durationNano) || (Number(row.span.endTimeUnixNano) - spanStartNano);
       setTooltip({
         x: e.clientX - rect.left,
         y: e.clientY - rect.top,
         serviceName: row.serviceName,
-        operationName: row.span.operationName,
-        duration: row.span.duration,
+        operationName: row.span.name,
+        durationNano,
         hasError: row.hasError,
       });
     },
@@ -175,7 +176,7 @@ export default function TraceFlamegraphView({ trace }: TraceViewProps) {
             Flamegraph
           </h4>
           <span className="text-xs text-gray-400">
-            {trace.spans.length} spans · {formatDuration(traceDuration)}
+            {trace.spans.length} spans · {formatDuration(traceDurationNano)}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -209,10 +210,10 @@ export default function TraceFlamegraphView({ trace }: TraceViewProps) {
       {/* 时间轴标尺 */}
       <div className="flex items-center justify-between text-[10px] text-gray-400 mb-1 px-1">
         <span>0</span>
-        <span>{formatDuration(traceDuration / 4)}</span>
-        <span>{formatDuration(traceDuration / 2)}</span>
-        <span>{formatDuration((traceDuration * 3) / 4)}</span>
-        <span>{formatDuration(traceDuration)}</span>
+        <span>{formatDuration(traceDurationNano / 4)}</span>
+        <span>{formatDuration(traceDurationNano / 2)}</span>
+        <span>{formatDuration((traceDurationNano * 3) / 4)}</span>
+        <span>{formatDuration(traceDurationNano)}</span>
       </div>
 
       {/* 火焰图容器 */}
@@ -231,7 +232,7 @@ export default function TraceFlamegraphView({ trace }: TraceViewProps) {
         >
           {rows.map((row) => (
             <div
-              key={row.span.spanID}
+              key={row.span.spanId}
               className={`absolute rounded-sm text-[10px] text-white leading-tight truncate px-1 cursor-pointer transition-opacity hover:opacity-90 flex items-center ${
                 row.hasError ? 'ring-2 ring-red-500 ring-inset' : ''
               }`}
@@ -247,7 +248,7 @@ export default function TraceFlamegraphView({ trace }: TraceViewProps) {
               onMouseLeave={handleMouseLeave}
             >
               <span className="truncate">
-                {row.serviceName}::{row.span.operationName}
+                {row.serviceName}::{row.span.name}
               </span>
             </div>
           ))}
@@ -266,7 +267,7 @@ export default function TraceFlamegraphView({ trace }: TraceViewProps) {
               {tooltip.serviceName}::{tooltip.operationName}
             </div>
             <div className="flex items-center gap-3 mt-1 text-gray-300">
-              <span>{formatDuration(tooltip.duration)}</span>
+              <span>{formatDuration(tooltip.durationNano)}</span>
               {tooltip.hasError ? (
                 <span className="text-red-400 font-semibold">ERROR</span>
               ) : (

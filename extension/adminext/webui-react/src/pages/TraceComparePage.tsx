@@ -14,7 +14,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { apiClient } from '@/api/client';
-import type { JaegerTrace } from '@/types/trace';
+import type { OTelTrace } from '@/types/trace';
 import TraceDiffView from '@/components/TraceDiffView';
 import EmptyState from '@/components/EmptyState';
 
@@ -26,8 +26,8 @@ export default function TraceComparePage() {
   const [inputB, setInputB] = useState(searchParams.get('traceB') ?? '');
 
   // Loaded trace data
-  const [traceA, setTraceA] = useState<JaegerTrace | null>(null);
-  const [traceB, setTraceB] = useState<JaegerTrace | null>(null);
+  const [traceA, setTraceA] = useState<OTelTrace | null>(null);
+  const [traceB, setTraceB] = useState<OTelTrace | null>(null);
 
   // Loading / error state
   const [loading, setLoading] = useState(false);
@@ -37,13 +37,12 @@ export default function TraceComparePage() {
   // Fetch traces
   // ========================================================================
 
-  const fetchTrace = useCallback(async (traceID: string): Promise<JaegerTrace | null> => {
-    const resp = await apiClient.getTrace(traceID);
-    const data = resp.data;
-    if (!data || data.length === 0) {
+  const fetchTrace = useCallback(async (traceID: string): Promise<OTelTrace> => {
+    const trace = await apiClient.getTrace(traceID);
+    if (!trace || !trace.spans || trace.spans.length === 0) {
       throw new Error(`Trace "${traceID}" not found`);
     }
-    return data[0]!;
+    return trace;
   }, []);
 
   const doCompare = useCallback(async (idA: string, idB: string) => {
