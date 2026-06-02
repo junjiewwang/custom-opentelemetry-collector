@@ -1117,12 +1117,11 @@ WARN  scheduler:verifier Some purge tasks failed  failed=2 total=150
 | 10 | 多节点模拟测试 | `lifecycle/coordinator_redis_test.go` — 4 tests: ConcurrentClaimNoDuplication (5 nodes, 100 tasks), LeaderElection (10 nodes), FullDistributedPurge (3 schedulers, 80 indices), WorkerJoinsActiveEpoch | ✅ 全部通过 (race) |
 | 11 | verifyAndComplete 轮询优化 | `lifecycle/scheduler.go` — 替代 `time.Sleep(5s)` 为 `time.Ticker` + deadline 轮询机制，新增 `VerifyTimeout`/`VerifyPollInterval` 配置项 | ✅ |
 | 12 | 失败任务重试入队机制 | `lifecycle/scheduler.go` + `interfaces.go` + `coordinator_local.go` + `coordinator_redis.go` — 新增 `RetryableCoordinator` 接口, 循环重试 (`retryFailedTasks` + `waitForRetryCompletion`), `GetFailedTasks` 实现 | ✅ 全部通过 (race) |
+| 13 | 端到端 YAML 配置测试 | `config_e2e_test.go` — 19 tests: YAML 解析 (full/minimal/hybrid), 默认值填充, 配置校验, Extension 启动, 分布式模式注入/降级, 完整 pipeline Start→Stop | ✅ 全部通过 (race) |
 
 ### 🔲 待完成
 
-| # | 任务 | 说明 |
-|---|------|------|
-| 13 | 端到端 YAML 配置测试 | 验证配置解析 → Extension 启动 → 分布式模式激活 |
+（无 — Sprint 2a 全部完成）
 
 ### 遗留问题
 
