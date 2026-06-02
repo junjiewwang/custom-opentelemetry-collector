@@ -1,6 +1,6 @@
 # 统一任务引擎 + 节点能力模型 重构方案
 
-> **状态**：Sprint 3 全部完成 + resolveEngine 两层策略实现（共享 controlplane engine → 本地创建 engine → single-node 降级）  
+> **状态**：Sprint 3 全部完成 + resolveEngine 两层策略实现 + Legacy 代码清理完成（Phase 1-3，共删除 ~8,189 行）  
 > **创建日期**：2026-06-02  
 > **最后更新**：2026-06-02  
 > **核心目标**：将 controlplane/taskmanager 和 lifecycle/coordinator 统一为一个 Task Engine，同时引入节点能力模型
@@ -983,8 +983,21 @@ observability_storage:
 - ✅ scheduler 代码路径简化为单一 engine 路径
 - ✅ 无未使用 import / 无编译警告
 
-**已废弃但保留的代码**：
-- `coordinator_redis.go` / `coordinator_local.go`：`RedisCoordinator` 和 `LocalCoordinator` 类型编译正常，但不再被 scheduler 使用。保留原因：(1) 纯 RedisCoordinator 单元测试仍验证其协议正确性；(2) 未来如有其他模块需要低级别协调原语可复用。标记为候选删除。
+**已废弃代码清理完成**（2026-06-02）：
+
+Phase 1-3 legacy 代码全部移除，共删除 **~8,189 行**代码：
+
+| Phase | 删除内容 | 行数 |
+|-------|---------|------|
+| Phase 1 | `lifecycle/coordinator_local.go` + `coordinator_redis.go` + 测试 | ~1,153 |
+| Phase 2 | `taskmanager/service.go` + `reaper.go` + `state_machine.go` + `store/` 包 + 测试 | ~6,328 |
+| Phase 3 | `longpoll/task_handler.go` + `manager_init.go` legacy 方法 | ~708 |
+
+**最终架构（清理后）**：
+- `controlplaneext/taskmanager/` 仅保留：`interface.go`（接口定义）、`factory.go`（engine 创建）、`service_engine.go`（Facade）、`reaper_engine.go`（超时检测）、`helper.go`（工具函数）
+- `longpoll/` 仅保留：`task_handler_engine.go`（engine-backed handler）+ `engine_adapter.go`（适配器）
+- `manager_init.go`：engine-only 路径，无 Redis 直连 fallback
+- 所有 task management 代码路径统一使用 `taskengine.Engine`
 
 ---
 
