@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/hybrid"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
+	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
 // internalProvider is the internal interface that both ES and PG providers implement.
@@ -547,27 +548,58 @@ func (e *ObservabilityStorage) buildLifecycleScheduler(host component.Host) *lif
 		e.logger.Warn("Lifecycle scheduler: PostgreSQL purger not yet implemented, purge will be skipped")
 	}
 
-	// Wire distributed coordinator if configured
+	// Wire distributed engine if configured
 	if e.config.Scheduler.Distributed {
-		coordinator := e.buildCoordinator(host)
-		if coordinator != nil {
-			opts = append(opts, lifecycle.WithCoordinator(coordinator))
+		engine := e.resolveEngine(host)
+		if engine != nil {
+			nodeID := e.config.Scheduler.NodeID
+			if nodeID == "" {
+				nodeID = fmt.Sprintf("node-%d", time.Now().UnixNano())
+			}
+			var elector lifecycle.LeaderElector = lifecycle.NewLocalLeaderElector()
+			// Try Redis-based leader elector if storage is available
+			if redisElector := e.buildRedisLeaderElector(host, nodeID); redisElector != nil {
+				elector = redisElector
+			}
+			opts = append(opts, lifecycle.WithEngine(engine, elector))
+		} else {
+			e.logger.Warn("Distributed purge enabled but no engine could be created (no Redis), falling back to single-node mode")
 		}
 	}
 
 	return lifecycle.NewScheduler(opts...)
 }
 
-// buildCoordinator attempts to build a distributed TaskCoordinator from Redis.
-// Returns nil if Redis is unavailable (graceful degradation to single-node mode).
-func (e *ObservabilityStorage) buildCoordinator(host component.Host) lifecycle.TaskCoordinator {
+// resolveEngine attempts to obtain a taskengine.Engine, preferring shared from controlplaneext,
+// falling back to building a local engine with Redis. Returns nil only if no Redis is available.
+func (e *ObservabilityStorage) resolveEngine(host component.Host) taskengine.Engine {
+	// Strategy 1: Share engine from controlplane extension (same process)
+	if engine := e.getSharedEngine(host); engine != nil {
+		e.logger.Info("Distributed purge using shared engine from controlplane extension",
+			zap.String("controlplane_extension", e.config.Scheduler.ControlplaneExtension))
+		return engine
+	}
+
+	// Strategy 2: Build a local engine instance with Redis
+	engine := e.buildLocalEngine(host)
+	if engine != nil {
+		e.logger.Info("Distributed purge using local engine instance (independent deployment)")
+		return engine
+	}
+
+	return nil
+}
+
+// buildLocalEngine creates a standalone taskengine.Engine backed by Redis.
+// Returns nil if Redis is not available.
+func (e *ObservabilityStorage) buildLocalEngine(host component.Host) taskengine.Engine {
 	storageExtName := e.config.Scheduler.StorageExtension
 	if storageExtName == "" {
-		e.logger.Warn("Distributed purge enabled but storage_extension not configured, using local mode")
+		e.logger.Warn("Distributed purge: storage_extension not configured, cannot create engine")
 		return nil
 	}
 
-	// Find the storage extension from the host
+	// Find the storage extension
 	storageType := component.MustNewType(storageExtName)
 	var storage storageext.Storage
 	for id, ext := range host.GetExtensions() {
@@ -580,9 +612,8 @@ func (e *ObservabilityStorage) buildCoordinator(host component.Host) lifecycle.T
 	}
 
 	if storage == nil {
-		e.logger.Warn("Storage extension not found, distributed purge falling back to local mode",
-			zap.String("storage_extension", storageExtName),
-		)
+		e.logger.Warn("Storage extension not found, cannot create engine for distributed purge",
+			zap.String("storage_extension", storageExtName))
 		return nil
 	}
 
@@ -597,25 +628,109 @@ func (e *ObservabilityStorage) buildCoordinator(host component.Host) lifecycle.T
 	}
 
 	if err != nil {
-		e.logger.Warn("Failed to get Redis client for distributed purge, falling back to local mode",
-			zap.String("redis_name", redisName),
-			zap.Error(err),
-		)
+		e.logger.Warn("Failed to get Redis for engine, distributed purge unavailable",
+			zap.String("redis_name", redisName), zap.Error(err))
 		return nil
 	}
 
-	// Determine nodeID
-	nodeID := e.config.Scheduler.NodeID
-	if nodeID == "" {
-		nodeID = fmt.Sprintf("node-%d", time.Now().UnixNano())
+	// Build engine with Redis store
+	storeCfg := taskengine.RedisStoreConfig{
+		KeyPrefix: "te",
+		ResultTTL: 24 * time.Hour,
+	}
+	store := taskengine.NewRedisStore(redisClient, e.logger.Named("lifecycle-engine-store"), storeCfg)
+
+	engineCfg := taskengine.EngineConfig{
+		DefaultTimeout:    e.config.Scheduler.TaskTimeout,
+		DefaultMaxRetries: e.config.Scheduler.MaxRetries,
+	}
+	engine := taskengine.NewEngine(store, nil, e.logger.Named("lifecycle-engine"), engineCfg)
+
+	// Start the engine
+	if startErr := engine.Start(context.Background()); startErr != nil {
+		e.logger.Error("Failed to start local engine", zap.Error(startErr))
+		return nil
 	}
 
-	e.logger.Info("Distributed purge coordinator initialized",
-		zap.String("node_id", nodeID),
-		zap.String("redis_name", redisName),
-	)
+	e.logger.Info("Local task engine created for distributed purge",
+		zap.String("redis_name", redisName))
+	return engine
+}
 
-	return lifecycle.NewRedisCoordinator(redisClient, nodeID, e.logger)
+// getSharedEngine attempts to obtain a shared taskengine.Engine from controlplaneext.
+// Returns nil if the controlplane extension is not configured, not found, or not engine-backed.
+func (e *ObservabilityStorage) getSharedEngine(host component.Host) taskengine.Engine {
+	cpExtName := e.config.Scheduler.ControlplaneExtension
+	if cpExtName == "" {
+		return nil
+	}
+
+	cpType := component.MustNewType(cpExtName)
+	for id, ext := range host.GetExtensions() {
+		if id.Type() == cpType {
+			// Use interface to avoid direct package import cycle
+			type engineGetter interface {
+				GetTaskEngine() taskengine.Engine
+			}
+			if eg, ok := ext.(engineGetter); ok {
+				engine := eg.GetTaskEngine()
+				if engine != nil {
+					return engine
+				}
+				e.logger.Warn("Controlplane extension found but no engine available (task_manager.type != 'engine')",
+					zap.String("controlplane_extension", cpExtName))
+				return nil
+			}
+			e.logger.Warn("Controlplane extension found but does not implement engine getter",
+				zap.String("controlplane_extension", cpExtName))
+			return nil
+		}
+	}
+
+	e.logger.Debug("Controlplane extension not found, will create local engine",
+		zap.String("controlplane_extension", cpExtName))
+	return nil
+}
+
+// buildRedisLeaderElector builds a Redis-backed leader elector for distributed purge.
+// Returns nil if Redis is not available (falls back to local elector).
+func (e *ObservabilityStorage) buildRedisLeaderElector(host component.Host, nodeID string) lifecycle.LeaderElector {
+	storageExtName := e.config.Scheduler.StorageExtension
+	if storageExtName == "" {
+		return nil
+	}
+
+	storageType := component.MustNewType(storageExtName)
+	var storage storageext.Storage
+	for id, ext := range host.GetExtensions() {
+		if id.Type() == storageType {
+			if s, ok := ext.(storageext.Storage); ok {
+				storage = s
+				break
+			}
+		}
+	}
+
+	if storage == nil {
+		return nil
+	}
+
+	redisName := e.config.Scheduler.RedisName
+	var redisClient redis.UniversalClient
+	var err error
+	if redisName == "" || redisName == "default" {
+		redisClient, err = storage.GetDefaultRedis()
+	} else {
+		redisClient, err = storage.GetRedis(redisName)
+	}
+
+	if err != nil {
+		e.logger.Warn("Failed to get Redis for leader elector, using local elector",
+			zap.Error(err))
+		return nil
+	}
+
+	return lifecycle.NewRedisLeaderElector(redisClient, nodeID, e.logger)
 }
 
 // GetLifecycleScheduler returns the lifecycle scheduler for API access (usage trends, etc.).

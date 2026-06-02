@@ -5,7 +5,6 @@ package lifecycle
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -115,304 +114,15 @@ func (a *mockAuditCollector) GetEvents() []LifecycleEvent {
 }
 
 // ═══════════════════════════════════════════════════
-// Test Cases
+// Test Cases (Engine-based distributed purge)
 // ═══════════════════════════════════════════════════
 
-func TestDistributedPurge_FullPipeline(t *testing.T) {
-	// Setup: 60 expired trace indices (above threshold of 50)
-	expired := make([]string, 60)
-	for i := range expired {
-		expired[i] = fmt.Sprintf("otel-traces-2026.01.%02d", i+1)
-	}
+// Note: Full distributed purge integration tests are in engine_adapter_test.go
+// which tests the DistributedPurgeOrchestrator with mock engines.
+// The tests below verify scheduler-level configuration behaviors.
 
-	purger := newMockDistPurger(map[SignalType][]string{
-		SignalTrace: expired,
-	})
-	audit := &mockAuditCollector{}
-	coordinator := NewLocalCoordinator()
-
-	s := NewScheduler(
-		WithResolver(&mockDistResolver{retention: 7 * 24 * time.Hour}),
-		WithPurger(purger),
-		WithAuditEmitter(audit),
-		WithCoordinator(coordinator),
-		WithConfig(SchedulerConfig{
-			Enabled:              true,
-			Interval:             time.Hour,
-			Distributed:          true,
-			DistributedThreshold: 50, // 60 > 50, will trigger distributed
-			WorkerConcurrency:    5,
-			TaskTimeout:          10 * time.Second,
-			MaxRetries:           3,
-			NodeID:               "test-node-1",
-		}),
-		WithLogger(zaptest.NewLogger(t)),
-	)
-
-	// Run one distributed purge cycle
-	ctx := context.Background()
-	s.distributedPurge(ctx)
-
-	// Verify all 60 indices were deleted
-	deleted := purger.GetDeletedIndices()
-	if len(deleted) != 60 {
-		t.Errorf("expected 60 indices deleted, got %d", len(deleted))
-	}
-
-	// Verify audit events
-	events := audit.GetEvents()
-	hasPlan := false
-	hasVerify := false
-	for _, e := range events {
-		if e.Action == ActionDistPlan {
-			hasPlan = true
-		}
-		if e.Action == ActionDistVerify {
-			hasVerify = true
-		}
-	}
-	if !hasPlan {
-		t.Error("expected ActionDistPlan audit event")
-	}
-	if !hasVerify {
-		t.Error("expected ActionDistVerify audit event")
-	}
-}
-
-func TestDistributedPurge_BelowThreshold_FallsBackToSingleNode(t *testing.T) {
-	// Setup: Only 10 expired indices (below threshold of 50)
-	expired := make([]string, 10)
-	for i := range expired {
-		expired[i] = fmt.Sprintf("otel-traces-2026.01.%02d", i+1)
-	}
-
-	purger := newMockDistPurger(map[SignalType][]string{
-		SignalTrace: expired,
-	})
-	coordinator := NewLocalCoordinator()
-
-	s := NewScheduler(
-		WithResolver(&mockDistResolver{retention: 7 * 24 * time.Hour}),
-		WithPurger(purger),
-		WithCoordinator(coordinator),
-		WithConfig(SchedulerConfig{
-			Enabled:              true,
-			Interval:             time.Hour,
-			Distributed:          true,
-			DistributedThreshold: 50, // 10 < 50, should fall back
-			WorkerConcurrency:    5,
-			TaskTimeout:          10 * time.Second,
-			NodeID:               "test-node-1",
-		}),
-		WithLogger(zaptest.NewLogger(t)),
-	)
-
-	ctx := context.Background()
-	s.distributedPurge(ctx)
-
-	// In single-node fallback, DeleteSingleIndex won't be called
-	// (purgeSignal uses PurgeExpired instead)
-	deleted := purger.GetDeletedIndices()
-	if len(deleted) != 0 {
-		t.Errorf("expected 0 DeleteSingleIndex calls in fallback mode, got %d", len(deleted))
-	}
-}
-
-func TestDistributedPurge_PurgerWithoutIndexLister_FallsBack(t *testing.T) {
-	// Use a purger that does NOT implement IndexLister/SingleIndexPurger
-	simplePurger := &simpleTestPurger{}
-	coordinator := NewLocalCoordinator()
-
-	s := NewScheduler(
-		WithResolver(&mockDistResolver{retention: 7 * 24 * time.Hour}),
-		WithPurger(simplePurger),
-		WithCoordinator(coordinator),
-		WithConfig(SchedulerConfig{
-			Enabled:              true,
-			Interval:             time.Hour,
-			Distributed:          true,
-			DistributedThreshold: 1,
-			NodeID:               "test-node-1",
-		}),
-		WithLogger(zaptest.NewLogger(t)),
-	)
-
-	// Should not panic, should gracefully fall back
-	ctx := context.Background()
-	s.distributedPurge(ctx)
-}
-
-// simpleTestPurger only implements LifecyclePurger (no IndexLister/SingleIndexPurger)
-type simpleTestPurger struct{}
-
-func (p *simpleTestPurger) PurgeExpired(_ context.Context, signal SignalType, _ time.Time) (*PurgeResult, error) {
-	return &PurgeResult{Signal: signal}, nil
-}
-func (p *simpleTestPurger) PurgeByApp(_ context.Context, _ string, signal SignalType, _ time.Time) (*PurgeResult, error) {
-	return &PurgeResult{Signal: signal}, nil
-}
-func (p *simpleTestPurger) EstimatePurge(_ context.Context, signal SignalType, _ time.Time) (*PurgeEstimate, error) {
-	return &PurgeEstimate{Signal: signal}, nil
-}
-func (p *simpleTestPurger) GetDataBoundary(_ context.Context, signal SignalType) (*DataBoundary, error) {
-	return &DataBoundary{Signal: signal, IsEmpty: true}, nil
-}
-
-func TestDistributedPurge_DeleteFailure_ReportsError(t *testing.T) {
-	// Setup: Some indices that will fail deletion
-	expired := []string{"idx1", "idx2", "idx3"}
-
-	purger := newMockDistPurger(map[SignalType][]string{
-		SignalTrace: expired,
-	})
-	purger.deleteErr = fmt.Errorf("ES connection refused")
-
-	coordinator := NewLocalCoordinator()
-
-	s := NewScheduler(
-		WithResolver(&mockDistResolver{retention: 7 * 24 * time.Hour}),
-		WithPurger(purger),
-		WithCoordinator(coordinator),
-		WithConfig(SchedulerConfig{
-			Enabled:              true,
-			Interval:             time.Hour,
-			Distributed:          true,
-			DistributedThreshold: 1, // force distributed mode
-			WorkerConcurrency:    2,
-			TaskTimeout:          5 * time.Second,
-			NodeID:               "test-node-1",
-		}),
-		WithLogger(zaptest.NewLogger(t)),
-	)
-
-	ctx := context.Background()
-	s.distributedPurge(ctx)
-
-	// All tasks should have been attempted but failed
-	deleted := purger.GetDeletedIndices()
-	if len(deleted) != 0 {
-		t.Errorf("expected 0 successful deletions, got %d", len(deleted))
-	}
-}
-
-func TestDistributedPurge_ConcurrentWorkers(t *testing.T) {
-	// Setup: 200 expired indices across multiple signals
-	traceIndices := make([]string, 80)
-	for i := range traceIndices {
-		traceIndices[i] = fmt.Sprintf("otel-traces-%04d", i)
-	}
-	logIndices := make([]string, 70)
-	for i := range logIndices {
-		logIndices[i] = fmt.Sprintf("otel-logs-%04d", i)
-	}
-	metricIndices := make([]string, 50)
-	for i := range metricIndices {
-		metricIndices[i] = fmt.Sprintf("otel-metrics-%04d", i)
-	}
-
-	purger := newMockDistPurger(map[SignalType][]string{
-		SignalTrace:  traceIndices,
-		SignalLog:    logIndices,
-		SignalMetric: metricIndices,
-	})
-	coordinator := NewLocalCoordinator()
-
-	s := NewScheduler(
-		WithResolver(&mockDistResolver{retention: 7 * 24 * time.Hour}),
-		WithPurger(purger),
-		WithCoordinator(coordinator),
-		WithConfig(SchedulerConfig{
-			Enabled:              true,
-			Interval:             time.Hour,
-			Distributed:          true,
-			DistributedThreshold: 50, // 200 > 50
-			WorkerConcurrency:    20, // High concurrency
-			TaskTimeout:          10 * time.Second,
-			NodeID:               "test-node-1",
-		}),
-		WithLogger(zaptest.NewLogger(t)),
-	)
-
-	ctx := context.Background()
-	s.distributedPurge(ctx)
-
-	// Verify all 200 indices were deleted
-	deleted := purger.GetDeletedIndices()
-	if len(deleted) != 200 {
-		t.Errorf("expected 200 indices deleted, got %d", len(deleted))
-	}
-}
-
-func TestDistributedPurge_NoExpiredData(t *testing.T) {
-	purger := newMockDistPurger(map[SignalType][]string{})
-	coordinator := NewLocalCoordinator()
-
-	s := NewScheduler(
-		WithResolver(&mockDistResolver{retention: 7 * 24 * time.Hour}),
-		WithPurger(purger),
-		WithCoordinator(coordinator),
-		WithConfig(SchedulerConfig{
-			Enabled:              true,
-			Interval:             time.Hour,
-			Distributed:          true,
-			DistributedThreshold: 1,
-			WorkerConcurrency:    5,
-			TaskTimeout:          5 * time.Second,
-			NodeID:               "test-node-1",
-		}),
-		WithLogger(zaptest.NewLogger(t)),
-	)
-
-	ctx := context.Background()
-	s.distributedPurge(ctx)
-
-	// No deletions
-	deleted := purger.GetDeletedIndices()
-	if len(deleted) != 0 {
-		t.Errorf("expected 0 deletions, got %d", len(deleted))
-	}
-}
-
-func TestScheduler_RunCycle_RoutesToDistributed(t *testing.T) {
-	// Verify runCycle routes to distributedPurge when coordinator is set
-	expired := make([]string, 60)
-	for i := range expired {
-		expired[i] = fmt.Sprintf("otel-traces-%04d", i)
-	}
-
-	purger := newMockDistPurger(map[SignalType][]string{
-		SignalTrace: expired,
-	})
-	coordinator := NewLocalCoordinator()
-
-	s := NewScheduler(
-		WithResolver(&mockDistResolver{retention: 7 * 24 * time.Hour}),
-		WithPurger(purger),
-		WithCoordinator(coordinator),
-		WithConfig(SchedulerConfig{
-			Enabled:              true,
-			Interval:             time.Hour,
-			Distributed:          true,
-			DistributedThreshold: 50,
-			WorkerConcurrency:    5,
-			TaskTimeout:          10 * time.Second,
-			NodeID:               "test-node-1",
-		}),
-		WithLogger(zaptest.NewLogger(t)),
-	)
-
-	ctx := context.Background()
-	s.runCycle(ctx)
-
-	// If distributed mode worked, DeleteSingleIndex should have been called
-	deleted := purger.GetDeletedIndices()
-	if len(deleted) != 60 {
-		t.Errorf("expected 60 indices deleted via distributed mode, got %d", len(deleted))
-	}
-}
-
-func TestScheduler_RunCycle_SingleNodeWhenNoCoordinator(t *testing.T) {
-	// Without coordinator, should use single-node purge (purgeSignal)
+func TestScheduler_RunCycle_SingleNodeWhenNoOrchestrator(t *testing.T) {
+	// Without orchestrator (engine), distributed=true falls back to single-node
 	purger := newMockDistPurger(map[SignalType][]string{
 		SignalTrace: {"idx1", "idx2"},
 	})
@@ -420,11 +130,11 @@ func TestScheduler_RunCycle_SingleNodeWhenNoCoordinator(t *testing.T) {
 	s := NewScheduler(
 		WithResolver(&mockDistResolver{retention: 7 * 24 * time.Hour}),
 		WithPurger(purger),
-		// No WithCoordinator — single-node mode
+		// No WithEngine — single-node mode
 		WithConfig(SchedulerConfig{
 			Enabled:              true,
 			Interval:             time.Hour,
-			Distributed:          true, // even with Distributed=true, no coordinator → single-node
+			Distributed:          true, // even with Distributed=true, no engine → single-node
 			DistributedThreshold: 1,
 			NodeID:               "test-node-1",
 		}),
@@ -438,19 +148,6 @@ func TestScheduler_RunCycle_SingleNodeWhenNoCoordinator(t *testing.T) {
 	deleted := purger.GetDeletedIndices()
 	if len(deleted) != 0 {
 		t.Errorf("expected 0 DeleteSingleIndex calls in single-node mode, got %d", len(deleted))
-	}
-}
-
-func TestWithCoordinator_Option(t *testing.T) {
-	coordinator := NewLocalCoordinator()
-	s := NewScheduler(
-		WithCoordinator(coordinator),
-		WithConfig(SchedulerConfig{Distributed: true}),
-		WithLogger(zap.NewNop()),
-	)
-
-	if s.coordinator == nil {
-		t.Fatal("expected coordinator to be set")
 	}
 }
 

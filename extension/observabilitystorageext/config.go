@@ -57,9 +57,17 @@ type SchedulerConfig struct {
 	// Requires a storage extension with Redis. Falls back to local mode if unavailable.
 	Distributed bool `mapstructure:"distributed"`
 
+	// ControlplaneExtension is the component type name of the controlplane extension.
+	// When set and task_manager.type="engine", the scheduler shares the same Engine instance
+	// from controlplaneext for distributed purge coordination. This replaces the need for
+	// a separate Coordinator and provides unified task management across all subsystems.
+	// Example: "controlplane"
+	ControlplaneExtension string `mapstructure:"controlplane_extension"`
+
 	// StorageExtension is the component type name of the storageext extension
 	// used to obtain Redis client for distributed coordination.
-	// Required when Distributed=true. Example: "storageext"
+	// Only used as fallback when ControlplaneExtension is not set or engine is unavailable.
+	// Required when Distributed=true and no ControlplaneExtension. Example: "storage"
 	StorageExtension string `mapstructure:"storage_extension"`
 
 	// RedisName is the named Redis connection to use for distributed coordination.
