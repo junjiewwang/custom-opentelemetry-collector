@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
+	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
 // TokenValidationResult holds the result of token validation.
@@ -510,6 +511,17 @@ func (e *Extension) GetTaskManagerConfig() taskmanager.Config {
 // GetTaskManager returns the task manager for direct access.
 func (e *Extension) GetTaskManager() taskmanager.TaskManager {
 	return e.taskMgr
+}
+
+// GetTaskEngine returns the underlying taskengine.Engine if the task manager is
+// engine-backed (Config.Type="engine"). Returns nil if using legacy store-based mode.
+// This allows other extensions (e.g., observabilitystorageext) to share the same
+// Engine instance for unified distributed task coordination.
+func (e *Extension) GetTaskEngine() taskengine.Engine {
+	if ep, ok := e.taskMgr.(taskmanager.EngineProvider); ok {
+		return ep.GetEngine()
+	}
+	return nil
 }
 
 // GetAgentRegistry returns the agent registry for direct access.

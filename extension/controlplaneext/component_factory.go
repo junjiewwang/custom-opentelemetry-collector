@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
+	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
 // ComponentFactory creates control plane components.
@@ -96,7 +97,22 @@ func (f *ComponentFactory) CreateConfigManagerWithOnDemand(cfg configmanager.Con
 
 // CreateTaskManager creates the appropriate TaskManager based on config.
 // Uses the new service/store architecture for better separation of concerns.
+//
+// Supported types:
+//   - "memory" or "": in-process task store (single node, no persistence)
+//   - "redis": Redis-backed legacy store via store.TaskStore
+//   - "engine": unified taskengine.Engine backend (recommended for new deployments)
 func (f *ComponentFactory) CreateTaskManager(cfg taskmanager.Config) (taskmanager.TaskManager, error) {
+	// Engine mode: use the unified taskengine.Engine as backend
+	if cfg.Type == "engine" {
+		engine, err := f.createTaskEngine(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create task engine: %w", err)
+		}
+		return taskmanager.NewTaskManagerWithEngine(f.logger, cfg, engine)
+	}
+
+	// Legacy mode: memory or redis via store.TaskStore
 	var redisClient taskmanager.RedisClient
 
 	if cfg.Type == "redis" {
@@ -115,6 +131,47 @@ func (f *ComponentFactory) CreateTaskManager(cfg taskmanager.Config) (taskmanage
 	}
 
 	return taskmanager.NewTaskManager(f.logger, cfg, redisClient)
+}
+
+// createTaskEngine creates a taskengine.Engine based on the TaskManager config.
+// The engine store type matches the underlying config: if redis is configured,
+// use RedisStore; otherwise fallback to MemoryStore.
+func (f *ComponentFactory) createTaskEngine(cfg taskmanager.Config) (taskengine.Engine, error) {
+	engineCfg := taskengine.EngineConfig{
+		DefaultTimeout:    cfg.DefaultTimeout,
+		DefaultMaxRetries: 0, // Controlplane tasks don't retry by default
+	}
+
+	var store taskengine.Store
+
+	// Determine store based on Redis availability
+	if f.storage != nil {
+		redisName := cfg.RedisName
+		if redisName == "" {
+			redisName = "default"
+		}
+		client, err := f.storage.GetRedis(redisName)
+		if err != nil {
+			f.logger.Warn("Failed to get Redis for task engine, falling back to memory store",
+				zap.String("redis_name", redisName), zap.Error(err))
+			store = taskengine.NewMemoryStore()
+		} else {
+			storeCfg := taskengine.RedisStoreConfig{
+				KeyPrefix: cfg.KeyPrefix,
+				ResultTTL: cfg.ResultTTL,
+			}
+			// Use "te" prefix if the legacy prefix is configured
+			if storeCfg.KeyPrefix == "" || storeCfg.KeyPrefix == "otel:tasks" {
+				storeCfg.KeyPrefix = "te"
+			}
+			store = taskengine.NewRedisStore(client, f.logger.Named("engine-store"), storeCfg)
+		}
+	} else {
+		store = taskengine.NewMemoryStore()
+	}
+
+	engine := taskengine.NewEngine(store, nil, f.logger.Named("task-engine"), engineCfg)
+	return engine, nil
 }
 
 // CreateAgentRegistry creates the appropriate AgentRegistry based on config.
