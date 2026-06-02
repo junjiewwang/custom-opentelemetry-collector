@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
+	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
 // TaskManager defines the interface for task management.
@@ -58,6 +59,13 @@ type TaskManager interface {
 	Close() error
 }
 
+// EngineProvider is an optional interface that engine-backed TaskManager
+// implementations expose. Components that need direct engine access
+// (e.g., longpoll handler for optimized Claim) can type-assert to this interface.
+type EngineProvider interface {
+	GetEngine() taskengine.Engine
+}
+
 // TaskInfo contains detailed task information.
 type TaskInfo struct {
 	Task            *model.Task       `json:"task"`
@@ -90,7 +98,10 @@ type ListTasksPage struct {
 
 // Config holds the configuration for TaskManager.
 type Config struct {
-	// Type specifies the backend type: "memory" or "redis"
+	// Type specifies the backend type: "memory", "redis", or "engine"
+	// - "memory": in-process task store (single node, no persistence)
+	// - "redis": Redis-backed store via legacy store.TaskStore (deprecated path)
+	// - "engine": unified taskengine.Engine backend (recommended for new deployments)
 	Type string `mapstructure:"type"`
 
 	// RedisName is the name of the Redis connection from storage extension

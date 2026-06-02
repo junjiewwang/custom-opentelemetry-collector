@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// Package store provides the legacy task store interface and implementations.
+//
+// Deprecated: This package is superseded by the unified taskengine package
+// (go.opentelemetry.io/collector/custom/taskengine). New code should use
+// taskengine.Store and taskmanager.NewTaskManagerWithEngine() instead.
+// This package is retained for backward compatibility during the migration
+// period and will be removed in a future release.
 package store
 
 import (

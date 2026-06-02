@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager/store"
+	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
 // RedisClient is a type alias for redis.UniversalClient.
@@ -36,4 +37,17 @@ func NewTaskManager(logger *zap.Logger, config Config, redisClient RedisClient) 
 	}
 
 	return NewTaskService(logger.Named("service"), config, taskStore), nil
+}
+
+// NewTaskManagerWithEngine creates an engine-backed TaskManager.
+// This is the new factory function for Sprint 3 migration, using the unified
+// taskengine.Engine as the backend instead of the legacy store.TaskStore.
+//
+// The returned TaskManager implements the same interface as the legacy
+// NewTaskManager, ensuring full backward compatibility for all callers.
+func NewTaskManagerWithEngine(logger *zap.Logger, config Config, engine taskengine.Engine) (TaskManager, error) {
+	if engine == nil {
+		return nil, errors.New("engine is required for engine-backed task manager")
+	}
+	return NewTaskServiceEngine(engine, logger.Named("service-engine"), config), nil
 }
