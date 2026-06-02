@@ -30,6 +30,14 @@ type TaskClaimEngine interface {
 	IsTaskCancelled(ctx context.Context, taskID string) (bool, error)
 }
 
+// TaskWaiter represents a waiting task poll request.
+type TaskWaiter struct {
+	agentID    string
+	resultChan chan *HandlerResult
+	ctx        context.Context
+	cancel     context.CancelFunc
+}
+
 // TaskPollHandlerEngine implements LongPollHandler for task polling using the
 // unified task engine instead of direct Redis operations.
 //

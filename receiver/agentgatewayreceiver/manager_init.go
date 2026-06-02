@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
@@ -22,8 +21,7 @@ func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
 		return nil
 	}
 
-	storage := r.controlPlaneExt.GetStorage()
-	if storage == nil {
+	if r.controlPlaneExt.GetStorage() == nil {
 		r.logger.Debug("Storage not available, skipping long poll manager")
 		return nil
 	}
@@ -36,9 +34,9 @@ func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
 		r.logger.Warn("Failed to initialize config poll handler", zap.Error(err))
 	}
 
-	// 3. Initialize task poll handler based on backend type
+	// 3. Initialize task poll handler (engine-backed)
 	taskCfg := r.controlPlaneExt.GetTaskManagerConfig()
-	if err := r.initTaskPollHandlerAuto(storage, taskCfg); err != nil {
+	if err := r.initTaskPollHandlerAuto(taskCfg); err != nil {
 		r.logger.Warn("Failed to initialize task poll handler", zap.Error(err))
 	}
 
@@ -72,59 +70,28 @@ func (r *agentGatewayReceiver) initConfigPollHandler() error {
 	return r.longPollManager.RegisterHandler(configHandler)
 }
 
-// initTaskPollHandlerAuto automatically selects the best task poll handler based on
-// the TaskManager backend type. If the TaskManager implements EngineProvider,
-// the engine-backed handler is used; otherwise falls back to legacy Redis handler.
-func (r *agentGatewayReceiver) initTaskPollHandlerAuto(storage interface {
-	GetRedis(name string) (redis.UniversalClient, error)
-}, taskCfg taskmanager.Config) error {
-	// Try engine-backed path first (preferred)
-	if ep, ok := r.controlPlaneExt.GetTaskManager().(taskmanager.EngineProvider); ok {
-		engine := ep.GetEngine()
-		if engine != nil {
-			r.logger.Info("Using engine-backed task poll handler",
-				zap.String("task_manager_type", taskCfg.Type))
-			return r.initTaskPollHandlerWithEngine(engine)
-		}
+// initTaskPollHandlerAuto initializes the engine-backed task poll handler.
+// Since all TaskManager types now route through taskengine.Engine,
+// this always uses the engine path via EngineProvider.
+func (r *agentGatewayReceiver) initTaskPollHandlerAuto(taskCfg taskmanager.Config) error {
+	ep, ok := r.controlPlaneExt.GetTaskManager().(taskmanager.EngineProvider)
+	if !ok {
+		r.logger.Debug("TaskManager does not implement EngineProvider, skipping task poll handler")
+		return nil
 	}
 
-	// Fallback to legacy Redis handler
-	if taskCfg.Type == "redis" || taskCfg.Type == "engine" {
-		r.logger.Info("Using legacy Redis-based task poll handler",
-			zap.String("task_manager_type", taskCfg.Type))
-		return r.initTaskPollHandler(storage, taskCfg)
+	engine := ep.GetEngine()
+	if engine == nil {
+		r.logger.Warn("EngineProvider returned nil engine, skipping task poll handler")
+		return nil
 	}
 
-	r.logger.Debug("Task poll handler not initialized (type not supported for longpoll)",
+	r.logger.Info("Using engine-backed task poll handler",
 		zap.String("task_manager_type", taskCfg.Type))
-	return nil
-}
-
-// initTaskPollHandler initializes and registers the task poll handler.
-// Uses the legacy Redis-based handler when engine is not available.
-func (r *agentGatewayReceiver) initTaskPollHandler(storage interface {
-	GetRedis(name string) (redis.UniversalClient, error)
-}, taskCfg taskmanager.Config) error {
-	redisName := taskCfg.RedisName
-	if redisName == "" {
-		redisName = "default"
-	}
-	keyPrefix := taskCfg.KeyPrefix
-	if keyPrefix == "" {
-		keyPrefix = "otel:tasks"
-	}
-
-	redisClient, err := storage.GetRedis(redisName)
-	if err != nil {
-		return err
-	}
-
-	taskHandler := longpoll.NewTaskPollHandler(r.logger, redisClient, keyPrefix)
-	return r.longPollManager.RegisterHandler(taskHandler)
+	return r.initTaskPollHandlerWithEngine(engine)
 }
 
 // initTaskPollHandlerWithEngine initializes the engine-backed task poll handler.
-// This is the Sprint 3 path that replaces direct Redis operations with the unified engine.
 func (r *agentGatewayReceiver) initTaskPollHandlerWithEngine(engine taskengine.Engine) error {
 	adapter := longpoll.NewEngineAdapter(engine)
 	taskHandler := longpoll.NewTaskPollHandlerEngine(r.logger, adapter)
