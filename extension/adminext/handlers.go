@@ -991,21 +991,18 @@ func (e *Extension) batchTaskActionV2(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 func (e *Extension) getDashboardOverview(w http.ResponseWriter, r *http.Request) {
-	// Get instance stats
+	// Get cached instance stats (CachingRegistry, 5s TTL, O(1) with cache hit)
 	instanceStats, err := e.agentReg.GetAgentStats(r.Context())
 	if err != nil {
 		instanceStats = &agentregistry.AgentStats{}
 	}
 
-	// Get pending tasks count
-	pendingTasks, err := e.taskMgr.GetGlobalPendingTasks(r.Context())
-	pendingCount := 0
-	if err == nil {
-		pendingCount = len(pendingTasks)
-	}
-
-	// Get app count
+	// Get app count (single Redis HGetAll, efficient)
 	apps, _ := e.tokenMgr.ListApps(r.Context())
+
+	// pending/running task counts are omitted here; the /tasks page provides
+	// full task visibility. These queries (GetGlobalPendingTasks via ListTasks)
+	// require O(n) Redis SCAN+GET and hurt dashboard performance.
 
 	e.writeJSON(w, http.StatusOK, map[string]any{
 		"apps": map[string]any{
@@ -1018,7 +1015,7 @@ func (e *Extension) getDashboardOverview(w http.ResponseWriter, r *http.Request)
 			"unhealthy": instanceStats.UnhealthyAgents,
 		},
 		"tasks": map[string]any{
-			"pending": pendingCount,
+			"pending": 0,
 		},
 	})
 }
