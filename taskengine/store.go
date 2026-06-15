@@ -20,6 +20,11 @@ type Store interface {
 	// GetTask retrieves a task by ID. Returns nil, nil if not found.
 	GetTask(ctx context.Context, taskID string) (*Task, error)
 
+	// GetTasks retrieves multiple tasks by ID in a single batch operation.
+	// Implementations should use MGet (Redis) or equivalent to minimize round-trips.
+	// Missing/unavailable tasks are silently omitted from the result.
+	GetTasks(ctx context.Context, taskIDs []string) ([]*Task, error)
+
 	// UpdateTaskStatus atomically transitions the task to a new status.
 	// Returns InvalidTransitionError if the state machine rejects the transition.
 	// claimedBy is set when transitioning to Running.

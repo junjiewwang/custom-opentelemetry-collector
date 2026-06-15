@@ -132,6 +132,47 @@ func (s *RedisStore) GetTask(ctx context.Context, taskID string) (*Task, error) 
 	return &task, nil
 }
 
+// GetTasks retrieves multiple tasks by ID using Redis MGET for batch efficiency.
+// Missing/nil results are silently omitted.
+func (s *RedisStore) GetTasks(ctx context.Context, taskIDs []string) ([]*Task, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+
+	keys := make([]string, len(taskIDs))
+	for i, id := range taskIDs {
+		keys[i] = s.taskKey(id)
+	}
+
+	results, err := s.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("mget tasks: %w", err)
+	}
+
+	tasks := make([]*Task, 0, len(taskIDs))
+	for i, val := range results {
+		if val == nil {
+			continue // key not found
+		}
+		data, ok := val.(string)
+		if !ok {
+			s.logger.Warn("unexpected MGet result type",
+				zap.String("task_id", taskIDs[i]),
+				zap.Any("type", fmt.Sprintf("%T", val)))
+			continue
+		}
+		var task Task
+		if err := json.Unmarshal([]byte(data), &task); err != nil {
+			s.logger.Warn("failed to unmarshal task in batch",
+				zap.String("task_id", taskIDs[i]),
+				zap.Error(err))
+			continue
+		}
+		tasks = append(tasks, &task)
+	}
+	return tasks, nil
+}
+
 // updateTaskStatusScript is a Lua script that atomically validates and applies a status transition.
 // This prevents race conditions where two nodes try to claim the same task.
 //
@@ -276,14 +317,15 @@ func (s *RedisStore) ListTasks(ctx context.Context, query ListQuery) (*ListPage,
 		}
 	}
 
-	// Fetch and filter tasks
+	// Batch-fetch all tasks in a single MGET round-trip
+	fetchedTasks, err := s.GetTasks(ctx, taskIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch get tasks: %w", err)
+	}
+
+	// Apply filters
 	var allTasks []*Task
-	for _, id := range taskIDs {
-		task, err := s.GetTask(ctx, id)
-		if err != nil || task == nil {
-			continue
-		}
-		// Apply filters
+	for _, task := range fetchedTasks {
 		if query.TaskType != "" && task.Type != query.TaskType {
 			continue
 		}

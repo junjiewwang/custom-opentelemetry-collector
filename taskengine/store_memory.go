@@ -63,6 +63,20 @@ func (s *MemoryStore) GetTask(_ context.Context, taskID string) (*Task, error) {
 	return &copied, nil
 }
 
+func (s *MemoryStore) GetTasks(_ context.Context, taskIDs []string) ([]*Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tasks := make([]*Task, 0, len(taskIDs))
+	for _, id := range taskIDs {
+		if task, ok := s.tasks[id]; ok {
+			copied := *task
+			tasks = append(tasks, &copied)
+		}
+	}
+	return tasks, nil
+}
+
 func (s *MemoryStore) UpdateTaskStatus(_ context.Context, taskID string, status TaskStatus, claimedBy string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
