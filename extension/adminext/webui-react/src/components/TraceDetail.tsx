@@ -90,6 +90,29 @@ function isSpanError(span: OTelSpan): boolean {
   return span.status?.code === 'STATUS_CODE_ERROR';
 }
 
+/** 通用剪贴板复制（兼容 HTTP 非安全上下文） */
+function copyText(text: string): boolean {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text);
+    return true;
+  }
+  // Fallback: execCommand (works in HTTP contexts)
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
 // ============================================================================
 // TraceDetail 主组件
 // ============================================================================
@@ -671,9 +694,9 @@ function SpanDetail({ span, traceStartNano }: SpanDetailProps) {
   const spanDurationNano = Number(span.durationNano) || (Number(span.endTimeUnixNano) - spanStartNano);
   const relativeStartNano = spanStartNano - traceStartNano;
 
-  // 复制到剪贴板
+  // 复制到剪贴板（兼容 HTTP）
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
+    copyText(text);
   };
 
   return (
@@ -976,7 +999,7 @@ function KeyValueTable({ items }: { items: KeyValue[] }) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   const handleCopy = useCallback((value: string, index: number) => {
-    navigator.clipboard.writeText(value);
+    copyText(value);
     setCopiedIndex(index);
     setTimeout(() => setCopiedIndex(null), 1500);
   }, []);
@@ -1099,7 +1122,7 @@ function TraceJsonView({ trace }: TraceDetailProps) {
   const lineCount = useMemo(() => jsonText.split('\n').length, [jsonText]);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(jsonText);
+    copyText(jsonText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [jsonText]);
