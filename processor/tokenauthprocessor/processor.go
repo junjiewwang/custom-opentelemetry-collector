@@ -325,6 +325,8 @@ func (p *tokenAuthProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces
 			if p.config.RemoveTokenAttribute {
 				newRS.Resource().Attributes().Remove(p.config.AttributeKey)
 			}
+			// Enrich app_id into resource attributes for downstream data isolation
+			p.enrichAppID(token, newRS.Resource().Attributes())
 		} else {
 			invalidCount += rs.ScopeSpans().Len()
 		}
@@ -368,6 +370,8 @@ func (p *tokenAuthProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metr
 			if p.config.RemoveTokenAttribute {
 				newRM.Resource().Attributes().Remove(p.config.AttributeKey)
 			}
+			// Enrich app_id into resource attributes for downstream data isolation
+			p.enrichAppID(token, newRM.Resource().Attributes())
 		} else {
 			invalidCount += rm.ScopeMetrics().Len()
 		}
@@ -411,6 +415,8 @@ func (p *tokenAuthProcessor) ConsumeLogs(ctx context.Context, ld plog.Logs) erro
 			if p.config.RemoveTokenAttribute {
 				newRL.Resource().Attributes().Remove(p.config.AttributeKey)
 			}
+			// Enrich app_id into resource attributes for downstream data isolation
+			p.enrichAppID(token, newRL.Resource().Attributes())
 		} else {
 			invalidCount += rl.ScopeLogs().Len()
 		}
@@ -442,27 +448,33 @@ func extractTokenFromAttributes(attrs pcommon.Map, key string) string {
 // validateToken validates the token using the control plane extension.
 // Uses a TTL-based cache to avoid repeated validation calls.
 func (p *tokenAuthProcessor) validateToken(ctx context.Context, token string) bool {
+	_, ok := p.validateTokenWithAppID(ctx, token)
+	return ok
+}
+
+// validateTokenWithAppID validates the token and returns the associated AppID.
+func (p *tokenAuthProcessor) validateTokenWithAppID(ctx context.Context, token string) (string, bool) {
 	if token == "" {
-		return false
+		return "", false
 	}
 
 	// Check cache first (if enabled)
 	if p.cache != nil {
 		if entry, ok := p.cache.get(token); ok {
-			return entry.valid
+			return entry.appID, entry.valid
 		}
 	}
 
 	// Validate with control plane
 	if p.controlPlane == nil {
 		p.logger.Debug("Token validation failed: control plane not available")
-		return false
+		return "", false
 	}
 
 	result, err := p.controlPlane.ValidateToken(ctx, token)
 	if err != nil {
 		p.logger.Error("Token validation error", zap.Error(err))
-		return false
+		return "", false
 	}
 
 	// Cache the result (if enabled)
@@ -476,7 +488,27 @@ func (p *tokenAuthProcessor) validateToken(ctx context.Context, token string) bo
 		)
 	}
 
-	return result.Valid
+	return result.AppID, result.Valid
+}
+
+// enrichAppID adds the app_id from token validation to resource attributes.
+// Since validateToken() was already called successfully before this method,
+// the appID is guaranteed to be in cache (if caching is enabled) or can be
+// retrieved from a lightweight re-validation.
+func (p *tokenAuthProcessor) enrichAppID(token string, attrs pcommon.Map) {
+	// Fast path: read from cache (already populated by the validateToken call above)
+	if p.cache != nil {
+		if entry, ok := p.cache.get(token); ok && entry.valid && entry.appID != "" {
+			attrs.PutStr("app_id", entry.appID)
+			return
+		}
+	}
+
+	// Fallback: re-validate to get appID (cache miss, should be rare)
+	appID, ok := p.validateTokenWithAppID(context.Background(), token)
+	if ok && appID != "" {
+		attrs.PutStr("app_id", appID)
+	}
 }
 
 // ClearCache clears the token validation cache.
