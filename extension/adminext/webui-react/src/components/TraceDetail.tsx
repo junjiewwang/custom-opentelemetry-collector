@@ -33,10 +33,10 @@ import TraceGraphView from './TraceGraphView';
 
 interface TraceDetailProps {
   trace: OTelTrace;
-  onClose: () => void;
+  onClose?: () => void;
 }
 
-type ViewTab = 'timeline' | 'statistics' | 'table' | 'flamegraph' | 'graph';
+type ViewTab = 'timeline' | 'statistics' | 'table' | 'flamegraph' | 'graph' | 'json';
 
 const VIEW_TABS: { key: ViewTab; label: string; icon: string }[] = [
   { key: 'timeline', label: 'Timeline', icon: 'fa-stream' },
@@ -44,6 +44,7 @@ const VIEW_TABS: { key: ViewTab; label: string; icon: string }[] = [
   { key: 'table', label: 'Table', icon: 'fa-table' },
   { key: 'flamegraph', label: 'Flamegraph', icon: 'fa-fire' },
   { key: 'graph', label: 'Graph', icon: 'fa-project-diagram' },
+  { key: 'json', label: 'JSON', icon: 'fa-code' },
 ];
 
 // ============================================================================
@@ -507,6 +508,8 @@ export default function TraceDetail({ trace, onClose }: TraceDetailProps) {
             <TraceGraphView trace={trace} />
           </div>
         </div>
+      ) : activeTab === 'json' ? (
+        <TraceJsonView trace={trace} />
       ) : null}
     </div>
   );
@@ -1074,6 +1077,81 @@ function LongValueDisplay({ value }: { value: string }) {
       >
         {expanded ? 'Show less' : 'Show more'}
       </button>
+    </div>
+  );
+}
+
+// ============================================================================
+// TraceJsonView - 原始 JSON 数据查看（方便 agent 分析和优化）
+// ============================================================================
+
+function TraceJsonView({ trace }: TraceDetailProps) {
+  const [copied, setCopied] = useState(false);
+
+  const jsonText = useMemo(() => {
+    try {
+      return JSON.stringify(trace, null, 2);
+    } catch {
+      return '{}';
+    }
+  }, [trace]);
+
+  const lineCount = useMemo(() => jsonText.split('\n').length, [jsonText]);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(jsonText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [jsonText]);
+
+  const handleDownload = useCallback(() => {
+    const blob = new Blob([jsonText], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `trace-${trace.traceId.substring(0, 16)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [jsonText, trace.traceId]);
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col p-4 lg:p-5">
+      {/* 工具栏 */}
+      <div className="flex-shrink-0 flex items-center justify-between mb-3 px-2">
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          <span className="inline-flex items-center gap-1.5">
+            <i className="fas fa-file-code text-slate-400" />
+            <span className="font-mono text-slate-600">{trace.traceId}</span>
+          </span>
+          <span className="text-slate-300">|</span>
+          <span>{trace.spans.length} spans</span>
+          <span className="text-slate-300">|</span>
+          <span>{lineCount} lines</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition shadow-sm"
+          >
+            <i className={`fas ${copied ? 'fa-check text-green-500' : 'fa-copy'} text-[11px]`} />
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+          <button
+            onClick={handleDownload}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl bg-primary-50 text-primary-700 hover:bg-primary-100 transition shadow-sm"
+          >
+            <i className="fas fa-download text-[11px]" />
+            Download .json
+          </button>
+        </div>
+      </div>
+
+      {/* JSON 内容区 — 代码风格展示 */}
+      <div className="flex-1 min-h-0 rounded-2xl border border-slate-200 bg-[#1e293b] shadow-sm overflow-hidden">
+        <pre className="h-full overflow-auto p-5 text-[13px] leading-relaxed font-mono text-slate-300 whitespace-pre">
+          <code>{jsonText}</code>
+        </pre>
+      </div>
     </div>
   );
 }
