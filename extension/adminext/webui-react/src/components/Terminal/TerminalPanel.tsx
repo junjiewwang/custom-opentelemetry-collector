@@ -300,7 +300,8 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
                 if (dims) {
                   sendWS({ action: 'resize', cols: dims.cols, rows: dims.rows });
                 }
-              }, 100);
+                sendWS({ action: 'read', data: '\r' });
+              }, 150);
             }
           });
           return;
@@ -314,13 +315,16 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
           relayReadyRef.current = true;
           // Start idle detection now that relay is active.
           resetIdleTimer();
-          // 短暂延迟确保 relay 完全就绪
+          // 短暂延迟确保 relay 完全就绪，然后发送 resize + 回车唤醒 Arthas
           setTimeout(() => {
             const dims = terminal.getProposedDimensions();
             if (dims) {
               sendWS({ action: 'resize', cols: dims.cols, rows: dims.rows });
             }
-          }, 100);
+            // Arthas 需要收到第一次输入才会显示 prompt/banner
+            // 发送一个回车（不会执行任何命令）来触发 Arthas 输出欢迎 banner
+            sendWS({ action: 'read', data: '\r' });
+          }, 150);
         }
       };
 
