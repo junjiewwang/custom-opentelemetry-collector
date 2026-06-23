@@ -873,15 +873,57 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		zap.String("remote_node_addr", agentNodeAddr),
 	)
 
-	// If agent not found anywhere, return error
+	// If agent not found anywhere, wait for it to register (up to connectTimeout).
+	// This handles the common case where the browser sends connectArthas immediately
+	// after triggering an arthas_attach task, but the Arthas agent hasn't finished
+	// starting yet (bootstrap + JVM attach + WebSocket reconnect takes ~30-60s).
 	if !isLocalAgent && agentNodeAddr == "" {
-		ctx.logger.Warn("[connectArthas] Agent not online",
+		ctx.logger.Info("[connectArthas] Agent not found yet, waiting for agentRegister",
 			zap.String("requested_agent_id", agentID),
+			zap.String("session_id", sessionID),
 		)
-		_ = sendBrowserStatus(ctx.conn, sessionID, statusError,
-			"Agent is offline. Please ensure the target application has started Arthas and connected to the server.")
-		_ = ctx.conn.Close()
-		return
+		_ = sendBrowserStatus(ctx.conn, sessionID, statusConnecting,
+			"Arthas is starting, waiting for agent to connect...")
+
+		deadline := time.Now().Add(s.connectTimeout())
+		pollInterval := 2 * time.Second
+		for time.Now().Before(deadline) {
+			time.Sleep(pollInterval)
+			s.mu.Lock()
+			a := s.agents[agentID]
+			s.mu.Unlock()
+			if a != nil && a.conn != nil && !s.isAgentTimeout(a) {
+				agent = a
+				isLocalAgent = true
+				ctx.logger.Info("[connectArthas] Agent appeared after waiting",
+					zap.String("agent_id", agentID),
+					zap.Duration("waited", time.Since(deadline.Add(-s.connectTimeout()))),
+				)
+				break
+			}
+			// Distributed: check if agent registered on another node
+			if s.distributed != nil {
+				if addr, err := s.distributed.GetAgentNodeAddr(s.ctx, agentID); err == nil && addr != "" {
+					agentNodeAddr = addr
+					ctx.logger.Info("[connectArthas] Agent appeared on remote node after waiting",
+						zap.String("agent_id", agentID),
+						zap.String("remote_node", addr),
+					)
+					break
+				}
+			}
+		}
+
+		if !isLocalAgent && agentNodeAddr == "" {
+			ctx.logger.Warn("[connectArthas] Agent still not online after waiting",
+				zap.String("requested_agent_id", agentID),
+				zap.Duration("timeout", s.connectTimeout()),
+			)
+			_ = sendBrowserStatus(ctx.conn, sessionID, statusError,
+				"Agent is offline. Please ensure the target application has started Arthas and connected to the server.")
+			_ = ctx.conn.Close()
+			return
+		}
 	}
 
 	// If agent is on another node, proxy the request
