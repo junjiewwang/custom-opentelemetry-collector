@@ -231,25 +231,25 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 					"start_time":      map[string]any{"type": "date_nanos"},
 					"end_time":        map[string]any{"type": "date_nanos"},
 					"duration_us":     map[string]any{"type": "long"},
-					"app_id":          map[string]any{"type": "keyword"},
-					"attributes":      map[string]any{"type": "object", "dynamic": true},
-					"resource": map[string]any{
-						"properties": map[string]any{
-							"service.name":      map[string]any{"type": "keyword"},
-							"service.namespace": map[string]any{"type": "keyword"},
-							"service.version":   map[string]any{"type": "keyword"},
-							"host.name":         map[string]any{"type": "keyword"},
-							"app_id":            map[string]any{"type": "keyword"},
-						},
+				"app_id":          map[string]any{"type": "keyword"},
+				"attributes":      map[string]any{"type": "flattened"},
+				"resource": map[string]any{
+					"properties": map[string]any{
+						"service.name":      map[string]any{"type": "keyword"},
+						"service.namespace": map[string]any{"type": "keyword"},
+						"service.version":   map[string]any{"type": "keyword"},
+						"host.name":         map[string]any{"type": "keyword"},
+						"app_id":            map[string]any{"type": "keyword"},
 					},
-					"events": map[string]any{
-						"type": "nested",
-						"properties": map[string]any{
-							"name":       map[string]any{"type": "keyword"},
-							"timestamp":  map[string]any{"type": "date_nanos"},
-							"attributes": map[string]any{"type": "object", "dynamic": true},
-						},
+				},
+				"events": map[string]any{
+					"type": "nested",
+					"properties": map[string]any{
+						"name":       map[string]any{"type": "keyword"},
+						"timestamp":  map[string]any{"type": "date_nanos"},
+						"attributes": map[string]any{"type": "flattened"},
 					},
+				},
 					"links": map[string]any{
 						"type": "nested",
 						"properties": map[string]any{
@@ -323,9 +323,9 @@ func (a *Admin) createLogTemplate(ctx context.Context) error {
 					"severity_number": map[string]any{"type": "integer"},
 					"body":            map[string]any{"type": "text", "analyzer": "standard"},
 					"service_name":    map[string]any{"type": "keyword"},
-					"app_id":          map[string]any{"type": "keyword"},
-					"attributes":      map[string]any{"type": "object", "dynamic": true},
-					"resource":        map[string]any{"type": "flattened"},
+				"app_id":          map[string]any{"type": "keyword"},
+				"attributes":      map[string]any{"type": "flattened"},
+				"resource":        map[string]any{"type": "flattened"},
 				},
 			},
 		},
