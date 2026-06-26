@@ -125,7 +125,7 @@ export default function StorageAdminPage() {
 
     try {
       const result = await apiClient.purgeStorage(signal, before);
-      setPurgeMessage(`成功清除 ${result.deleted_count} 条记录${result.freed_bytes ? `，释放 ${formatBytes(result.freed_bytes)}` : ''}`);
+      setPurgeMessage(`成功清除 ${result.deletedCount} 条记录${result.freedBytes ? `，释放 ${formatBytes(result.freedBytes)}` : ''}`);
       // Reload
       loadData();
     } catch (err: unknown) {
@@ -229,15 +229,15 @@ export default function StorageAdminPage() {
           {diskUsage ? (
             <>
               <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                {formatBytes(diskUsage.used_bytes)} / {formatBytes(diskUsage.total_bytes)}
+                {formatBytes(diskUsage.usedBytes)} / {formatBytes(diskUsage.totalBytes)}
               </p>
               <div className="mt-2 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-blue-500 rounded-full transition-all"
-                  style={{ width: `${diskUsage.total_bytes > 0 ? (diskUsage.used_bytes / diskUsage.total_bytes * 100) : 0}%` }}
+                  style={{ width: `${diskUsage.totalBytes > 0 ? (diskUsage.usedBytes / diskUsage.totalBytes * 100) : 0}%` }}
                 />
               </div>
-              <p className="text-xs text-gray-500 mt-1">可用: {formatBytes(diskUsage.available_bytes)}</p>
+              <p className="text-xs text-gray-500 mt-1">可用: {formatBytes(diskUsage.availableBytes)}</p>
             </>
           ) : (
             <p className="text-gray-400">—</p>
@@ -246,7 +246,7 @@ export default function StorageAdminPage() {
       </div>
 
       {/* Disk Usage by Signal */}
-      {diskUsage?.by_signal && Object.keys(diskUsage.by_signal).length > 0 && (
+      {diskUsage?.bySignal && Object.keys(diskUsage.bySignal).length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
           <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">按信号类型分布</h3>
           <div className="grid grid-cols-3 gap-4">
@@ -254,7 +254,7 @@ export default function StorageAdminPage() {
               <div key={signal} className="text-center">
                 <p className="text-xs text-gray-500 uppercase">{signal}</p>
                 <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                  {diskUsage.by_signal?.[signal] ? formatBytes(diskUsage.by_signal[signal]) : '—'}
+                  {diskUsage.bySignal?.[signal] ? formatBytes(diskUsage.bySignal[signal]) : '—'}
                 </p>
               </div>
             ))}
@@ -356,10 +356,10 @@ export default function StorageAdminPage() {
                       <SignalBadge signal={idx.signal} />
                     </td>
                     <td className="px-4 py-2 text-right text-gray-700 dark:text-gray-300">
-                      {idx.docs_count.toLocaleString()}
+                      {idx.docsCount.toLocaleString()}
                     </td>
                     <td className="px-4 py-2 text-right text-gray-700 dark:text-gray-300">
-                      {formatBytes(idx.size_bytes)}
+                      {formatBytes(idx.sizeBytes)}
                     </td>
                   </tr>
                 ))}

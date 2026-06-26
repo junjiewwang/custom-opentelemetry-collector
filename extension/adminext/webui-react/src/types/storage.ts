@@ -23,8 +23,8 @@ export interface StorageStatus {
 /** 索引/表信息 */
 export interface IndexInfo {
   name: string;
-  docs_count: number;
-  size_bytes: number;
+  docsCount: number;
+  sizeBytes: number;
   signal: SignalType;
 }
 
@@ -57,10 +57,10 @@ export interface RetentionPolicy {
 
 /** 磁盘使用信息 */
 export interface DiskUsage {
-  total_bytes: number;
-  used_bytes: number;
-  available_bytes: number;
-  by_signal?: Record<SignalType, number>;
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  bySignal?: Record<SignalType, number>;
 }
 
 // ============================================================================
@@ -69,8 +69,8 @@ export interface DiskUsage {
 
 /** 清除操作结果 */
 export interface PurgeResult {
-  deleted_count: number;
-  freed_bytes?: number;
+  deletedCount: number;
+  freedBytes?: number;
   message?: string;
 }
 
