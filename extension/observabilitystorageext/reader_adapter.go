@@ -509,14 +509,17 @@ func (a *storageAdminAdapter) indexPrefixForSignal(signal SignalType) (string, e
 	}
 }
 
-// classifyIndexSignal maps an ES index name to its signal type based on index prefix.
-func classifyIndexSignal(indexName string) SignalType {
+// classifyIndexSignal maps an ES index name to its signal type using configured index prefixes.
+func (a *storageAdminAdapter) classifyIndexSignal(indexName string) SignalType {
+	if a.config == nil || a.config.Elasticsearch == nil {
+		return ""
+	}
 	switch {
-	case strings.HasPrefix(indexName, "otel-traces"):
+	case strings.HasPrefix(indexName, a.config.Elasticsearch.Traces.IndexPrefix):
 		return SignalTrace
-	case strings.HasPrefix(indexName, "otel-metrics"):
+	case strings.HasPrefix(indexName, a.config.Elasticsearch.Metrics.IndexPrefix):
 		return SignalMetric
-	case strings.HasPrefix(indexName, "otel-logs"):
+	case strings.HasPrefix(indexName, a.config.Elasticsearch.Logs.IndexPrefix):
 		return SignalLog
 	default:
 		return ""
@@ -571,7 +574,7 @@ func (a *storageAdminAdapter) GetDiskUsage(ctx context.Context) (*DiskUsage, err
 					}
 				}
 				if size > 0 {
-					signal := classifyIndexSignal(name)
+					signal := a.classifyIndexSignal(name)
 					if signal != "" {
 						usage.BySignal[signal] += size
 					}
