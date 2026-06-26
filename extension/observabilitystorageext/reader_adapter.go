@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
@@ -508,6 +509,20 @@ func (a *storageAdminAdapter) indexPrefixForSignal(signal SignalType) (string, e
 	}
 }
 
+// classifyIndexSignal maps an ES index name to its signal type based on index prefix.
+func classifyIndexSignal(indexName string) SignalType {
+	switch {
+	case strings.HasPrefix(indexName, "otel-traces"):
+		return SignalTrace
+	case strings.HasPrefix(indexName, "otel-metrics"):
+		return SignalMetric
+	case strings.HasPrefix(indexName, "otel-logs"):
+		return SignalLog
+	default:
+		return ""
+	}
+}
+
 // timestampFieldForSignal returns the timestamp field name used in ES documents for the given signal.
 func (a *storageAdminAdapter) timestampFieldForSignal(signal SignalType) string {
 	switch signal {
@@ -532,7 +547,7 @@ func (a *storageAdminAdapter) GetDiskUsage(ctx context.Context) (*DiskUsage, err
 		BySignal: make(map[SignalType]int64),
 	}
 
-	// Parse the indices stats response
+	// Parse used bytes from indices stats
 	if all, ok := stats["_all"].(map[string]any); ok {
 		if total, ok := all["total"].(map[string]any); ok {
 			if store, ok := total["store"].(map[string]any); ok {
@@ -541,6 +556,39 @@ func (a *storageAdminAdapter) GetDiskUsage(ctx context.Context) (*DiskUsage, err
 				}
 			}
 		}
+	}
+
+	// Parse per-signal breakdown
+	if indices, ok := stats["indices"].(map[string]any); ok {
+		for name, data := range indices {
+			if idxMap, ok := data.(map[string]any); ok {
+				var size int64
+				if total, ok := idxMap["total"].(map[string]any); ok {
+					if store, ok := total["store"].(map[string]any); ok {
+						if s, ok := store["size_in_bytes"].(float64); ok {
+							size = int64(s)
+						}
+					}
+				}
+				if size > 0 {
+					signal := classifyIndexSignal(name)
+					if signal != "" {
+						usage.BySignal[signal] += size
+					}
+				}
+			}
+		}
+	}
+
+	// Populate total and available bytes from ES nodes filesystem stats.
+	// If nodes stats are unavailable (e.g., restricted permissions), TotalBytes
+	// falls back to UsedBytes so the progress bar is at least visible.
+	totalBytes, availableBytes, nodeErr := a.inner.GetNodesDiskStats(ctx)
+	if nodeErr != nil {
+		usage.TotalBytes = usage.UsedBytes
+	} else {
+		usage.TotalBytes = totalBytes
+		usage.AvailableBytes = availableBytes
 	}
 
 	return usage, nil

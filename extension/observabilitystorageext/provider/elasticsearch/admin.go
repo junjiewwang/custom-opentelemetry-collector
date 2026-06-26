@@ -74,6 +74,11 @@ func (a *Admin) GetIndicesStats(ctx context.Context) (map[string]any, error) {
 	return a.client.GetIndicesStats(ctx, pattern)
 }
 
+// GetNodesDiskStats returns aggregated total and available disk bytes from ES data nodes.
+func (a *Admin) GetNodesDiskStats(ctx context.Context) (totalBytes int64, availableBytes int64, err error) {
+	return a.client.GetNodesDiskStats(ctx)
+}
+
 // SetRetention updates the ILM policy for the given signal type's index.
 // It modifies the delete phase min_age to the new retention duration.
 func (a *Admin) SetRetention(ctx context.Context, indexPrefix string, retention time.Duration) error {

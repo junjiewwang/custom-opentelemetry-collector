@@ -219,3 +219,40 @@ func (c *Client) DeleteIndicesByPattern(ctx context.Context, indexPattern string
 	}
 	return nil
 }
+
+// GetNodesDiskStats returns the aggregated total and available disk bytes
+// across all data nodes from the _nodes/stats/fs API.
+func (c *Client) GetNodesDiskStats(ctx context.Context) (totalBytes int64, availableBytes int64, err error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/_nodes/stats/fs", nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("nodes stats request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, 0, fmt.Errorf("nodes stats returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Nodes map[string]struct {
+			FS struct {
+				Total struct {
+					TotalInBytes     int64 `json:"total_in_bytes"`
+					AvailableInBytes int64 `json:"available_in_bytes"`
+				} `json:"total"`
+			} `json:"fs"`
+		} `json:"nodes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, 0, fmt.Errorf("failed to decode nodes stats: %w", err)
+	}
+
+	// Aggregate across all nodes
+	var total, available int64
+	for _, node := range result.Nodes {
+		total += node.FS.Total.TotalInBytes
+		available += node.FS.Total.AvailableInBytes
+	}
+	return total, available, nil
+}
