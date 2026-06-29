@@ -34,24 +34,12 @@ type ConfigPollHandler struct {
 	running atomic.Bool
 }
 
-// serviceState manages waiters and cached config for a specific service.
+// serviceState groups config lifecycle and waiter management for a single service.
+// Both components (configCache and WaiterMap) are independently thread-safe —
+// serviceState itself holds no locks.
 type serviceState struct {
-	sync.RWMutex
-	appID       string
-	serviceName string
-	config      *model.AgentConfig
-	waiters     map[string]*ConfigWaiter // agentID -> waiter
-	isWatching  bool
-}
-
-func (s *serviceState) getWaiters() []*ConfigWaiter {
-	s.RLock()
-	defer s.RUnlock()
-	res := make([]*ConfigWaiter, 0, len(s.waiters))
-	for _, w := range s.waiters {
-		res = append(res, w)
-	}
-	return res
+	config  *configCache
+	waiters WaiterMap[ConfigWaiter]
 }
 
 // ConfigWaiter represents a waiting config poll request.
@@ -123,7 +111,7 @@ func (h *ConfigPollHandler) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the handler.
+// Stop stops the handler and releases all resources (waiters, watches, service states).
 func (h *ConfigPollHandler) Stop() error {
 	if !h.running.Swap(false) {
 		return nil
@@ -131,27 +119,47 @@ func (h *ConfigPollHandler) Stop() error {
 
 	h.services.Range(func(key, value interface{}) bool {
 		state := value.(*serviceState)
-		state.Lock()
-		defer state.Unlock()
 
-		// Cancel all waiters
-		for _, waiter := range state.waiters {
-			if waiter.cancel != nil {
-				waiter.cancel()
+		// Cancel and clear all waiters
+		state.waiters.Clear(func(w *ConfigWaiter) {
+			if w.cancel != nil {
+				w.cancel()
 			}
-		}
-		state.waiters = make(map[string]*ConfigWaiter)
+		})
 
-		// Cancel watch via configMgr
-		if state.isWatching && h.configMgr != nil {
-			h.configMgr.UnwatchServiceConfig(state.appID, state.serviceName)
-			state.isWatching = false
-		}
+		// Unwatch Nacos
+		state.config.Unwatch()
+
+		// Remove from services map
+		h.services.Delete(key)
 		return true
 	})
 
 	h.logger.Info("ConfigPollHandler stopped")
 	return nil
+}
+
+// cleanupIdleServiceState cleans up a serviceState when its last waiter exits.
+// It unwatches Nacos and removes the service from the map.
+func (h *ConfigPollHandler) cleanupIdleServiceState(state *serviceState) {
+	// Double-check: a new Poll may have registered a waiter between our check and now
+	if !state.waiters.IsEmpty() {
+		return
+	}
+
+	// Unwatch Nacos and remove from services map
+	state.config.Unwatch()
+
+	// Remove from services map safely via LoadAndDelete — if a new serviceState has
+	// been created for the same key (race with concurrent getOrCreateServiceState),
+	// LoadAndDelete will return the wrong value and we skip the delete.
+	serviceKey := AgentKey(state.config.appID, state.config.serviceName)
+	if val, loaded := h.services.LoadAndDelete(serviceKey); loaded && val == state {
+		h.logger.Debug("Cleaned up idle service state",
+			zap.String("app_id", state.config.appID),
+			zap.String("service", state.config.serviceName),
+		)
+	}
 }
 
 // ShouldContinue returns whether the handler should continue polling.
@@ -160,14 +168,20 @@ func (h *ConfigPollHandler) ShouldContinue() bool {
 }
 
 // getOrCreateServiceState gets or creates a serviceState for the given appID and serviceName.
+// The first caller that creates the state wires the onChange callback for waiter notification.
 func (h *ConfigPollHandler) getOrCreateServiceState(appID, serviceName string) *serviceState {
 	serviceKey := AgentKey(appID, serviceName)
-	actual, _ := h.services.LoadOrStore(serviceKey, &serviceState{
-		appID:       appID,
-		serviceName: serviceName,
-		waiters:     make(map[string]*ConfigWaiter),
+	actual, loaded := h.services.LoadOrStore(serviceKey, &serviceState{
+		config: newConfigCache(appID, serviceName, h.configMgr, h.logger),
 	})
-	return actual.(*serviceState)
+	s := actual.(*serviceState)
+	if !loaded {
+		// We won the race — wire the config change → waiter notification callback
+		s.config.SetOnChange(func(newConfig *model.AgentConfig) {
+			h.notifyServiceWaiters(s, newConfig)
+		})
+	}
+	return s
 }
 
 // CheckImmediate checks if there are config changes immediately.
@@ -179,15 +193,13 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 	state := h.getOrCreateServiceState(req.AppID, req.ServiceName)
 
 	// 1. Get base config (cached or from Nacos)
-	state.RLock()
-	config := state.config
-	state.RUnlock()
+	config := state.config.Get()
 
 	// If no config in cache, or the client reports a version that matches our skeleton/cache,
 	// do a proactive check against Nacos to ensure we haven't missed a notification.
 	// This is critical for the "empty-to-created" transition.
 	if config == nil || (req.CurrentConfigVersion == config.Version && (req.CurrentConfigEtag == "" || req.CurrentConfigEtag == config.Etag)) {
-		freshConfig, err := h.loadConfigFromNacos(ctx, req.AppID, req.ServiceName)
+		freshConfig, err := state.config.LoadFromConfigMgr(ctx)
 		if err == nil && freshConfig != nil {
 			// Check if it's actually newer than what we had
 			if config == nil || freshConfig.Version != config.Version || freshConfig.Etag != config.Etag {
@@ -201,9 +213,7 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 					}()),
 					zap.String("new_version", freshConfig.Version))
 
-				state.Lock()
-				state.config = freshConfig
-				state.Unlock()
+				state.config.Set(freshConfig)
 				config = freshConfig
 			}
 		} else if err != nil && config == nil {
@@ -280,20 +290,19 @@ func (h *ConfigPollHandler) Poll(ctx context.Context, req *PollRequest) (*Handle
 		cancel:      cancel,
 	}
 
-	// Register waiter
-	state.Lock()
-	state.waiters[req.AgentID] = waiter
-	state.Unlock()
+	// Register waiter (WaiterMap is self-synchronized, no external lock needed)
+	state.waiters.Register(req.AgentID, waiter)
 
 	defer func() {
-		state.Lock()
-		delete(state.waiters, req.AgentID)
-		state.Unlock()
+		state.waiters.Deregister(req.AgentID, waiter)
+		if state.waiters.IsEmpty() {
+			h.cleanupIdleServiceState(state)
+		}
 		cancel()
 	}()
 
 	// Ensure Nacos watch is active
-	h.ensureWatching(state)
+	state.config.EnsureWatching()
 
 	// Step 3: Wait for change notification or timeout
 	select {
@@ -308,25 +317,7 @@ func (h *ConfigPollHandler) Poll(ctx context.Context, req *PollRequest) (*Handle
 	}
 }
 
-// loadConfigFromNacos loads config for the specific service via OnDemandConfigManager.
-func (h *ConfigPollHandler) loadConfigFromNacos(ctx context.Context, appID, serviceName string) (*model.AgentConfig, error) {
-	if serviceName == "" {
-		return nil, nil
-	}
-	cfg, err := h.configMgr.GetServiceConfig(ctx, appID, serviceName)
-	if err != nil {
-		if configmanager.IsConfigNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	// Ensure ETag is available for comparison
-	if cfg != nil && cfg.Etag == "" {
-		cfg.Etag = computeBusinessEtagFromModel(cfg)
-	}
-	return cfg, nil
-}
-
+// computeBusinessEtagFromModel computes a content-based ETag excluding volatile fields.
 func computeBusinessEtagFromModel(cfg *model.AgentConfig) string {
 	if cfg == nil {
 		return ""
@@ -340,55 +331,21 @@ func computeBusinessEtagFromModel(cfg *model.AgentConfig) string {
 	return ComputeEtag(&cloned)
 }
 
-// ensureWatching ensures config watch is active for the service via OnDemandConfigManager.
-func (h *ConfigPollHandler) ensureWatching(state *serviceState) {
-	state.Lock()
-	defer state.Unlock()
+// notifyServiceWaiters is the onChange callback wired by getOrCreateServiceState.
+// It snapshots all waiters for a service and notifies them of a config change.
+func (h *ConfigPollHandler) notifyServiceWaiters(state *serviceState, newConfig *model.AgentConfig) {
+	h.logger.Info("Config changed via configMgr",
+		zap.String("service", state.config.serviceName),
+	)
 
-	if state.isWatching || state.serviceName == "" || h.configMgr == nil {
-		return
-	}
-
-	// Capture appID and serviceName for the closure to avoid data race.
-	appID := state.appID
-	serviceName := state.serviceName
-
-	h.configMgr.WatchServiceConfig(appID, serviceName, func(event *configmanager.AgentConfigChangeEvent) {
-		h.handleConfigChangeEvent(appID, serviceName, event)
+	var waiters []*ConfigWaiter
+	state.waiters.Range(func(_ string, w *ConfigWaiter) bool {
+		waiters = append(waiters, w)
+		return true
 	})
 
-	state.isWatching = true
-	h.logger.Debug("Setup config watch via configMgr",
-		zap.String("app_id", appID),
-		zap.String("service", serviceName),
-	)
-}
-
-// handleConfigChangeEvent handles config change events from OnDemandConfigManager.
-func (h *ConfigPollHandler) handleConfigChangeEvent(appID, serviceName string, event *configmanager.AgentConfigChangeEvent) {
-	h.logger.Info("Config changed via configMgr",
-		zap.String("app_id", appID),
-		zap.String("service", serviceName),
-		zap.String("event_type", event.Type),
-	)
-
-	newConfig := event.NewConfig
-
-	// Update state and notify waiters
-	serviceKey := AgentKey(appID, serviceName)
-	if val, ok := h.services.Load(serviceKey); ok {
-		state := val.(*serviceState)
-		state.Lock()
-		state.config = newConfig
-		waiters := make([]*ConfigWaiter, 0, len(state.waiters))
-		for _, w := range state.waiters {
-			waiters = append(waiters, w)
-		}
-		state.Unlock()
-
-		for _, waiter := range waiters {
-			h.notifyWaiter(waiter, newConfig)
-		}
+	for _, waiter := range waiters {
+		h.notifyWaiter(waiter, newConfig)
 	}
 }
 
@@ -437,9 +394,7 @@ func (h *ConfigPollHandler) GetWaiterCount() int {
 	count := 0
 	h.services.Range(func(_, value interface{}) bool {
 		state := value.(*serviceState)
-		state.RLock()
-		count += len(state.waiters)
-		state.RUnlock()
+		count += state.waiters.Count()
 		return true
 	})
 	return count
@@ -450,11 +405,9 @@ func (h *ConfigPollHandler) GetWatchCount() int {
 	count := 0
 	h.services.Range(func(_, value interface{}) bool {
 		state := value.(*serviceState)
-		state.RLock()
-		if state.isWatching {
+		if state.config.IsWatching() {
 			count++
 		}
-		state.RUnlock()
 		return true
 	})
 	return count

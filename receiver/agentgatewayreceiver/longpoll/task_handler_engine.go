@@ -51,7 +51,7 @@ type TaskPollHandlerEngine struct {
 	engine TaskClaimEngine
 
 	// Waiters management (per agent)
-	waiters sync.Map // agentID -> *TaskWaiter
+	waiters WaiterMap[TaskWaiter] // agentID -> *TaskWaiter
 
 	// Task notification channel — triggered when engine publishes a "submitted" event.
 	// This replaces the Redis Pub/Sub mechanism.
@@ -110,12 +110,10 @@ func (h *TaskPollHandlerEngine) Stop() error {
 	close(h.stopCh)
 
 	// Cancel all waiters
-	h.waiters.Range(func(key, value interface{}) bool {
-		waiter := value.(*TaskWaiter)
-		if waiter.cancel != nil {
-			waiter.cancel()
+	h.waiters.Clear(func(w *TaskWaiter) {
+		if w.cancel != nil {
+			w.cancel()
 		}
-		return true
 	})
 
 	h.wg.Wait()
@@ -198,9 +196,9 @@ func (h *TaskPollHandlerEngine) Poll(ctx context.Context, req *PollRequest) (*Ha
 		cancel:     cancel,
 	}
 
-	h.waiters.Store(req.AgentID, waiter)
+	h.waiters.Register(req.AgentID, waiter)
 	defer func() {
-		h.waiters.Delete(req.AgentID)
+		h.waiters.Deregister(req.AgentID, waiter)
 		cancel()
 	}()
 
@@ -258,15 +256,13 @@ func (h *TaskPollHandlerEngine) dispatchNotifications() {
 func (h *TaskPollHandlerEngine) handleNotification(notif taskNotification) {
 	if notif.targetAgentID == "" {
 		// Global task — notify all waiters
-		h.waiters.Range(func(key, value interface{}) bool {
-			waiter := value.(*TaskWaiter)
+		h.waiters.Range(func(_ string, waiter *TaskWaiter) bool {
 			h.wakeWaiter(waiter, notif.taskID)
 			return true
 		})
 	} else {
 		// Agent-specific task — notify only the target agent's waiter
-		if waiterVal, ok := h.waiters.Load(notif.targetAgentID); ok {
-			waiter := waiterVal.(*TaskWaiter)
+		if waiter, ok := h.waiters.Load(notif.targetAgentID); ok {
 			h.wakeWaiter(waiter, notif.taskID)
 		}
 	}
@@ -310,10 +306,5 @@ func (h *TaskPollHandlerEngine) wakeWaiter(waiter *TaskWaiter, taskID string) {
 
 // GetWaiterCount returns the number of active waiters.
 func (h *TaskPollHandlerEngine) GetWaiterCount() int {
-	count := 0
-	h.waiters.Range(func(_, _ interface{}) bool {
-		count++
-		return true
-	})
-	return count
+	return h.waiters.Count()
 }
