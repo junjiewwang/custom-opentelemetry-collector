@@ -141,6 +141,26 @@ type StoredLink struct {
 }
 ```
 
+#### 类型选型：时间与 Duration 为什么用 `int64` 而不是 `uint64`
+
+| 决策 | 原因 |
+|------|------|
+| **不用 `uint64`** | JSON 没有无符号整数类型。`json.Marshal(uint64(math.MaxUint64))` 在某些实现下行为不一致。ES `long` 和 PG `BIGINT` 都是有符号的 |
+| **用 `int64`** | 全程对齐：Go int64 → JSON number → ES long / PG BIGINT。int64 纳秒可表示 ±292 年，duration 场景远超实际需求 |
+| **不用 `string`** | 字符串无法做 ES range 聚合、排序、过滤，需要在查询时把所有值 parse 成数字，性能和功能都打折 |
+
+**Source 时间戳的来源**：
+- OTLP proto 中 `start_time_unix_nano` 和 `end_time_unix_nano` 是 `fixed64` 类型
+- 大部分 SDK 实现中，这两个值来自 `time.Now().UnixNano()`，返回 `int64`
+- 极少数情况（时钟回拨、SDK bug）可能出现 end < start
+- `safeDuration()` 在转换层做防御：先转 `int64` 再减，负数 clamp 为 0
+
+```
+Go SDK                     OTLP proto          StoredSpan          ES/PG
+time.Now().UnixNano()  →  fixed64         →  int64            →  long
+(int64)                    (wire: uint64)      (JSON: number)      (signed 64bit)
+```
+
 ### 3.2 Layer 2 — 转换层（OTLP ↔ StoredSpan，公共复用）
 
 ```go
@@ -158,7 +178,7 @@ func ConvertOTLPSpan(span ptrace.Span, resource pcommon.Map) StoredSpan {
         Kind:          span.Kind().String(),                 // ← 存入时保证标准格式
         StartUnixNano: int64(span.StartTimestamp()),
         EndUnixNano:   int64(span.EndTimestamp()),
-        DurationNano:  int64(span.EndTimestamp() - span.StartTimestamp()), // ← 写入时计算, ES sort/filter 高效
+        DurationNano:  safeDuration(span.StartTimestamp(), span.EndTimestamp()), // ← 防御式计算
         Status: StoredStatus{
             Code:    span.Status().Code().String(),
             Message: span.Status().Message(),
@@ -194,6 +214,20 @@ func convertLinks(links ptrace.SpanLinkSlice) []StoredLink {
         }
     }
     return result
+}
+
+// safeDuration returns end-start as int64, clamping negative values to 0.
+// pcommon.Timestamp is uint64 nanosecond unix time. Direct subtraction
+// uint64(end-start) can underflow to a huge positive number if the clock
+// has drifted (end < start). Converting to int64 first and saturating at 0
+// prevents corrupted duration data from entering the store.
+func safeDuration(start, end pcommon.Timestamp) int64 {
+    startNs := int64(start)
+    endNs := int64(end)
+    if endNs > startNs {
+        return endNs - startNs
+    }
+    return 0
 }
 
 // StoredSpanToPublic 将存储格式转为公共 API 格式。
