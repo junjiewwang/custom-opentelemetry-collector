@@ -95,5 +95,39 @@ func (r *agentGatewayReceiver) initTaskPollHandlerAuto(taskCfg taskmanager.Confi
 func (r *agentGatewayReceiver) initTaskPollHandlerWithEngine(engine taskengine.Engine) error {
 	adapter := longpoll.NewEngineAdapter(engine)
 	taskHandler := longpoll.NewTaskPollHandlerEngine(r.logger, adapter)
+
+	// Subscribe to task events for real-time long poll notification.
+	// If the engine supports TaskEventSubscriber, we bridge submitted events
+	// to the handler's NotifyTaskSubmitted, waking waiters immediately.
+	if sub, ok := engine.(taskengine.TaskEventSubscriber); ok {
+		eventCh, err := sub.SubscribeEvents(context.Background())
+		if err != nil {
+			r.logger.Warn("Failed to subscribe to task events, falling back to timeout poll",
+				zap.Error(err),
+			)
+		} else {
+			r.shutdownWG.Add(1)
+			go r.bridgeTaskEvents(eventCh, taskHandler)
+			r.logger.Info("Task event bridge started (real-time notification enabled)")
+		}
+	} else {
+		r.logger.Debug("Engine does not support TaskEventSubscriber, using timeout poll only")
+	}
+
 	return r.longPollManager.RegisterHandler(taskHandler)
+}
+
+// bridgeTaskEvents reads task lifecycle events and routes "submitted" events
+// to the long poll handler for real-time waiter wake-up.
+func (r *agentGatewayReceiver) bridgeTaskEvents(
+	eventCh <-chan taskengine.TaskEvent,
+	handler *longpoll.TaskPollHandlerEngine,
+) {
+	defer r.shutdownWG.Done()
+	for event := range eventCh {
+		if event.Type == taskengine.EventTaskSubmitted {
+			handler.NotifyTaskSubmitted(event.TaskID, event.TargetNodeID)
+		}
+	}
+	r.logger.Debug("Task event bridge stopped")
 }

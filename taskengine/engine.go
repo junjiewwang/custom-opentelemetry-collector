@@ -64,3 +64,21 @@ type Engine interface {
 	// Stop gracefully shuts down the engine.
 	Stop(ctx context.Context) error
 }
+
+// TaskEventSubscriber is an optional interface for engines that support
+// subscribing to task lifecycle events (for real-time notifications).
+//
+// Consumers use type assertion to check if the engine supports this:
+//
+//	if sub, ok := engine.(TaskEventSubscriber); ok {
+//	    ch, _ := sub.SubscribeEvents(ctx)
+//	}
+//
+// If the engine does NOT implement this interface, consumers fall back
+// to timeout-based polling (graceful degradation).
+type TaskEventSubscriber interface {
+	// SubscribeEvents returns a channel that receives task lifecycle events.
+	// The channel is closed when ctx is cancelled.
+	// Callers must NOT close the returned channel.
+	SubscribeEvents(ctx context.Context) (<-chan TaskEvent, error)
+}

@@ -479,6 +479,54 @@ func (s *RedisStore) PublishEvent(ctx context.Context, event TaskEvent) error {
 	return s.client.Publish(ctx, channel, data).Err()
 }
 
+// SubscribeEvents subscribes to all task lifecycle events via Redis PSubscribe.
+// It uses the pattern {prefix}:events:* to receive events from all nodes.
+//
+// Lifecycle:
+//   - ctx cancellation → close returned channel → goroutine exits
+//   - Redis disconnection → go-redis auto-reconnect, events resume
+//   - Caller must NOT close the returned channel
+func (s *RedisStore) SubscribeEvents(ctx context.Context) (<-chan TaskEvent, error) {
+	pattern := fmt.Sprintf("%s:events:*", s.prefix)
+	pubsub := s.client.PSubscribe(ctx, pattern)
+	ch := make(chan TaskEvent, 256)
+
+	go func() {
+		defer close(ch)
+		defer pubsub.Close()
+
+		msgCh := pubsub.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-msgCh:
+				if !ok {
+					return
+				}
+				var event TaskEvent
+				if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
+					s.logger.Debug("Failed to unmarshal event from Pub/Sub, skipping",
+						zap.String("channel", msg.Channel),
+						zap.Error(err),
+					)
+					continue
+				}
+				select {
+				case ch <- event:
+				default:
+					s.logger.Debug("Event channel full, dropping event",
+						zap.String("type", string(event.Type)),
+						zap.String("task_id", event.TaskID),
+					)
+				}
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 // ─── Lifecycle ───
 
 // Start is a no-op for RedisStore (connection managed externally).

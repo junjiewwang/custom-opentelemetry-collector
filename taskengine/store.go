@@ -67,6 +67,15 @@ type Store interface {
 	// PublishEvent publishes a task lifecycle event for Pub/Sub listeners.
 	PublishEvent(ctx context.Context, event TaskEvent) error
 
+	// SubscribeEvents returns a channel that receives task lifecycle events from all nodes.
+	// The channel is closed when ctx is cancelled or the store is closed.
+	// Callers must NOT close the returned channel.
+	//
+	// Implementations:
+	//   - RedisStore: PSubscribe {prefix}:events:* with JSON unmarshaling
+	//   - MemoryStore: in-process channel fan-out from PublishEvent
+	SubscribeEvents(ctx context.Context) (<-chan TaskEvent, error)
+
 	// ─── Lifecycle ───
 
 	// Start initializes store resources (connections, background goroutines).

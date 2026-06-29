@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 // MemoryStore implements Store using in-memory data structures.
@@ -19,6 +20,15 @@ type MemoryStore struct {
 	results map[string]*TaskResult // taskID → TaskResult
 	queues  map[string][]string    // queueID → []taskID (append left, pop right)
 	groups  map[string][]string    // groupID → []taskID
+
+	// Event subscribers for in-process fan-out.
+	subscribers []*memorySubscriber
+}
+
+// memorySubscriber represents an event subscriber in MemoryStore.
+type memorySubscriber struct {
+	ch     chan TaskEvent
+	active atomic.Bool
 }
 
 // NewMemoryStore creates an in-memory Store implementation.
@@ -276,9 +286,60 @@ func (s *MemoryStore) GetProgress(ctx context.Context, taskType TaskType, groupI
 
 // ─── Events ───
 
-// PublishEvent is a no-op for MemoryStore (no external subscribers).
-func (s *MemoryStore) PublishEvent(_ context.Context, _ TaskEvent) error {
+// PublishEvent fans out the event to all active in-process subscribers.
+// Uses recover to guard against write to a closed channel (race with unsubscribe).
+func (s *MemoryStore) PublishEvent(_ context.Context, event TaskEvent) error {
+	s.mu.RLock()
+	// Take a snapshot to avoid holding the lock during sends.
+	subs := make([]*memorySubscriber, len(s.subscribers))
+	copy(subs, s.subscribers)
+	s.mu.RUnlock()
+
+	for _, sub := range subs {
+		func() {
+			defer func() { recover() }() // safety net for closed channel
+			if !sub.active.Load() {
+				return
+			}
+			select {
+			case sub.ch <- event:
+			default:
+				// Channel full, skip — subscriber will pick up via timeout poll.
+			}
+		}()
+	}
 	return nil
+}
+
+// SubscribeEvents creates an in-process event subscription.
+// The returned channel receives events from PublishEvent calls on this store.
+// The channel is closed when ctx is cancelled.
+func (s *MemoryStore) SubscribeEvents(ctx context.Context) (<-chan TaskEvent, error) {
+	ch := make(chan TaskEvent, 256)
+	sub := &memorySubscriber{ch: ch}
+	sub.active.Store(true)
+
+	s.mu.Lock()
+	s.subscribers = append(s.subscribers, sub)
+	s.mu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		// Mark inactive first to prevent new writes.
+		sub.active.Store(false)
+		// Remove from list so future PublishEvent skip it entirely.
+		s.mu.Lock()
+		for i, existing := range s.subscribers {
+			if existing == sub {
+				s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
+				break
+			}
+		}
+		s.mu.Unlock()
+		close(ch)
+	}()
+
+	return ch, nil
 }
 
 // ─── Lifecycle ───

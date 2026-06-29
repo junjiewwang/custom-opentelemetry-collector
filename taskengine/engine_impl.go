@@ -97,12 +97,13 @@ func (e *EngineImpl) Submit(ctx context.Context, task *Task) error {
 		return fmt.Errorf("enqueue task: %w", err)
 	}
 
-	// Publish event
+	// Publish event (TargetNodeID enables long poll to wake the correct agent)
 	_ = e.store.PublishEvent(ctx, TaskEvent{
-		Type:   EventTaskSubmitted,
-		TaskID: task.ID,
-		Status: StatusPending,
-		At:     task.CreatedAt,
+		Type:         EventTaskSubmitted,
+		TaskID:       task.ID,
+		TargetNodeID: task.Routing.TargetNodeID,
+		Status:       StatusPending,
+		At:           task.CreatedAt,
 	})
 
 	e.logger.Debug("task submitted",
@@ -391,6 +392,18 @@ func (e *EngineImpl) Stop(_ context.Context) error {
 	e.logger.Info("task engine stopped")
 	return nil
 }
+
+// SubscribeEvents implements the TaskEventSubscriber optional interface.
+// It delegates to the underlying store's SubscribeEvents method.
+func (e *EngineImpl) SubscribeEvents(ctx context.Context) (<-chan TaskEvent, error) {
+	return e.store.SubscribeEvents(ctx)
+}
+
+// Ensure EngineImpl implements both Engine and TaskEventSubscriber.
+var (
+	_ Engine               = (*EngineImpl)(nil)
+	_ TaskEventSubscriber  = (*EngineImpl)(nil)
+)
 
 // ═══ Internal helpers ═══
 

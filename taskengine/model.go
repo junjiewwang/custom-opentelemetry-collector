@@ -254,11 +254,12 @@ const (
 
 // TaskEvent is emitted when a task changes state (for Pub/Sub notifications).
 type TaskEvent struct {
-	Type   TaskEventType `json:"type"`
-	TaskID string        `json:"taskId"`
-	NodeID string        `json:"nodeId,omitempty"`
-	Status TaskStatus    `json:"status"`
-	At     int64         `json:"at"` // unix millis
+	Type          TaskEventType `json:"type"`
+	TaskID        string        `json:"taskId"`
+	NodeID        string        `json:"nodeId,omitempty"`       // which node published the event
+	Status        TaskStatus    `json:"status"`
+	At            int64         `json:"at"`                     // unix millis
+	TargetNodeID  string        `json:"targetNodeId,omitempty"` // agent ID (for direct routing) or empty (broadcast)
 }
 
 // ─── Consumer Descriptor ───
