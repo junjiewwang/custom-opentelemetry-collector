@@ -218,10 +218,11 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 	// 1. Get base config (cached or from Nacos)
 	config := state.config.Get()
 
-	// If no config in cache, or the client reports a version that matches our skeleton/cache,
-	// do a proactive check against Nacos to ensure we haven't missed a notification.
-	// This is critical for the "empty-to-created" transition.
-	if config == nil || (req.CurrentConfigVersion == config.Version && (req.CurrentConfigEtag == "" || req.CurrentConfigEtag == config.Etag)) {
+	// If no config in cache, or the client reports a matching version but lacks
+	// an ETag (can't confirm staleness), do a proactive check against Nacos.
+	// When both version AND ETag match, the agent definitely has the latest config —
+	// Nacos watch notifications handle further updates via the normal path.
+	if config == nil || (req.CurrentConfigVersion == config.Version && req.CurrentConfigEtag == "") {
 		freshConfig, err := state.config.LoadFromConfigMgr(ctx)
 		if err == nil && freshConfig != nil {
 			// Check if it's actually newer than what we had
