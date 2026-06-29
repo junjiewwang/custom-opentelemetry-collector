@@ -8,12 +8,20 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 )
+
+// serviceStateIdleGrace is how long a serviceState survives without waiters
+// before being removed from the map. Set long enough to cover the gap between
+// consecutive long polls (~ms), short enough to avoid unbounded memory growth.
+// The timeout resets on every poll since a new timer is created each time
+// the last waiter exits.
+const serviceStateIdleGrace = 2 * time.Minute
 
 
 // ConfigPollHandler implements LongPollHandler for configuration polling.
@@ -139,13 +147,18 @@ func (h *ConfigPollHandler) Stop() error {
 	return nil
 }
 
-// cleanupIdleServiceState unwatches Nacos when the last waiter exits.
-// The serviceState and its config cache are kept alive so the next poll
-// reuses the cached config instead of re-fetching from Nacos.
+// cleanupIdleServiceState unwatches Nacos when the last waiter exits and
+// schedules deferred deletion of the serviceState after a grace period.
 //
-// The serviceState is only removed from the map on handler Stop(),
-// which is acceptable because the number of services is bounded by
-// connected agents and serviceState is small (~two pointers).
+// Design rationale:
+//   - Long poll creates a waiter on each request and deregisters it on return.
+//     Between consecutive polls (~ms gap), waiters=0 but the agent is still active.
+//   - Immediate deletion would destroy the config cache, forcing a Nacos query on
+//     every poll cycle (log spam).
+//   - Deferred deletion via time.AfterFunc bridges the poll gap: if a new poll
+//     arrives before the grace period, the timer sees waiters>0 and no-ops.
+//   - If the agent truly disconnects, the timer fires and removes the state,
+//     preventing memory leaks.
 func (h *ConfigPollHandler) cleanupIdleServiceState(state *serviceState) {
 	// Double-check: a new Poll may have registered a waiter between our check and now
 	if !state.waiters.IsEmpty() {
@@ -155,6 +168,21 @@ func (h *ConfigPollHandler) cleanupIdleServiceState(state *serviceState) {
 	// Unwatch Nacos to conserve resources while idle.
 	// Watching will be restarted by EnsureWatching on the next poll.
 	state.config.Unwatch()
+
+	// Schedule deferred deletion. If a new poll registers a waiter within the grace
+	// period, the timer will see waiters>0 (or a different serviceState) and skip.
+	serviceKey := AgentKey(state.config.appID, state.config.serviceName)
+	time.AfterFunc(serviceStateIdleGrace, func() {
+		if !state.waiters.IsEmpty() {
+			return // new poll arrived, keep state
+		}
+		if val, loaded := h.services.LoadAndDelete(serviceKey); loaded && val == state {
+			h.logger.Debug("Cleaned up idle service state after grace period",
+				zap.String("app_id", state.config.appID),
+				zap.String("service", state.config.serviceName),
+			)
+		}
+	})
 }
 
 // ShouldContinue returns whether the handler should continue polling.
