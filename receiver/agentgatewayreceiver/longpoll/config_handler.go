@@ -139,27 +139,22 @@ func (h *ConfigPollHandler) Stop() error {
 	return nil
 }
 
-// cleanupIdleServiceState cleans up a serviceState when its last waiter exits.
-// It unwatches Nacos and removes the service from the map.
+// cleanupIdleServiceState unwatches Nacos when the last waiter exits.
+// The serviceState and its config cache are kept alive so the next poll
+// reuses the cached config instead of re-fetching from Nacos.
+//
+// The serviceState is only removed from the map on handler Stop(),
+// which is acceptable because the number of services is bounded by
+// connected agents and serviceState is small (~two pointers).
 func (h *ConfigPollHandler) cleanupIdleServiceState(state *serviceState) {
 	// Double-check: a new Poll may have registered a waiter between our check and now
 	if !state.waiters.IsEmpty() {
 		return
 	}
 
-	// Unwatch Nacos and remove from services map
+	// Unwatch Nacos to conserve resources while idle.
+	// Watching will be restarted by EnsureWatching on the next poll.
 	state.config.Unwatch()
-
-	// Remove from services map safely via LoadAndDelete — if a new serviceState has
-	// been created for the same key (race with concurrent getOrCreateServiceState),
-	// LoadAndDelete will return the wrong value and we skip the delete.
-	serviceKey := AgentKey(state.config.appID, state.config.serviceName)
-	if val, loaded := h.services.LoadAndDelete(serviceKey); loaded && val == state {
-		h.logger.Debug("Cleaned up idle service state",
-			zap.String("app_id", state.config.appID),
-			zap.String("service", state.config.serviceName),
-		)
-	}
 }
 
 // ShouldContinue returns whether the handler should continue polling.
