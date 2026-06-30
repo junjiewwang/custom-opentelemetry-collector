@@ -130,6 +130,86 @@ func (r *TraceReader) GetTrace(ctx context.Context, traceID string) (*Trace, err
 	return &trace, nil
 }
 
+// GetTraceSpans retrieves all spans for a trace as StoredSpan.
+func (r *TraceReader) GetTraceSpans(ctx context.Context, traceID string) ([]StoredSpan, error) {
+	searchReq := &SearchRequest{
+		Query: map[string]any{
+			"term": map[string]any{"trace_id": traceID},
+		},
+		Size: 1000,
+		Sort: []map[string]any{
+			{"start_time": map[string]any{"order": "asc"}},
+		},
+	}
+	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("get trace spans failed: %w", err)
+	}
+	return r.hitsToStoredSpans(resp.Hits.Hits)
+}
+
+// SearchSpans searches for spans matching the query and returns StoredSpan format.
+func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]StoredSpan, []string, error) {
+	esQuery := r.buildTraceSearchQuery(query)
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// Step 1: aggregation to find trace IDs
+	searchReq := &SearchRequest{
+		Query: esQuery,
+		Size:  0,
+		Aggregations: map[string]any{
+			"traces": map[string]any{
+				"terms": map[string]any{
+					"field": "trace_id",
+					"size":  limit + query.Offset,
+					"order": map[string]any{"max_start": "desc"},
+				},
+				"aggs": map[string]any{
+					"max_start": map[string]any{"max": map[string]any{"field": "start_time"}},
+				},
+			},
+		},
+	}
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("search spans failed: %w", err)
+	}
+	traceIDs, _, err := r.parseTraceAggregation(resp, query.Offset, limit)
+	if err != nil || len(traceIDs) == 0 {
+		return nil, traceIDs, err
+	}
+
+	// Step 2: fetch all spans
+	fetchReq := &SearchRequest{
+		Query: map[string]any{"terms": map[string]any{"trace_id": traceIDs}},
+		Size:  len(traceIDs) * 100,
+	}
+	fetchResp, err := r.client.Search(ctx, r.indexPattern(query.AppID), fetchReq)
+	if err != nil {
+		return nil, traceIDs, fmt.Errorf("fetch spans by IDs failed: %w", err)
+	}
+	spans, err := r.hitsToStoredSpans(fetchResp.Hits.Hits)
+	return spans, traceIDs, err
+}
+
+// hitsToStoredSpans converts ES search hits to StoredSpan directly (no local Span conversion).
+func (r *TraceReader) hitsToStoredSpans(hits []SearchHit) ([]StoredSpan, error) {
+	spans := make([]StoredSpan, 0, len(hits))
+	for _, hit := range hits {
+		var ss StoredSpan
+		if err := json.Unmarshal(hit.Source, &ss); err != nil {
+			r.logger.Warn("Failed to unmarshal span document", zap.String("id", hit.ID), zap.Error(err))
+			continue
+		}
+		ss = compatStoredSpan(ss, hit.Source)
+		spans = append(spans, ss)
+	}
+	return spans, nil
+}
+
 // GetServices returns all service names within the time range.
 func (r *TraceReader) GetServices(ctx context.Context, timeRange TimeRange) ([]Service, error) {
 	searchReq := &SearchRequest{

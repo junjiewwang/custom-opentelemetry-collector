@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -202,6 +203,18 @@ func (p *Provider) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 		return p.esProvider.WriteTraces(ctx, td)
 	case "postgresql":
 		return p.pgProvider.WriteTraces(ctx, td)
+	default:
+		return fmt.Errorf("no backend for traces")
+	}
+}
+
+// WriteSpans routes pre-converted spans to the chosen backend.
+func (p *Provider) WriteSpans(ctx context.Context, spans []storedmodel.StoredSpan) error {
+	switch p.traceBackend {
+	case "elasticsearch":
+		return p.esProvider.WriteSpans(ctx, spans)
+	case "postgresql":
+		return p.pgProvider.WriteSpans(ctx, spans)
 	default:
 		return fmt.Errorf("no backend for traces")
 	}

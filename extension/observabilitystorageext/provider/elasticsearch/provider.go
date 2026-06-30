@@ -143,6 +143,11 @@ func (p *Provider) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 	return p.traceWriter.WriteTraces(ctx, td)
 }
 
+// WriteSpans writes pre-converted StoredSpan documents.
+func (p *Provider) WriteSpans(ctx context.Context, spans []StoredSpan) error {
+	return p.traceWriter.WriteSpans(ctx, spans)
+}
+
 // WriteMetrics writes metric data to Elasticsearch.
 func (p *Provider) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
 	return p.metricWriter.WriteMetrics(ctx, md)

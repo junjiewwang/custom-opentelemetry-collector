@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
@@ -183,6 +184,11 @@ func (p *Provider) HealthCheck(ctx context.Context) (bool, string, map[string]an
 // WriteTraces writes trace data to PostgreSQL.
 func (p *Provider) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 	return p.traceWriter.WriteTraces(ctx, td)
+}
+
+// WriteSpans writes pre-converted StoredSpan documents to PostgreSQL.
+func (p *Provider) WriteSpans(_ context.Context, _ []storedmodel.StoredSpan) error {
+	return fmt.Errorf("WriteSpans not yet implemented for PostgreSQL provider (Sprint 4)")
 }
 
 // WriteMetrics writes metric data to PostgreSQL.

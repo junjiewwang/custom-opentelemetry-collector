@@ -31,9 +31,13 @@ type internalProvider interface {
 	Start(ctx context.Context) error
 	Shutdown(ctx context.Context) error
 	HealthCheck(ctx context.Context) (bool, string, map[string]any)
-	WriteTraces(ctx context.Context, td ptrace.Traces) error
+
+	// WriteSpans writes pre-converted spans in the canonical StoredSpan format.
+	WriteSpans(ctx context.Context, spans []StoredSpan) error
+	WriteTraces(ctx context.Context, td ptrace.Traces) error // deprecated, use WriteSpans
 	WriteMetrics(ctx context.Context, md pmetric.Metrics) error
 	WriteLogs(ctx context.Context, ld plog.Logs) error
+
 	FlushTraces(ctx context.Context) error
 	FlushMetrics(ctx context.Context) error
 	FlushLogs(ctx context.Context) error
@@ -116,12 +120,18 @@ func (e *ObservabilityStorage) Shutdown(ctx context.Context) error {
 	return e.provider.Shutdown(ctx)
 }
 
-// WriteTraces writes trace data through the provider.
+// WriteTraces converts OTLP traces to StoredSpan format and writes through the provider.
 func (e *ObservabilityStorage) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 	if e.provider == nil {
 		return fmt.Errorf("provider not initialized")
 	}
-	return e.provider.WriteTraces(ctx, td)
+
+	// Convert all spans to canonical format at the extension layer.
+	spans := convertOTLPTraces(td)
+	if len(spans) == 0 {
+		return nil
+	}
+	return e.provider.WriteSpans(ctx, spans)
 }
 
 // WriteMetrics writes metric data through the provider.

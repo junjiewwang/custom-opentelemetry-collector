@@ -72,6 +72,21 @@ func (w *TraceWriter) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 	return nil
 }
 
+// WriteSpans writes pre-converted StoredSpan documents to Elasticsearch.
+func (w *TraceWriter) WriteSpans(ctx context.Context, spans []StoredSpan) error {
+	for _, ss := range spans {
+		appID := ss.AppID
+		if appID == "" {
+			return fmt.Errorf("app_id is required in resource attributes, refusing to write traces without app-level data isolation")
+		}
+		indexName := w.getIndexName(appID, time.Unix(0, ss.StartUnixNano))
+		if err := w.buffer.Add(indexName, ss); err != nil {
+			return fmt.Errorf("failed to buffer trace document: %w", err)
+		}
+	}
+	return nil
+}
+
 // Flush forces any buffered trace data to be written to ES.
 func (w *TraceWriter) Flush(ctx context.Context) error {
 	return w.buffer.Flush(ctx)

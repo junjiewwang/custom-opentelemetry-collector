@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -85,6 +86,13 @@ type TraceWriter interface {
 	Flush(ctx context.Context) error
 }
 
+// SpanWriter writes spans in the canonical StoredSpan format.
+// Provider implementations receive pre-converted spans from the extension layer.
+type SpanWriter interface {
+	WriteSpans(ctx context.Context, spans []StoredSpan) error
+	Flush(ctx context.Context) error
+}
+
 // MetricWriter writes metric data to the storage backend.
 type MetricWriter interface {
 	// WriteMetrics writes a batch of metrics.
@@ -124,6 +132,19 @@ type TraceReader interface {
 	// GetDependencies returns service-to-service dependencies for the service map.
 	GetDependencies(ctx context.Context, timeRange TimeRange) ([]Dependency, error)
 }
+
+// SpanReader queries trace spans from storage in the canonical StoredSpan format.
+// Provider-agnostic adapter uses this to build Trace/Span responses.
+type SpanReader interface {
+	// SearchSpans returns spans matching the query.
+	SearchSpans(ctx context.Context, query TraceQuery) ([]storedmodel.StoredSpan, error)
+
+	// GetTrace retrieves all spans for a trace ID.
+	GetTrace(ctx context.Context, traceID string) ([]storedmodel.StoredSpan, error)
+}
+
+// StoredSpan is a convenience alias for the canonical storage format.
+type StoredSpan = storedmodel.StoredSpan
 
 // MetricReader queries metric data from the storage backend.
 type MetricReader interface {

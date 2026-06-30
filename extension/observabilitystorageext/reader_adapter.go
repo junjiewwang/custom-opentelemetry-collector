@@ -27,6 +27,14 @@ type traceReaderAdapter struct {
 
 var _ TraceReader = (*traceReaderAdapter)(nil)
 
+func (a *traceReaderAdapter) GetTrace(ctx context.Context, traceID string) (*Trace, error) {
+	spans, err := a.inner.GetTraceSpans(ctx, traceID)
+	if err != nil {
+		return nil, err
+	}
+	return buildTraceFromStoredSpans(spans), nil
+}
+
 func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery) (*TraceSearchResult, error) {
 	esQuery := elasticsearch.TraceQuery{
 		AppID:         query.AppID,
@@ -39,20 +47,77 @@ func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery)
 		Limit:         query.Limit,
 		Offset:        query.Offset,
 	}
-	result, err := a.inner.SearchTraces(ctx, esQuery)
+	spans, _, err := a.inner.SearchSpans(ctx, esQuery)
 	if err != nil {
 		return nil, err
 	}
-	return convertTraceSearchResult(result), nil
+
+	// Group spans by trace_id
+	traceMap := make(map[string][]StoredSpan)
+	for _, ss := range spans {
+		traceMap[ss.TraceID] = append(traceMap[ss.TraceID], ss)
+	}
+
+	// Keep original order
+	var seen []string
+	traces := make([]Trace, 0, len(traceMap))
+	for _, ss := range spans {
+		tid := ss.TraceID
+		if sp, ok := traceMap[tid]; ok {
+			seen = append(seen, tid)
+			traces = append(traces, *buildTraceFromStoredSpans(sp))
+			delete(traceMap, tid)
+		}
+	}
+
+	return &TraceSearchResult{Traces: traces, Total: int64(len(seen))}, nil
 }
 
-func (a *traceReaderAdapter) GetTrace(ctx context.Context, traceID string) (*Trace, error) {
-	result, err := a.inner.GetTrace(ctx, traceID)
-	if err != nil {
-		return nil, err
+// buildTraceFromStoredSpans builds a public Trace from StoredSpan slice.
+func buildTraceFromStoredSpans(spans []StoredSpan) *Trace {
+	publicSpans := make([]Span, len(spans))
+	for i, ss := range spans {
+		publicSpans[i] = StoredSpanToPublic(ss)
 	}
-	t := convertTrace(*result)
-	return &t, nil
+
+	trace := &Trace{
+		TraceID:   spans[0].TraceID,
+		Spans:     publicSpans,
+		SpanCount: len(publicSpans),
+	}
+
+	// Compute derived fields
+	serviceSet := make(map[string]struct{})
+	for _, s := range publicSpans {
+		if s.ServiceName != "" {
+			serviceSet[s.ServiceName] = struct{}{}
+		}
+		if s.ParentSpanID == "" {
+			trace.RootServiceName = s.ServiceName
+			trace.RootSpanName = s.Name
+		}
+	}
+	trace.ServiceCount = len(serviceSet)
+	trace.DurationNano = traceDuration(spans)
+
+	return trace
+}
+
+// traceDuration computes the total trace duration from StoredSpan range.
+func traceDuration(spans []StoredSpan) string {
+	var minStart, maxEnd int64
+	for _, ss := range spans {
+		if minStart == 0 || ss.StartUnixNano < minStart {
+			minStart = ss.StartUnixNano
+		}
+		if ss.EndUnixNano > maxEnd {
+			maxEnd = ss.EndUnixNano
+		}
+	}
+	if minStart > 0 && maxEnd > 0 {
+		return strconv.FormatInt(maxEnd-minStart, 10)
+	}
+	return "0"
 }
 
 func (a *traceReaderAdapter) GetServices(ctx context.Context, timeRange TimeRange) ([]Service, error) {
@@ -212,95 +277,10 @@ func (a *metricReaderAdapter) ListLabelValues(ctx context.Context, label string,
 // ═══════════════════════════════════════════════════
 // Type Conversion Helpers — ES internal → OTel standard
 // ═══════════════════════════════════════════════════
+// convertSpan / convertTrace / convertTraceSearchResult removed — replaced by
+// StoredSpanToPublic() and buildTraceFromStoredSpans() using the canonical format.
 
-func convertTraceSearchResult(src *elasticsearch.TraceSearchResult) *TraceSearchResult {
-	traces := make([]Trace, len(src.Traces))
-	for i, t := range src.Traces {
-		traces[i] = convertTrace(t)
-	}
-	return &TraceSearchResult{Traces: traces, Total: src.Total}
-}
-
-func convertTrace(src elasticsearch.Trace) Trace {
-	spans := make([]Span, len(src.Spans))
-	for i, s := range src.Spans {
-		spans[i] = convertSpan(s)
-	}
-
-	// Compute derived fields
-	trace := Trace{
-		TraceID: src.TraceID,
-		Spans:   spans,
-	}
-
-	// Duration: convert from microseconds to nanoseconds
-	if src.Duration > 0 {
-		trace.DurationNano = strconv.FormatInt(src.Duration*1000, 10)
-	}
-
-	// Compute span/service counts and root span info
-	trace.SpanCount = len(spans)
-	serviceSet := make(map[string]struct{})
-	for _, s := range spans {
-		if s.ServiceName != "" {
-			serviceSet[s.ServiceName] = struct{}{}
-		}
-		// Root span: no parent
-		if s.ParentSpanID == "" {
-			trace.RootServiceName = s.ServiceName
-			trace.RootSpanName = s.Name
-		}
-	}
-	trace.ServiceCount = len(serviceSet)
-
-	return trace
-}
-
-func convertSpan(src elasticsearch.Span) Span {
-	span := Span{
-		TraceID:           src.TraceID,
-		SpanID:            src.SpanID,
-		ParentSpanID:      src.ParentSpanID,
-		Name:              src.OperationName,
-		Kind:              NormalizeSpanKind(src.SpanKind),
-		StartTimeUnixNano: TimeToUnixNano(src.StartTime),
-		EndTimeUnixNano:   TimeToUnixNano(src.EndTime),
-		Status: SpanStatus{
-			Code:    NormalizeStatusCode(src.StatusCode),
-			Message: src.StatusMessage,
-		},
-		ServiceName:  src.ServiceName,
-		DurationNano: computeDurationNano(src.StartTime, src.EndTime, src.DurationUS),
-		Attributes:   MapToKeyValues(src.Attributes),
-		Resource:     MapToKeyValues(src.Resource),
-	}
-
-	if len(src.Events) > 0 {
-		span.Events = make([]SpanEvent, len(src.Events))
-		for i, e := range src.Events {
-			span.Events[i] = SpanEvent{
-				Name:         e.Name,
-				TimeUnixNano: TimeToUnixNano(e.Timestamp),
-				Attributes:   MapToKeyValues(e.Attributes),
-			}
-		}
-	}
-
-	if len(src.Links) > 0 {
-		span.Links = make([]SpanLink, len(src.Links))
-		for i, l := range src.Links {
-			span.Links[i] = SpanLink{
-				TraceID: l.TraceID,
-				SpanID:  l.SpanID,
-			}
-		}
-	}
-
-	return span
-}
-
-// computeDurationNano computes the duration in nanoseconds.
-// Prefers computing from start/end times; falls back to DurationUS (microseconds) if available.
+// computeDurationNano is retained for the PG reader adapter.
 func computeDurationNano(start, end time.Time, durationUS int64) string {
 	if !start.IsZero() && !end.IsZero() {
 		nanos := end.Sub(start).Nanoseconds()
@@ -309,7 +289,6 @@ func computeDurationNano(start, end time.Time, durationUS int64) string {
 		}
 	}
 	if durationUS > 0 {
-		// Convert microseconds to nanoseconds
 		return strconv.FormatInt(durationUS*1000, 10)
 	}
 	return "0"
