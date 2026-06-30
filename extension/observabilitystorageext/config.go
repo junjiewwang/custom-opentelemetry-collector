@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 )
 
 // Config defines the configuration for the observability storage extension.
@@ -414,25 +416,26 @@ type HybridConfig struct {
 
 // Validate checks if the HybridConfig is valid and ensures dependent provider configs exist.
 func (cfg *HybridConfig) Validate(parent *Config) error {
-	validBackends := map[string]bool{"elasticsearch": true, "postgresql": true}
+	validBackends := map[string]bool{storedmodel.BackendES: true, storedmodel.BackendPG: true}
 
 	routes := map[string]string{
-		"trace":  cfg.Trace,
-		"metric": cfg.Metric,
-		"log":    cfg.Log,
-		"admin":  cfg.Admin,
+		storedmodel.SignalTrace: cfg.Trace,
+		storedmodel.SignalMetric: cfg.Metric,
+		storedmodel.SignalLog:    cfg.Log,
+		storedmodel.SignalAdmin:  cfg.Admin,
 	}
 	for signal, backend := range routes {
 		if !validBackends[backend] {
-			return fmt.Errorf("hybrid.%s: invalid backend %q (must be 'elasticsearch' or 'postgresql')", signal, backend)
+			return fmt.Errorf("hybrid.%s: invalid backend %q (must be %q or %q)",
+				signal, backend, storedmodel.BackendES, storedmodel.BackendPG)
 		}
 	}
 
 	// Check that required sub-provider configs are present
-	needsES := cfg.Trace == "elasticsearch" || cfg.Metric == "elasticsearch" ||
-		cfg.Log == "elasticsearch" || cfg.Admin == "elasticsearch"
-	needsPG := cfg.Trace == "postgresql" || cfg.Metric == "postgresql" ||
-		cfg.Log == "postgresql" || cfg.Admin == "postgresql"
+	needsES := cfg.Trace == storedmodel.BackendES || cfg.Metric == storedmodel.BackendES ||
+		cfg.Log == storedmodel.BackendES || cfg.Admin == storedmodel.BackendES
+	needsPG := cfg.Trace == storedmodel.BackendPG || cfg.Metric == storedmodel.BackendPG ||
+		cfg.Log == storedmodel.BackendPG || cfg.Admin == storedmodel.BackendPG
 
 	if needsES && parent.Elasticsearch == nil {
 		return errors.New("hybrid routing requires elasticsearch config but 'elasticsearch' section is missing")
@@ -459,15 +462,15 @@ func (cfg *HybridConfig) Validate(parent *Config) error {
 // ApplyDefaults sets default values for HybridConfig.
 func (cfg *HybridConfig) ApplyDefaults() {
 	if cfg.Trace == "" {
-		cfg.Trace = "elasticsearch"
+		cfg.Trace = storedmodel.BackendES
 	}
 	if cfg.Metric == "" {
-		cfg.Metric = "postgresql"
+		cfg.Metric = storedmodel.BackendPG
 	}
 	if cfg.Log == "" {
-		cfg.Log = "elasticsearch"
+		cfg.Log = storedmodel.BackendES
 	}
 	if cfg.Admin == "" {
-		cfg.Admin = "postgresql"
+		cfg.Admin = storedmodel.BackendPG
 	}
 }

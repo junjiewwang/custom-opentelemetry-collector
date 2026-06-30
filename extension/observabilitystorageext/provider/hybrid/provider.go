@@ -22,10 +22,10 @@ import (
 
 // Config holds the Hybrid provider routing configuration.
 type Config struct {
-	Trace string `mapstructure:"trace"`
-	Metric string `mapstructure:"metric"`
-	Log   string `mapstructure:"log"`
-	Admin string `mapstructure:"admin"`
+	Trace string `mapstructure:storedmodel.SignalTrace`
+	Metric string `mapstructure:storedmodel.SignalMetric`
+	Log   string `mapstructure:storedmodel.SignalLog`
+	Admin string `mapstructure:storedmodel.SignalAdmin`
 	ES    *elasticsearch.Config `mapstructure:"es"`
 	PG    *postgresql.Config `mapstructure:"pg"`
 }
@@ -74,15 +74,16 @@ func NewProvider(config *Config, logger *zap.Logger) (*Provider, error) {
 	}
 
 	routing := map[string]string{
-		"trace": config.Trace,
-		"metric": config.Metric,
-		"log":   config.Log,
-		"admin": config.Admin,
+		storedmodel.SignalTrace: config.Trace,
+		storedmodel.SignalMetric: config.Metric,
+		storedmodel.SignalLog:   config.Log,
+		storedmodel.SignalAdmin: config.Admin,
 	}
 
 	for signal, be := range routing {
-		if be != "elasticsearch" && be != "postgresql" {
-			return nil, fmt.Errorf("invalid backend for %q: %q (must be 'elasticsearch' or 'postgresql')", signal, be)
+		if be != storedmodel.BackendES && be != storedmodel.BackendPG {
+			return nil, fmt.Errorf("invalid backend for %s: %q (must be %q or %q)",
+				signal, be, storedmodel.BackendES, storedmodel.BackendPG)
 		}
 	}
 
@@ -100,10 +101,10 @@ func (p *Provider) Name() string { return "hybrid" }
 // Start initializes sub-providers as needed based on routing config.
 func (p *Provider) Start(ctx context.Context) error {
 	p.logger.Info("Starting Hybrid provider",
-		zap.String("trace", p.routing["trace"]),
-		zap.String("metric", p.routing["metric"]),
-		zap.String("log", p.routing["log"]),
-		zap.String("admin", p.routing["admin"]),
+		zap.String(storedmodel.SignalTrace, p.routing[storedmodel.SignalTrace]),
+		zap.String(storedmodel.SignalMetric, p.routing[storedmodel.SignalMetric]),
+		zap.String(storedmodel.SignalLog, p.routing[storedmodel.SignalLog]),
+		zap.String(storedmodel.SignalAdmin, p.routing[storedmodel.SignalAdmin]),
 	)
 
 	// Determine which backends are needed
@@ -112,21 +113,21 @@ func (p *Provider) Start(ctx context.Context) error {
 		needed[be] = true
 	}
 
-	if needed["elasticsearch"] {
+	if needed[storedmodel.BackendES] {
 		es, err := p.startES(ctx)
 		if err != nil {
 			return err
 		}
-		p.backends["elasticsearch"] = es
+		p.backends[storedmodel.BackendES] = es
 		p.esProvider = es.(*elasticsearch.Provider)
 	}
 
-	if needed["postgresql"] {
+	if needed[storedmodel.BackendPG] {
 		pg, err := p.startPG(ctx)
 		if err != nil {
 			return err
 		}
-		p.backends["postgresql"] = pg
+		p.backends[storedmodel.BackendPG] = pg
 		p.pgProvider = pg.(*postgresql.Provider)
 	}
 
@@ -220,7 +221,7 @@ func (p *Provider) backendNames() []string {
 }
 
 func (p *Provider) WriteTraces(ctx context.Context, td ptrace.Traces) error {
-	be, err := p.backendFor("trace")
+	be, err := p.backendFor(storedmodel.SignalTrace)
 	if err != nil {
 		return err
 	}
@@ -228,7 +229,7 @@ func (p *Provider) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 }
 
 func (p *Provider) WriteSpans(ctx context.Context, spans []storedmodel.StoredSpan) error {
-	be, err := p.backendFor("trace")
+	be, err := p.backendFor(storedmodel.SignalTrace)
 	if err != nil {
 		return err
 	}
@@ -236,7 +237,7 @@ func (p *Provider) WriteSpans(ctx context.Context, spans []storedmodel.StoredSpa
 }
 
 func (p *Provider) WriteLogs(ctx context.Context, ld plog.Logs) error {
-	be, err := p.backendFor("log")
+	be, err := p.backendFor(storedmodel.SignalLog)
 	if err != nil {
 		return err
 	}
@@ -244,7 +245,7 @@ func (p *Provider) WriteLogs(ctx context.Context, ld plog.Logs) error {
 }
 
 func (p *Provider) WriteLogRecords(ctx context.Context, records []storedmodel.StoredLogRecord) error {
-	be, err := p.backendFor("log")
+	be, err := p.backendFor(storedmodel.SignalLog)
 	if err != nil {
 		return err
 	}
@@ -252,7 +253,7 @@ func (p *Provider) WriteLogRecords(ctx context.Context, records []storedmodel.St
 }
 
 func (p *Provider) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
-	be, err := p.backendFor("metric")
+	be, err := p.backendFor(storedmodel.SignalMetric)
 	if err != nil {
 		return err
 	}
@@ -260,7 +261,7 @@ func (p *Provider) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
 }
 
 func (p *Provider) WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error {
-	be, err := p.backendFor("metric")
+	be, err := p.backendFor(storedmodel.SignalMetric)
 	if err != nil {
 		return err
 	}
@@ -268,7 +269,7 @@ func (p *Provider) WriteMetricPoints(ctx context.Context, points []storedmodel.S
 }
 
 func (p *Provider) FlushTraces(ctx context.Context) error {
-	be, err := p.backendFor("trace")
+	be, err := p.backendFor(storedmodel.SignalTrace)
 	if err != nil {
 		return nil // flush is best-effort
 	}
@@ -276,7 +277,7 @@ func (p *Provider) FlushTraces(ctx context.Context) error {
 }
 
 func (p *Provider) FlushMetrics(ctx context.Context) error {
-	be, err := p.backendFor("metric")
+	be, err := p.backendFor(storedmodel.SignalMetric)
 	if err != nil {
 		return nil
 	}
@@ -284,7 +285,7 @@ func (p *Provider) FlushMetrics(ctx context.Context) error {
 }
 
 func (p *Provider) FlushLogs(ctx context.Context) error {
-	be, err := p.backendFor("log")
+	be, err := p.backendFor(storedmodel.SignalLog)
 	if err != nil {
 		return nil
 	}
@@ -299,7 +300,7 @@ func (p *Provider) FlushLogs(ctx context.Context) error {
 
 func (p *Provider) ESProvider() *elasticsearch.Provider { return p.esProvider }
 func (p *Provider) PGProvider() *postgresql.Provider   { return p.pgProvider }
-func (p *Provider) TraceBackend() string                { return p.routing["trace"] }
-func (p *Provider) MetricBackend() string               { return p.routing["metric"] }
-func (p *Provider) LogBackend() string                  { return p.routing["log"] }
-func (p *Provider) AdminBackend() string                { return p.routing["admin"] }
+func (p *Provider) TraceBackend() string                { return p.routing[storedmodel.SignalTrace] }
+func (p *Provider) MetricBackend() string               { return p.routing[storedmodel.SignalMetric] }
+func (p *Provider) LogBackend() string                  { return p.routing[storedmodel.SignalLog] }
+func (p *Provider) AdminBackend() string                { return p.routing[storedmodel.SignalAdmin] }
