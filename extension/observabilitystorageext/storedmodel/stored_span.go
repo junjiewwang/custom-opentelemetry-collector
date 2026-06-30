@@ -13,6 +13,8 @@
 package storedmodel
 
 import (
+	"strings"
+
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
@@ -194,16 +196,27 @@ func getAttrStr(attrs pcommon.Map, key string, default_ string) string {
 	return default_
 }
 
-// getAppIDAttr extracts the app ID from resource attributes.
+// getAppIDAttr extracts the app ID from resource attributes with sanitization.
 func getAppIDAttr(attrs pcommon.Map) string {
 	for _, key := range []string{"app_id", "app.id"} {
 		if val, ok := attrs.Get(key); ok {
 			if id := val.AsString(); id != "" {
-				return id
+				return sanitizeAppID(id)
 			}
 		}
 	}
 	return ""
+}
+
+// sanitizeAppID normalizes an app ID for ES index name safety: lowercase,
+// special chars replaced with "-".
+func sanitizeAppID(id string) string {
+	id = strings.ToLower(id)
+	replacer := strings.NewReplacer(
+		" ", "-", "/", "-", "\\", "-", "*", "-", "?", "-",
+		"\"", "", "<", "", ">", "", "|", "-", "#", "-", ",", "-",
+	)
+	return replacer.Replace(id)
 }
 
 // convertEvents converts OTLP span events to StoredEvent slice.
