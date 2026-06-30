@@ -187,8 +187,18 @@ func (p *Provider) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 }
 
 // WriteSpans writes pre-converted StoredSpan documents to PostgreSQL.
-func (p *Provider) WriteSpans(_ context.Context, _ []storedmodel.StoredSpan) error {
-	return fmt.Errorf("WriteSpans not yet implemented for PostgreSQL provider (Sprint 4)")
+func (p *Provider) WriteSpans(ctx context.Context, spans []storedmodel.StoredSpan) error {
+	return p.traceWriter.WriteSpans(ctx, spans)
+}
+
+// WriteLogRecords writes pre-converted StoredLogRecord documents.
+func (p *Provider) WriteLogRecords(ctx context.Context, records []storedmodel.StoredLogRecord) error {
+	return p.logWriter.WriteLogRecords(ctx, records)
+}
+
+// WriteMetricPoints writes pre-converted StoredMetricDataPoint documents.
+func (p *Provider) WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error {
+	return p.metricWriter.WriteMetricPoints(ctx, points)
 }
 
 // WriteMetrics writes metric data to PostgreSQL.

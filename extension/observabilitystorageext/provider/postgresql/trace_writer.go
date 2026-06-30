@@ -9,7 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
+
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 )
@@ -208,4 +211,47 @@ func (s *traceRowSource) Values() ([]any, error) {
 
 func (s *traceRowSource) Err() error {
 	return nil
+}
+
+// WriteSpans writes pre-converted StoredSpan documents using COPY protocol.
+func (w *TraceWriter) WriteSpans(ctx context.Context, spans []storedmodel.StoredSpan) error {
+	rows := make([]traceRow, len(spans))
+	for i, ss := range spans {
+		rows[i] = storedSpanToTraceRow(ss)
+	}
+	w.mu.Lock()
+	w.buffer = append(w.buffer, rows...)
+	shouldFlush := len(w.buffer) >= w.config.BatchSize
+	w.mu.Unlock()
+	if shouldFlush {
+		return w.Flush(ctx)
+	}
+	return nil
+}
+
+// storedSpanToTraceRow converts a StoredSpan to a PG trace row.
+func storedSpanToTraceRow(ss storedmodel.StoredSpan) traceRow {
+	attrsJSON, _ := json.Marshal(ss.Attributes)
+	resJSON, _ := json.Marshal(ss.Resource)
+	eventsJSON, _ := json.Marshal(ss.Events)
+	linksJSON, _ := json.Marshal(ss.Links)
+
+	return traceRow{
+		TraceID:        ss.TraceID,
+		SpanID:         ss.SpanID,
+		ParentSpanID:   ss.ParentSpanID,
+		OperationName:  ss.Name,
+		ServiceName:    ss.ServiceName,
+		SpanKind:       ss.Kind,
+		StatusCode:     ss.Status.Code,
+		StatusMessage:  ss.Status.Message,
+		StartTime:      time.Unix(0, ss.StartUnixNano),
+		EndTime:        time.Unix(0, ss.EndUnixNano),
+		DurationMs:     float64(ss.DurationNano) / 1e6,
+		AppID:          ss.AppID,
+		Attributes:     attrsJSON,
+		Resource:       resJSON,
+		Events:         eventsJSON,
+		Links:          linksJSON,
+	}
 }

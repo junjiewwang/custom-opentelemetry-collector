@@ -9,7 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
+
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.uber.org/zap"
 )
@@ -205,5 +208,40 @@ func (s *logRowSource) Values() ([]any, error) {
 }
 
 func (s *logRowSource) Err() error {
+	return nil
+}
+
+// WriteLogRecords writes pre-converted StoredLogRecord documents.
+func (w *LogWriter) WriteLogRecords(ctx context.Context, records []storedmodel.StoredLogRecord) error {
+	rows := make([]logRow, len(records))
+	for i, lr := range records {
+		attrsJSON, _ := json.Marshal(lr.Attributes)
+		resJSON, _ := json.Marshal(lr.Resource)
+		var obsTime *time.Time
+		if lr.ObservedTimeUnixNano > 0 {
+			t := time.Unix(0, lr.ObservedTimeUnixNano)
+			obsTime = &t
+		}
+		rows[i] = logRow{
+			Timestamp:      time.Unix(0, lr.TimeUnixNano),
+			ObservedTime:   obsTime,
+			SeverityNumber: int(lr.SeverityNumber),
+			SeverityText:   lr.SeverityText,
+			Body:           lr.Body,
+			ServiceName:    lr.ServiceName,
+			AppID:          lr.AppID,
+			TraceID:        lr.TraceID,
+			SpanID:         lr.SpanID,
+			Attributes:     attrsJSON,
+			Resource:       resJSON,
+		}
+	}
+	w.mu.Lock()
+	w.buffer = append(w.buffer, rows...)
+	shouldFlush := len(w.buffer) >= w.config.BatchSize
+	w.mu.Unlock()
+	if shouldFlush {
+		return w.Flush(ctx)
+	}
 	return nil
 }

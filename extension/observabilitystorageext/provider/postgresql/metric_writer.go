@@ -9,7 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
+
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
@@ -259,5 +262,33 @@ func (s *metricRowSource) Values() ([]any, error) {
 }
 
 func (s *metricRowSource) Err() error {
+	return nil
+}
+
+// WriteMetricPoints writes pre-converted StoredMetricDataPoint documents.
+func (w *MetricWriter) WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error {
+	rows := make([]metricRow, len(points))
+	for i, dp := range points {
+		labelsJSON, _ := json.Marshal(dp.Labels)
+		resJSON, _ := json.Marshal(dp.Resource)
+		v := dp.Value
+		rows[i] = metricRow{
+			MetricName:  dp.Name,
+			MetricType:  dp.Type,
+			ServiceName: dp.ServiceName,
+			AppID:       dp.AppID,
+			Timestamp:   time.Unix(0, dp.TimeUnixNano),
+			Value:       &v,
+			Labels:      labelsJSON,
+			Resource:    resJSON,
+		}
+	}
+	w.mu.Lock()
+	w.buffer = append(w.buffer, rows...)
+	shouldFlush := len(w.buffer) >= w.config.BatchSize
+	w.mu.Unlock()
+	if shouldFlush {
+		return w.Flush(ctx)
+	}
 	return nil
 }
