@@ -22,40 +22,49 @@ import (
 
 // Config holds the Hybrid provider routing configuration.
 type Config struct {
-	// Trace specifies which backend to use for traces: "elasticsearch" or "postgresql".
-	Trace string
+	Trace string `mapstructure:"trace"`
+	Metric string `mapstructure:"metric"`
+	Log   string `mapstructure:"log"`
+	Admin string `mapstructure:"admin"`
+	ES    *elasticsearch.Config `mapstructure:"es"`
+	PG    *postgresql.Config `mapstructure:"pg"`
+}
 
-	// Metric specifies which backend to use for metrics.
-	Metric string
+// subProvider is the local interface that both ES and PG providers satisfy.
+// It decouples the hybrid router from concrete provider types (DIP).
+type subProvider interface {
+	Name() string
+	Start(ctx context.Context) error
+	Shutdown(ctx context.Context) error
+	HealthCheck(ctx context.Context) (bool, string, map[string]any)
 
-	// Log specifies which backend to use for logs.
-	Log string
+	WriteTraces(ctx context.Context, td ptrace.Traces) error
+	WriteSpans(ctx context.Context, spans []storedmodel.StoredSpan) error
+	WriteLogs(ctx context.Context, ld plog.Logs) error
+	WriteLogRecords(ctx context.Context, records []storedmodel.StoredLogRecord) error
+	WriteMetrics(ctx context.Context, md pmetric.Metrics) error
+	WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error
 
-	// Admin specifies which backend to use for admin operations.
-	Admin string
-
-	// ES holds the Elasticsearch provider config (used if any signal routes to ES).
-	ES *elasticsearch.Config
-
-	// PG holds the PostgreSQL provider config (used if any signal routes to PG).
-	PG *postgresql.Config
+	FlushTraces(ctx context.Context) error
+	FlushMetrics(ctx context.Context) error
+	FlushLogs(ctx context.Context) error
 }
 
 // Provider implements a hybrid observability storage provider that routes
-// different signal types to different backends.
+// different signal types to different backends via the subProvider interface.
 type Provider struct {
 	config *Config
 	logger *zap.Logger
 
-	// Sub-providers (only initialized if needed based on routing config)
+	// registry: backend name → provider instance (extensible, OCP)
+	backends map[string]subProvider
+
+	// routing: signal name → backend name
+	routing map[string]string
+
+	// concrete references retained for read-path accessors (backward compat)
 	esProvider *elasticsearch.Provider
 	pgProvider *postgresql.Provider
-
-	// Routing: which backend each signal uses
-	traceBackend  string
-	metricBackend string
-	logBackend    string
-	adminBackend  string
 }
 
 // NewProvider creates a new Hybrid provider instance.
@@ -64,93 +73,106 @@ func NewProvider(config *Config, logger *zap.Logger) (*Provider, error) {
 		return nil, fmt.Errorf("hybrid config is nil")
 	}
 
-	// Validate routing
-	validBackends := map[string]bool{"elasticsearch": true, "postgresql": true}
-	for _, b := range []string{config.Trace, config.Metric, config.Log, config.Admin} {
-		if !validBackends[b] {
-			return nil, fmt.Errorf("invalid backend in hybrid config: %q (must be 'elasticsearch' or 'postgresql')", b)
+	routing := map[string]string{
+		"trace": config.Trace,
+		"metric": config.Metric,
+		"log":   config.Log,
+		"admin": config.Admin,
+	}
+
+	for signal, be := range routing {
+		if be != "elasticsearch" && be != "postgresql" {
+			return nil, fmt.Errorf("invalid backend for %q: %q (must be 'elasticsearch' or 'postgresql')", signal, be)
 		}
 	}
 
 	return &Provider{
-		config:        config,
-		logger:        logger.Named("hybrid-provider"),
-		traceBackend:  config.Trace,
-		metricBackend: config.Metric,
-		logBackend:    config.Log,
-		adminBackend:  config.Admin,
+		config:   config,
+		logger:   logger.Named("hybrid-provider"),
+		backends: make(map[string]subProvider),
+		routing:  routing,
 	}, nil
 }
 
 // Name returns the provider name.
-func (p *Provider) Name() string {
-	return "hybrid"
-}
+func (p *Provider) Name() string { return "hybrid" }
 
-// Start initializes the sub-providers that are needed based on routing config.
+// Start initializes sub-providers as needed based on routing config.
 func (p *Provider) Start(ctx context.Context) error {
 	p.logger.Info("Starting Hybrid provider",
-		zap.String("trace", p.traceBackend),
-		zap.String("metric", p.metricBackend),
-		zap.String("log", p.logBackend),
-		zap.String("admin", p.adminBackend),
+		zap.String("trace", p.routing["trace"]),
+		zap.String("metric", p.routing["metric"]),
+		zap.String("log", p.routing["log"]),
+		zap.String("admin", p.routing["admin"]),
 	)
 
-	needsES := p.traceBackend == "elasticsearch" || p.metricBackend == "elasticsearch" ||
-		p.logBackend == "elasticsearch" || p.adminBackend == "elasticsearch"
-	needsPG := p.traceBackend == "postgresql" || p.metricBackend == "postgresql" ||
-		p.logBackend == "postgresql" || p.adminBackend == "postgresql"
-
-	if needsES {
-		if p.config.ES == nil {
-			return fmt.Errorf("hybrid routing requires elasticsearch config but it is nil")
-		}
-		esProvider, err := elasticsearch.NewProvider(p.config.ES, p.logger)
-		if err != nil {
-			return fmt.Errorf("failed to create ES sub-provider: %w", err)
-		}
-		if err := esProvider.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start ES sub-provider: %w", err)
-		}
-		p.esProvider = esProvider
-		p.logger.Info("ES sub-provider started")
+	// Determine which backends are needed
+	needed := make(map[string]bool)
+	for _, be := range p.routing {
+		needed[be] = true
 	}
 
-	if needsPG {
-		if p.config.PG == nil {
-			return fmt.Errorf("hybrid routing requires postgresql config but it is nil")
-		}
-		pgProvider, err := postgresql.NewProvider(p.config.PG, p.logger)
+	if needed["elasticsearch"] {
+		es, err := p.startES(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to create PG sub-provider: %w", err)
+			return err
 		}
-		if err := pgProvider.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start PG sub-provider: %w", err)
-		}
-		p.pgProvider = pgProvider
-		p.logger.Info("PG sub-provider started")
+		p.backends["elasticsearch"] = es
+		p.esProvider = es.(*elasticsearch.Provider)
 	}
 
-	p.logger.Info("Hybrid provider started successfully")
+	if needed["postgresql"] {
+		pg, err := p.startPG(ctx)
+		if err != nil {
+			return err
+		}
+		p.backends["postgresql"] = pg
+		p.pgProvider = pg.(*postgresql.Provider)
+	}
+
+	p.logger.Info("Hybrid provider started")
 	return nil
+}
+
+func (p *Provider) startES(ctx context.Context) (subProvider, error) {
+	if p.config.ES == nil {
+		return nil, fmt.Errorf("hybrid routing requires elasticsearch config but it is nil")
+	}
+	es, err := elasticsearch.NewProvider(p.config.ES, p.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ES sub-provider: %w", err)
+	}
+	if err := es.Start(ctx); err != nil {
+		return nil, fmt.Errorf("failed to start ES sub-provider: %w", err)
+	}
+	p.logger.Info("ES sub-provider started")
+	return es, nil
+}
+
+func (p *Provider) startPG(ctx context.Context) (subProvider, error) {
+	if p.config.PG == nil {
+		return nil, fmt.Errorf("hybrid routing requires postgresql config but it is nil")
+	}
+	pg, err := postgresql.NewProvider(p.config.PG, p.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PG sub-provider: %w", err)
+	}
+	if err := pg.Start(ctx); err != nil {
+		return nil, fmt.Errorf("failed to start PG sub-provider: %w", err)
+	}
+	p.logger.Info("PG sub-provider started")
+	return pg, nil
 }
 
 // Shutdown gracefully stops all sub-providers.
 func (p *Provider) Shutdown(ctx context.Context) error {
 	p.logger.Info("Shutting down Hybrid provider")
 	var errs []error
-
-	if p.esProvider != nil {
-		if err := p.esProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("ES shutdown: %w", err))
+	for name, be := range p.backends {
+		if err := be.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("%s shutdown: %w", name, err))
 		}
 	}
-	if p.pgProvider != nil {
-		if err := p.pgProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("PG shutdown: %w", err))
-		}
-	}
-
 	if len(errs) > 0 {
 		return fmt.Errorf("hybrid shutdown errors: %v", errs)
 	}
@@ -159,181 +181,125 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 
 // HealthCheck verifies all sub-providers are healthy.
 func (p *Provider) HealthCheck(ctx context.Context) (bool, string, map[string]any) {
-	details := map[string]any{
-		"routing": map[string]string{
-			"trace":  p.traceBackend,
-			"metric": p.metricBackend,
-			"log":    p.logBackend,
-			"admin":  p.adminBackend,
-		},
-	}
-
+	details := map[string]any{"routing": p.routing}
 	allHealthy := true
-	var messages []string
+	var msgs []string
 
-	if p.esProvider != nil {
-		healthy, msg, esDetails := p.esProvider.HealthCheck(ctx)
+	for name, be := range p.backends {
+		healthy, msg, beDetails := be.HealthCheck(ctx)
 		if !healthy {
 			allHealthy = false
 		}
-		messages = append(messages, fmt.Sprintf("ES: %s", msg))
-		details["elasticsearch"] = esDetails
+		msgs = append(msgs, fmt.Sprintf("%s: %s", name, msg))
+		details[name] = beDetails
 	}
 
-	if p.pgProvider != nil {
-		healthy, msg, pgDetails := p.pgProvider.HealthCheck(ctx)
-		if !healthy {
-			allHealthy = false
-		}
-		messages = append(messages, fmt.Sprintf("PG: %s", msg))
-		details["postgresql"] = pgDetails
-	}
-
-	return allHealthy, fmt.Sprintf("hybrid(%v)", messages), details
+	return allHealthy, fmt.Sprintf("hybrid(%v)", msgs), details
 }
 
-// ══════════════════════════════════
-// Write operations — route by signal
-// ══════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// Write routing — unified via backendFor, all nil-safe
+// ═══════════════════════════════════════════════════════
 
-// WriteTraces routes trace writes to the configured backend.
+// backendFor returns the sub-provider for a signal, or an error.
+func (p *Provider) backendFor(signal string) (subProvider, error) {
+	name := p.routing[signal]
+	be := p.backends[name]
+	if be == nil {
+		return nil, fmt.Errorf("no backend for signal %q (configured: %q, started: %v)", signal, name, p.backendNames())
+	}
+	return be, nil
+}
+
+func (p *Provider) backendNames() []string {
+	names := make([]string, 0, len(p.backends))
+	for n := range p.backends {
+		names = append(names, n)
+	}
+	return names
+}
+
 func (p *Provider) WriteTraces(ctx context.Context, td ptrace.Traces) error {
-	switch p.traceBackend {
-	case "elasticsearch":
-		return p.esProvider.WriteTraces(ctx, td)
-	case "postgresql":
-		return p.pgProvider.WriteTraces(ctx, td)
-	default:
-		return fmt.Errorf("no backend for traces")
+	be, err := p.backendFor("trace")
+	if err != nil {
+		return err
 	}
+	return be.WriteTraces(ctx, td)
 }
 
-// WriteSpans routes pre-converted spans to the chosen backend.
 func (p *Provider) WriteSpans(ctx context.Context, spans []storedmodel.StoredSpan) error {
-	switch p.traceBackend {
-	case "elasticsearch":
-		return p.esProvider.WriteSpans(ctx, spans)
-	case "postgresql":
-		return p.pgProvider.WriteSpans(ctx, spans)
-	default:
-		return fmt.Errorf("no backend for traces")
+	be, err := p.backendFor("trace")
+	if err != nil {
+		return err
 	}
+	return be.WriteSpans(ctx, spans)
 }
 
-// WriteLogRecords routes pre-converted log records to the chosen backend.
-func (p *Provider) WriteLogRecords(ctx context.Context, records []storedmodel.StoredLogRecord) error {
-	switch p.logBackend {
-	case "elasticsearch":
-		return p.esProvider.WriteLogRecords(ctx, records)
-	case "postgresql":
-		return p.pgProvider.WriteLogRecords(ctx, records)
-	default:
-		return fmt.Errorf("no backend for logs")
-	}
-}
-
-// WriteMetricPoints routes pre-converted metric data points to the chosen backend.
-func (p *Provider) WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error {
-	switch p.metricBackend {
-	case "elasticsearch":
-		return p.esProvider.WriteMetricPoints(ctx, points)
-	case "postgresql":
-		return p.pgProvider.WriteMetricPoints(ctx, points)
-	default:
-		return fmt.Errorf("no backend for metrics")
-	}
-}
-
-// WriteMetrics routes metric writes to the configured backend.
-func (p *Provider) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
-	switch p.metricBackend {
-	case "elasticsearch":
-		return p.esProvider.WriteMetrics(ctx, md)
-	case "postgresql":
-		return p.pgProvider.WriteMetrics(ctx, md)
-	default:
-		return fmt.Errorf("no backend for metrics")
-	}
-}
-
-// WriteLogs routes log writes to the configured backend.
 func (p *Provider) WriteLogs(ctx context.Context, ld plog.Logs) error {
-	switch p.logBackend {
-	case "elasticsearch":
-		return p.esProvider.WriteLogs(ctx, ld)
-	case "postgresql":
-		return p.pgProvider.WriteLogs(ctx, ld)
-	default:
-		return fmt.Errorf("no backend for logs")
+	be, err := p.backendFor("log")
+	if err != nil {
+		return err
 	}
+	return be.WriteLogs(ctx, ld)
 }
 
-// FlushTraces flushes buffered trace data.
+func (p *Provider) WriteLogRecords(ctx context.Context, records []storedmodel.StoredLogRecord) error {
+	be, err := p.backendFor("log")
+	if err != nil {
+		return err
+	}
+	return be.WriteLogRecords(ctx, records)
+}
+
+func (p *Provider) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
+	be, err := p.backendFor("metric")
+	if err != nil {
+		return err
+	}
+	return be.WriteMetrics(ctx, md)
+}
+
+func (p *Provider) WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error {
+	be, err := p.backendFor("metric")
+	if err != nil {
+		return err
+	}
+	return be.WriteMetricPoints(ctx, points)
+}
+
 func (p *Provider) FlushTraces(ctx context.Context) error {
-	switch p.traceBackend {
-	case "elasticsearch":
-		return p.esProvider.FlushTraces(ctx)
-	case "postgresql":
-		return p.pgProvider.FlushTraces(ctx)
-	default:
-		return nil
+	be, err := p.backendFor("trace")
+	if err != nil {
+		return nil // flush is best-effort
 	}
+	return be.FlushTraces(ctx)
 }
 
-// FlushMetrics flushes buffered metric data.
 func (p *Provider) FlushMetrics(ctx context.Context) error {
-	switch p.metricBackend {
-	case "elasticsearch":
-		return p.esProvider.FlushMetrics(ctx)
-	case "postgresql":
-		return p.pgProvider.FlushMetrics(ctx)
-	default:
+	be, err := p.backendFor("metric")
+	if err != nil {
 		return nil
 	}
+	return be.FlushMetrics(ctx)
 }
 
-// FlushLogs flushes buffered log data.
 func (p *Provider) FlushLogs(ctx context.Context) error {
-	switch p.logBackend {
-	case "elasticsearch":
-		return p.esProvider.FlushLogs(ctx)
-	case "postgresql":
-		return p.pgProvider.FlushLogs(ctx)
-	default:
+	be, err := p.backendFor("log")
+	if err != nil {
 		return nil
 	}
+	return be.FlushLogs(ctx)
 }
 
-// ══════════════════════════════════
-// Reader accessors — route by signal
-// ══════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// Reader accessors — retained for backward compat with
+// extension.go's read routing (GetTraceReader etc.)
+// Deprecated: prefer routing via internalProvider interface.
+// ═══════════════════════════════════════════════════════
 
-// ESProvider returns the Elasticsearch sub-provider (may be nil).
-func (p *Provider) ESProvider() *elasticsearch.Provider {
-	return p.esProvider
-}
-
-// PGProvider returns the PostgreSQL sub-provider (may be nil).
-func (p *Provider) PGProvider() *postgresql.Provider {
-	return p.pgProvider
-}
-
-// TraceBackend returns which backend handles traces.
-func (p *Provider) TraceBackend() string {
-	return p.traceBackend
-}
-
-// MetricBackend returns which backend handles metrics.
-func (p *Provider) MetricBackend() string {
-	return p.metricBackend
-}
-
-// LogBackend returns which backend handles logs.
-func (p *Provider) LogBackend() string {
-	return p.logBackend
-}
-
-// AdminBackend returns which backend handles admin operations.
-func (p *Provider) AdminBackend() string {
-	return p.adminBackend
-}
+func (p *Provider) ESProvider() *elasticsearch.Provider { return p.esProvider }
+func (p *Provider) PGProvider() *postgresql.Provider   { return p.pgProvider }
+func (p *Provider) TraceBackend() string                { return p.routing["trace"] }
+func (p *Provider) MetricBackend() string               { return p.routing["metric"] }
+func (p *Provider) LogBackend() string                  { return p.routing["log"] }
+func (p *Provider) AdminBackend() string                { return p.routing["admin"] }
