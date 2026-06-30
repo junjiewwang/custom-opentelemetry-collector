@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.uber.org/zap"
 )
 
@@ -253,6 +254,92 @@ func (r *TraceReader) GetTrace(ctx context.Context, traceID string) (*Trace, err
 		return nil, fmt.Errorf("trace not found: %s", traceID)
 	}
 	return trace, nil
+}
+
+// GetTraceSpans returns all spans for a trace as StoredSpan.
+func (r *TraceReader) GetTraceSpans(ctx context.Context, traceID string) ([]storedmodel.StoredSpan, error) {
+	sql := fmt.Sprintf(`
+		SELECT trace_id, span_id, parent_span_id, operation_name, service_name,
+			   span_kind, status_code, status_message, start_time, end_time,
+			   duration_ms, attributes, resource, events, links
+		FROM %s
+		WHERE trace_id = $1
+		ORDER BY start_time ASC
+	`, r.config.Traces.TableName)
+
+	rows, err := r.client.Query(ctx, sql, traceID)
+	if err != nil {
+		return nil, fmt.Errorf("get trace spans: %w", err)
+	}
+	defer rows.Close()
+
+	var spans []storedmodel.StoredSpan
+	for rows.Next() {
+		ss, err := r.scanStoredSpan(rows)
+		if err != nil {
+			return nil, err
+		}
+		spans = append(spans, ss)
+	}
+	if len(spans) == 0 {
+		return nil, fmt.Errorf("trace not found: %s", traceID)
+	}
+	return spans, nil
+}
+
+// SearchSpans searches spans matching the query and returns StoredSpan format.
+func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]storedmodel.StoredSpan, []string, error) {
+	// Simplified: delegate to SearchTraces (ID list) then GetTraceSpans for each
+	result, err := r.SearchTraces(ctx, query)
+	if err != nil || result == nil || len(result.Traces) == 0 {
+		return nil, nil, err
+	}
+
+	var allSpans []storedmodel.StoredSpan
+	var traceIDs []string
+	for _, t := range result.Traces {
+		traceIDs = append(traceIDs, t.TraceID)
+		spans, err := r.GetTraceSpans(ctx, t.TraceID)
+		if err != nil {
+			r.logger.Warn("Failed to fetch spans for trace", zap.String("trace_id", t.TraceID), zap.Error(err))
+			continue
+		}
+		allSpans = append(allSpans, spans...)
+	}
+	return allSpans, traceIDs, nil
+}
+
+// scanStoredSpan scans a PG row into a StoredSpan.
+func (r *TraceReader) scanStoredSpan(rows interface{ Scan(...interface{}) error }) (storedmodel.StoredSpan, error) {
+	var ss storedmodel.StoredSpan
+	var operationName, spanKind, statusCode, statusMsg string
+	var startTime, endTime time.Time
+	var durationMs float64
+	var attrsJSON, resourceJSON, eventsJSON, linksJSON []byte
+
+	if err := rows.Scan(
+		&ss.TraceID, &ss.SpanID, &ss.ParentSpanID, &operationName,
+		&ss.ServiceName, &spanKind, &statusCode, &statusMsg,
+		&startTime, &endTime, &durationMs,
+		&attrsJSON, &resourceJSON, &eventsJSON, &linksJSON,
+	); err != nil {
+		return ss, fmt.Errorf("scan span: %w", err)
+	}
+
+	ss.Name = operationName
+	ss.Kind = spanKind
+	ss.Status.Code = statusCode
+	ss.Status.Message = statusMsg
+	ss.StartUnixNano = startTime.UnixNano()
+	ss.EndUnixNano = endTime.UnixNano()
+	ss.DurationNano = int64(durationMs * 1e6)
+
+	_ = json.Unmarshal(attrsJSON, &ss.Attributes)
+	_ = json.Unmarshal(resourceJSON, &ss.Resource)
+	_ = json.Unmarshal(eventsJSON, &ss.Events)
+	_ = json.Unmarshal(linksJSON, &ss.Links)
+
+	return ss, nil
 }
 
 // GetServices returns all service names within the time range.
