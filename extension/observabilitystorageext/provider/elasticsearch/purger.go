@@ -268,7 +268,7 @@ func (p *Purger) deleteByQueryForApp(ctx context.Context, pattern string, signal
 				},
 				{
 					"term": map[string]any{
-						"app_id": appID,
+						FieldAppID: appID,
 					},
 				},
 			},
@@ -310,13 +310,13 @@ func (p *Purger) indexPrefix(signal lifecycle.SignalType) string {
 func (p *Purger) timestampField(signal lifecycle.SignalType) string {
 	switch signal {
 	case lifecycle.SignalTrace:
-		return "start_time"
+		return FieldStartTimeUnixNano
 	case lifecycle.SignalMetric:
-		return "@timestamp"
+		return FieldMetricTimeUnixNano
 	case lifecycle.SignalLog:
-		return "timestamp"
+		return FieldLogTimeUnixNano
 	default:
-		return "@timestamp"
+		return FieldMetricTimeUnixNano
 	}
 }
 

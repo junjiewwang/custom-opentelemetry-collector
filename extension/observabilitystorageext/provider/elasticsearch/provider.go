@@ -206,7 +206,7 @@ func (p *Provider) PurgeByApp(ctx context.Context, appID, indexPattern, timeFiel
 	query := map[string]any{
 		"bool": map[string]any{
 			"must": []map[string]any{
-				{"term": map[string]any{"resource.app_id": appID}},
+				{"term": map[string]any{FieldResource + ".app_id": appID}},
 				{"range": map[string]any{
 					timeField: map[string]any{"lt": formatTimestamp(before)},
 				}},

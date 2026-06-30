@@ -149,7 +149,7 @@ func (a *Admin) PurgeByApp(ctx context.Context, indexPrefix string, timestampFie
 				},
 				{
 					"term": map[string]any{
-						"app_id": appID,
+						FieldAppID: appID,
 					},
 				},
 			},
@@ -221,23 +221,23 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 			"mappings": map[string]any{
 				"properties": map[string]any{
 					// Core OTLP fields (new format)
-					"traceId":           map[string]any{"type": "keyword"},
-					"spanId":            map[string]any{"type": "keyword"},
-					"parentSpanId":      map[string]any{"type": "keyword"},
-					"name":              map[string]any{"type": "keyword"},
-					"kind":              map[string]any{"type": "keyword"},
-					"startTimeUnixNano": map[string]any{"type": "long"},
-					"endTimeUnixNano":   map[string]any{"type": "long"},
-					"durationNano":      map[string]any{"type": "long"},
-					"traceState":        map[string]any{"type": "keyword"},
-					"status": map[string]any{
+					FieldTraceID:           map[string]any{"type": "keyword"},
+					FieldSpanID:            map[string]any{"type": "keyword"},
+					FieldParentSpanID:      map[string]any{"type": "keyword"},
+					FieldName:              map[string]any{"type": "keyword"},
+					FieldKind:              map[string]any{"type": "keyword"},
+					FieldStartTimeUnixNano: map[string]any{"type": "long"},
+					FieldEndTimeUnixNano:   map[string]any{"type": "long"},
+					FieldDurationNano:      map[string]any{"type": "long"},
+					FieldTraceState:        map[string]any{"type": "keyword"},
+					FieldStatus: map[string]any{
 						"properties": map[string]any{
 							"code":    map[string]any{"type": "keyword"},
 							"message": map[string]any{"type": "text"},
 						},
 					},
 					// Scope info
-					"scope": map[string]any{
+					FieldScope: map[string]any{
 						"properties": map[string]any{
 							"name":       map[string]any{"type": "keyword"},
 							"version":    map[string]any{"type": "keyword"},
@@ -245,8 +245,8 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 						},
 					},
 					// Compact attributes
-					"attributes": map[string]any{"type": "flattened"},
-					"resource": map[string]any{
+					FieldAttributes: map[string]any{"type": "flattened"},
+					FieldResource: map[string]any{
 						"properties": map[string]any{
 							"service.name":      map[string]any{"type": "keyword"},
 							"service.namespace": map[string]any{"type": "keyword"},
@@ -256,27 +256,27 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 						},
 					},
 					// Events (new format)
-					"events": map[string]any{
+					FieldEvents: map[string]any{
 						"type": "nested",
 						"properties": map[string]any{
-							"timeUnixNano": map[string]any{"type": "long"},
-							"name":         map[string]any{"type": "keyword"},
-							"attributes":   map[string]any{"type": "flattened"},
+							FieldLogTimeUnixNano: map[string]any{"type": "long"},
+							"name":               map[string]any{"type": "keyword"},
+							FieldAttributes:      map[string]any{"type": "flattened"},
 						},
 					},
 					// Links (new format, extended)
-					"links": map[string]any{
+					FieldLinks: map[string]any{
 						"type": "nested",
 						"properties": map[string]any{
-							"traceId":    map[string]any{"type": "keyword"},
-							"spanId":     map[string]any{"type": "keyword"},
-							"traceState": map[string]any{"type": "keyword"},
-							"attributes": map[string]any{"type": "flattened"},
+							FieldTraceID:    map[string]any{"type": "keyword"},
+							FieldSpanID:     map[string]any{"type": "keyword"},
+							FieldTraceState: map[string]any{"type": "keyword"},
+							FieldAttributes: map[string]any{"type": "flattened"},
 						},
 					},
 					// Derived fields
-					"serviceName": map[string]any{"type": "keyword"},
-					"appId":       map[string]any{"type": "keyword"},
+					FieldServiceName: map[string]any{"type": "keyword"},
+					FieldAppID:       map[string]any{"type": "keyword"},
 				},
 			},
 		},
@@ -299,14 +299,14 @@ func (a *Admin) createMetricTemplate(ctx context.Context) error {
 			},
 			"mappings": map[string]any{
 				"properties": map[string]any{
-					"timeUnixNano": map[string]any{"type": "long"},
-					"name":         map[string]any{"type": "keyword"},
-					"type":         map[string]any{"type": "keyword"},
-					"value":        map[string]any{"type": "double"},
-					"serviceName":  map[string]any{"type": "keyword"},
-					"appId":        map[string]any{"type": "keyword"},
-					"labels":       map[string]any{"type": "flattened"},
-					"resource":     map[string]any{"type": "flattened"},
+					FieldMetricTimeUnixNano: map[string]any{"type": "long"},
+					FieldName:               map[string]any{"type": "keyword"},
+					FieldMetricType:         map[string]any{"type": "keyword"},
+					FieldMetricValue:        map[string]any{"type": "double"},
+					FieldServiceName:        map[string]any{"type": "keyword"},
+					FieldAppID:              map[string]any{"type": "keyword"},
+					FieldMetricLabels:       map[string]any{"type": "flattened"},
+					FieldResource:           map[string]any{"type": "flattened"},
 				},
 			},
 		},
@@ -329,17 +329,17 @@ func (a *Admin) createLogTemplate(ctx context.Context) error {
 			},
 			"mappings": map[string]any{
 				"properties": map[string]any{
-					"timeUnixNano":         map[string]any{"type": "long"},
-					"observedTimeUnixNano": map[string]any{"type": "long"},
-					"traceId":              map[string]any{"type": "keyword"},
-					"spanId":               map[string]any{"type": "keyword"},
-					"severityText":         map[string]any{"type": "keyword"},
-					"severityNumber":       map[string]any{"type": "integer"},
-					"body":                 map[string]any{"type": "text", "analyzer": "standard"},
-					"serviceName":          map[string]any{"type": "keyword"},
-					"appId":                map[string]any{"type": "keyword"},
-					"attributes":           map[string]any{"type": "flattened"},
-					"resource":             map[string]any{"type": "flattened"},
+					FieldLogTimeUnixNano:         map[string]any{"type": "long"},
+					FieldLogObservedTimeUnixNano: map[string]any{"type": "long"},
+					FieldTraceID:                 map[string]any{"type": "keyword"},
+					FieldSpanID:                  map[string]any{"type": "keyword"},
+					FieldLogSeverityText:         map[string]any{"type": "keyword"},
+					FieldLogSeverityNumber:       map[string]any{"type": "integer"},
+					FieldLogBody:                 map[string]any{"type": "text", "analyzer": "standard"},
+					FieldServiceName:             map[string]any{"type": "keyword"},
+					FieldAppID:                   map[string]any{"type": "keyword"},
+					FieldAttributes:              map[string]any{"type": "flattened"},
+					FieldResource:                map[string]any{"type": "flattened"},
 				},
 			},
 		},
