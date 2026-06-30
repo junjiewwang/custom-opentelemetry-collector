@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -146,6 +147,16 @@ func (p *Provider) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 // WriteSpans writes pre-converted StoredSpan documents.
 func (p *Provider) WriteSpans(ctx context.Context, spans []StoredSpan) error {
 	return p.traceWriter.WriteSpans(ctx, spans)
+}
+
+// WriteLogRecords writes pre-converted StoredLogRecord documents.
+func (p *Provider) WriteLogRecords(ctx context.Context, records []StoredLogRecord) error {
+	return p.logWriter.WriteLogRecords(ctx, records)
+}
+
+// WriteMetricPoints writes pre-converted StoredMetricDataPoint documents.
+func (p *Provider) WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error {
+	return p.metricWriter.WriteMetricPoints(ctx, points)
 }
 
 // WriteMetrics writes metric data to Elasticsearch.

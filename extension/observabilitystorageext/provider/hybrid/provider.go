@@ -220,6 +220,30 @@ func (p *Provider) WriteSpans(ctx context.Context, spans []storedmodel.StoredSpa
 	}
 }
 
+// WriteLogRecords routes pre-converted log records to the chosen backend.
+func (p *Provider) WriteLogRecords(ctx context.Context, records []storedmodel.StoredLogRecord) error {
+	switch p.logBackend {
+	case "elasticsearch":
+		return p.esProvider.WriteLogRecords(ctx, records)
+	case "postgresql":
+		return p.pgProvider.WriteLogRecords(ctx, records)
+	default:
+		return fmt.Errorf("no backend for logs")
+	}
+}
+
+// WriteMetricPoints routes pre-converted metric data points to the chosen backend.
+func (p *Provider) WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error {
+	switch p.metricBackend {
+	case "elasticsearch":
+		return p.esProvider.WriteMetricPoints(ctx, points)
+	case "postgresql":
+		return p.pgProvider.WriteMetricPoints(ctx, points)
+	default:
+		return fmt.Errorf("no backend for metrics")
+	}
+}
+
 // WriteMetrics routes metric writes to the configured backend.
 func (p *Provider) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
 	switch p.metricBackend {
