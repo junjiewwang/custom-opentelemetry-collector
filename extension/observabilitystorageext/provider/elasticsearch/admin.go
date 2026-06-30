@@ -299,20 +299,14 @@ func (a *Admin) createMetricTemplate(ctx context.Context) error {
 			},
 			"mappings": map[string]any{
 				"properties": map[string]any{
-					"@timestamp":   map[string]any{"type": "date"},
-					"metric_name":  map[string]any{"type": "keyword"},
-					"metric_type":  map[string]any{"type": "keyword"},
+					"timeUnixNano": map[string]any{"type": "long"},
+					"name":         map[string]any{"type": "keyword"},
+					"type":         map[string]any{"type": "keyword"},
 					"value":        map[string]any{"type": "double"},
-					"service_name": map[string]any{"type": "keyword"},
-					"app_id":       map[string]any{"type": "keyword"},
+					"serviceName":  map[string]any{"type": "keyword"},
+					"appId":        map[string]any{"type": "keyword"},
 					"labels":       map[string]any{"type": "flattened"},
 					"resource":     map[string]any{"type": "flattened"},
-					"histogram": map[string]any{
-						"properties": map[string]any{
-							"counts": map[string]any{"type": "long"},
-							"values": map[string]any{"type": "double"},
-						},
-					},
 				},
 			},
 		},

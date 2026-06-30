@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
@@ -39,17 +40,16 @@ func (w *MetricWriter) Stop() {
 	w.buffer.Stop()
 }
 
-// WriteMetrics converts pmetric.Metrics to ES documents and buffers them.
+// WriteMetrics converts OTLP metrics to StoredMetricDataPoint documents.
 func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
 	resourceMetrics := md.ResourceMetrics()
 	for i := 0; i < resourceMetrics.Len(); i++ {
 		rm := resourceMetrics.At(i)
-		resource := extractResourceAttributes(rm.Resource())
-		serviceName := getServiceNameFromResource(rm.Resource())
-		appID := getAppID(rm.Resource())
+		res := rm.Resource()
+		appID := getAppID(res)
 
 		if appID == "" {
-			return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write metrics without app-level data isolation")
+			return fmt.Errorf("app_id is required, refusing to write metrics without app-level data isolation")
 		}
 
 		scopeMetrics := rm.ScopeMetrics()
@@ -58,20 +58,30 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 			metrics := sm.Metrics()
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
-				docs := w.metricToDocs(metric, resource, serviceName)
-			for _, doc := range docs {
-				doc["app_id"] = appID
-				ts, _ := doc["@timestamp"].(string)
-				t, _ := time.Parse(esTimestampFormat, ts)
-				if t.IsZero() {
-					t = time.Now()
-				}
-					indexName := w.getIndexName(appID, t)
-					if err := w.buffer.Add(indexName, doc); err != nil {
+				points := storedmodel.ConvertOTLPMetric(metric, res)
+				for _, pt := range points {
+					pt.AppID = appID
+					indexName := w.getIndexName(appID, time.Unix(0, pt.TimeUnixNano))
+					if err := w.buffer.Add(indexName, pt); err != nil {
 						return fmt.Errorf("failed to buffer metric document: %w", err)
 					}
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// WriteMetricPoints writes pre-converted StoredMetricDataPoint documents.
+func (w *MetricWriter) WriteMetricPoints(ctx context.Context, points []storedmodel.StoredMetricDataPoint) error {
+	for _, dp := range points {
+		appID := dp.AppID
+		if appID == "" {
+			return fmt.Errorf("app_id is required for metric data")
+		}
+		indexName := w.getIndexName(appID, time.Unix(0, dp.TimeUnixNano))
+		if err := w.buffer.Add(indexName, dp); err != nil {
+			return fmt.Errorf("failed to buffer metric document: %w", err)
 		}
 	}
 	return nil
@@ -82,132 +92,8 @@ func (w *MetricWriter) Flush(ctx context.Context) error {
 	return w.buffer.Flush(ctx)
 }
 
-// metricToDocs converts a single metric to one or more ES documents.
-// Each data point becomes a separate document.
-func (w *MetricWriter) metricToDocs(metric pmetric.Metric, resource map[string]any, serviceName string) []map[string]any {
-	var docs []map[string]any
-
-	switch metric.Type() {
-	case pmetric.MetricTypeGauge:
-		docs = w.gaugeToDoc(metric, resource, serviceName)
-	case pmetric.MetricTypeSum:
-		docs = w.sumToDoc(metric, resource, serviceName)
-	case pmetric.MetricTypeHistogram:
-		docs = w.histogramToDoc(metric, resource, serviceName)
-	case pmetric.MetricTypeSummary:
-		docs = w.summaryToDoc(metric, resource, serviceName)
-	default:
-		w.logger.Debug("Unsupported metric type, skipping",
-			zap.String("metric_name", metric.Name()),
-			zap.String("type", metric.Type().String()),
-		)
-	}
-	return docs
-}
-
-func (w *MetricWriter) gaugeToDoc(metric pmetric.Metric, resource map[string]any, serviceName string) []map[string]any {
-	dps := metric.Gauge().DataPoints()
-	docs := make([]map[string]any, 0, dps.Len())
-	for i := 0; i < dps.Len(); i++ {
-		dp := dps.At(i)
-		doc := map[string]any{
-			"@timestamp":   formatTimestamp(dp.Timestamp().AsTime()),
-			"metric_name":  metric.Name(),
-			"metric_type":  "gauge",
-			"service_name": serviceName,
-			"resource":     resource,
-			"labels":       attributesToMap(dp.Attributes()),
-		}
-		switch dp.ValueType() {
-		case pmetric.NumberDataPointValueTypeDouble:
-			doc["value"] = dp.DoubleValue()
-		case pmetric.NumberDataPointValueTypeInt:
-			doc["value"] = float64(dp.IntValue())
-		}
-		docs = append(docs, doc)
-	}
-	return docs
-}
-
-func (w *MetricWriter) sumToDoc(metric pmetric.Metric, resource map[string]any, serviceName string) []map[string]any {
-	dps := metric.Sum().DataPoints()
-	docs := make([]map[string]any, 0, dps.Len())
-	for i := 0; i < dps.Len(); i++ {
-		dp := dps.At(i)
-		doc := map[string]any{
-			"@timestamp":   formatTimestamp(dp.Timestamp().AsTime()),
-			"metric_name":  metric.Name(),
-			"metric_type":  "counter",
-			"service_name": serviceName,
-			"resource":     resource,
-			"labels":       attributesToMap(dp.Attributes()),
-		}
-		switch dp.ValueType() {
-		case pmetric.NumberDataPointValueTypeDouble:
-			doc["value"] = dp.DoubleValue()
-		case pmetric.NumberDataPointValueTypeInt:
-			doc["value"] = float64(dp.IntValue())
-		}
-		docs = append(docs, doc)
-	}
-	return docs
-}
-
-func (w *MetricWriter) histogramToDoc(metric pmetric.Metric, resource map[string]any, serviceName string) []map[string]any {
-	dps := metric.Histogram().DataPoints()
-	docs := make([]map[string]any, 0, dps.Len())
-	for i := 0; i < dps.Len(); i++ {
-		dp := dps.At(i)
-		doc := map[string]any{
-			"@timestamp":   formatTimestamp(dp.Timestamp().AsTime()),
-			"metric_name":  metric.Name(),
-			"metric_type":  "histogram",
-			"service_name": serviceName,
-			"resource":     resource,
-			"labels":       attributesToMap(dp.Attributes()),
-			"value":        dp.Sum(),
-		}
-		if dp.HasSum() {
-			doc["value"] = dp.Sum()
-		}
-		// Store histogram bucket data
-		if dp.BucketCounts().Len() > 0 {
-			counts := make([]uint64, dp.BucketCounts().Len())
-			for j := 0; j < dp.BucketCounts().Len(); j++ {
-				counts[j] = dp.BucketCounts().At(j)
-			}
-			bounds := make([]float64, dp.ExplicitBounds().Len())
-			for j := 0; j < dp.ExplicitBounds().Len(); j++ {
-				bounds[j] = dp.ExplicitBounds().At(j)
-			}
-			doc["histogram"] = map[string]any{
-				"counts": counts,
-				"values": bounds,
-			}
-		}
-		docs = append(docs, doc)
-	}
-	return docs
-}
-
-func (w *MetricWriter) summaryToDoc(metric pmetric.Metric, resource map[string]any, serviceName string) []map[string]any {
-	dps := metric.Summary().DataPoints()
-	docs := make([]map[string]any, 0, dps.Len())
-	for i := 0; i < dps.Len(); i++ {
-		dp := dps.At(i)
-		doc := map[string]any{
-			"@timestamp":   formatTimestamp(dp.Timestamp().AsTime()),
-			"metric_name":  metric.Name(),
-			"metric_type":  "summary",
-			"service_name": serviceName,
-			"resource":     resource,
-			"labels":       attributesToMap(dp.Attributes()),
-			"value":        dp.Sum(),
-		}
-		docs = append(docs, doc)
-	}
-	return docs
-}
+// gaugeToDoc, sumToDoc, histogramToDoc, summaryToDoc, metricToDocs removed —
+// replaced by storedmodel.ConvertOTLPMetric().
 
 // getIndexName returns the app-scoped, date-based index name for a given timestamp.
 // Format: {prefix}-{app_id}-{date}, e.g., "otel-metrics-app001-2026.06.01"

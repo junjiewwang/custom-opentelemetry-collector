@@ -4,6 +4,7 @@
 package observabilitystorageext
 
 import (
+	"fmt"
 	"strconv"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
@@ -81,4 +82,25 @@ func StoredLogRecordToPublic(lr storedmodel.StoredLogRecord) LogRecord {
 		ServiceName:          lr.ServiceName,
 		AppID:                lr.AppID,
 	}
+}
+
+// StoredMetricDataPointToPublic converts a stored metric data point to public format.
+func StoredMetricDataPointToPublic(dp storedmodel.StoredMetricDataPoint) MetricDataPoint {
+	return MetricDataPoint{
+		Labels:       toStringMap(dp.Labels),
+		Value:        dp.Value,
+		TimeUnixNano: strconv.FormatInt(dp.TimeUnixNano, 10),
+	}
+}
+
+// toStringMap converts map[string]any to map[string]string for labels.
+func toStringMap(m map[string]any) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = fmt.Sprintf("%v", v)
+	}
+	return out
 }
