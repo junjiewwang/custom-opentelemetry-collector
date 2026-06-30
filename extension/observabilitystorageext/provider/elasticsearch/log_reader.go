@@ -9,8 +9,12 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.uber.org/zap"
 )
+
+// StoredLogRecord aliases the canonical log storage type.
+type StoredLogRecord = storedmodel.StoredLogRecord
 
 // LogReader implements log query operations against Elasticsearch.
 type LogReader struct {
@@ -440,51 +444,46 @@ func (r *LogReader) calculateInterval(tr TimeRange) string {
 func (r *LogReader) hitsToLogRecords(hits []SearchHit) ([]LogRecord, error) {
 	records := make([]LogRecord, 0, len(hits))
 	for _, hit := range hits {
-		var doc logDocument
-		if err := json.Unmarshal(hit.Source, &doc); err != nil {
+		var rec StoredLogRecord
+		if err := json.Unmarshal(hit.Source, &rec); err != nil {
 			r.logger.Warn("Failed to unmarshal log document", zap.String("id", hit.ID), zap.Error(err))
 			continue
 		}
-		record := doc.toLogRecord()
-		record.ID = hit.ID
-		records = append(records, record)
+		rec = compatLogRecord(rec, hit.Source)
+		localRec := LogRecord{
+			Timestamp:      time.Unix(0, rec.TimeUnixNano),
+			ObservedTime:   time.Unix(0, rec.ObservedTimeUnixNano),
+			Severity:       rec.SeverityText,
+			SeverityNumber: rec.SeverityNumber,
+			Body:           rec.Body,
+			ServiceName:    rec.ServiceName,
+			TraceID:        rec.TraceID,
+			SpanID:         rec.SpanID,
+			AppID:          rec.AppID,
+			Attributes:     rec.Attributes,
+			Resource:       rec.Resource,
+			ID:             hit.ID,
+		}
+		records = append(records, localRec)
 	}
 	return records, nil
 }
 
+// compatLogRecord fills fields from old index format.
+func compatLogRecord(rec StoredLogRecord, raw json.RawMessage) StoredLogRecord {
+	if rec.SeverityText == "" {
+		var legacy struct {
+			Severity string `json:"severity"`
+		}
+		if json.Unmarshal(raw, &legacy) == nil && legacy.Severity != "" {
+			rec.SeverityText = legacy.Severity
+		}
+	}
+	return rec
+}
+
 // ==================== Log Document Model ====================
 
-// logDocument represents the ES document structure for a log record (read-side).
-type logDocument struct {
-	Timestamp      string         `json:"timestamp"`
-	ObservedTime   string         `json:"observed_time,omitempty"`
-	Severity       string         `json:"severity"`
-	SeverityNumber int32          `json:"severity_number"`
-	Body           string         `json:"body,omitempty"`
-	ServiceName    string         `json:"service_name"`
-	TraceID        string         `json:"trace_id,omitempty"`
-	SpanID         string         `json:"span_id,omitempty"`
-	AppID          string         `json:"app_id,omitempty"`
-	Attributes     map[string]any `json:"attributes,omitempty"`
-	Resource       map[string]any `json:"resource,omitempty"`
-}
-
-// toLogRecord converts an ES log document to the local LogRecord type.
-func (d *logDocument) toLogRecord() LogRecord {
-	ts, _ := time.Parse(esTimestampFormat, d.Timestamp)
-	observedTs, _ := time.Parse(esTimestampFormat, d.ObservedTime)
-
-	return LogRecord{
-		Timestamp:      ts,
-		ObservedTime:   observedTs,
-		Severity:       d.Severity,
-		SeverityNumber: d.SeverityNumber,
-		Body:           d.Body,
-		ServiceName:    d.ServiceName,
-		TraceID:        d.TraceID,
-		SpanID:         d.SpanID,
-		AppID:          d.AppID,
-		Attributes:     d.Attributes,
-		Resource:       d.Resource,
-	}
-}
+// ==================== Log Document Model ====================
+// logDocument and toLogRecord() replaced by storedmodel.StoredLogRecord.
+// For backward compat with old index data, see compatLogRecord().

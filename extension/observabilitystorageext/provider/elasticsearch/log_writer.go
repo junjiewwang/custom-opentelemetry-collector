@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.uber.org/zap"
@@ -45,9 +46,8 @@ func (w *LogWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 	resourceLogs := ld.ResourceLogs()
 	for i := 0; i < resourceLogs.Len(); i++ {
 		rl := resourceLogs.At(i)
-		resource := extractResourceAttributes(rl.Resource())
-		serviceName := getServiceNameFromResourceLogs(rl.Resource())
-		appID := getAppID(rl.Resource())
+		res := rl.Resource()
+		appID := getAppID(res)
 
 		if appID == "" {
 			return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write logs without app-level data isolation")
@@ -59,8 +59,8 @@ func (w *LogWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 			logRecords := sl.LogRecords()
 			for k := 0; k < logRecords.Len(); k++ {
 				lr := logRecords.At(k)
-				doc := w.logRecordToDoc(lr, resource, serviceName)
-				doc["app_id"] = appID
+				doc := w.logRecordToDoc(lr, res)
+				doc.AppID = appID
 				indexName := w.getIndexName(appID, lr.Timestamp().AsTime())
 
 				if err := w.buffer.Add(indexName, doc); err != nil {
@@ -77,39 +77,24 @@ func (w *LogWriter) Flush(ctx context.Context) error {
 	return w.buffer.Flush(ctx)
 }
 
-// logRecordToDoc converts a single log record to an ES document.
-func (w *LogWriter) logRecordToDoc(lr plog.LogRecord, resource map[string]any, serviceName string) map[string]any {
-	doc := map[string]any{
-		"timestamp":       formatTimestamp(lr.Timestamp().AsTime()),
-		"observed_time":   formatTimestamp(lr.ObservedTimestamp().AsTime()),
-		"severity":        lr.SeverityText(),
-		"severity_number": int32(lr.SeverityNumber()),
-		"service_name":    serviceName,
-		"resource":        resource,
-	}
+// logRecordToDoc converts a log record to canonical format.
+func (w *LogWriter) logRecordToDoc(lr plog.LogRecord, res pcommon.Resource) StoredLogRecord {
+	return storedmodel.ConvertOTLPLog(lr, res)
+}
 
-	// Body
-	if body := lr.Body(); body.Type() != pcommon.ValueTypeEmpty {
-		doc["body"] = body.AsString()
+// WriteLogRecords writes pre-converted StoredLogRecord documents.
+func (w *LogWriter) WriteLogRecords(ctx context.Context, records []storedmodel.StoredLogRecord) error {
+	for _, rec := range records {
+		appID := rec.AppID
+		if appID == "" {
+			return fmt.Errorf("app_id is required, refusing to write logs without app-level data isolation")
+		}
+		indexName := w.getIndexName(appID, time.Unix(0, rec.TimeUnixNano))
+		if err := w.buffer.Add(indexName, rec); err != nil {
+			return fmt.Errorf("failed to buffer log document: %w", err)
+		}
 	}
-
-	// Trace context
-	traceID := lr.TraceID().String()
-	if traceID != "" && traceID != "00000000000000000000000000000000" {
-		doc["trace_id"] = traceID
-	}
-	spanID := lr.SpanID().String()
-	if spanID != "" && spanID != "0000000000000000" {
-		doc["span_id"] = spanID
-	}
-
-	// Attributes
-	attrs := attributesToMap(lr.Attributes())
-	if len(attrs) > 0 {
-		doc["attributes"] = attrs
-	}
-
-	return doc
+	return nil
 }
 
 // getIndexName returns the app-scoped, date-based index name for a given timestamp.

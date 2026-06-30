@@ -65,3 +65,20 @@ func storedLinksToPublic(links []storedmodel.StoredLink) []SpanLink {
 	}
 	return result
 }
+
+// StoredLogRecordToPublic converts a stored LogRecord to the public LogRecord type.
+func StoredLogRecordToPublic(lr storedmodel.StoredLogRecord) LogRecord {
+	return LogRecord{
+		TimeUnixNano:         strconv.FormatInt(lr.TimeUnixNano, 10),
+		ObservedTimeUnixNano: strconv.FormatInt(lr.ObservedTimeUnixNano, 10),
+		TraceID:              lr.TraceID,
+		SpanID:               lr.SpanID,
+		SeverityNumber:       lr.SeverityNumber,
+		SeverityText:         lr.SeverityText,
+		Body:                 lr.Body,
+		Attributes:           MapToKeyValues(lr.Attributes),
+		Resource:             MapToKeyValues(lr.Resource),
+		ServiceName:          lr.ServiceName,
+		AppID:                lr.AppID,
+	}
+}
