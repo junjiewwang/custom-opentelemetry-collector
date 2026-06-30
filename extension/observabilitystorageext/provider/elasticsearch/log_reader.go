@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.uber.org/zap"
 )
@@ -47,7 +48,7 @@ func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchR
 		From:  query.Offset,
 		Size:  limit,
 		Sort: []map[string]any{
-			{"timestamp": map[string]any{"order": "desc"}},
+			{FieldLogTimeUnixNano: map[string]any{"order": "desc"}},
 		},
 	}
 
@@ -100,16 +101,16 @@ func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) 
 		Query: map[string]any{
 			"bool": map[string]any{
 				"must": []map[string]any{
-					{"term": map[string]any{"service_name": target.ServiceName}},
+					{"term": map[string]any{FieldServiceName: target.ServiceName}},
 					{"range": map[string]any{
-						"timestamp": map[string]any{"lt": formatTimestamp(target.Timestamp)},
+						FieldLogTimeUnixNano: map[string]any{"lt": target.Timestamp.UnixNano()},
 					}},
 				},
 			},
 		},
 		Size: lines,
 		Sort: []map[string]any{
-			{"timestamp": map[string]any{"order": "desc"}},
+			{FieldLogTimeUnixNano: map[string]any{"order": "desc"}},
 		},
 	}
 
@@ -128,16 +129,16 @@ func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) 
 		Query: map[string]any{
 			"bool": map[string]any{
 				"must": []map[string]any{
-					{"term": map[string]any{"service_name": target.ServiceName}},
+					{"term": map[string]any{FieldServiceName: target.ServiceName}},
 					{"range": map[string]any{
-						"timestamp": map[string]any{"gt": formatTimestamp(target.Timestamp)},
+						FieldLogTimeUnixNano: map[string]any{"gt": target.Timestamp.UnixNano()},
 					}},
 				},
 			},
 		},
 		Size: lines,
 		Sort: []map[string]any{
-			{"timestamp": map[string]any{"order": "asc"}},
+			{FieldLogTimeUnixNano: map[string]any{"order": "asc"}},
 		},
 	}
 
@@ -164,13 +165,13 @@ func (r *LogReader) ListLogFields(ctx context.Context, timeRange TimeRange) ([]L
 		Aggregations: map[string]any{
 			"severities": map[string]any{
 				"terms": map[string]any{
-					"field": "severity",
+					"field": FieldLogSeverityText,
 					"size":  20,
 				},
 			},
 			"services": map[string]any{
 				"terms": map[string]any{
-					"field": "service_name",
+					"field": FieldServiceName,
 					"size":  500,
 				},
 			},
@@ -183,13 +184,13 @@ func (r *LogReader) ListLogFields(ctx context.Context, timeRange TimeRange) ([]L
 	}
 
 	fields := []LogField{
-		{Name: "timestamp", Type: "date", Count: resp.Hits.Total.Value},
-		{Name: "severity", Type: "keyword", Count: resp.Hits.Total.Value},
-		{Name: "service_name", Type: "keyword", Count: resp.Hits.Total.Value},
-		{Name: "body", Type: "text", Count: resp.Hits.Total.Value},
-		{Name: "trace_id", Type: "keyword"},
-		{Name: "span_id", Type: "keyword"},
-		{Name: "app_id", Type: "keyword"},
+		{Name: FieldLogTimeUnixNano, Type: "date", Count: resp.Hits.Total.Value},
+		{Name: FieldLogSeverityText, Type: "keyword", Count: resp.Hits.Total.Value},
+		{Name: FieldServiceName, Type: "keyword", Count: resp.Hits.Total.Value},
+		{Name: FieldLogBody, Type: "text", Count: resp.Hits.Total.Value},
+		{Name: FieldTraceID, Type: "keyword"},
+		{Name: FieldSpanID, Type: "keyword"},
+		{Name: FieldAppID, Type: "keyword"},
 	}
 
 	// Add severity values as context.
@@ -222,7 +223,7 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 
 	if query.ServiceName != "" {
 		must = append(must, map[string]any{
-			"term": map[string]any{"service_name": query.ServiceName},
+			"term": map[string]any{FieldServiceName: query.ServiceName},
 		})
 	}
 
@@ -240,13 +241,13 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 			},
 			"by_service": map[string]any{
 				"terms": map[string]any{
-					"field": "service_name",
+					"field": FieldServiceName,
 					"size":  500,
 				},
 			},
 			"time_histogram": map[string]any{
 				"date_histogram": map[string]any{
-					"field":          "timestamp",
+					"field":          FieldLogTimeUnixNano,
 					"fixed_interval": r.calculateInterval(query.TimeRange),
 					"min_doc_count":  0,
 				},
@@ -323,99 +324,48 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 // indexPattern returns the ES index pattern for logs.
 // When appID is provided, returns an app-scoped pattern; otherwise falls back to global wildcard.
 func (r *LogReader) indexPattern(appID ...string) string {
-	if len(appID) > 0 && appID[0] != "" {
-		return r.config.Logs.IndexPrefix + "-" + appID[0] + "-*"
+	id := ""
+	if len(appID) > 0 {
+		id = appID[0]
 	}
-	return r.config.Logs.IndexPrefix + "-*"
+	return esq.IndexPattern(r.config.Logs.IndexPrefix, id)
 }
 
-// errMissingLogAppID is returned when AppID is not provided in a log query.
-var errMissingLogAppID = fmt.Errorf("app_id is required for log queries (app-level data isolation)")
-
 // buildLogSearchQuery constructs the ES query from LogQuery parameters.
-func (r *LogReader) buildLogSearchQuery(query LogQuery) map[string]any {
-	var must []map[string]any
+func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
+	qb := esq.NewBuilder().
+		Raw(esq.TimeRangeFilter(FieldLogTimeUnixNano, lq.TimeRange))
 
-	// Time range filter.
-	must = append(must, r.timeRangeFilter(query.TimeRange))
-
-	// Full-text search on body.
-	if query.Query != "" {
-		must = append(must, map[string]any{
-			"match": map[string]any{
-				"body": map[string]any{
-					"query":    query.Query,
-					"operator": "and",
-				},
-			},
-		})
+	if lq.Query != "" {
+		qb.Match(FieldLogBody, lq.Query, map[string]any{"operator": "and"})
+	}
+	if lq.ServiceName != "" {
+		qb.Term(FieldServiceName, lq.ServiceName)
+	}
+	if len(lq.Severity) > 0 {
+		qb.Terms(FieldLogSeverityText, lq.Severity)
+	}
+	if lq.TraceID != "" {
+		qb.Term(FieldTraceID, lq.TraceID)
+	}
+	if lq.SpanID != "" {
+		qb.Term(FieldSpanID, lq.SpanID)
+	}
+	for k, v := range lq.Attributes {
+		qb.Term(fmt.Sprintf(FieldAttributes+".%s", k), v)
 	}
 
-	// Service name filter.
-	if query.ServiceName != "" {
-		must = append(must, map[string]any{
-			"term": map[string]any{"service_name": query.ServiceName},
-		})
-	}
-
-	// Severity filter.
-	if len(query.Severity) > 0 {
-		must = append(must, map[string]any{
-			"terms": map[string]any{"severity": query.Severity},
-		})
-	}
-
-	// Trace context filters.
-	if query.TraceID != "" {
-		must = append(must, map[string]any{
-			"term": map[string]any{"trace_id": query.TraceID},
-		})
-	}
-	if query.SpanID != "" {
-		must = append(must, map[string]any{
-			"term": map[string]any{"span_id": query.SpanID},
-		})
-	}
-
-	// Attribute filters.
-	for k, v := range query.Attributes {
-		must = append(must, map[string]any{
-			"term": map[string]any{fmt.Sprintf("attributes.%s", k): v},
-		})
-	}
-
-	return map[string]any{
-		"bool": map[string]any{"must": must},
-	}
+	return qb.Build()
 }
 
 // timeRangeQuery returns a simple time range query for logs.
 func (r *LogReader) timeRangeQuery(tr TimeRange) map[string]any {
-	return map[string]any{
-		"range": map[string]any{
-			"timestamp": map[string]any{
-				"gte": formatTimestamp(tr.Start),
-				"lte": formatTimestamp(tr.End),
-			},
-		},
-	}
+	return esq.TimeRangeQuery(FieldLogTimeUnixNano, tr)
 }
 
 // timeRangeFilter returns a time range filter clause for use in bool.must.
 func (r *LogReader) timeRangeFilter(tr TimeRange) map[string]any {
-	filter := map[string]any{}
-	if !tr.Start.IsZero() {
-		filter["gte"] = formatTimestamp(tr.Start)
-	}
-	if !tr.End.IsZero() {
-		filter["lte"] = formatTimestamp(tr.End)
-	}
-	if len(filter) == 0 {
-		return map[string]any{"match_all": map[string]any{}}
-	}
-	return map[string]any{
-		"range": map[string]any{"timestamp": filter},
-	}
+	return esq.TimeRangeFilter(FieldLogTimeUnixNano, tr)
 }
 
 // calculateInterval determines the date_histogram interval based on the time range.

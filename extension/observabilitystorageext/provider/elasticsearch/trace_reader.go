@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.uber.org/zap"
 )
@@ -57,18 +58,18 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 		Aggregations: map[string]any{
 			"traces": map[string]any{
 				"terms": map[string]any{
-					"field": "trace_id",
+					"field": FieldTraceID,
 					"size":  limit + query.Offset,
 					"order": map[string]any{"max_start": "desc"},
 				},
 				"aggs": map[string]any{
 					"max_start": map[string]any{
-						"max": map[string]any{"field": "start_time"},
+						"max": map[string]any{"field": FieldStartTimeUnixNano},
 					},
 				},
 			},
 			"total_traces": map[string]any{
-				"cardinality": map[string]any{"field": "trace_id"},
+				"cardinality": map[string]any{"field": FieldTraceID},
 			},
 		},
 	}
@@ -103,12 +104,10 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 // GetTrace retrieves a single trace by its trace ID.
 func (r *TraceReader) GetTrace(ctx context.Context, traceID string) (*Trace, error) {
 	searchReq := &SearchRequest{
-		Query: map[string]any{
-			"term": map[string]any{"trace_id": traceID},
-		},
-		Size: 1000, // Max spans per trace.
+		Query: esq.TermQ(FieldTraceID, traceID),
+		Size:  1000, // Max spans per trace.
 		Sort: []map[string]any{
-			{"start_time": map[string]any{"order": "asc"}},
+			{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
 		},
 	}
 
@@ -121,7 +120,7 @@ func (r *TraceReader) GetTrace(ctx context.Context, traceID string) (*Trace, err
 		return nil, fmt.Errorf("trace %s not found", traceID)
 	}
 
-	spans, err := r.hitsToSpans(resp.Hits.Hits)
+	spans, err := r.hitsToStoredSpans(resp.Hits.Hits)
 	if err != nil {
 		return nil, err
 	}
@@ -133,12 +132,10 @@ func (r *TraceReader) GetTrace(ctx context.Context, traceID string) (*Trace, err
 // GetTraceSpans retrieves all spans for a trace as StoredSpan.
 func (r *TraceReader) GetTraceSpans(ctx context.Context, traceID string) ([]StoredSpan, error) {
 	searchReq := &SearchRequest{
-		Query: map[string]any{
-			"term": map[string]any{"trace_id": traceID},
-		},
-		Size: 1000,
+		Query: esq.TermQ(FieldTraceID, traceID),
+		Size:  1000,
 		Sort: []map[string]any{
-			{"start_time": map[string]any{"order": "asc"}},
+			{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
 		},
 	}
 	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
@@ -163,12 +160,12 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 		Aggregations: map[string]any{
 			"traces": map[string]any{
 				"terms": map[string]any{
-					"field": "trace_id",
+					"field": FieldTraceID,
 					"size":  limit + query.Offset,
 					"order": map[string]any{"max_start": "desc"},
 				},
 				"aggs": map[string]any{
-					"max_start": map[string]any{"max": map[string]any{"field": "start_time"}},
+					"max_start": map[string]any{"max": map[string]any{"field": FieldStartTimeUnixNano}},
 				},
 			},
 		},
@@ -184,7 +181,7 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 
 	// Step 2: fetch all spans
 	fetchReq := &SearchRequest{
-		Query: map[string]any{"terms": map[string]any{"trace_id": traceIDs}},
+		Query: esq.TermsQ(FieldTraceID, traceIDs),
 		Size:  len(traceIDs) * 100,
 	}
 	fetchResp, err := r.client.Search(ctx, r.indexPattern(query.AppID), fetchReq)
@@ -218,7 +215,7 @@ func (r *TraceReader) GetServices(ctx context.Context, timeRange TimeRange) ([]S
 		Aggregations: map[string]any{
 			"services": map[string]any{
 				"terms": map[string]any{
-					"field": "service_name",
+					"field": FieldServiceName,
 					"size":  1000,
 				},
 			},
@@ -235,28 +232,24 @@ func (r *TraceReader) GetServices(ctx context.Context, timeRange TimeRange) ([]S
 
 // GetOperations returns operations for a given service.
 func (r *TraceReader) GetOperations(ctx context.Context, service string, timeRange TimeRange) ([]Operation, error) {
-	query := map[string]any{
-		"bool": map[string]any{
-			"must": []map[string]any{
-				{"term": map[string]any{"service_name": service}},
-				r.timeRangeFilter(timeRange),
-			},
-		},
-	}
+	esQuery := esq.NewBuilder().
+		Term(FieldServiceName, service).
+		Raw(esq.TimeRangeFilter(FieldStartTimeUnixNano, timeRange)).
+		Build()
 
 	searchReq := &SearchRequest{
-		Query: query,
+		Query: esQuery,
 		Size:  0,
 		Aggregations: map[string]any{
 			"operations": map[string]any{
 				"terms": map[string]any{
-					"field": "operation_name",
+					"field": FieldName,
 					"size":  1000,
 				},
 				"aggs": map[string]any{
 					"span_kinds": map[string]any{
 						"terms": map[string]any{
-							"field": "span_kind",
+							"field": FieldKind,
 							"size":  10,
 						},
 					},
@@ -283,100 +276,45 @@ func (r *TraceReader) GetDependencies(ctx context.Context, timeRange TimeRange) 
 // ==================== Internal Helpers ====================
 
 // indexPattern returns the ES index pattern for traces.
-// When appID is provided, returns an app-scoped pattern; otherwise falls back to global wildcard.
 func (r *TraceReader) indexPattern(appID ...string) string {
-	if len(appID) > 0 && appID[0] != "" {
-		return r.config.Traces.IndexPrefix + "-" + appID[0] + "-*"
+	id := ""
+	if len(appID) > 0 {
+		id = appID[0]
 	}
-	return r.config.Traces.IndexPrefix + "-*"
+	return esq.IndexPattern(r.config.Traces.IndexPrefix, id)
 }
-
-// errMissingTraceAppID is returned when AppID is not provided in a query.
-var errMissingTraceAppID = fmt.Errorf("app_id is required for trace queries (app-level data isolation)")
 
 // buildTraceSearchQuery constructs the ES query from TraceQuery parameters.
-func (r *TraceReader) buildTraceSearchQuery(query TraceQuery) map[string]any {
-	var must []map[string]any
+func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
+	qb := esq.NewBuilder().
+		Raw(esq.TimeRangeFilter(FieldStartTimeUnixNano, tq.TimeRange))
 
-	// Time range filter.
-	must = append(must, r.timeRangeFilter(query.TimeRange))
-
-	// Service name filter.
-	if query.ServiceName != "" {
-		must = append(must, map[string]any{
-			"term": map[string]any{"service_name": query.ServiceName},
-		})
+	if tq.ServiceName != "" {
+		qb.Term(FieldServiceName, tq.ServiceName)
+	}
+	if tq.OperationName != "" {
+		qb.Term(FieldName, tq.OperationName)
+	}
+	if tq.MinDuration > 0 {
+		qb.Range(FieldDurationNano, tq.MinDuration.Nanoseconds(), nil, nil, nil)
+	}
+	if tq.MaxDuration > 0 {
+		qb.Range(FieldDurationNano, nil, tq.MaxDuration.Nanoseconds(), nil, nil)
 	}
 
-	// Operation name filter.
-	if query.OperationName != "" {
-		must = append(must, map[string]any{
-			"term": map[string]any{"operation_name": query.OperationName},
-		})
+	for k, v := range tq.Tags {
+		qb.Should(1,
+			esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
+			esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
+		)
 	}
 
-	// Duration filter.
-	if query.MinDuration > 0 {
-		must = append(must, map[string]any{
-			"range": map[string]any{
-				"duration_us": map[string]any{"gte": query.MinDuration.Microseconds()},
-			},
-		})
-	}
-	if query.MaxDuration > 0 {
-		must = append(must, map[string]any{
-			"range": map[string]any{
-				"duration_us": map[string]any{"lte": query.MaxDuration.Microseconds()},
-			},
-		})
-	}
-
-	// Tag filters (match in attributes or resource).
-	for k, v := range query.Tags {
-		must = append(must, map[string]any{
-			"bool": map[string]any{
-				"should": []map[string]any{
-					{"term": map[string]any{fmt.Sprintf("attributes.%s", k): v}},
-					{"term": map[string]any{fmt.Sprintf("resource.%s", k): v}},
-				},
-				"minimum_should_match": 1,
-			},
-		})
-	}
-
-	return map[string]any{
-		"bool": map[string]any{"must": must},
-	}
+	return qb.Build()
 }
 
-// timeRangeQuery returns a simple time range query.
+// timeRangeQuery returns a simple time range query using nanosecond long values.
 func (r *TraceReader) timeRangeQuery(tr TimeRange) map[string]any {
-	return map[string]any{
-		"range": map[string]any{
-			"start_time": map[string]any{
-				"gte": formatTimestamp(tr.Start),
-				"lte": formatTimestamp(tr.End),
-			},
-		},
-	}
-}
-
-// timeRangeFilter returns a time range filter clause for use in bool.must.
-func (r *TraceReader) timeRangeFilter(tr TimeRange) map[string]any {
-	filter := map[string]any{}
-	if !tr.Start.IsZero() {
-		filter["gte"] = formatTimestamp(tr.Start)
-	}
-	if !tr.End.IsZero() {
-		filter["lte"] = formatTimestamp(tr.End)
-	}
-	if len(filter) == 0 {
-		// No time range constraint — match all.
-		return map[string]any{"match_all": map[string]any{}}
-	}
-	return map[string]any{
-		"range": map[string]any{"start_time": filter},
-	}
+	return esq.TimeRangeQuery(FieldStartTimeUnixNano, tr)
 }
 
 // parseTraceAggregation extracts trace IDs and total count from the aggregation response.
@@ -424,13 +362,11 @@ func (r *TraceReader) parseTraceAggregation(resp *SearchResponse, offset, limit 
 // fetchTracesByIDs fetches all spans for the given trace IDs and assembles them into Trace objects.
 func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, appID string) ([]Trace, error) {
 	searchReq := &SearchRequest{
-		Query: map[string]any{
-			"terms": map[string]any{"trace_id": traceIDs},
-		},
+		Query: esq.TermsQ(FieldTraceID, traceIDs),
 		Size: len(traceIDs) * 100, // Assume average 100 spans per trace.
 		Sort: []map[string]any{
-			{"trace_id": map[string]any{"order": "asc"}},
-			{"start_time": map[string]any{"order": "asc"}},
+			{FieldTraceID: map[string]any{"order": "asc"}},
+			{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
 		},
 	}
 
@@ -439,7 +375,7 @@ func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, a
 		return nil, fmt.Errorf("fetch traces by IDs failed: %w", err)
 	}
 
-	spans, err := r.hitsToSpans(resp.Hits.Hits)
+	spans, err := r.hitsToStoredSpans(resp.Hits.Hits)
 	if err != nil {
 		return nil, err
 	}
@@ -458,22 +394,6 @@ func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, a
 		}
 	}
 	return traces, nil
-}
-
-// hitsToSpans converts ES search hits into StoredSpan objects.
-func (r *TraceReader) hitsToSpans(hits []SearchHit) ([]StoredSpan, error) {
-	spans := make([]StoredSpan, 0, len(hits))
-	for _, hit := range hits {
-		var ss StoredSpan
-		if err := json.Unmarshal(hit.Source, &ss); err != nil {
-			r.logger.Warn("Failed to unmarshal span document", zap.String("id", hit.ID), zap.Error(err))
-			continue
-		}
-		// Compat: fill Name from legacy operation_name if new field is absent
-		ss = compatStoredSpan(ss, hit.Source)
-		spans = append(spans, ss)
-	}
-	return spans, nil
 }
 
 // assembleTrace creates a Trace from a list of StoredSpans.
@@ -552,11 +472,8 @@ func storedLinksToLocal(links []StoredLink) []SpanLink {
 	return result
 }
 
-// compatStoredSpan fills fields that were absent in old index formats for
-// backward compatibility until ES ILM rolls them over.
 func compatStoredSpan(ss StoredSpan, raw json.RawMessage) StoredSpan {
 	if ss.Name == "" {
-		// Old index used "operation_name"
 		var legacy struct {
 			OperationName string `json:"operation_name"`
 			SpanKind      string `json:"span_kind"`
@@ -587,19 +504,13 @@ func (r *TraceReader) parseServicesAggregation(resp *SearchResponse, aggName str
 	if !ok {
 		return nil, nil
 	}
-
-	var agg struct {
-		Buckets []struct {
-			Key string `json:"key"`
-		} `json:"buckets"`
-	}
-	if err := json.Unmarshal(raw, &agg); err != nil {
+	keys, err := esq.ParseTermsAgg(raw)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse %s aggregation: %w", aggName, err)
 	}
-
-	services := make([]Service, 0, len(agg.Buckets))
-	for _, bucket := range agg.Buckets {
-		services = append(services, Service{Name: bucket.Key})
+	services := make([]Service, len(keys))
+	for i, key := range keys {
+		services[i] = Service{Name: key}
 	}
 	return services, nil
 }
@@ -649,13 +560,13 @@ func (r *TraceReader) calculateDependencies(ctx context.Context, timeRange TimeR
 		Aggregations: map[string]any{
 			"by_trace": map[string]any{
 				"terms": map[string]any{
-					"field": "trace_id",
+					"field": FieldTraceID,
 					"size":  5000,
 				},
 				"aggs": map[string]any{
 					"services": map[string]any{
 						"terms": map[string]any{
-							"field": "service_name",
+							"field": FieldServiceName,
 							"size":  100,
 						},
 					},

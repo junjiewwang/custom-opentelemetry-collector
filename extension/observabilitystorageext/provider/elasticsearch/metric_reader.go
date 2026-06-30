@@ -9,13 +9,14 @@ import (
 	"fmt"
 	"time"
 
+	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.uber.org/zap"
 )
 
 // MetricReader implements metric query operations against Elasticsearch.
 // Metrics are stored as per-datapoint documents with fields:
 //
-//	@timestamp, metric_name, metric_type, service_name, value, labels, resource
+//	timeUnixNano, name, type, serviceName, value, labels, resource
 type MetricReader struct {
 	client *Client
 	config *Config
@@ -42,9 +43,9 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 			"bool": map[string]any{
 				"must": []map[string]any{
 					esQuery,
-					{"range": map[string]any{
-						"@timestamp": map[string]any{"lte": formatTimestamp(query.Time)},
-					}},
+				{"range": map[string]any{
+					FieldMetricTimeUnixNano: map[string]any{"lte": query.Time.UnixNano()},
+				}},
 				},
 			},
 		}
@@ -57,15 +58,15 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 		Aggregations: map[string]any{
 			"by_labels": map[string]any{
 				"terms": map[string]any{
-					"field": "labels",
+					"field": FieldMetricLabels,
 					"size":  1000,
 				},
 				"aggs": map[string]any{
 					"latest": map[string]any{
 						"top_hits": map[string]any{
 							"size":    1,
-							"sort":    []map[string]any{{"@timestamp": map[string]any{"order": "desc"}}},
-							"_source": []string{"@timestamp", "value", "labels"},
+							"sort":    []map[string]any{{FieldMetricTimeUnixNano: map[string]any{"order": "desc"}}},
+							"_source": []string{FieldMetricTimeUnixNano, FieldMetricValue, FieldMetricLabels},
 						},
 					},
 				},
@@ -114,7 +115,7 @@ func (r *MetricReader) queryDirect(ctx context.Context, appID string, query map[
 		Query: query,
 		Size:  100,
 		Sort: []map[string]any{
-			{"@timestamp": map[string]any{"order": "desc"}},
+			{FieldMetricTimeUnixNano: map[string]any{"order": "desc"}},
 		},
 	}
 
@@ -140,13 +141,13 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 	if !query.TimeRange.Start.IsZero() || !query.TimeRange.End.IsZero() {
 		timeFilter := map[string]any{}
 		if !query.TimeRange.Start.IsZero() {
-			timeFilter["gte"] = formatTimestamp(query.TimeRange.Start)
+			timeFilter["gte"] = query.TimeRange.Start.UnixNano()
 		}
 		if !query.TimeRange.End.IsZero() {
-			timeFilter["lte"] = formatTimestamp(query.TimeRange.End)
+			timeFilter["lte"] = query.TimeRange.End.UnixNano()
 		}
 		must = append(must, map[string]any{
-			"range": map[string]any{"@timestamp": timeFilter},
+			"range": map[string]any{FieldMetricTimeUnixNano: timeFilter},
 		})
 	}
 
@@ -161,13 +162,13 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 		Aggregations: map[string]any{
 			"time_series": map[string]any{
 				"date_histogram": map[string]any{
-					"field":          "@timestamp",
+					"field":          FieldMetricTimeUnixNano,
 					"fixed_interval": interval,
 					"min_doc_count":  0,
 				},
 				"aggs": map[string]any{
 					"avg_value": map[string]any{
-						"avg": map[string]any{"field": "value"},
+						"avg": map[string]any{"field": FieldMetricValue},
 					},
 				},
 			},
@@ -219,7 +220,7 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 		Aggregations: map[string]any{
 			"metric_names": map[string]any{
 				"terms": map[string]any{
-					"field": "metric_name",
+					"field": FieldName,
 					"size":  5000,
 				},
 			},
@@ -235,19 +236,9 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 	if !ok {
 		return nil, nil
 	}
-
-	var agg struct {
-		Buckets []struct {
-			Key string `json:"key"`
-		} `json:"buckets"`
-	}
-	if err := json.Unmarshal(raw, &agg); err != nil {
+	names, err := esq.ParseTermsAgg(raw)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse metric_names aggregation: %w", err)
-	}
-
-	names := make([]string, 0, len(agg.Buckets))
-	for _, b := range agg.Buckets {
-		names = append(names, b.Key)
 	}
 	return names, nil
 }
@@ -259,9 +250,9 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange) 
 	searchReq := &SearchRequest{
 		Query:  r.timeRangeQuery(timeRange),
 		Size:   100,
-		Source: []string{"labels"},
+		Source: []string{FieldMetricLabels},
 		Sort: []map[string]any{
-			{"@timestamp": map[string]any{"order": "desc"}},
+			{FieldMetricTimeUnixNano: map[string]any{"order": "desc"}},
 		},
 	}
 
@@ -291,7 +282,7 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange) 
 
 // ListLabelValues returns values for a specific label within the time range.
 func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
-	fieldPath := fmt.Sprintf("labels.%s", label)
+	fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", label)
 
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),
@@ -315,19 +306,9 @@ func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRa
 	if !ok {
 		return nil, nil
 	}
-
-	var agg struct {
-		Buckets []struct {
-			Key string `json:"key"`
-		} `json:"buckets"`
-	}
-	if err := json.Unmarshal(raw, &agg); err != nil {
+	values, err := esq.ParseTermsAgg(raw)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse label_values aggregation: %w", err)
-	}
-
-	values := make([]string, 0, len(agg.Buckets))
-	for _, b := range agg.Buckets {
-		values = append(values, b.Key)
 	}
 	return values, nil
 }
@@ -337,60 +318,33 @@ func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRa
 // indexPattern returns the ES index pattern for metrics.
 // When appID is provided, returns an app-scoped pattern; otherwise falls back to global wildcard.
 func (r *MetricReader) indexPattern(appID ...string) string {
-	if len(appID) > 0 && appID[0] != "" {
-		return r.config.Metrics.IndexPrefix + "-" + appID[0] + "-*"
+	id := ""
+	if len(appID) > 0 {
+		id = appID[0]
 	}
-	return r.config.Metrics.IndexPrefix + "-*"
+	return esq.IndexPattern(r.config.Metrics.IndexPrefix, id)
 }
-
-// errMissingMetricAppID is returned when AppID is not provided in a metric query.
-var errMissingMetricAppID = fmt.Errorf("app_id is required for metric queries (app-level data isolation)")
 
 // buildMetricQuery constructs the ES query for metric search.
 func (r *MetricReader) buildMetricQuery(metricName string, labels map[string]string, serviceName string) map[string]any {
-	var must []map[string]any
+	qb := esq.NewBuilder()
 
 	if metricName != "" {
-		must = append(must, map[string]any{
-			"term": map[string]any{"metric_name": metricName},
-		})
+		qb.Term(FieldName, metricName)
 	}
-
 	if serviceName != "" {
-		must = append(must, map[string]any{
-			"term": map[string]any{"service_name": serviceName},
-		})
+		qb.Term(FieldServiceName, serviceName)
 	}
-
 	for k, v := range labels {
-		must = append(must, map[string]any{
-			"term": map[string]any{fmt.Sprintf("labels.%s", k): v},
-		})
+		qb.Term(fmt.Sprintf(FieldMetricLabels+".%s", k), v)
 	}
 
-	if len(must) == 0 {
-		return map[string]any{"match_all": map[string]any{}}
-	}
-	return map[string]any{
-		"bool": map[string]any{"must": must},
-	}
+	return qb.Build()
 }
 
 // timeRangeQuery returns a simple time range query for metrics.
 func (r *MetricReader) timeRangeQuery(tr TimeRange) map[string]any {
-	filter := map[string]any{}
-	if !tr.Start.IsZero() {
-		filter["gte"] = formatTimestamp(tr.Start)
-	}
-	if !tr.End.IsZero() {
-		filter["lte"] = formatTimestamp(tr.End)
-	}
-	if len(filter) == 0 {
-		return map[string]any{"match_all": map[string]any{}}
-	}
-	return map[string]any{
-		"range": map[string]any{"@timestamp": filter},
-	}
+	return esq.TimeRangeFilter(FieldMetricTimeUnixNano, tr)
 }
 
 // calculateInterval determines the appropriate histogram interval.
@@ -419,19 +373,18 @@ func (r *MetricReader) calculateInterval(tr TimeRange, step time.Duration) strin
 // hitToDataPoint converts an ES search hit to a MetricDataPoint.
 func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 	var doc struct {
-		Timestamp string            `json:"@timestamp"`
-		Value     float64           `json:"value"`
-		Labels    map[string]string `json:"labels"`
+		TimeUnixNano int64             `json:"timeUnixNano"`
+		Value        float64           `json:"value"`
+		Labels       map[string]string `json:"labels"`
 	}
 	if err := json.Unmarshal(hit.Source, &doc); err != nil {
 		r.logger.Warn("Failed to unmarshal metric hit", zap.String("id", hit.ID), zap.Error(err))
 		return MetricDataPoint{}
 	}
 
-	ts, _ := time.Parse(esTimestampFormat, doc.Timestamp)
 	return MetricDataPoint{
 		Labels: doc.Labels,
 		Value:  doc.Value,
-		Time:   ts,
+		Time:   time.Unix(0, doc.TimeUnixNano),
 	}
 }
