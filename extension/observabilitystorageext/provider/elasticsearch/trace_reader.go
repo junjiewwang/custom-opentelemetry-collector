@@ -9,7 +9,15 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.uber.org/zap"
+)
+
+// Stored-span types are aliased from the canonical storedmodel package.
+type (
+	StoredSpan  = storedmodel.StoredSpan
+	StoredEvent = storedmodel.StoredEvent
+	StoredLink  = storedmodel.StoredLink
 )
 
 // TraceReader implements trace query operations against Elasticsearch.
@@ -357,7 +365,7 @@ func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, a
 	}
 
 	// Group spans by trace_id.
-	traceMap := make(map[string][]Span)
+	traceMap := make(map[string][]StoredSpan)
 	for _, span := range spans {
 		traceMap[span.TraceID] = append(traceMap[span.TraceID], span)
 	}
@@ -372,35 +380,39 @@ func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, a
 	return traces, nil
 }
 
-// hitsToSpans converts ES search hits into Span objects.
-func (r *TraceReader) hitsToSpans(hits []SearchHit) ([]Span, error) {
-	spans := make([]Span, 0, len(hits))
+// hitsToSpans converts ES search hits into StoredSpan objects.
+func (r *TraceReader) hitsToSpans(hits []SearchHit) ([]StoredSpan, error) {
+	spans := make([]StoredSpan, 0, len(hits))
 	for _, hit := range hits {
-		var doc spanDocument
-		if err := json.Unmarshal(hit.Source, &doc); err != nil {
+		var ss StoredSpan
+		if err := json.Unmarshal(hit.Source, &ss); err != nil {
 			r.logger.Warn("Failed to unmarshal span document", zap.String("id", hit.ID), zap.Error(err))
 			continue
 		}
-		spans = append(spans, doc.toSpan())
+		// Compat: fill Name from legacy operation_name if new field is absent
+		ss = compatStoredSpan(ss, hit.Source)
+		spans = append(spans, ss)
 	}
 	return spans, nil
 }
 
-// assembleTrace creates a Trace from a list of spans.
-func (r *TraceReader) assembleTrace(traceID string, spans []Span) Trace {
-	var minStart, maxEnd time.Time
-	for _, s := range spans {
-		if minStart.IsZero() || s.StartTime.Before(minStart) {
-			minStart = s.StartTime
+// assembleTrace creates a Trace from a list of StoredSpans.
+func (r *TraceReader) assembleTrace(traceID string, storedSpans []StoredSpan) Trace {
+	spans := make([]Span, len(storedSpans))
+	var minStart, maxEnd int64
+	for i, ss := range storedSpans {
+		spans[i] = storedSpanToLocalSpan(ss)
+		if minStart == 0 || ss.StartUnixNano < minStart {
+			minStart = ss.StartUnixNano
 		}
-		if s.EndTime.After(maxEnd) {
-			maxEnd = s.EndTime
+		if ss.EndUnixNano > maxEnd {
+			maxEnd = ss.EndUnixNano
 		}
 	}
 
 	duration := int64(0)
-	if !minStart.IsZero() && !maxEnd.IsZero() {
-		duration = maxEnd.Sub(minStart).Microseconds()
+	if minStart > 0 && maxEnd > 0 {
+		duration = (maxEnd - minStart) / 1000 // nanoseconds → microseconds
 	}
 
 	return Trace{
@@ -408,6 +420,85 @@ func (r *TraceReader) assembleTrace(traceID string, spans []Span) Trace {
 		Spans:    spans,
 		Duration: duration,
 	}
+}
+
+// storedSpanToLocalSpan converts a StoredSpan to the local Span type.
+func storedSpanToLocalSpan(ss StoredSpan) Span {
+	return Span{
+		TraceID:       ss.TraceID,
+		SpanID:        ss.SpanID,
+		ParentSpanID:  ss.ParentSpanID,
+		OperationName: ss.Name,
+		ServiceName:   ss.ServiceName,
+		SpanKind:      ss.Kind,
+		StatusCode:    ss.Status.Code,
+		StatusMessage: ss.Status.Message,
+		StartTime:     time.Unix(0, ss.StartUnixNano),
+		EndTime:       time.Unix(0, ss.EndUnixNano),
+		DurationUS:    ss.DurationNano / 1000,
+		Attributes:    ss.Attributes,
+		Resource:      ss.Resource,
+		Events:        storedEventsToLocal(ss.Events),
+		Links:         storedLinksToLocal(ss.Links),
+	}
+}
+
+func storedEventsToLocal(events []StoredEvent) []SpanEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	result := make([]SpanEvent, len(events))
+	for i, e := range events {
+		result[i] = SpanEvent{
+			Name:       e.Name,
+			Timestamp:  time.Unix(0, e.TimeUnixNano),
+			Attributes: e.Attributes,
+		}
+	}
+	return result
+}
+
+func storedLinksToLocal(links []StoredLink) []SpanLink {
+	if len(links) == 0 {
+		return nil
+	}
+	result := make([]SpanLink, len(links))
+	for i, l := range links {
+		result[i] = SpanLink{
+			TraceID: l.TraceID,
+			SpanID:  l.SpanID,
+		}
+	}
+	return result
+}
+
+// compatStoredSpan fills fields that were absent in old index formats for
+// backward compatibility until ES ILM rolls them over.
+func compatStoredSpan(ss StoredSpan, raw json.RawMessage) StoredSpan {
+	if ss.Name == "" {
+		// Old index used "operation_name"
+		var legacy struct {
+			OperationName string `json:"operation_name"`
+			SpanKind      string `json:"span_kind"`
+			StatusCode    string `json:"status_code"`
+			StatusMsg     string `json:"status_message"`
+		}
+		if json.Unmarshal(raw, &legacy) == nil {
+			if ss.Name == "" {
+				ss.Name = legacy.OperationName
+			}
+			if ss.Kind == "" {
+				ss.Kind = legacy.SpanKind
+			}
+			if ss.Status.Code == "" {
+				ss.Status.Code = legacy.StatusCode
+			}
+			if ss.Status.Message == "" {
+				ss.Status.Message = legacy.StatusMsg
+			}
+		}
+	}
+	return ss
 }
 
 // parseServicesAggregation parses a terms aggregation to extract Service names.
@@ -554,80 +645,7 @@ func (r *TraceReader) calculateDependencies(ctx context.Context, timeRange TimeR
 
 // ==================== Span Document Model ====================
 
-// spanDocument represents the ES document structure for a span (read-side).
-type spanDocument struct {
-	TraceID       string         `json:"trace_id"`
-	SpanID        string         `json:"span_id"`
-	ParentSpanID  string         `json:"parent_span_id,omitempty"`
-	OperationName string         `json:"operation_name"`
-	ServiceName   string         `json:"service_name"`
-	SpanKind      string         `json:"span_kind"`
-	StatusCode    string         `json:"status_code"`
-	StatusMessage string         `json:"status_message,omitempty"`
-	StartTime     string         `json:"start_time"`
-	EndTime       string         `json:"end_time"`
-	DurationUS    int64          `json:"duration_us"`
-	Attributes    map[string]any `json:"attributes,omitempty"`
-	Resource      map[string]any `json:"resource,omitempty"`
-	Events        []spanEventDoc `json:"events,omitempty"`
-	Links         []spanLinkDoc  `json:"links,omitempty"`
-}
-
-type spanEventDoc struct {
-	Name       string         `json:"name"`
-	Timestamp  string         `json:"timestamp"`
-	Attributes map[string]any `json:"attributes,omitempty"`
-}
-
-type spanLinkDoc struct {
-	TraceID string `json:"trace_id"`
-	SpanID  string `json:"span_id"`
-}
-
-// toSpan converts an ES span document to the local Span type.
-func (d *spanDocument) toSpan() Span {
-	startTime, _ := time.Parse(esTimestampFormat, d.StartTime)
-	endTime, _ := time.Parse(esTimestampFormat, d.EndTime)
-
-	span := Span{
-		TraceID:       d.TraceID,
-		SpanID:        d.SpanID,
-		ParentSpanID:  d.ParentSpanID,
-		OperationName: d.OperationName,
-		ServiceName:   d.ServiceName,
-		SpanKind:      d.SpanKind,
-		StatusCode:    d.StatusCode,
-		StatusMessage: d.StatusMessage,
-		StartTime:     startTime,
-		EndTime:       endTime,
-		DurationUS:    d.DurationUS,
-		Attributes:    d.Attributes,
-		Resource:      d.Resource,
-	}
-
-	// Convert events.
-	if len(d.Events) > 0 {
-		span.Events = make([]SpanEvent, 0, len(d.Events))
-		for _, e := range d.Events {
-			ts, _ := time.Parse(esTimestampFormat, e.Timestamp)
-			span.Events = append(span.Events, SpanEvent{
-				Name:       e.Name,
-				Timestamp:  ts,
-				Attributes: e.Attributes,
-			})
-		}
-	}
-
-	// Convert links.
-	if len(d.Links) > 0 {
-		span.Links = make([]SpanLink, 0, len(d.Links))
-		for _, l := range d.Links {
-			span.Links = append(span.Links, SpanLink{
-				TraceID: l.TraceID,
-				SpanID:  l.SpanID,
-			})
-		}
-	}
-
-	return span
-}
+// ==================== Span Document Model ====================
+// spanDocument is replaced by storedmodel.StoredSpan from Layer 1.
+// For backward compatibility with old index data (operation_name, span_kind, etc.),
+// see the compat.go unmarshal helpers.

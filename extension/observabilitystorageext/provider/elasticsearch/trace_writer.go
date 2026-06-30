@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 )
@@ -39,15 +41,14 @@ func (w *TraceWriter) Stop() {
 	w.buffer.Stop()
 }
 
-// WriteTraces converts ptrace.Traces to ES documents and buffers them.
+// WriteTraces converts ptrace.Traces to StoredSpan documents and buffers them.
 func (w *TraceWriter) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 	resourceSpans := td.ResourceSpans()
 	for i := 0; i < resourceSpans.Len(); i++ {
 		rs := resourceSpans.At(i)
-		resource := extractResourceAttributes(rs.Resource())
-		serviceName := getServiceName(rs.Resource())
-		appID := getAppID(rs.Resource())
+		resource := rs.Resource()
 
+		appID := getAppID(resource)
 		if appID == "" {
 			return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write traces without app-level data isolation")
 		}
@@ -58,8 +59,8 @@ func (w *TraceWriter) WriteTraces(ctx context.Context, td ptrace.Traces) error {
 			spans := ss.Spans()
 			for k := 0; k < spans.Len(); k++ {
 				span := spans.At(k)
-				doc := w.spanToDoc(span, resource, serviceName)
-				doc["app_id"] = appID
+				doc := w.convertSpan(span, ss, resource)
+				doc.AppID = appID
 				indexName := w.getIndexName(appID, span.StartTimestamp().AsTime())
 
 				if err := w.buffer.Add(indexName, doc); err != nil {
@@ -76,70 +77,9 @@ func (w *TraceWriter) Flush(ctx context.Context) error {
 	return w.buffer.Flush(ctx)
 }
 
-// spanToDoc converts a single span to an ES document map.
-func (w *TraceWriter) spanToDoc(span ptrace.Span, resource map[string]any, serviceName string) map[string]any {
-	doc := map[string]any{
-		"trace_id":       span.TraceID().String(),
-		"span_id":        span.SpanID().String(),
-		"operation_name": span.Name(),
-		"service_name":   serviceName,
-		"span_kind":      span.Kind().String(),
-		"status_code":    span.Status().Code().String(),
-		"start_time":     formatTimestamp(span.StartTimestamp().AsTime()),
-		"end_time":       formatTimestamp(span.EndTimestamp().AsTime()),
-		"duration_us":    (span.EndTimestamp().AsTime().Sub(span.StartTimestamp().AsTime())).Microseconds(),
-		"resource":       resource,
-	}
-
-	// Parent span ID
-	parentID := span.ParentSpanID().String()
-	if parentID != "" && parentID != "0000000000000000" {
-		doc["parent_span_id"] = parentID
-	}
-
-	// Status message
-	if msg := span.Status().Message(); msg != "" {
-		doc["status_message"] = msg
-	}
-
-	// Attributes
-	attrs := attributesToMap(span.Attributes())
-	if len(attrs) > 0 {
-		doc["attributes"] = attrs
-	}
-
-	// Events
-	if span.Events().Len() > 0 {
-		events := make([]map[string]any, 0, span.Events().Len())
-		for i := 0; i < span.Events().Len(); i++ {
-			event := span.Events().At(i)
-			e := map[string]any{
-				"name":      event.Name(),
-				"timestamp": formatTimestamp(event.Timestamp().AsTime()),
-			}
-			eventAttrs := attributesToMap(event.Attributes())
-			if len(eventAttrs) > 0 {
-				e["attributes"] = eventAttrs
-			}
-			events = append(events, e)
-		}
-		doc["events"] = events
-	}
-
-	// Links
-	if span.Links().Len() > 0 {
-		links := make([]map[string]any, 0, span.Links().Len())
-		for i := 0; i < span.Links().Len(); i++ {
-			link := span.Links().At(i)
-			links = append(links, map[string]any{
-				"trace_id": link.TraceID().String(),
-				"span_id":  link.SpanID().String(),
-			})
-		}
-		doc["links"] = links
-	}
-
-	return doc
+// convertSpan converts an OTLP span to the canonical StoredSpan format.
+func (w *TraceWriter) convertSpan(span ptrace.Span, scope ptrace.ScopeSpans, resource pcommon.Resource) storedmodel.StoredSpan {
+	return storedmodel.ConvertOTLPSpan(span, scope, resource)
 }
 
 // getIndexName returns the app-scoped, date-based index name for a given timestamp.

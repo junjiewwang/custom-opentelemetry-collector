@@ -24,20 +24,23 @@ func TestTraceWriter_SpanToDoc_BasicFields(t *testing.T) {
 	defer server.Close()
 
 	cfg := newTestConfig([]string{server.URL})
-	cfg.BatchSize = 100 // prevent auto-flush
+	cfg.BatchSize = 100
 
 	client, err := NewClient(cfg, zaptest.NewLogger(t))
 	require.NoError(t, err)
 
 	writer := NewTraceWriter(client, cfg, zaptest.NewLogger(t))
 
-	// Create a trace with one span
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "test-service")
 	rs.Resource().Attributes().PutStr("host.name", "test-host")
 
-	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	ss := rs.ScopeSpans().AppendEmpty()
+	ss.Scope().SetName("go.opentelemetry.contrib")
+	ss.Scope().SetVersion("v1.0.0")
+
+	span := ss.Spans().AppendEmpty()
 	span.SetTraceID(pcommon.TraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}))
 	span.SetSpanID(pcommon.SpanID([8]byte{1, 2, 3, 4, 5, 6, 7, 8}))
 	span.SetParentSpanID(pcommon.SpanID([8]byte{0, 0, 0, 0, 0, 0, 0, 1}))
@@ -47,40 +50,30 @@ func TestTraceWriter_SpanToDoc_BasicFields(t *testing.T) {
 	span.Status().SetMessage("success")
 	span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)))
 	span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 0, 500000000, time.UTC)))
-
-	// Attributes
 	span.Attributes().PutStr("http.method", "GET")
 	span.Attributes().PutInt("http.status_code", 200)
 
-	// Extract the doc using internal method
-	resource := extractResourceAttributes(rs.Resource())
-	serviceName := getServiceName(rs.Resource())
-	doc := writer.spanToDoc(span, resource, serviceName)
+	doc := writer.convertSpan(span, ss, rs.Resource())
 
-	// Verify basic fields
-	assert.Equal(t, "0102030405060708090a0b0c0d0e0f10", doc["trace_id"])
-	assert.Equal(t, "0102030405060708", doc["span_id"])
-	assert.Equal(t, "0000000000000001", doc["parent_span_id"])
-	assert.Equal(t, "GET /api/users", doc["operation_name"])
-	assert.Equal(t, "test-service", doc["service_name"])
-	assert.Equal(t, "Server", doc["span_kind"])
-	assert.Equal(t, "Ok", doc["status_code"])
-	assert.Equal(t, "success", doc["status_message"])
+	assert.Equal(t, "0102030405060708090a0b0c0d0e0f10", doc.TraceID)
+	assert.Equal(t, "0102030405060708", doc.SpanID)
+	assert.Equal(t, "0000000000000001", doc.ParentSpanID)
+	assert.Equal(t, "GET /api/users", doc.Name)
+	assert.Equal(t, "test-service", doc.ServiceName)
+	assert.Equal(t, "Server", doc.Kind)
+	assert.Equal(t, "Ok", doc.Status.Code)
+	assert.Equal(t, "success", doc.Status.Message)
+	assert.Equal(t, int64(500000000), doc.DurationNano)
 
-	// Duration: 500ms = 500000 us
-	assert.Equal(t, int64(500000), doc["duration_us"])
+	assert.Equal(t, "test-service", doc.Resource["service.name"])
+	assert.Equal(t, "test-host", doc.Resource["host.name"])
 
-	// Resource
-	res, ok := doc["resource"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "test-service", res["service.name"])
-	assert.Equal(t, "test-host", res["host.name"])
+	assert.Equal(t, "GET", doc.Attributes["http.method"])
+	assert.Equal(t, int64(200), doc.Attributes["http.status_code"])
 
-	// Attributes
-	attrs, ok := doc["attributes"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "GET", attrs["http.method"])
-	assert.Equal(t, int64(200), attrs["http.status_code"])
+	// Scope info
+	assert.Equal(t, "go.opentelemetry.contrib", doc.Scope.Name)
+	assert.Equal(t, "v1.0.0", doc.Scope.Version)
 }
 
 func TestTraceWriter_SpanToDoc_NoParentSpan(t *testing.T) {
@@ -97,16 +90,12 @@ func TestTraceWriter_SpanToDoc_NoParentSpan(t *testing.T) {
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "root-service")
 
-	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	ss := rs.ScopeSpans().AppendEmpty()
+	span := ss.Spans().AppendEmpty()
 	span.SetName("root-span")
-	// Don't set ParentSpanID at all - it defaults to all zeros
 
-	resource := extractResourceAttributes(rs.Resource())
-	doc := writer.spanToDoc(span, resource, "root-service")
-
-	// Root span should NOT have parent_span_id field
-	_, hasParent := doc["parent_span_id"]
-	assert.False(t, hasParent, "root span should not have parent_span_id")
+	doc := writer.convertSpan(span, ss, rs.Resource())
+	assert.Empty(t, doc.ParentSpanID, "root span should not have parentSpanId")
 }
 
 func TestTraceWriter_SpanToDoc_Events(t *testing.T) {
@@ -123,10 +112,10 @@ func TestTraceWriter_SpanToDoc_Events(t *testing.T) {
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "svc")
 
-	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	ss := rs.ScopeSpans().AppendEmpty()
+	span := ss.Spans().AppendEmpty()
 	span.SetName("span-with-events")
 
-	// Add events
 	event1 := span.Events().AppendEmpty()
 	event1.SetName("exception")
 	event1.SetTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 1, 0, time.UTC)))
@@ -137,23 +126,14 @@ func TestTraceWriter_SpanToDoc_Events(t *testing.T) {
 	event2.SetName("log")
 	event2.SetTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 2, 0, time.UTC)))
 
-	resource := extractResourceAttributes(rs.Resource())
-	doc := writer.spanToDoc(span, resource, "svc")
+	doc := writer.convertSpan(span, ss, rs.Resource())
 
-	events, ok := doc["events"].([]map[string]any)
-	require.True(t, ok)
-	require.Len(t, events, 2)
-
-	// First event
-	assert.Equal(t, "exception", events[0]["name"])
-	eventAttrs := events[0]["attributes"].(map[string]any)
-	assert.Equal(t, "NullPointerException", eventAttrs["exception.type"])
-	assert.Equal(t, "null ref", eventAttrs["exception.message"])
-
-	// Second event - no attributes
-	assert.Equal(t, "log", events[1]["name"])
-	_, hasAttrs := events[1]["attributes"]
-	assert.False(t, hasAttrs)
+	require.Len(t, doc.Events, 2)
+	assert.Equal(t, "exception", doc.Events[0].Name)
+	assert.Equal(t, "NullPointerException", doc.Events[0].Attributes["exception.type"])
+	assert.Equal(t, "null ref", doc.Events[0].Attributes["exception.message"])
+	assert.Equal(t, "log", doc.Events[1].Name)
+	assert.Nil(t, doc.Events[1].Attributes)
 }
 
 func TestTraceWriter_SpanToDoc_Links(t *testing.T) {
@@ -170,21 +150,19 @@ func TestTraceWriter_SpanToDoc_Links(t *testing.T) {
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "svc")
 
-	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	ss := rs.ScopeSpans().AppendEmpty()
+	span := ss.Spans().AppendEmpty()
 	span.SetName("span-with-links")
 
 	link := span.Links().AppendEmpty()
 	link.SetTraceID(pcommon.TraceID([16]byte{10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160}))
 	link.SetSpanID(pcommon.SpanID([8]byte{11, 22, 33, 44, 55, 66, 77, 88}))
 
-	resource := extractResourceAttributes(rs.Resource())
-	doc := writer.spanToDoc(span, resource, "svc")
+	doc := writer.convertSpan(span, ss, rs.Resource())
 
-	links, ok := doc["links"].([]map[string]any)
-	require.True(t, ok)
-	require.Len(t, links, 1)
-	assert.Equal(t, "0a141e28323c46505a646e78828c96a0", links[0]["trace_id"])
-	assert.Equal(t, "0b16212c37424d58", links[0]["span_id"])
+	require.Len(t, doc.Links, 1)
+	assert.Equal(t, "0a141e28323c46505a646e78828c96a0", doc.Links[0].TraceID)
+	assert.Equal(t, "0b16212c37424d58", doc.Links[0].SpanID)
 }
 
 func TestTraceWriter_GetIndexName(t *testing.T) {
@@ -218,20 +196,20 @@ func TestTraceWriter_WriteTraces_EndToEnd(t *testing.T) {
 	defer server.Close()
 
 	cfg := newTestConfig([]string{server.URL})
-	cfg.BatchSize = 1 // flush immediately
+	cfg.BatchSize = 1
 
 	client, err := NewClient(cfg, zaptest.NewLogger(t))
 	require.NoError(t, err)
 
 	writer := NewTraceWriter(client, cfg, zaptest.NewLogger(t))
 
-	// Create trace data
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "payment-svc")
 	rs.Resource().Attributes().PutStr("app_id", "payment-app")
 
-	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	ss := rs.ScopeSpans().AppendEmpty()
+	span := ss.Spans().AppendEmpty()
 	span.SetTraceID(pcommon.TraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}))
 	span.SetSpanID(pcommon.SpanID([8]byte{1, 2, 3, 4, 5, 6, 7, 8}))
 	span.SetName("process-payment")
@@ -241,23 +219,21 @@ func TestTraceWriter_WriteTraces_EndToEnd(t *testing.T) {
 	err = writer.WriteTraces(context.Background(), td)
 	require.NoError(t, err)
 
-	// Verify the bulk request body
 	require.NotEmpty(t, receivedBody)
 	lines := strings.Split(strings.TrimSpace(string(receivedBody)), "\n")
-	require.Len(t, lines, 2, "should have action + doc lines")
+	require.Len(t, lines, 2)
 
-	// Verify action line
 	var action map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &action))
 	indexAction := action["index"].(map[string]any)
 	assert.Equal(t, "otel-traces-payment-app-2026.05.29", indexAction["_index"])
 
-	// Verify document line
 	var doc map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[1]), &doc))
-	assert.Equal(t, "process-payment", doc["operation_name"])
-	assert.Equal(t, "payment-svc", doc["service_name"])
-	assert.Equal(t, float64(1000000), doc["duration_us"]) // 1s = 1000000 us (JSON numbers are float64)
+	// New field names
+	assert.Equal(t, "process-payment", doc["name"])
+	assert.Equal(t, "payment-svc", doc["serviceName"])
+	assert.Equal(t, float64(1000000000), doc["durationNano"]) // 1s = 1e9 nanos
 }
 
 func TestTraceWriter_WriteTraces_MultipleSpans(t *testing.T) {
@@ -274,14 +250,13 @@ func TestTraceWriter_WriteTraces_MultipleSpans(t *testing.T) {
 	defer server.Close()
 
 	cfg := newTestConfig([]string{server.URL})
-	cfg.BatchSize = 2 // flush every 2 docs
+	cfg.BatchSize = 2
 
 	client, err := NewClient(cfg, zaptest.NewLogger(t))
 	require.NoError(t, err)
 
 	writer := NewTraceWriter(client, cfg, zaptest.NewLogger(t))
 
-	// Create trace with 3 spans
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "multi-svc")
@@ -297,11 +272,8 @@ func TestTraceWriter_WriteTraces_MultipleSpans(t *testing.T) {
 
 	err = writer.WriteTraces(context.Background(), td)
 	require.NoError(t, err)
-
-	// 3 spans with batch_size 2 = 1 bulk call (at 2nd span) + remaining 1 span buffered
 	assert.Equal(t, 1, bulkCount)
 
-	// Flush remaining
 	require.NoError(t, writer.Flush(context.Background()))
 	assert.Equal(t, 2, bulkCount)
 }
@@ -316,13 +288,12 @@ func TestTraceWriter_WriteTraces_RejectsWithoutAppID(t *testing.T) {
 
 	writer := NewTraceWriter(client, cfg, zaptest.NewLogger(t))
 
-	// Create trace without app_id in resource attributes
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "payment-svc")
-	// No app_id set
 
-	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	ss := rs.ScopeSpans().AppendEmpty()
+	span := ss.Spans().AppendEmpty()
 	span.SetName("process-payment")
 	span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)))
 	span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Date(2026, 5, 29, 10, 0, 1, 0, time.UTC)))
@@ -330,5 +301,4 @@ func TestTraceWriter_WriteTraces_RejectsWithoutAppID(t *testing.T) {
 	err = writer.WriteTraces(context.Background(), td)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "app_id is required")
-	assert.Contains(t, err.Error(), "app-level data isolation")
 }

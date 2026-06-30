@@ -220,43 +220,63 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 			},
 			"mappings": map[string]any{
 				"properties": map[string]any{
-					"trace_id":        map[string]any{"type": "keyword"},
-					"span_id":         map[string]any{"type": "keyword"},
-					"parent_span_id":  map[string]any{"type": "keyword"},
-					"operation_name":  map[string]any{"type": "keyword"},
-					"service_name":    map[string]any{"type": "keyword"},
-					"span_kind":       map[string]any{"type": "keyword"},
-					"status_code":     map[string]any{"type": "keyword"},
-					"status_message":  map[string]any{"type": "text"},
-					"start_time":      map[string]any{"type": "date_nanos"},
-					"end_time":        map[string]any{"type": "date_nanos"},
-					"duration_us":     map[string]any{"type": "long"},
-				"app_id":          map[string]any{"type": "keyword"},
-				"attributes":      map[string]any{"type": "flattened"},
-				"resource": map[string]any{
-					"properties": map[string]any{
-						"service.name":      map[string]any{"type": "keyword"},
-						"service.namespace": map[string]any{"type": "keyword"},
-						"service.version":   map[string]any{"type": "keyword"},
-						"host.name":         map[string]any{"type": "keyword"},
-						"app_id":            map[string]any{"type": "keyword"},
+					// Core OTLP fields (new format)
+					"traceId":           map[string]any{"type": "keyword"},
+					"spanId":            map[string]any{"type": "keyword"},
+					"parentSpanId":      map[string]any{"type": "keyword"},
+					"name":              map[string]any{"type": "keyword"},
+					"kind":              map[string]any{"type": "keyword"},
+					"startTimeUnixNano": map[string]any{"type": "long"},
+					"endTimeUnixNano":   map[string]any{"type": "long"},
+					"durationNano":      map[string]any{"type": "long"},
+					"traceState":        map[string]any{"type": "keyword"},
+					"status": map[string]any{
+						"properties": map[string]any{
+							"code":    map[string]any{"type": "keyword"},
+							"message": map[string]any{"type": "text"},
+						},
 					},
-				},
-				"events": map[string]any{
-					"type": "nested",
-					"properties": map[string]any{
-						"name":       map[string]any{"type": "keyword"},
-						"timestamp":  map[string]any{"type": "date_nanos"},
-						"attributes": map[string]any{"type": "flattened"},
+					// Scope info
+					"scope": map[string]any{
+						"properties": map[string]any{
+							"name":       map[string]any{"type": "keyword"},
+							"version":    map[string]any{"type": "keyword"},
+							"attributes": map[string]any{"type": "flattened"},
+						},
 					},
-				},
+					// Compact attributes
+					"attributes": map[string]any{"type": "flattened"},
+					"resource": map[string]any{
+						"properties": map[string]any{
+							"service.name":      map[string]any{"type": "keyword"},
+							"service.namespace": map[string]any{"type": "keyword"},
+							"service.version":   map[string]any{"type": "keyword"},
+							"host.name":         map[string]any{"type": "keyword"},
+							"app_id":            map[string]any{"type": "keyword"},
+						},
+					},
+					// Events (new format)
+					"events": map[string]any{
+						"type": "nested",
+						"properties": map[string]any{
+							"timeUnixNano": map[string]any{"type": "long"},
+							"name":         map[string]any{"type": "keyword"},
+							"attributes":   map[string]any{"type": "flattened"},
+						},
+					},
+					// Links (new format, extended)
 					"links": map[string]any{
 						"type": "nested",
 						"properties": map[string]any{
-							"trace_id": map[string]any{"type": "keyword"},
-							"span_id":  map[string]any{"type": "keyword"},
+							"traceId":    map[string]any{"type": "keyword"},
+							"spanId":     map[string]any{"type": "keyword"},
+							"traceState": map[string]any{"type": "keyword"},
+							"attributes": map[string]any{"type": "flattened"},
 						},
 					},
+					// Derived fields
+					"serviceName": map[string]any{"type": "keyword"},
+					"appId":       map[string]any{"type": "keyword"},
 				},
 			},
 		},
