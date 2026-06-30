@@ -3,7 +3,11 @@
 
 package elasticsearch
 
-import "time"
+import (
+	"time"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+)
 
 // ═══════════════════════════════════════════════════
 // Reader Types — local definitions to avoid circular import
@@ -14,26 +18,11 @@ import "time"
 // the public interface types when exposing Reader to other components.
 // ═══════════════════════════════════════════════════
 
-// TimeRange defines a time window for queries.
-type TimeRange struct {
-	Start time.Time
-	End   time.Time
-}
+// TimeRange aliases the unified storedmodel definition.
+type TimeRange = storedmodel.TimeRange
 
-// ── Trace Query Types ──────────────────────────────
-
-// TraceQuery holds parameters for searching traces.
-type TraceQuery struct {
-	AppID         string // required: identifies which app's data to query
-	ServiceName   string
-	OperationName string
-	Tags          map[string]string
-	MinDuration   time.Duration
-	MaxDuration   time.Duration
-	TimeRange     TimeRange
-	Limit         int
-	Offset        int
-}
+// TraceQuery aliases the unified storedmodel definition.
+type TraceQuery = storedmodel.TraceQuery
 
 // TraceSearchResult holds the result of a trace search.
 type TraceSearchResult struct {

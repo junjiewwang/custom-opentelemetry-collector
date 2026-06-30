@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 )
 
 // ═══════════════════════════════════════════════════
@@ -36,18 +37,18 @@ func (a *traceReaderAdapter) GetTrace(ctx context.Context, traceID string) (*Tra
 }
 
 func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery) (*TraceSearchResult, error) {
-	esQuery := elasticsearch.TraceQuery{
+	q := storedmodel.TraceQuery{
 		AppID:         query.AppID,
 		ServiceName:   query.ServiceName,
 		OperationName: query.OperationName,
 		Tags:          query.Tags,
 		MinDuration:   query.MinDuration,
 		MaxDuration:   query.MaxDuration,
-		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		TimeRange:     storedmodel.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
 		Limit:         query.Limit,
 		Offset:        query.Offset,
 	}
-	spans, _, err := a.inner.SearchSpans(ctx, esQuery)
+	spans, _, err := a.inner.SearchSpans(ctx, q)
 	if err != nil {
 		return nil, err
 	}

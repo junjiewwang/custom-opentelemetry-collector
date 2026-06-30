@@ -14,23 +14,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// TraceQuery represents parameters for searching traces.
-type TraceQuery struct {
-	ServiceName   string
-	OperationName string
-	Tags          map[string]string
-	MinDuration   time.Duration
-	MaxDuration   time.Duration
-	TimeRange     TimeRange
-	Limit         int
-	Offset        int
-}
+// TraceQuery aliases the unified storedmodel definition.
+type TraceQuery = storedmodel.TraceQuery
 
-// TimeRange represents a time window for queries.
-type TimeRange struct {
-	Start time.Time
-	End   time.Time
-}
+// TimeRange aliases the unified storedmodel definition.
+type TimeRange = storedmodel.TimeRange
 
 // TraceSearchResult holds the result of a trace search.
 type TraceSearchResult struct {
