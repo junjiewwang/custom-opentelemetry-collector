@@ -22,10 +22,10 @@ import (
 
 // Config holds the Hybrid provider routing configuration.
 type Config struct {
-	Trace string `mapstructure:storedmodel.SignalTrace`
-	Metric string `mapstructure:storedmodel.SignalMetric`
-	Log   string `mapstructure:storedmodel.SignalLog`
-	Admin string `mapstructure:storedmodel.SignalAdmin`
+	Trace string `mapstructure:"trace"`
+	Metric string `mapstructure:"metric"`
+	Log   string `mapstructure:"log"`
+	Admin string `mapstructure:"admin"`
 	ES    *elasticsearch.Config `mapstructure:"es"`
 	PG    *postgresql.Config `mapstructure:"pg"`
 }
