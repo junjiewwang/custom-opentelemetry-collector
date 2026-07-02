@@ -63,6 +63,8 @@ import type {
   DiskUsage,
   PurgeResult,
   SignalType,
+  DailyStorageRequest,
+  DailyStorageResponse,
 } from '@/types/storage';
 
 interface InstrumentationRuleMutationResponse {
@@ -543,6 +545,19 @@ class ApiClient {
   /** 获取磁盘使用情况 */
   getStorageDiskUsage(): Promise<DiskUsage> {
     return this.request<DiskUsage>('GET', '/observability/admin/disk-usage');
+  }
+
+  /** 获取按天存储量（直接查 ES 索引统计） */
+  getStorageDailyUsage(params: DailyStorageRequest = {}): Promise<DailyStorageResponse> {
+    const query = new URLSearchParams();
+    if (params.start) query.set('start', params.start);
+    if (params.end) query.set('end', params.end);
+    if (params.appId) query.set('appId', params.appId);
+    const qs = query.toString();
+    return this.request<DailyStorageResponse>(
+      'GET',
+      `/observability/admin/disk-usage/daily${qs ? `?${qs}` : ''}`,
+    );
   }
 }
 

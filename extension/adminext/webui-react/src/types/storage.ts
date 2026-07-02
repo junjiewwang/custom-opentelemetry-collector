@@ -101,3 +101,37 @@ export function formatRetention(duration: string): string {
   }
   return duration;
 }
+
+// ============================================================================
+// Usage Trend
+// ============================================================================
+
+// ============================================================================
+// Daily Usage (按天存储量，直接查询 ES 索引统计)
+// ============================================================================
+
+/** 按天存储量查询参数 */
+export interface DailyStorageRequest {
+  start?: string;  // ISO 8601 date
+  end?: string;
+  appId?: string;
+}
+
+/** 单日聚合的存储量 */
+export interface DailyStoragePoint {
+  date: string;                       // "2026-07-01"
+  bySignal: Record<string, number>;   // per-signal total (trace/metric/log)
+  byApp: Record<string, number>;      // per-app total
+}
+
+/** 按天存储量查询响应 */
+export interface DailyStorageResponse {
+  points: DailyStoragePoint[];
+}
+
+/** 时间范围预设 */
+export const DAILY_RANGES = [
+  { label: '7 天', days: 7 },
+  { label: '14 天', days: 14 },
+  { label: '30 天', days: 30 },
+] as const;

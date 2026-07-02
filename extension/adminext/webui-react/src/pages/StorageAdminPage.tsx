@@ -9,8 +9,9 @@
  * - 数据清除操作
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { apiClient } from '@/api/client';
+import type { App } from '@/types/api';
 import type {
   StorageStatus,
   StorageHealth,
@@ -18,8 +19,11 @@ import type {
   RetentionPolicies,
   IndexInfo,
   SignalType,
+  DailyStorageResponse,
 } from '@/types/storage';
-import { formatBytes, formatRetention } from '@/types/storage';
+import { formatBytes, formatRetention, DAILY_RANGES } from '@/types/storage';
+import TimeSeriesChart from '@/components/TimeSeriesChart';
+import type { ChartSeries } from '@/types/metric';
 
 // ============================================================================
 // Component
@@ -47,6 +51,15 @@ export default function StorageAdminPage() {
   const [purging, setPurging] = useState(false);
   const [purgeMessage, setPurgeMessage] = useState('');
 
+  // Apps
+  const [apps, setApps] = useState<App[]>([]);
+  const [selectedAppId, setSelectedAppId] = useState('');
+
+  // Daily usage chart
+  const [dailyData, setDailyData] = useState<DailyStorageResponse | null>(null);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyRangeDays, setDailyRangeDays] = useState(7);
+
   // ========================================================================
   // Load data
   // ========================================================================
@@ -56,11 +69,12 @@ export default function StorageAdminPage() {
     setError('');
 
     try {
-      const [statusRes, healthRes, diskRes, retentionRes] = await Promise.allSettled([
+      const [statusRes, healthRes, diskRes, retentionRes, appsRes] = await Promise.allSettled([
         apiClient.getStorageStatus(),
         apiClient.getStorageHealth(),
         apiClient.getStorageDiskUsage(),
         apiClient.getStorageRetention(),
+        apiClient.getApps(),
       ]);
 
       if (statusRes.status === 'fulfilled') setStatus(statusRes.value);
@@ -73,6 +87,7 @@ export default function StorageAdminPage() {
       if (healthRes.status === 'fulfilled') setHealth(healthRes.value);
       if (diskRes.status === 'fulfilled') setDiskUsage(diskRes.value);
       if (retentionRes.status === 'fulfilled') setRetention(retentionRes.value);
+      if (appsRes.status === 'fulfilled') setApps(appsRes.value);
 
       setAvailable(true);
     } catch (err: unknown) {
@@ -86,6 +101,31 @@ export default function StorageAdminPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Load daily usage data when range or app changes
+  const loadDailyUsage = useCallback(async () => {
+    setDailyLoading(true);
+    try {
+      const end = new Date();
+      const start = new Date(end.getTime() - dailyRangeDays * 24 * 60 * 60 * 1000);
+      const resp = await apiClient.getStorageDailyUsage({
+        start: start.toISOString(),
+        end: end.toISOString(),
+        appId: selectedAppId || undefined,
+      });
+      setDailyData(resp);
+    } catch {
+      // Daily API is optional — silently ignore if not available
+    } finally {
+      setDailyLoading(false);
+    }
+  }, [dailyRangeDays, selectedAppId]);
+
+  useEffect(() => {
+    if (available) {
+      loadDailyUsage();
+    }
+  }, [available, loadDailyUsage]);
 
   // ========================================================================
   // Handlers
@@ -169,8 +209,21 @@ export default function StorageAdminPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Page Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">存储管理</h1>
+        {apps.length > 0 && (
+          <select
+            value={selectedAppId}
+            onChange={e => setSelectedAppId(e.target.value)}
+            className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md
+              bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200"
+          >
+            <option value="">全部 App</option>
+            {apps.map(a => (
+              <option key={a.id} value={a.id}>{a.name || a.id}</option>
+            ))}
+          </select>
+        )}
         <button
           onClick={loadData}
           className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md
@@ -261,6 +314,16 @@ export default function StorageAdminPage() {
           </div>
         </div>
       )}
+
+      {/* Daily Storage Usage Chart */}
+      <DailyUsageSection
+        data={dailyData}
+        loading={dailyLoading}
+        rangeDays={dailyRangeDays}
+        onRangeChange={setDailyRangeDays}
+        appName={selectedAppId ? (apps.find(a => a.id === selectedAppId)?.name || selectedAppId) : undefined}
+        apps={apps}
+      />
 
       {/* Retention Policies */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
@@ -374,6 +437,94 @@ export default function StorageAdminPage() {
 
 // ============================================================================
 // Helper Components
+// ============================================================================
+
+// ============================================================================
+// DailyUsageSection
+// ============================================================================
+
+interface DailyUsageSectionProps {
+  data: DailyStorageResponse | null;
+  loading: boolean;
+  rangeDays: number;
+  onRangeChange: (days: number) => void;
+  appName?: string;
+  apps?: App[];
+}
+
+function DailyUsageSection({ data, loading, rangeDays, onRangeChange, appName, apps }: DailyUsageSectionProps) {
+  const appNameMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    apps?.forEach(a => { m[a.id] = a.name || a.id; });
+    return m;
+  }, [apps]);
+
+  const series: ChartSeries[] = useMemo(() => {
+    if (!data || data.points.length === 0) return [];
+
+    if (appName) {
+      // Specific App → one line per signal
+      const signals = ['trace', 'metric', 'log'];
+      return signals
+        .filter(signal => data.points.some(p => (p.bySignal?.[signal] ?? 0) > 0))
+        .map(signal => ({
+          name: `${appName} - ${signal}`,
+          labels: {},
+          data: data.points.map(p => ({
+            time: new Date(p.date).getTime(),
+            value: p.bySignal?.[signal] ?? 0,
+          })),
+        }));
+    }
+
+    // All Apps → one line per app (show as "appId (名称)")
+    const appIds = new Set<string>();
+    data.points.forEach(p => Object.keys(p.byApp || {}).forEach(id => appIds.add(id)));
+    return Array.from(appIds).sort().map(appId => ({
+      name: appNameMap[appId] ? `${appId} (${appNameMap[appId]})` : appId,
+      labels: {},
+      data: data.points.map(p => ({
+        time: new Date(p.date).getTime(),
+        value: p.byApp?.[appId] ?? 0,
+      })),
+    }));
+  }, [data, appName, appNameMap]);
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">
+          按天存储用量{appName ? <span className="ml-1 text-blue-600">{appName}</span> : null}
+        </h3>
+        <div className="flex gap-1">
+          {DAILY_RANGES.map(r => (
+            <button
+              key={r.days}
+              onClick={() => onRangeChange(r.days)}
+              className={`px-2 py-1 text-xs rounded transition-colors ${
+                rangeDays === r.days
+                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                  : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <TimeSeriesChart
+        series={series}
+        chartType="area"
+        unit="bytes"
+        height={200}
+        loading={loading}
+      />
+    </div>
+  );
+}
+
+// ============================================================================
+// SignalBadge
 // ============================================================================
 
 function SignalBadge({ signal }: { signal: SignalType }) {
