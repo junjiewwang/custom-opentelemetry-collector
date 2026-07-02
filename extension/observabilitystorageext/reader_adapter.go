@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/lifecycle"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 )
@@ -385,8 +386,14 @@ func convertMetricRangeResult(src *elasticsearch.MetricRangeResult) *MetricRange
 
 // storageAdminAdapter adapts the ES Admin to the public StorageAdmin interface.
 type storageAdminAdapter struct {
-	inner  *elasticsearch.Admin
-	config *Config
+	inner          *elasticsearch.Admin
+	config         *Config
+	retentionStore lifecycle.RetentionStore
+}
+
+// configKey returns the RetentionStore key for the signal's retention config.
+func (a *storageAdminAdapter) configKey(signal SignalType) string {
+	return "platform_default/" + string(signal)
 }
 
 var _ StorageAdmin = (*storageAdminAdapter)(nil)
@@ -416,18 +423,43 @@ func (a *storageAdminAdapter) InitSchema(ctx context.Context) error {
 	return a.inner.InitSchema(ctx)
 }
 
-func (a *storageAdminAdapter) GetRetention(_ context.Context) (map[SignalType]RetentionPolicy, error) {
+func (a *storageAdminAdapter) GetRetention(ctx context.Context) (map[SignalType]RetentionPolicy, error) {
 	result := make(map[SignalType]RetentionPolicy)
-	if a.config != nil && a.config.Elasticsearch.Traces.Retention > 0 {
-		result[SignalTrace] = RetentionPolicy{Duration: a.config.Elasticsearch.Traces.Retention}
-	}
-	if a.config != nil && a.config.Elasticsearch.Metrics.Retention > 0 {
-		result[SignalMetric] = RetentionPolicy{Duration: a.config.Elasticsearch.Metrics.Retention}
-	}
-	if a.config != nil && a.config.Elasticsearch.Logs.Retention > 0 {
-		result[SignalLog] = RetentionPolicy{Duration: a.config.Elasticsearch.Logs.Retention}
+	signals := []SignalType{SignalTrace, SignalMetric, SignalLog}
+
+	for _, signal := range signals {
+		var duration time.Duration
+		// 1. Priority: read from RetentionStore (app config, source of truth)
+		if a.retentionStore != nil {
+			if d, err := a.retentionStore.GetForApp(ctx, a.configKey(signal), lifecycle.SignalType(signal)); err == nil && d != nil && *d > 0 {
+				duration = *d
+			}
+		}
+		// 2. Fallback: platform default from config.yaml (not RetentionStore)
+		if duration == 0 {
+			duration = a.configDefault(signal)
+		}
+		if duration > 0 {
+			result[signal] = RetentionPolicy{Duration: RetentionDuration(duration)}
+		}
 	}
 	return result, nil
+}
+
+// configDefault returns the platform-level default retention for a signal from config.yaml.
+func (a *storageAdminAdapter) configDefault(signal SignalType) time.Duration {
+	if a.config == nil || a.config.Elasticsearch == nil {
+		return 0
+	}
+	switch signal {
+	case SignalTrace:
+		return a.config.Elasticsearch.Traces.Retention
+	case SignalMetric:
+		return a.config.Elasticsearch.Metrics.Retention
+	case SignalLog:
+		return a.config.Elasticsearch.Logs.Retention
+	}
+	return 0
 }
 
 func (a *storageAdminAdapter) SetRetention(ctx context.Context, signal SignalType, policy RetentionPolicy) error {
@@ -435,7 +467,18 @@ func (a *storageAdminAdapter) SetRetention(ctx context.Context, signal SignalTyp
 	if err != nil {
 		return err
 	}
-	return a.inner.SetRetention(ctx, indexPrefix, policy.Duration)
+	// 1. Write to ES ILM policy (execution layer)
+	if err := a.inner.SetRetention(ctx, indexPrefix, time.Duration(policy.Duration)); err != nil {
+		return err
+	}
+	// 2. Write to RetentionStore (app config, source of truth)
+	if a.retentionStore != nil {
+		if err := a.retentionStore.SetForApp(ctx, a.configKey(signal), lifecycle.SignalType(signal), time.Duration(policy.Duration)); err != nil {
+			return err
+		}
+	}
+	// NOTE: a.config.X.Retention is the platform default from config.yaml, NOT updated here.
+	return nil
 }
 
 func (a *storageAdminAdapter) Purge(ctx context.Context, signal SignalType, before time.Time) (*PurgeResult, error) {
@@ -528,6 +571,7 @@ func (a *storageAdminAdapter) GetDiskUsage(ctx context.Context) (*DiskUsage, err
 
 	usage := &DiskUsage{
 		BySignal: make(map[SignalType]int64),
+		ByApp:    make(map[string]int64),
 	}
 
 	// Parse used bytes from indices stats

@@ -262,9 +262,9 @@ func (a *pgStorageAdminAdapter) InitSchema(ctx context.Context) error {
 
 func (a *pgStorageAdminAdapter) GetRetention(ctx context.Context) (map[SignalType]RetentionPolicy, error) {
 	return map[SignalType]RetentionPolicy{
-		SignalTrace:  {Duration: a.config.PostgreSQL.Traces.Retention},
-		SignalMetric: {Duration: a.config.PostgreSQL.Metrics.Retention},
-		SignalLog:    {Duration: a.config.PostgreSQL.Logs.Retention},
+		SignalTrace:  {Duration: RetentionDuration(a.config.PostgreSQL.Traces.Retention)},
+		SignalMetric: {Duration: RetentionDuration(a.config.PostgreSQL.Metrics.Retention)},
+		SignalLog:    {Duration: RetentionDuration(a.config.PostgreSQL.Logs.Retention)},
 	}, nil
 }
 
@@ -273,7 +273,7 @@ func (a *pgStorageAdminAdapter) SetRetention(ctx context.Context, signal SignalT
 	if err != nil {
 		return err
 	}
-	return a.inner.SetRetention(ctx, tableName, policy.Duration)
+	return a.inner.SetRetention(ctx, tableName, time.Duration(policy.Duration))
 }
 
 func (a *pgStorageAdminAdapter) Purge(ctx context.Context, signal SignalType, before time.Time) (*PurgeResult, error) {
@@ -330,6 +330,7 @@ func (a *pgStorageAdminAdapter) GetDiskUsage(ctx context.Context) (*DiskUsage, e
 		TotalBytes: totalSize,
 		UsedBytes:  totalSize,
 		BySignal:   bySignal,
+		ByApp:      nil, // PG provider: app-level usage not yet supported
 	}, nil
 }
 

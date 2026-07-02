@@ -200,7 +200,7 @@ func (e *ObservabilityStorage) GetStorageAdmin() StorageAdmin {
 		if e.esProvider == nil || e.esProvider.Admin() == nil {
 			return nil
 		}
-		return &storageAdminAdapter{inner: e.esProvider.Admin(), config: e.config}
+		return &storageAdminAdapter{inner: e.esProvider.Admin(), config: e.config, retentionStore: e.retentionStore}
 	case "postgresql":
 		if e.pgProvider == nil || e.pgProvider.Admin() == nil {
 			return nil
@@ -473,7 +473,7 @@ func (e *ObservabilityStorage) getHybridStorageAdmin() StorageAdmin {
 		if e.esProvider == nil || e.esProvider.Admin() == nil {
 			return nil
 		}
-		return &storageAdminAdapter{inner: e.esProvider.Admin(), config: e.config}
+		return &storageAdminAdapter{inner: e.esProvider.Admin(), config: e.config, retentionStore: e.retentionStore}
 	case "postgresql":
 		if e.pgProvider == nil || e.pgProvider.Admin() == nil {
 			return nil
