@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
+	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
 func newTestInstrumentationService(t *testing.T) (*InstrumentationService, *agentregistry.MemoryAgentRegistry, taskmanager.TaskManager) {
@@ -27,7 +28,11 @@ func newTestInstrumentationService(t *testing.T) (*InstrumentationService, *agen
 	agentReg := agentregistry.NewMemoryAgentRegistry(logger, agentCfg)
 	require.NoError(t, agentReg.Start(context.Background()))
 
-	taskMgr, err := taskmanager.NewTaskManager(logger, taskmanager.DefaultConfig(), nil)
+	engine := taskengine.NewEngine(taskengine.NewMemoryStore(), nil, logger, taskengine.DefaultEngineConfig())
+	require.NoError(t, engine.Start(context.Background()))
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+
+	taskMgr, err := taskmanager.NewTaskManager(logger, taskmanager.DefaultConfig(), engine)
 	require.NoError(t, err)
 	require.NoError(t, taskMgr.Start(context.Background()))
 
@@ -241,7 +246,11 @@ func TestReconcileExpiredTargetRecoversWhenOnline(t *testing.T) {
 	registry := agentregistry.NewMemoryAgentRegistry(logger, agentCfg)
 	require.NoError(t, registry.Start(context.Background()))
 
-	tm, err := taskmanager.NewTaskManager(logger, taskmanager.DefaultConfig(), nil)
+	engine := taskengine.NewEngine(taskengine.NewMemoryStore(), nil, logger, taskengine.DefaultEngineConfig())
+	require.NoError(t, engine.Start(context.Background()))
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+
+	tm, err := taskmanager.NewTaskManager(logger, taskmanager.DefaultConfig(), engine)
 	require.NoError(t, err)
 	require.NoError(t, tm.Start(context.Background()))
 
@@ -273,6 +282,7 @@ func TestReconcileExpiredTargetRecoversWhenOnline(t *testing.T) {
 	target.State = TargetStateExpired
 	target.TaskID = ""
 	target.TaskStatus = ""
+	target.LastDispatchAtMillis = 0
 	target.UpdatedAtMillis = time.Now().UnixMilli()
 	require.NoError(t, svc.store.SaveTargetStatuses(context.Background(), rule.ID, targets))
 
