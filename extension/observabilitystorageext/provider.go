@@ -208,6 +208,20 @@ type StorageAdmin interface {
 }
 
 // ═══════════════════════════════════════════════════
+// DailyStorageProvider — 按天存储用量查询
+// ═══════════════════════════════════════════════════
+
+// DailyStorageDailyStorageProvider provides storage usage broken down by calendar day.
+// Data comes directly from backend storage (e.g., ES index _stats), not from
+// in-memory trend buffers.
+//
+// Separated from StorageAdmin (ISP): PG provider may not support this yet.
+type DailyStorageProvider interface {
+	// GetDailyStorage returns per-day storage usage within the date range.
+	GetDailyStorage(ctx context.Context, req DailyStorageRequest) (*DailyStorageResponse, error)
+}
+
+// ═══════════════════════════════════════════════════
 // HealthStatus
 // ═══════════════════════════════════════════════════
 

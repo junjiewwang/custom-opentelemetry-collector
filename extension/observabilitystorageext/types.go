@@ -4,10 +4,13 @@
 package observabilitystorageext
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 )
 
 // ═══════════════════════════════════════════════════
@@ -328,9 +331,31 @@ type TimeBucket struct {
 // Admin Types
 // ═══════════════════════════════════════════════════
 
+// RetentionDuration wraps time.Duration with JSON marshaling as Go duration string (e.g. "720h").
+type RetentionDuration time.Duration
+
+// MarshalJSON serializes the duration as a Go duration string (e.g. "720h0m0s").
+func (d RetentionDuration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Duration(d).String())
+}
+
+// UnmarshalJSON deserializes a Go duration string ("720h") into RetentionDuration.
+func (d *RetentionDuration) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	dur, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d = RetentionDuration(dur)
+	return nil
+}
+
 // RetentionPolicy defines the data retention for a signal type.
 type RetentionPolicy struct {
-	Duration time.Duration `json:"duration"`
+	Duration RetentionDuration `json:"duration"`
 }
 
 // StorageStatus holds the overall status of the storage backend.
@@ -363,7 +388,16 @@ type DiskUsage struct {
 	UsedBytes      int64               `json:"usedBytes"`
 	AvailableBytes int64               `json:"availableBytes"`
 	BySignal       map[SignalType]int64 `json:"bySignal,omitempty"`
+	ByApp          map[string]int64     `json:"byApp,omitempty"`
 }
+
+// ═══════════════════════════════════════════════════
+// Daily Storage Types (aliased from storedmodel to avoid circular imports with ES)
+// ═══════════════════════════════════════════════════
+
+type DailyStorageRequest = storedmodel.DailyStorageRequest
+type DailyStoragePoint = storedmodel.DailyStoragePoint
+type DailyStorageResponse = storedmodel.DailyStorageResponse
 
 // ═══════════════════════════════════════════════════
 // Helper Functions — for constructing OTel types
