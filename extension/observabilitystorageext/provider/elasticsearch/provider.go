@@ -32,6 +32,7 @@ type Provider struct {
 	logReader    *LogReader
 
 	admin *Admin
+	usage *UsageReporter
 }
 
 // NewProvider creates a new Elasticsearch provider instance.
@@ -83,6 +84,9 @@ func (p *Provider) Start(ctx context.Context) error {
 	p.traceReader = NewTraceReader(p.client, p.config, p.logger)
 	p.metricReader = NewMetricReader(p.client, p.config, p.logger)
 	p.logReader = NewLogReader(p.client, p.config, p.logger)
+
+	// Initialize usage reporter (for daily storage queries)
+	p.usage = NewUsageReporter(p.client, p.config, p.logger)
 
 	// Start background flush loops
 	p.traceWriter.Start()
@@ -187,6 +191,14 @@ func (p *Provider) FlushLogs(ctx context.Context) error {
 // Admin returns the storage admin interface.
 func (p *Provider) Admin() *Admin {
 	return p.admin
+}
+
+// GetDailyStorage returns per-day storage usage from ES index stats.
+func (p *Provider) GetDailyStorage(ctx context.Context, req storedmodel.DailyStorageRequest) (*storedmodel.DailyStorageResponse, error) {
+	if p.usage == nil {
+		return &storedmodel.DailyStorageResponse{}, nil
+	}
+	return p.usage.GetDailyStorage(ctx, req)
 }
 
 // Purge removes data older than the given time for the given index pattern.
