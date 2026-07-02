@@ -111,6 +111,22 @@ type UsageReporter interface {
 }
 
 // ═══════════════════════════════════════════════════
+// UsageHistoryReader — Historical Usage Access
+// ═══════════════════════════════════════════════════
+
+// UsageHistoryReader provides access to historical usage snapshots.
+// Implementations (e.g., TrendBuffer) store periodically-collected snapshots
+// and expose them for trend aggregation and visualization.
+//
+// This abstraction follows DIP: TrendAggregator depends on this interface,
+// not on concrete TrendBuffer, enabling mock injection for testing.
+type UsageHistoryReader interface {
+	// ReadSnapshots returns all snapshots within [since, until].
+	// Returns empty slice if no snapshots exist in the range.
+	ReadSnapshots(since, until time.Time) []UsageSnapshot
+}
+
+// ═══════════════════════════════════════════════════
 // AuditEmitter — Lifecycle Event Emission
 // ═══════════════════════════════════════════════════
 

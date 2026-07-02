@@ -147,3 +147,94 @@ func TestTrendBuffer_FullWrapMultipleTimes(t *testing.T) {
 		t.Errorf("expected [7, 8, 9], got [%d, %d, %d]", all[0].UsedBytes, all[1].UsedBytes, all[2].UsedBytes)
 	}
 }
+
+func TestTrendBuffer_ReadSnapshots_FullRange(t *testing.T) {
+	buf := NewTrendBuffer(5)
+	base := time.Unix(1000, 0)
+	for i := range 5 {
+		buf.Push(UsageSnapshot{Timestamp: base.Add(time.Duration(i) * time.Hour), UsedBytes: int64((i + 1) * 100)})
+	}
+
+	result := buf.ReadSnapshots(base, base.Add(4*time.Hour))
+	if len(result) != 5 {
+		t.Fatalf("expected 5 snapshots in full range, got %d", len(result))
+	}
+	if result[0].UsedBytes != 100 || result[4].UsedBytes != 500 {
+		t.Errorf("unexpected values: first=%d last=%d", result[0].UsedBytes, result[4].UsedBytes)
+	}
+}
+
+func TestTrendBuffer_ReadSnapshots_PartialRange(t *testing.T) {
+	buf := NewTrendBuffer(10)
+	base := time.Unix(1000, 0)
+	for i := range 10 {
+		buf.Push(UsageSnapshot{Timestamp: base.Add(time.Duration(i) * time.Hour), UsedBytes: int64(i)})
+	}
+
+	// Query middle 3 hours: [2h, 4h]
+	result := buf.ReadSnapshots(base.Add(2*time.Hour), base.Add(4*time.Hour))
+	if len(result) != 3 {
+		t.Fatalf("expected 3 snapshots, got %d", len(result))
+	}
+	if result[0].UsedBytes != 2 || result[1].UsedBytes != 3 || result[2].UsedBytes != 4 {
+		t.Errorf("unexpected values: %v", result)
+	}
+}
+
+func TestTrendBuffer_ReadSnapshots_SinglePoint(t *testing.T) {
+	buf := NewTrendBuffer(5)
+	ts := time.Unix(1000, 0)
+	for i := range 5 {
+		buf.Push(UsageSnapshot{Timestamp: ts.Add(time.Duration(i) * time.Hour), UsedBytes: int64(i)})
+	}
+
+	// Exact match on hour 2
+	result := buf.ReadSnapshots(ts.Add(2*time.Hour), ts.Add(2*time.Hour))
+	if len(result) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(result))
+	}
+	if result[0].UsedBytes != 2 {
+		t.Errorf("expected UsedBytes=2, got %d", result[0].UsedBytes)
+	}
+}
+
+func TestTrendBuffer_ReadSnapshots_NoMatch(t *testing.T) {
+	buf := NewTrendBuffer(5)
+	base := time.Unix(1000, 0)
+	for i := range 5 {
+		buf.Push(UsageSnapshot{Timestamp: base.Add(time.Duration(i) * time.Hour), UsedBytes: int64(i)})
+	}
+
+	// Range before all data
+	result := buf.ReadSnapshots(base.Add(-10*time.Hour), base.Add(-1*time.Hour))
+	if len(result) != 0 {
+		t.Errorf("expected 0 snapshots for past range, got %d", len(result))
+	}
+
+	// Range after all data
+	result = buf.ReadSnapshots(base.Add(10*time.Hour), base.Add(20*time.Hour))
+	if len(result) != 0 {
+		t.Errorf("expected 0 snapshots for future range, got %d", len(result))
+	}
+}
+
+func TestTrendBuffer_ReadSnapshots_EmptyBuffer(t *testing.T) {
+	buf := NewTrendBuffer(5)
+	result := buf.ReadSnapshots(time.Unix(0, 0), time.Unix(9999, 0))
+	if result != nil {
+		t.Errorf("expected nil for empty buffer, got %v", result)
+	}
+}
+
+func TestTrendBuffer_InterfaceSatisfaction(t *testing.T) {
+	// Compile-time check: TrendBuffer implements UsageHistoryReader
+	var _ UsageHistoryReader = (*TrendBuffer)(nil)
+
+	buf := NewTrendBuffer(3)
+	buf.Push(UsageSnapshot{Timestamp: time.Unix(1000, 0), UsedBytes: 100})
+
+	result := buf.ReadSnapshots(time.Unix(0, 0), time.Unix(9999, 0))
+	if len(result) != 1 {
+		t.Fatalf("expected 1 snapshot via interface, got %d", len(result))
+	}
+}

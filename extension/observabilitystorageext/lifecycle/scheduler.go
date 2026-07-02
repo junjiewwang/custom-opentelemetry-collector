@@ -175,6 +175,12 @@ func (s *LifecycleScheduler) GetTrend() []UsageSnapshot {
 	return s.trendBuf.All()
 }
 
+// TrendReader returns the underlying UsageHistoryReader for trend aggregation.
+// Used by the extension layer to wire TrendAggregator without directly depending on TrendBuffer.
+func (s *LifecycleScheduler) TrendReader() UsageHistoryReader {
+	return s.trendBuf
+}
+
 // loop is the main scheduling goroutine.
 func (s *LifecycleScheduler) loop() {
 	defer s.wg.Done()
@@ -260,6 +266,7 @@ func (s *LifecycleScheduler) collectUsageSnapshot(ctx context.Context) {
 		TotalBytes: usage.TotalBytes,
 		UsedBytes:  usage.UsedBytes,
 		BySignal:   usage.BySignal,
+		ByApp:      usage.ByApp,
 	}
 
 	s.trendMu.Lock()

@@ -5,7 +5,11 @@ package lifecycle
 
 import (
 	"sync"
+	"time"
 )
+
+// Compile-time check: TrendBuffer implements UsageHistoryReader.
+var _ UsageHistoryReader = (*TrendBuffer)(nil)
 
 // TrendBuffer is a thread-safe, fixed-size ring buffer for UsageSnapshot.
 // It retains the N most recent snapshots and overwrites the oldest when full.
@@ -57,6 +61,29 @@ func (b *TrendBuffer) All() []UsageSnapshot {
 	copy(result, b.buf[b.head:])
 	copy(result[b.size-b.head:], b.buf[:b.head])
 	return result
+}
+
+// ReadSnapshots returns all snapshots within [since, until] in chronological order.
+// Implements UsageHistoryReader.
+func (b *TrendBuffer) ReadSnapshots(since, until time.Time) []UsageSnapshot {
+	all := b.All()
+	if len(all) == 0 {
+		return nil
+	}
+	// Binary-search for start index (snapshots are sorted by timestamp)
+	startIdx := 0
+	for startIdx < len(all) && all[startIdx].Timestamp.Before(since) {
+		startIdx++
+	}
+	// Collect up to until
+	endIdx := startIdx
+	for endIdx < len(all) && !all[endIdx].Timestamp.After(until) {
+		endIdx++
+	}
+	if startIdx >= endIdx {
+		return nil
+	}
+	return all[startIdx:endIdx]
 }
 
 // Len returns the number of snapshots currently stored.

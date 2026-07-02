@@ -88,6 +88,7 @@ type StorageUsage struct {
 	UsedBytes      int64                `json:"usedBytes"`
 	AvailableBytes int64                `json:"availableBytes"`
 	BySignal       map[SignalType]int64 `json:"bySignal,omitempty"`
+	ByApp          map[string]int64     `json:"byApp,omitempty"`
 	UsageRatio     float64              `json:"usageRatio"` // usedBytes/totalBytes
 }
 
@@ -97,6 +98,7 @@ type UsageSnapshot struct {
 	TotalBytes int64                `json:"totalBytes"`
 	UsedBytes  int64                `json:"usedBytes"`
 	BySignal   map[SignalType]int64 `json:"bySignal,omitempty"`
+	ByApp      map[string]int64     `json:"byApp,omitempty"`
 }
 
 // ═══════════════════════════════════════════════════
