@@ -260,6 +260,7 @@ func (e *Extension) newRouter() http.Handler {
 					r.Put("/retention/{signal}", e.handleSetStorageRetention)
 					r.Post("/purge/{signal}", e.handleStoragePurge)
 					r.Get("/disk-usage", e.handleStorageDiskUsage)
+					r.Get("/disk-usage/daily", e.handleStorageDailyUsage)
 				})
 			}
 		})

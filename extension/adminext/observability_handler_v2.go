@@ -427,7 +427,7 @@ func (e *Extension) handleSetStorageRetention(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	policy := observabilitystorageext.RetentionPolicy{Duration: duration}
+	policy := observabilitystorageext.RetentionPolicy{Duration: observabilitystorageext.RetentionDuration(duration)}
 	if err := e.storageAdmin.SetRetention(r.Context(), signal, policy); err != nil {
 		e.writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -491,6 +491,42 @@ func (e *Extension) handleStorageDiskUsage(w http.ResponseWriter, r *http.Reques
 	}
 
 	e.writeJSON(w, http.StatusOK, usage)
+}
+
+// handleStorageDailyUsage returns per-day storage usage from index-level stats.
+// GET /api/v2/observability/admin/disk-usage/daily?start=xxx&end=xxx&appId=xxx
+func (e *Extension) handleStorageDailyUsage(w http.ResponseWriter, r *http.Request) {
+	if e.observabilityStorage == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Storage extension not available")
+		return
+	}
+
+	q := r.URL.Query()
+
+	// Parse date range — defaults to last 7 days
+	tr := parseTimeRange(r)
+	if tr.Start.IsZero() {
+		tr.Start = time.Now().Add(-7 * 24 * time.Hour)
+	}
+	if tr.End.IsZero() {
+		tr.End = time.Now()
+	}
+
+	req := observabilitystorageext.DailyStorageRequest{
+		StartDate: tr.Start,
+		EndDate:   tr.End,
+		AppID:     q.Get("appId"),
+	}
+
+	// Get the daily storage provider from the storage extension
+	provider := e.observabilityStorage.GetProvider()
+	resp, err := provider.GetDailyStorage(r.Context(), req)
+	if err != nil {
+		e.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	e.writeJSON(w, http.StatusOK, resp)
 }
 
 // handleStorageHealth returns the health status of the storage backend.
