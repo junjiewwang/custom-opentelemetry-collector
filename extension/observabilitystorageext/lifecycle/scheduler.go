@@ -297,13 +297,6 @@ func (s *LifecycleScheduler) purgeAppsWithOverrides(ctx context.Context) {
 			// E.g., "keep 1 day" = keep today + yesterday, delete the day before yesterday and earlier.
 			today := time.Now().UTC().Truncate(24 * time.Hour)
 			cutoff := today.Add(-perAppDur)
-			s.logger.Info("Purging per-app expired data",
-				zap.String("appID", entry.AppID),
-				zap.String("signal", string(signal)),
-				zap.Duration("per_app_retention", perAppDur),
-				zap.Duration("platform_retention", platformRet.Duration),
-				zap.Time("cutoff", cutoff),
-			)
 
 			if s.config.DryRun {
 				s.logger.Info("[DRY-RUN] Would purge per-app expired data",
@@ -332,13 +325,22 @@ func (s *LifecycleScheduler) purgeAppsWithOverrides(ctx context.Context) {
 				continue
 			}
 
-			s.audit.Emit(ctx, LifecycleEvent{
-				Timestamp: time.Now(),
-				Action:    ActionAutoPurge,
-				Signal:    signal,
-				Operator:  "scheduler:per-app:" + entry.AppID,
-				Result:    map[string]any{"appID": entry.AppID, "cutoff": cutoff, "deleted_units": result.DeletedUnits},
-			})
+			if result.DeletedUnits > 0 {
+				s.logger.Info("Purged per-app expired data",
+					zap.String("appID", entry.AppID),
+					zap.String("signal", string(signal)),
+					zap.Duration("per_app_retention", perAppDur),
+					zap.Time("cutoff", cutoff),
+					zap.Int("deleted_indices", result.DeletedUnits),
+				)
+				s.audit.Emit(ctx, LifecycleEvent{
+					Timestamp: time.Now(),
+					Action:    ActionAutoPurge,
+					Signal:    signal,
+					Operator:  "scheduler:per-app:" + entry.AppID,
+					Result:    map[string]any{"appID": entry.AppID, "cutoff": cutoff, "deleted_units": result.DeletedUnits},
+				})
+			}
 		}
 	}
 }
