@@ -79,8 +79,7 @@ func (p *Purger) PurgeExpired(ctx context.Context, signal lifecycle.SignalType, 
 func (p *Purger) PurgeByApp(ctx context.Context, appID string, signal lifecycle.SignalType, before time.Time) (*lifecycle.PurgeResult, error) {
 	start := time.Now()
 	prefix := p.indexPrefix(signal)
-	sanitized := sanitizeAppID(appID)
-	appPattern := prefix + "-" + sanitized + "-*"
+	appPattern := prefix + "-" + appID + "-*"
 
 	// Try index deletion first (app-scoped pattern)
 	deletedIndices, err := p.deleteExpiredIndicesWithPattern(ctx, appPattern, before)
