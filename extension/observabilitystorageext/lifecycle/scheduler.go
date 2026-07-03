@@ -293,7 +293,10 @@ func (s *LifecycleScheduler) purgeAppsWithOverrides(ctx context.Context) {
 				continue
 			}
 
-			cutoff := time.Now().Add(-perAppDur)
+			// Align to UTC midnight: date-based indices cover full days.
+			// E.g., "keep 1 day" = keep today + yesterday, delete the day before yesterday and earlier.
+			today := time.Now().UTC().Truncate(24 * time.Hour)
+			cutoff := today.Add(-perAppDur)
 			s.logger.Info("Purging per-app expired data",
 				zap.String("appID", entry.AppID),
 				zap.String("signal", string(signal)),
