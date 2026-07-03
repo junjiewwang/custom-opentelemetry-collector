@@ -317,6 +317,7 @@ func (o *DistributedPurgeOrchestrator) planTasks(
 			continue
 		}
 		if retention.Duration <= 0 {
+			o.logger.Debug("Signal skipped: no retention configured", zap.String("signal", string(signal)))
 			continue
 		}
 
@@ -326,6 +327,13 @@ func (o *DistributedPurgeOrchestrator) planTasks(
 			o.logger.Error("Failed to list expired", zap.String("signal", string(signal)), zap.Error(err))
 			continue
 		}
+
+		o.logger.Info("Expired scan completed",
+			zap.String("signal", string(signal)),
+			zap.Duration("retention", retention.Duration),
+			zap.Time("cutoff", cutoff),
+			zap.Int("expired_count", len(expired)),
+		)
 
 		for _, indexName := range expired {
 			tasks = append(tasks, PurgeTask{

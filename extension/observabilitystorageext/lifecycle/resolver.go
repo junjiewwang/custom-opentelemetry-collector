@@ -63,6 +63,14 @@ func (r *retentionResolverChain) Resolve(ctx context.Context, signal SignalType,
 	return r.clamp(signal, builtinDefault(signal), SourceBuiltinDefault), nil
 }
 
+// ListAppOverrides returns all apps that have custom retention settings.
+func (r *retentionResolverChain) ListAppOverrides(ctx context.Context) ([]AppRetentionEntry, error) {
+	if r.store == nil {
+		return nil, nil
+	}
+	return r.store.ListAppOverrides(ctx)
+}
+
 // ResolveAll returns retention for all signal types.
 func (r *retentionResolverChain) ResolveAll(ctx context.Context, appID string) (map[SignalType]EffectiveRetention, error) {
 	result := make(map[SignalType]EffectiveRetention, 3)

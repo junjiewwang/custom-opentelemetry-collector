@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/lifecycle"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/hybrid"
@@ -492,8 +493,9 @@ func (e *ObservabilityStorage) getHybridStorageAdmin() StorageAdmin {
 // It uses the Strategy Pattern: the specific purger/reporter implementations are
 // chosen based on the active provider type (DIP — depend on abstractions).
 func (e *ObservabilityStorage) buildLifecycleScheduler(host component.Host) *lifecycle.LifecycleScheduler {
-	// Initialize the in-memory retention store (shared with API layer for future use)
-	e.retentionStore = lifecycle.NewInMemoryRetentionStore()
+	// Initialize the retention store adapter — delegates to AppRetentionProvider when available.
+	// Starts empty (all overrides = nil = use platform default); admin injects the provider later.
+	e.retentionStore = newAppRetentionStoreAdapter()
 
 	// Convert extension config to lifecycle domain types
 	defaults := lifecycle.RetentionDefaults{
@@ -754,3 +756,13 @@ func (e *ObservabilityStorage) GetLifecycleScheduler() *lifecycle.LifecycleSched
 func (e *ObservabilityStorage) GetRetentionStore() lifecycle.RetentionStore {
 	return e.retentionStore
 }
+
+// SetAppRetentionProvider injects both AppRetentionProvider and AppManager into the
+// retention store adapter. Called by adminext after both extensions are initialized.
+func (e *ObservabilityStorage) SetAppRetentionProvider(provider appmanager.AppRetentionProvider, apps appmanager.AppManager) {
+	if adapter, ok := e.retentionStore.(*appRetentionStoreAdapter); ok {
+		adapter.SetProviders(provider, apps)
+	}
+}
+
+

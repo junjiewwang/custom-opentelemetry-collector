@@ -93,6 +93,10 @@ func (r *mockDistResolver) ResolveAll(_ context.Context, _ string) (map[SignalTy
 	return result, nil
 }
 
+func (r *mockDistResolver) ListAppOverrides(_ context.Context) ([]AppRetentionEntry, error) {
+	return nil, nil
+}
+
 // mockAuditCollector collects audit events for assertion.
 type mockAuditCollector struct {
 	mu     sync.Mutex

@@ -91,6 +91,10 @@ func (r *engineTestResolver) ResolveAll(_ context.Context, _ string) (map[Signal
 	return nil, nil
 }
 
+func (r *engineTestResolver) ListAppOverrides(_ context.Context) ([]AppRetentionEntry, error) {
+	return nil, nil
+}
+
 // engineTestAuditEmitter records audit events.
 type engineTestAuditEmitter struct {
 	mu     sync.Mutex

@@ -223,6 +223,9 @@ func (s *LifecycleScheduler) runCycle(ctx context.Context) {
 		}
 	}
 
+	// Phase 4: Per-app purge — apps with stricter retention than platform default
+	s.purgeAppsWithOverrides(ctx)
+
 	s.logger.Debug("Lifecycle cycle completed", zap.Duration("elapsed", time.Since(start)))
 }
 
@@ -245,6 +248,94 @@ func (s *LifecycleScheduler) distributedPurgeViaEngine(ctx context.Context) {
 		// Orchestrator decided to fallback (threshold, election failure, etc.)
 		for _, signal := range AllSignals() {
 			s.purgeSignal(ctx, signal)
+		}
+	}
+}
+
+// purgeAppsWithOverrides scans all apps that have per-app retention overrides
+// and purges their data using the app-specific cutoff (which may be stricter than platform default).
+// This runs after the platform-level purge and handles per-app retention correctly.
+func (s *LifecycleScheduler) purgeAppsWithOverrides(ctx context.Context) {
+	if s.resolver == nil || s.purger == nil {
+		return
+	}
+
+	overrides, err := s.resolver.ListAppOverrides(ctx)
+	if err != nil {
+		s.logger.Warn("Failed to list app retention overrides", zap.Error(err))
+		return
+	}
+	if len(overrides) == 0 {
+		return
+	}
+
+	s.logger.Info("Checking per-app retention overrides", zap.Int("app_count", len(overrides)))
+
+	for _, entry := range overrides {
+		for signal, perAppDur := range entry.Overrides {
+			if perAppDur <= 0 {
+				continue
+			}
+
+			// Resolve platform default for comparison
+			platformRet, err := s.resolver.Resolve(ctx, signal, "")
+			if err != nil {
+				s.logger.Error("Failed to resolve platform retention for per-app check",
+					zap.String("appID", entry.AppID),
+					zap.String("signal", string(signal)),
+					zap.Error(err),
+				)
+				continue
+			}
+
+			// Only purge if per-app retention is STRICTER than platform default
+			if perAppDur >= platformRet.Duration {
+				continue
+			}
+
+			cutoff := time.Now().Add(-perAppDur)
+			s.logger.Info("Purging per-app expired data",
+				zap.String("appID", entry.AppID),
+				zap.String("signal", string(signal)),
+				zap.Duration("per_app_retention", perAppDur),
+				zap.Duration("platform_retention", platformRet.Duration),
+				zap.Time("cutoff", cutoff),
+			)
+
+			if s.config.DryRun {
+				s.logger.Info("[DRY-RUN] Would purge per-app expired data",
+					zap.String("appID", entry.AppID),
+					zap.String("signal", string(signal)),
+					zap.Time("cutoff", cutoff),
+				)
+				continue
+			}
+
+			result, err := s.purger.PurgeByApp(ctx, entry.AppID, signal, cutoff)
+			if err != nil {
+				s.logger.Error("Failed to purge per-app expired data",
+					zap.String("appID", entry.AppID),
+					zap.String("signal", string(signal)),
+					zap.Error(err),
+				)
+				s.audit.Emit(ctx, LifecycleEvent{
+					Timestamp: time.Now(),
+					Action:    ActionAutoPurge,
+					Signal:    signal,
+					Operator:  "scheduler:per-app",
+					Result:    map[string]any{"appID": entry.AppID, "cutoff": cutoff},
+					Error:     err.Error(),
+				})
+				continue
+			}
+
+			s.audit.Emit(ctx, LifecycleEvent{
+				Timestamp: time.Now(),
+				Action:    ActionAutoPurge,
+				Signal:    signal,
+				Operator:  "scheduler:per-app:" + entry.AppID,
+				Result:    map[string]any{"appID": entry.AppID, "cutoff": cutoff, "deleted_units": result.DeletedUnits},
+			})
 		}
 	}
 }

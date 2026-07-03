@@ -113,6 +113,10 @@ func (m *mockResolver) ResolveAll(_ context.Context, _ string) (map[SignalType]E
 	return result, m.err
 }
 
+func (m *mockResolver) ListAppOverrides(_ context.Context) ([]AppRetentionEntry, error) {
+	return nil, nil
+}
+
 // mockUsageReporter returns configurable usage.
 type mockUsageReporter struct {
 	mu    sync.Mutex

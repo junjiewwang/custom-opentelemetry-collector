@@ -78,6 +78,10 @@ type RetentionResolver interface {
 
 	// ResolveAll returns retention for all signals, optionally scoped to an app.
 	ResolveAll(ctx context.Context, appID string) (map[SignalType]EffectiveRetention, error)
+
+	// ListAppOverrides returns all apps that have custom retention settings.
+	// Used by the scheduler to discover apps needing per-app purging.
+	ListAppOverrides(ctx context.Context) ([]AppRetentionEntry, error)
 }
 
 // ═══════════════════════════════════════════════════
