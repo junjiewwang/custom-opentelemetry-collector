@@ -65,6 +65,7 @@ import type {
   SignalType,
   DailyStorageRequest,
   DailyStorageResponse,
+  AppRetentionResponse,
 } from '@/types/storage';
 
 interface InstrumentationRuleMutationResponse {
@@ -372,15 +373,23 @@ class ApiClient {
   // ========================================================================
 
   /** 获取所有可用的 Service 列表 */
-  getTraceServices(): Promise<{ data: Service[] }> {
-    return this.request<{ data: Service[] }>('GET', '/observability/traces/services');
+  getTraceServices(start?: string, end?: string): Promise<{ data: Service[] }> {
+    const params = new URLSearchParams();
+    if (start) params.set('start', start);
+    if (end) params.set('end', end);
+    const qs = params.toString();
+    return this.request<{ data: Service[] }>('GET', `/observability/traces/services${qs ? `?${qs}` : ''}`);
   }
 
   /** 获取指定 Service 的所有 Operation */
-  getTraceOperations(service: string): Promise<{ data: Operation[] }> {
+  getTraceOperations(service: string, start?: string, end?: string): Promise<{ data: Operation[] }> {
+    const params = new URLSearchParams();
+    if (start) params.set('start', start);
+    if (end) params.set('end', end);
+    const qs = params.toString();
     return this.request<{ data: Operation[] }>(
       'GET',
-      `/observability/traces/services/${encodeURIComponent(service)}/operations`,
+      `/observability/traces/services/${encodeURIComponent(service)}/operations${qs ? `?${qs}` : ''}`,
     );
   }
 
@@ -558,6 +567,25 @@ class ApiClient {
       'GET',
       `/observability/admin/disk-usage/daily${qs ? `?${qs}` : ''}`,
     );
+  }
+
+  // ========================================================================
+  // App Retention (per-app data lifecycle policy)
+  // ========================================================================
+
+  /** 获取 App 的 retention 配置 */
+  getAppRetention(appId: string): Promise<AppRetentionResponse> {
+    return this.request<AppRetentionResponse>('GET', `/apps/${encodeURIComponent(appId)}/retention`);
+  }
+
+  /** 设置 App 某 signal 的 retention */
+  setAppRetention(appId: string, signal: string, duration: string): Promise<{ message: string; success: boolean }> {
+    return this.request('PUT', `/apps/${encodeURIComponent(appId)}/retention/${signal}`, { duration });
+  }
+
+  /** 删除 App 某 signal 的 retention override */
+  deleteAppRetention(appId: string, signal: string): Promise<{ message: string; success: boolean }> {
+    return this.request('DELETE', `/apps/${encodeURIComponent(appId)}/retention/${signal}`);
   }
 }
 

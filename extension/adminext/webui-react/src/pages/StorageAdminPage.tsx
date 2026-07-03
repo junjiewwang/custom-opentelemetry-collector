@@ -4,9 +4,11 @@
  * 功能：
  * - 存储健康状态概览
  * - 磁盘使用量（总量/已用/可用 + 按信号类型分布）
+ * - 按天存储用量趋势图（按 App 分线，按信号分线）
  * - 索引列表（名称、文档数、大小、信号类型）
- * - 保留策略查看/修改
  * - 数据清除操作
+ *
+ * 注意：保留策略（retention）已移至 App 配置页面管理，属于业务配置而非存储运维。
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -16,12 +18,11 @@ import type {
   StorageStatus,
   StorageHealth,
   DiskUsage,
-  RetentionPolicies,
   IndexInfo,
   SignalType,
   DailyStorageResponse,
 } from '@/types/storage';
-import { formatBytes, formatRetention, DAILY_RANGES } from '@/types/storage';
+import { formatBytes, DAILY_RANGES } from '@/types/storage';
 import TimeSeriesChart from '@/components/TimeSeriesChart';
 import type { ChartSeries } from '@/types/metric';
 
@@ -37,19 +38,9 @@ export default function StorageAdminPage() {
   const [status, setStatus] = useState<StorageStatus | null>(null);
   const [health, setHealth] = useState<StorageHealth | null>(null);
   const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
-  const [retention, setRetention] = useState<RetentionPolicies | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [available, setAvailable] = useState<boolean | null>(null);
-
-  // Retention edit
-  const [editingRetention, setEditingRetention] = useState<SignalType | null>(null);
-  const [retentionInput, setRetentionInput] = useState('');
-  const [retentionSaving, setRetentionSaving] = useState(false);
-
-  // Purge
-  const [purging, setPurging] = useState(false);
-  const [purgeMessage, setPurgeMessage] = useState('');
 
   // Apps
   const [apps, setApps] = useState<App[]>([]);
@@ -69,11 +60,10 @@ export default function StorageAdminPage() {
     setError('');
 
     try {
-      const [statusRes, healthRes, diskRes, retentionRes, appsRes] = await Promise.allSettled([
+      const [statusRes, healthRes, diskRes, appsRes] = await Promise.allSettled([
         apiClient.getStorageStatus(),
         apiClient.getStorageHealth(),
         apiClient.getStorageDiskUsage(),
-        apiClient.getStorageRetention(),
         apiClient.getApps(),
       ]);
 
@@ -86,7 +76,6 @@ export default function StorageAdminPage() {
 
       if (healthRes.status === 'fulfilled') setHealth(healthRes.value);
       if (diskRes.status === 'fulfilled') setDiskUsage(diskRes.value);
-      if (retentionRes.status === 'fulfilled') setRetention(retentionRes.value);
       if (appsRes.status === 'fulfilled') setApps(appsRes.value);
 
       setAvailable(true);
@@ -130,51 +119,6 @@ export default function StorageAdminPage() {
   // ========================================================================
   // Handlers
   // ========================================================================
-
-  const handleSaveRetention = async (signal: SignalType) => {
-    if (!retentionInput) return;
-    setRetentionSaving(true);
-    try {
-      await apiClient.setStorageRetention(signal, retentionInput);
-      setEditingRetention(null);
-      setRetentionInput('');
-      // Reload retention
-      const res = await apiClient.getStorageRetention();
-      setRetention(res);
-    } catch (err: unknown) {
-      const e = err as { message?: string };
-      setError(e.message || 'Failed to update retention');
-    } finally {
-      setRetentionSaving(false);
-    }
-  };
-
-  const handlePurge = async (signal: SignalType) => {
-    const daysAgo = prompt(`清除 ${signal} 数据：输入清除多少天前的数据（例如 30）`);
-    if (!daysAgo) return;
-
-    const days = parseInt(daysAgo, 10);
-    if (isNaN(days) || days <= 0) {
-      setError('请输入有效的天数');
-      return;
-    }
-
-    const before = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-    setPurging(true);
-    setPurgeMessage('');
-
-    try {
-      const result = await apiClient.purgeStorage(signal, before);
-      setPurgeMessage(`成功清除 ${result.deletedCount} 条记录${result.freedBytes ? `，释放 ${formatBytes(result.freedBytes)}` : ''}`);
-      // Reload
-      loadData();
-    } catch (err: unknown) {
-      const e = err as { message?: string };
-      setError(e.message || 'Purge failed');
-    } finally {
-      setPurging(false);
-    }
-  };
 
   // ========================================================================
   // Render: Not Available
@@ -238,14 +182,6 @@ export default function StorageAdminPage() {
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
           {error}
           <button onClick={() => setError('')} className="ml-2 underline">关闭</button>
-        </div>
-      )}
-
-      {/* Purge success message */}
-      {purgeMessage && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-green-700 text-sm">
-          {purgeMessage}
-          <button onClick={() => setPurgeMessage('')} className="ml-2 underline">关闭</button>
         </div>
       )}
 
@@ -324,74 +260,6 @@ export default function StorageAdminPage() {
         appName={selectedAppId ? (apps.find(a => a.id === selectedAppId)?.name || selectedAppId) : undefined}
         apps={apps}
       />
-
-      {/* Retention Policies */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-        <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">保留策略</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {(['trace', 'metric', 'log'] as SignalType[]).map(signal => {
-            const policy = retention?.[signal];
-            const isEditing = editingRetention === signal;
-
-            return (
-              <div key={signal} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-medium text-gray-500 uppercase">{signal}</span>
-                  <div className="flex gap-1">
-                    {!isEditing && (
-                      <button
-                        onClick={() => {
-                          setEditingRetention(signal);
-                          setRetentionInput(policy?.duration || '720h');
-                        }}
-                        className="text-xs text-blue-600 hover:text-blue-700"
-                      >
-                        修改
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handlePurge(signal)}
-                      disabled={purging}
-                      className="text-xs text-red-600 hover:text-red-700 disabled:opacity-50"
-                    >
-                      清除
-                    </button>
-                  </div>
-                </div>
-
-                {isEditing ? (
-                  <div className="flex gap-1 mt-2">
-                    <input
-                      type="text"
-                      value={retentionInput}
-                      onChange={e => setRetentionInput(e.target.value)}
-                      placeholder="例如: 720h"
-                      className="flex-1 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded"
-                    />
-                    <button
-                      onClick={() => handleSaveRetention(signal)}
-                      disabled={retentionSaving}
-                      className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-                    >
-                      保存
-                    </button>
-                    <button
-                      onClick={() => setEditingRetention(null)}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
-                    >
-                      取消
-                    </button>
-                  </div>
-                ) : (
-                  <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                    {policy?.duration ? formatRetention(policy.duration) : '未设置'}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
 
       {/* Indices Table */}
       {status?.indices && status.indices.length > 0 && (

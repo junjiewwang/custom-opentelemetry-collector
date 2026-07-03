@@ -117,6 +117,11 @@ func (e *Extension) newRouter() http.Handler {
 					r.Delete("/services/{serviceName}", e.deleteAppServiceConfigV2)
 				})
 
+				// Retention management (per-app data lifecycle policy)
+				r.Get("/retention", e.handleAppRetention)
+				r.Put("/retention/{signal}", e.handleSetAppRetention)
+				r.Delete("/retention/{signal}", e.handleDeleteAppRetention)
+
 				// Services under app
 				r.Get("/services", e.listAppServices)
 				r.Get("/services/{serviceName}", e.getService)

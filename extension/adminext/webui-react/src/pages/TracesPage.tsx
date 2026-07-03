@@ -16,12 +16,39 @@ import type { OTelTrace, TraceListItem, TraceSearchParams } from '@/types/trace'
 import TraceDetail from '@/components/TraceDetail';
 import DetailDrawer from '@/components/DetailDrawer';
 import EmptyState from '@/components/EmptyState';
+import TimeRangePicker from '@/components/TimeRangePicker';
 
 // ============================================================================
 // 排序选项
 // ============================================================================
 
 type SortOrder = 'most-recent' | 'longest' | 'shortest' | 'most-spans' | 'least-spans';
+
+const LOOKBACK_MS: Record<string, number> = {
+  '15m': 15 * 60 * 1000,
+  '30m': 30 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '3h': 3 * 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '12h': 12 * 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '2d': 2 * 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+};
+
+function lookbackMs(lookback: string): number {
+  return LOOKBACK_MS[lookback] ?? 60 * 60 * 1000;
+}
+
+function formatDateTime(date: Date): string {
+  return date.toISOString().slice(0, 16); // "2026-07-01T12:00"
+}
+
+function applyLookback(lb: string): [string, string] {
+  const end = new Date();
+  const start = new Date(end.getTime() - lookbackMs(lb));
+  return [formatDateTime(start), formatDateTime(end)];
+}
 
 const SORT_OPTIONS: { value: SortOrder; label: string }[] = [
   { value: 'most-recent', label: 'Most Recent' },
@@ -62,7 +89,8 @@ export default function TracesPage() {
   const [selectedService, setSelectedService] = useState('');
   const [selectedOperation, setSelectedOperation] = useState('');
   const [tagsInput, setTagsInput] = useState('');
-  const [lookback, setLookback] = useState('1h');
+  const [timeStart, setTimeStart] = useState(() => formatDateTime(new Date(Date.now() - 3600000)));
+  const [timeEnd, setTimeEnd] = useState(() => formatDateTime(new Date()));
   const [minDuration, setMinDuration] = useState('');
   const [maxDuration, setMaxDuration] = useState('');
   const [limit, setLimit] = useState(20);
@@ -85,11 +113,14 @@ export default function TracesPage() {
 
   useEffect(() => {
     loadServices();
-  }, []);
+  }, [timeStart, timeEnd]);
 
   const loadServices = async () => {
     try {
-      const resp = await apiClient.getTraceServices();
+      const resp = await apiClient.getTraceServices(
+        String(new Date(timeStart).getTime()),
+        String(new Date(timeEnd).getTime()),
+      );
       const svcList = (resp.data ?? []).map(s => s.name).sort();
       setServices(svcList);
 
@@ -125,7 +156,10 @@ export default function TracesPage() {
 
     setSelectedService(urlService);
     if (urlOperation) setSelectedOperation(urlOperation);
-    if (urlLookback) setLookback(urlLookback);
+    if (urlLookback) {
+      const [s, e] = applyLookback(urlLookback);
+      setTimeStart(s); setTimeEnd(e);
+    }
     if (urlTags) setTagsInput(urlTags);
     if (urlMinDuration) setMinDuration(urlMinDuration);
     if (urlMaxDuration) setMaxDuration(urlMaxDuration);
@@ -148,7 +182,7 @@ export default function TracesPage() {
       return;
     }
     loadOperations(selectedService);
-  }, [selectedService]);
+  }, [selectedService, timeStart, timeEnd]);
 
   // ========================================================================
   // 自动搜索（从 URL 参数初始化后，等 service 设置完毕自动触发）
@@ -167,7 +201,11 @@ export default function TracesPage() {
 
   const loadOperations = async (service: string) => {
     try {
-      const resp = await apiClient.getTraceOperations(service);
+      const resp = await apiClient.getTraceOperations(
+        service,
+        String(new Date(timeStart).getTime()),
+        String(new Date(timeEnd).getTime()),
+      );
       const ops = (resp.data ?? []).map(op => op.name).sort();
       setOperations(ops);
     } catch {
@@ -190,26 +228,11 @@ export default function TracesPage() {
     setSelectedTraceID(null);
 
     try {
-      // 计算时间范围（毫秒）
-      const now = Date.now();
-      const lookbackMap: Record<string, number> = {
-        '15m': 15 * 60 * 1000,
-        '30m': 30 * 60 * 1000,
-        '1h': 60 * 60 * 1000,
-        '3h': 3 * 60 * 60 * 1000,
-        '6h': 6 * 60 * 60 * 1000,
-        '12h': 12 * 60 * 60 * 1000,
-        '24h': 24 * 60 * 60 * 1000,
-        '2d': 2 * 24 * 60 * 60 * 1000,
-        '7d': 7 * 24 * 60 * 60 * 1000,
-      };
-      const lookbackDuration = lookbackMap[lookback] ?? 60 * 60 * 1000;
-
       const params: TraceSearchParams = {
         service: selectedService,
         limit,
-        end: now,
-        start: now - lookbackDuration,
+        end: new Date(timeEnd).getTime(),
+        start: new Date(timeStart).getTime(),
       };
       if (selectedOperation) params.operation = selectedOperation;
       if (tagsInput.trim()) params.tags = tagsInput.trim();
@@ -229,7 +252,7 @@ export default function TracesPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedService, selectedOperation, tagsInput, lookback, minDuration, maxDuration, limit]);
+  }, [selectedService, selectedOperation, tagsInput, timeStart, timeEnd, minDuration, maxDuration, limit]);
 
   // ========================================================================
   // 排序后的 traces（根据 sortOrder 动态排序）
@@ -341,13 +364,27 @@ export default function TracesPage() {
 
   return (
     <div className="fade-in">
-      {/* Page Header */}
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3">
-          <i className="fas fa-route text-primary-600" />
-          Traces
-        </h2>
-        <p className="text-gray-500 mt-1">Search and explore distributed tracing data</p>
+      {/* Page Header + Time Range + Refresh */}
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3">
+            <i className="fas fa-route text-primary-600" />
+            Traces
+          </h2>
+          <p className="text-gray-500 mt-1 text-sm">Search and explore distributed tracing data</p>
+        </div>
+        <div className="flex items-center gap-3 pt-1">
+          <div className="w-56">
+            <TimeRangePicker start={timeStart} end={timeEnd} onChange={(s, e) => { setTimeStart(s); setTimeEnd(e); }} />
+          </div>
+          <button
+            onClick={() => { loadServices(); if (selectedService) loadOperations(selectedService); }}
+            className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <i className="fas fa-sync-alt text-gray-500 text-xs" />
+            刷新
+          </button>
+        </div>
       </div>
 
       {/* Search Panel */}
@@ -384,26 +421,6 @@ export default function TracesPage() {
               {operations.map(op => (
                 <option key={op} value={op}>{op}</option>
               ))}
-            </select>
-          </div>
-
-          {/* Lookback */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Lookback</label>
-            <select
-              value={lookback}
-              onChange={(e) => setLookback(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-            >
-              <option value="15m">Last 15 min</option>
-              <option value="30m">Last 30 min</option>
-              <option value="1h">Last 1 hour</option>
-              <option value="3h">Last 3 hours</option>
-              <option value="6h">Last 6 hours</option>
-              <option value="12h">Last 12 hours</option>
-              <option value="24h">Last 24 hours</option>
-              <option value="2d">Last 2 days</option>
-              <option value="7d">Last 7 days</option>
             </select>
           </div>
 

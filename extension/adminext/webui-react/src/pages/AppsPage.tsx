@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import EmptyState from '@/components/EmptyState';
+import AppDetailDrawer from '@/components/AppDetailDrawer';
 import type { App } from '@/types/api';
 
 /** Token 最大长度（与后端 MaxTokenLength 保持一致） */
@@ -29,6 +30,9 @@ export default function AppsPage() {
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [tokenApp, setTokenApp] = useState<App | null>(null);
   const [customToken, setCustomToken] = useState('');
+
+  // App 详情抽屉
+  const [drawerApp, setDrawerApp] = useState<App | null>(null);
 
   const loadApps = useCallback(async () => {
     if (loading) return;
@@ -198,6 +202,13 @@ export default function AppsPage() {
                 <td className="px-6 py-4 text-right">
                   <div className="flex items-center justify-end gap-2">
                     <button
+                      onClick={() => setDrawerApp(app)}
+                      className="p-2 text-gray-400 hover:text-sky-600 transition"
+                      title="Configure"
+                    >
+                      <i className="fas fa-cog" />
+                    </button>
+                    <button
                       onClick={() => openTokenModal(app)}
                       className="p-2 text-gray-400 hover:text-yellow-500 transition"
                       title="Manage Token"
@@ -359,6 +370,13 @@ export default function AppsPage() {
           </div>
         </div>
       )}
+
+      <AppDetailDrawer
+        app={drawerApp}
+        open={!!drawerApp}
+        onClose={() => setDrawerApp(null)}
+        onDelete={(id) => deleteApp(apps.find(a => a.id === id)!)}
+      />
     </div>
   );
 }

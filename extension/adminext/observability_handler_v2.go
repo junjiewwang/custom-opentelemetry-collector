@@ -585,8 +585,12 @@ func parseTimeParam(s string, fallback time.Time) time.Time {
 		nsec := int64((f - float64(sec)) * 1e9)
 		return time.Unix(sec, nsec)
 	}
-	// Try RFC3339
+	// Try RFC3339 (full: "2026-07-01T12:00:00Z")
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	// Try datetime-local format (from <input type="datetime-local">): "2026-07-01T12:00"
+	if t, err := time.Parse("2006-01-02T15:04", s); err == nil {
 		return t
 	}
 	return fallback

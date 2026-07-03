@@ -129,6 +129,18 @@ export interface DailyStorageResponse {
   points: DailyStoragePoint[];
 }
 
+// ============================================================================
+// App Retention (per-app data lifecycle policy)
+// ============================================================================
+
+export interface SignalRetention {
+  value: string;            // e.g. "720h0m0s" or ""
+  source: 'app' | 'platform'; // "app" = custom, "platform" = default
+  platform_default: string;  // platform default value
+}
+
+export type AppRetentionResponse = Record<string, SignalRetention>; // key: "trace"|"metric"|"log"
+
 /** 时间范围预设 */
 export const DAILY_RANGES = [
   { label: '7 天', days: 7 },
