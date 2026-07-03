@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
 // ============================================================================
@@ -93,7 +93,7 @@ func (e *Extension) createApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app, err := e.tokenMgr.CreateApp(r.Context(), &tokenmanager.CreateAppRequest{
+	app, err := e.tokenMgr.CreateApp(r.Context(), &appmanager.CreateAppRequest{
 		Name:        req.Name,
 		Description: req.Description,
 		Metadata:    req.Metadata,
@@ -137,7 +137,7 @@ func (e *Extension) updateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app, err := e.tokenMgr.UpdateApp(r.Context(), appID, &tokenmanager.UpdateAppRequest{
+	app, err := e.tokenMgr.UpdateApp(r.Context(), appID, &appmanager.UpdateAppRequest{
 		Name:        req.Name,
 		Description: req.Description,
 		Metadata:    req.Metadata,
@@ -179,7 +179,7 @@ func (e *Extension) regenerateAppToken(w http.ResponseWriter, r *http.Request) {
 func (e *Extension) setAppToken(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
-	req, err := decodeJSON[tokenmanager.SetTokenRequest](r)
+	req, err := decodeJSON[appmanager.SetTokenRequest](r)
 	if err != nil {
 		e.handleError(w, errBadRequest(err.Error()))
 		return
@@ -199,7 +199,7 @@ func (e *Extension) setAppToken(w http.ResponseWriter, r *http.Request) {
 // Config Management (Simplified: Service-level only)
 // ============================================================================
 
-func (e *Extension) getAppWithOnDemandCheck(r *http.Request) (*tokenmanager.AppInfo, error) {
+func (e *Extension) getAppWithOnDemandCheck(r *http.Request) (*appmanager.AppInfo, error) {
 	if e.onDemandConfigMgr == nil {
 		return nil, errNotImplemented("on-demand config manager not enabled")
 	}

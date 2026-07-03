@@ -25,7 +25,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
@@ -59,7 +59,7 @@ type Extension struct {
 	configMgr  configmanager.ConfigManager
 	taskMgr    taskmanager.TaskManager
 	agentReg   agentregistry.AgentRegistry
-	tokenMgr   tokenmanager.TokenManager
+	tokenMgr   appmanager.TokenManager
 	serviceMgr servicemanager.ServiceManager
 	instrMgr   instrumentationmanager.InstrumentationManager
 
@@ -78,7 +78,8 @@ type Extension struct {
 	storageTraceReader   observabilitystorageext.TraceReader
 	storageMetricReader  observabilitystorageext.MetricReader
 	storageLogReader     observabilitystorageext.LogReader
-	storageAdmin         observabilitystorageext.StorageAdmin
+	storageAdmin      observabilitystorageext.StorageAdmin
+	retentionProvider appmanager.AppRetentionProvider
 
 	// Notification components (from controlplane extension)
 	notificationStore notification.Store
@@ -131,6 +132,13 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		// Create our own components
 		if err := e.initOwnComponents(ctx, host); err != nil {
 			return err
+		}
+	}
+
+	// Extract AppRetentionProvider from TokenManager (AppService implements both)
+	if e.tokenMgr != nil {
+		if provider, ok := e.tokenMgr.(appmanager.AppRetentionProvider); ok {
+			e.retentionProvider = provider
 		}
 	}
 
@@ -478,7 +486,7 @@ func (e *Extension) GetAgentRegistry() agentregistry.AgentRegistry {
 }
 
 // GetTokenManager returns the token manager.
-func (e *Extension) GetTokenManager() tokenmanager.TokenManager {
+func (e *Extension) GetTokenManager() appmanager.TokenManager {
 	return e.tokenMgr
 }
 
@@ -506,7 +514,11 @@ func (e *Extension) initObservability(host component.Host) error {
 					e.storageMetricReader = storage.GetMetricReader()
 					e.storageLogReader = storage.GetLogReader()
 					e.storageAdmin = storage.GetStorageAdmin()
-					e.logger.Info("Observability readers initialized from storage extension",
+					// Bridge per-app retention + app list to purger's RetentionStore
+					if e.retentionProvider != nil && e.tokenMgr != nil {
+						e.observabilityStorage.SetAppRetentionProvider(e.retentionProvider, e.tokenMgr)
+					}
+				e.logger.Info("Observability readers initialized from storage extension",
 						zap.String("extension", e.config.Observability.StorageExtension),
 						zap.Bool("trace_reader", e.storageTraceReader != nil),
 						zap.Bool("metric_reader", e.storageMetricReader != nil),

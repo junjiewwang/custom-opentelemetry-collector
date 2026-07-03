@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
 const (
@@ -46,7 +46,7 @@ func newRuntimeSnapshotInstanceID() string {
 	if err != nil || strings.TrimSpace(hostname) == "" {
 		hostname = "collector"
 	}
-	instanceID, err := tokenmanager.GenerateID()
+	instanceID, err := appmanager.GenerateID()
 	if err != nil {
 		return fmt.Sprintf("%s-%d", hostname, time.Now().UnixNano())
 	}

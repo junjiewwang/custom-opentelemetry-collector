@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
 const runtimeSnapshotTaskType = "dynamic_instrument_list"
@@ -270,7 +270,7 @@ func (s *InstrumentationService) queryAgentRuntimeSnapshot(ctx context.Context, 
 		return nil
 	}
 	requestedAt := time.Now().UnixMilli()
-	taskID, err := tokenmanager.GenerateID()
+	taskID, err := appmanager.GenerateID()
 	if err != nil {
 		return s.recordFailedRuntimeSnapshot(ctx, agent.AgentID, "", RuntimeRefreshStatusFailed, fmt.Sprintf("generate snapshot task id: %v", err), requestedAt, requestedAt)
 	}

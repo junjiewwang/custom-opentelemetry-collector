@@ -14,7 +14,7 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
 type AuditSource string
@@ -360,7 +360,7 @@ func (s *InstrumentationService) dispatchOperationToAgent(ctx context.Context, r
 		return next, newAuditEntry(source, action, status, next.AgentID, "", reason, now), false
 	}
 
-	taskID, err := tokenmanager.GenerateID()
+	taskID, err := appmanager.GenerateID()
 	if err != nil {
 		next.State = TargetStateFailed
 		next.LastErrorMessage = fmt.Sprintf("generate task id: %v", err)
@@ -573,7 +573,7 @@ func cloneRuleAuditEntry(item *RuleAuditEntry) *RuleAuditEntry {
 }
 
 func newAuditEntry(source AuditSource, action AuditAction, status AuditStatus, agentID, taskID, message string, now int64) *RuleAuditEntry {
-	auditID, err := tokenmanager.GenerateID()
+	auditID, err := appmanager.GenerateID()
 	if err != nil {
 		auditID = fmt.Sprintf("audit-%d", now)
 	}

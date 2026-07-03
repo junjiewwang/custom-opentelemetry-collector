@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/instrumentationmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
 // ObservabilityConfig defines the configuration for observability query backends.
@@ -90,7 +90,7 @@ type Config struct {
 	AgentRegistry agentregistry.Config `mapstructure:"agent_registry"`
 
 	// TokenManager configuration.
-	TokenManager tokenmanager.Config `mapstructure:"token_manager"`
+	TokenManager appmanager.Config `mapstructure:"token_manager"`
 
 	// InstrumentationManager configuration.
 	InstrumentationManager instrumentationmanager.Config `mapstructure:"instrumentation_manager"`
@@ -286,7 +286,7 @@ func createDefaultConfig() *Config {
 		ConfigManager:          configmanager.DefaultConfig(),
 		TaskManager:            taskmanager.DefaultConfig(),
 		AgentRegistry:          agentregistry.DefaultConfig(),
-		TokenManager:           tokenmanager.DefaultConfig(),
+		TokenManager:           appmanager.DefaultConfig(),
 		InstrumentationManager: instrumentationmanager.DefaultConfig(),
 	}
 }

@@ -18,7 +18,7 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
 type InstrumentationService struct {
@@ -85,7 +85,7 @@ func (s *InstrumentationService) CreateRule(ctx context.Context, req *CreateRule
 		return nil, err
 	}
 
-	ruleID, err := tokenmanager.GenerateID()
+	ruleID, err := appmanager.GenerateID()
 	if err != nil {
 		return nil, fmt.Errorf("generate rule id: %w", err)
 	}
@@ -361,7 +361,7 @@ func (s *InstrumentationService) refreshTargetStatus(ctx context.Context, rule *
 
 func (s *InstrumentationService) dispatchRuleOperation(ctx context.Context, rule *Rule, operationType OperationType) error {
 	now := time.Now().UnixMilli()
-	operationID, err := tokenmanager.GenerateID()
+	operationID, err := appmanager.GenerateID()
 	if err != nil {
 		return fmt.Errorf("generate operation id: %w", err)
 	}

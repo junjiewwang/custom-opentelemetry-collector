@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
 // Config defines the configuration for the control plane extension.
@@ -37,7 +37,7 @@ type Config struct {
 	AgentRegistry agentregistry.Config `mapstructure:"agent_registry"`
 
 	// TokenManager configuration for token validation.
-	TokenManager tokenmanager.Config `mapstructure:"token_manager"`
+	TokenManager appmanager.Config `mapstructure:"token_manager"`
 
 	// ServiceManager configuration for service entity management.
 	ServiceManager servicemanager.Config `mapstructure:"service_manager"`
@@ -118,7 +118,7 @@ func createDefaultConfig() *Config {
 		ConfigManager:    configmanager.DefaultConfig(),
 		TaskManager:      taskmanager.DefaultConfig(),
 		AgentRegistry:    agentregistry.DefaultConfig(),
-		TokenManager:     tokenmanager.DefaultConfig(),
+		TokenManager:     appmanager.DefaultConfig(),
 		ServiceManager:   servicemanager.DefaultConfig(),
 		TaskExecutor: TaskExecutorConfig{
 			Workers:        4,

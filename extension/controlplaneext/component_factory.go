@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/collector/component"
 	"go.uber.org/zap"
 
@@ -18,7 +19,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/taskengine"
 )
@@ -190,9 +191,10 @@ func (f *ComponentFactory) CreateAgentRegistry(cfg agentregistry.Config) (agentr
 }
 
 // CreateTokenManager creates the appropriate TokenManager based on config.
-func (f *ComponentFactory) CreateTokenManager(cfg tokenmanager.Config) (tokenmanager.TokenManager, error) {
-	switch cfg.Type {
-	case "redis":
+// The returned TokenManager also implements AppRetentionProvider.
+func (f *ComponentFactory) CreateTokenManager(cfg appmanager.Config) (appmanager.TokenManager, error) {
+	var redisClient redis.UniversalClient
+	if cfg.Type == "redis" {
 		if f.storage == nil {
 			return nil, fmt.Errorf("storage extension required for redis token manager")
 		}
@@ -200,15 +202,14 @@ func (f *ComponentFactory) CreateTokenManager(cfg tokenmanager.Config) (tokenman
 		if redisName == "" {
 			redisName = "default"
 		}
-		client, err := f.storage.GetRedis(redisName)
+		var err error
+		redisClient, err = f.storage.GetRedis(redisName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
 		}
-		return tokenmanager.NewRedisTokenManager(f.logger, cfg, client)
-
-	default:
-		return tokenmanager.NewMemoryTokenManager(f.logger, cfg), nil
 	}
+
+	return appmanager.NewTokenManager(f.logger, cfg, redisClient)
 }
 
 // CreateServiceManager creates the appropriate ServiceManager based on config.
@@ -316,7 +317,7 @@ type ComponentConfigs struct {
 	ConfigManager        configmanager.Config
 	TaskManager          taskmanager.Config
 	AgentRegistry        agentregistry.Config
-	TokenManager         tokenmanager.Config
+	TokenManager         appmanager.Config
 	ServiceManager       servicemanager.Config
 	ChunkManager         ChunkManagerConfig
 	ArtifactNotification notification.Config

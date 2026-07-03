@@ -15,7 +15,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager/store"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
 // ServiceService provides high-level service management operations.
@@ -59,7 +59,7 @@ func (s *ServiceService) CreateService(ctx context.Context, req *CreateServiceRe
 		return nil, errors.New("service_name is required")
 	}
 
-	serviceID, err := tokenmanager.GenerateID()
+	serviceID, err := appmanager.GenerateID()
 	if err != nil {
 		return nil, fmt.Errorf("generate service ID: %w", err)
 	}
@@ -97,7 +97,7 @@ func (s *ServiceService) EnsureService(ctx context.Context, appID, serviceName s
 		return nil, errors.New("app_id and service_name are required")
 	}
 
-	serviceID, err := tokenmanager.GenerateID()
+	serviceID, err := appmanager.GenerateID()
 	if err != nil {
 		return nil, fmt.Errorf("generate service ID: %w", err)
 	}

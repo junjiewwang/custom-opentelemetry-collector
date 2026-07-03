@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tokenmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 	"go.opentelemetry.io/collector/custom/taskengine"
@@ -92,7 +92,7 @@ type Extension struct {
 	configMgr      configmanager.ConfigManager
 	taskMgr        taskmanager.TaskManager
 	agentReg       agentregistry.AgentRegistry
-	tokenMgr       tokenmanager.TokenManager
+	tokenMgr       appmanager.TokenManager
 	serviceMgr     servicemanager.ServiceManager
 	taskExecutor   *TaskExecutor
 	statusReporter *StatusReporter
@@ -543,7 +543,7 @@ func (e *Extension) GetOnDemandConfigManager() configmanager.OnDemandConfigManag
 }
 
 // GetTokenManager returns the token manager for direct access.
-func (e *Extension) GetTokenManager() tokenmanager.TokenManager {
+func (e *Extension) GetTokenManager() appmanager.TokenManager {
 	return e.tokenMgr
 }
 
@@ -647,7 +647,7 @@ func (e *Extension) Dependencies() []component.ID {
 // servicemanager.BackfillDataSource interface, avoiding circular imports.
 type backfillDataSourceAdapter struct {
 	agentReg  agentregistry.AgentRegistry
-	tokenMgr  tokenmanager.TokenManager
+	tokenMgr  appmanager.TokenManager
 	configMgr configmanager.OnDemandConfigManager // nil if config backfill is not available
 }
 
