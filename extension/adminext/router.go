@@ -275,8 +275,6 @@ func (e *Extension) newRouter() http.Handler {
 		// ============================================================================
 		if e.arthasTunnel != nil {
 			r.Route("/arthas", func(r chi.Router) {
-				// List agents with active tunnel connections
-				r.Get("/agents", e.listArthasAgents)
 				// WebSocket endpoint for browser terminal (uses WS token auth)
 				r.Get("/ws", e.handleArthasWebSocket)
 			})

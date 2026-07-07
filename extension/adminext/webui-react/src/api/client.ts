@@ -18,7 +18,7 @@ import type {
   TaskListParams,
   CreateTaskRequest,
   AgentConfig,
-  ArthasAgent,
+
   ApiError,
 } from '@/types/api';
 
@@ -316,9 +316,7 @@ class ApiClient {
   // Arthas
   // ========================================================================
 
-  getArthasAgents(): Promise<ArthasAgent[]> {
-    return this.request<ArthasAgent[]>('GET', '/arthas/agents');
-  }
+
 
   /**
    * Attach Arthas 到指定实例（创建 arthas_attach 任务）

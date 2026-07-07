@@ -16,7 +16,7 @@ import { useToast } from '@/contexts/ToastContext';
 import { useConfirm } from '@/components/ConfirmDialog';
 import SearchableSelect, { type SelectOption } from '@/components/SearchableSelect';
 import InstanceTasksTab from '@/components/InstanceTasksTab';
-import type { Instance, EnrichedInstance, ArthasAgent, App, AppService, ApiError } from '@/types/api';
+import type { Instance, App, AppService, ApiError } from '@/types/api';
 
 // 懒加载终端面板（包含 xterm.js，约 200KB）
 const TerminalPanel = lazy(() => import('@/components/Terminal/TerminalPanel'));
@@ -74,22 +74,6 @@ function formatUptime(ts: number): string {
 
 // ── 合并 Arthas 状态 ──────────────────────────────────
 
-function enrichInstances(instances: Instance[], arthasAgents: ArthasAgent[]): EnrichedInstance[] {
-  const tunnelMap = new Map<string, ArthasAgent>();
-  for (const a of arthasAgents) {
-    if (a.agent_id) tunnelMap.set(a.agent_id, a);
-  }
-  return instances.map(inst => ({
-    ...inst,
-    arthasStatus: {
-      state: tunnelMap.has(inst.agent_id) ? 'running' as const : 'stopped' as const,
-      arthasVersion: '',
-      tunnelReady: tunnelMap.has(inst.agent_id),
-      tunnelAgentId: tunnelMap.get(inst.agent_id)?.agent_id || '',
-    },
-  }));
-}
-
 // ── 组件 ──────────────────────────────────────────────
 
 export default function InstancesPage() {
@@ -97,7 +81,7 @@ export default function InstancesPage() {
   const confirm = useConfirm();
 
   // 数据
-  const [instances, setInstances] = useState<EnrichedInstance[]>([]);
+  const [instances, setInstances] = useState<Instance[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -111,11 +95,11 @@ export default function InstancesPage() {
   const [servicesLoading, setServicesLoading] = useState(false);
 
   // 选中实例 & Tab
-  const [selectedInstance, setSelectedInstance] = useState<EnrichedInstance | null>(null);
+  const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>('overview');
 
   // 终端面板
-  const [terminalInstance, setTerminalInstance] = useState<EnrichedInstance | null>(null);
+  const [terminalInstance, setTerminalInstance] = useState<Instance | null>(null);
 
   // 当前级联选择的最新值：供异步回调读取，避免旧闭包把页面刷回上一个服务
   const selectedAppIdRef = useRef(selectedAppId);
@@ -138,29 +122,23 @@ export default function InstancesPage() {
     const gen = ++loadGenRef.current;
     setLoading(true);
     try {
-      const [instancesRes, arthasRes] = await Promise.allSettled([
-        apiClient.getInstances('', {
-          status: 'all',
-          app_id: appId || undefined,
-          service_name: serviceName || undefined,
-        }),
-        apiClient.getArthasAgents(),
-      ]);
+      const instances = await apiClient.getInstances('', {
+        status: 'all',
+        app_id: appId || undefined,
+        service_name: serviceName || undefined,
+      });
 
       // 如果在等待期间又触发了新的加载，丢弃本次过期响应
       if (gen !== loadGenRef.current) return;
 
-      const instancesList = instancesRes.status === 'fulfilled' ? instancesRes.value : [];
-      const tunnelAgents = arthasRes.status === 'fulfilled' ? (arthasRes.value || []) : [];
-      const enriched = enrichInstances(instancesList, tunnelAgents);
-      setInstances(enriched);
+      setInstances(instances);
 
       // 自动选中：优先保留已选中的实例（如果仍在新列表中），否则选第一个
       setSelectedInstance(prev => {
-        if (prev && enriched.some(i => i.agent_id === prev.agent_id)) {
-          return enriched.find(i => i.agent_id === prev.agent_id) || prev;
+        if (prev && instances.some(i => i.agent_id === prev.agent_id)) {
+          return instances.find(i => i.agent_id === prev.agent_id) || prev;
         }
-        return enriched.length > 0 ? enriched[0]! : null;
+        return instances.length > 0 ? instances[0]! : null;
       });
     } catch (e) {
       if (gen !== loadGenRef.current) return;
@@ -284,7 +262,7 @@ export default function InstancesPage() {
     for (const inst of instances) {
       if (inst.status?.state === 'online') result.online++;
       else result.offline++;
-      if (inst.arthasStatus.tunnelReady) result.arthas_ready++;
+      if (!!inst.arthas_tunnel_agent_id) result.arthas_ready++;
       else result.arthas_not_ready++;
     }
     return result;
@@ -296,8 +274,8 @@ export default function InstancesPage() {
     let list = instances;
     if (statusFilter === 'online') list = list.filter(i => i.status?.state === 'online');
     else if (statusFilter === 'offline') list = list.filter(i => i.status?.state !== 'online');
-    else if (statusFilter === 'arthas_ready') list = list.filter(i => i.arthasStatus.tunnelReady);
-    else if (statusFilter === 'arthas_not_ready') list = list.filter(i => !i.arthasStatus.tunnelReady);
+    else if (statusFilter === 'arthas_ready') list = list.filter(i => i.arthas_tunnel_agent_id);
+    else if (statusFilter === 'arthas_not_ready') list = list.filter(i => !i.arthas_tunnel_agent_id);
 
     const q = search.toLowerCase().trim();
     if (q) {
@@ -313,7 +291,7 @@ export default function InstancesPage() {
 
   // ── 下线实例 ──────────────────────────────────────
 
-  const handleUnregister = useCallback(async (inst: EnrichedInstance) => {
+  const handleUnregister = useCallback(async (inst: Instance) => {
     const ok = await confirm({
       title: 'Remove Instance',
       message: `Remove instance ${inst.agent_id} from the registry?\n\nIf the instance is still running, it may re-register on its next heartbeat.`,
@@ -535,7 +513,7 @@ export default function InstancesPage() {
                           }`}>
                             <i className="fas fa-server" />
                           </div>
-                          {inst.arthasStatus.tunnelReady && (
+                          {!!inst.arthas_tunnel_agent_id && (
                             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-purple-500 rounded-full border border-white" />
                           )}
                         </div>
@@ -597,7 +575,7 @@ export default function InstancesPage() {
                     }`}>
                       {selectedInstance.status?.state === 'online' ? 'online' : 'offline'}
                     </span>
-                    {selectedInstance.arthasStatus.tunnelReady && (
+                    {!!selectedInstance.arthas_tunnel_agent_id && (
                       <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-50 text-purple-600 flex-shrink-0">arthas</span>
                     )}
                     <span className="text-[10px] text-gray-400 flex-shrink-0">v{selectedInstance.version || '?'}</span>
@@ -615,11 +593,11 @@ export default function InstancesPage() {
                       <button
                         onClick={() => setTerminalInstance(selectedInstance)}
                         className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition flex items-center gap-1.5 ${
-                          selectedInstance.arthasStatus.tunnelReady
+                          !!selectedInstance.arthas_tunnel_agent_id
                             ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-sm shadow-purple-200'
                             : 'bg-gray-800 text-white hover:bg-gray-900 shadow-sm'
                         }`}
-                        title={selectedInstance.arthasStatus.tunnelReady ? 'Connect to Arthas diagnostic console' : 'Arthas tunnel not connected'}
+                        title={!!selectedInstance.arthas_tunnel_agent_id ? 'Connect to Arthas diagnostic console' : 'Arthas tunnel not connected'}
                       >
                         <i className="fas fa-bug text-[9px]" />
                         Arthas
@@ -760,7 +738,7 @@ export default function InstancesPage() {
 
 // ── Overview Tab 子组件 ──────────────────────────────
 
-function OverviewTab({ instance, copyToClipboard }: { instance: EnrichedInstance; copyToClipboard: (text: string) => void }) {
+function OverviewTab({ instance, copyToClipboard }: { instance: Instance; copyToClipboard: (text: string) => void }) {
   return (
     <div className="space-y-5">
       {/* 基本信息 */}
@@ -781,30 +759,27 @@ function OverviewTab({ instance, copyToClipboard }: { instance: EnrichedInstance
       <section>
         <SectionTitle icon="fas fa-bug" title="Arthas Status" />
         <div className={`p-3 rounded-lg border ${
-          instance.arthasStatus.tunnelReady
+          !!instance.arthas_tunnel_agent_id
             ? 'bg-purple-50/50 border-purple-200/60'
             : 'bg-gray-50 border-gray-100'
         }`}>
           <div className="flex items-center gap-2.5">
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-              instance.arthasStatus.tunnelReady ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-400'
+              !!instance.arthas_tunnel_agent_id ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-400'
             }`}>
               <i className="fas fa-bug text-xs" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <span className={`inline-flex rounded-full h-1.5 w-1.5 ${
-                  instance.arthasStatus.tunnelReady ? 'bg-purple-500' : 'bg-gray-300'
+                  !!instance.arthas_tunnel_agent_id ? 'bg-purple-500' : 'bg-gray-300'
                 }`} />
                 <span className={`text-[11px] font-semibold ${
-                  instance.arthasStatus.tunnelReady ? 'text-purple-700' : 'text-gray-500'
+                  !!instance.arthas_tunnel_agent_id ? 'text-purple-700' : 'text-gray-500'
                 }`}>
-                  {instance.arthasStatus.tunnelReady ? 'Tunnel Connected' : 'Tunnel Not Connected'}
+                  {!!instance.arthas_tunnel_agent_id ? 'Tunnel Connected' : 'Tunnel Not Connected'}
                 </span>
               </div>
-              {instance.arthasStatus.arthasVersion && (
-                <p className="text-[10px] text-gray-400 mt-0.5 ml-3.5">Version: {instance.arthasStatus.arthasVersion}</p>
-              )}
             </div>
           </div>
         </div>

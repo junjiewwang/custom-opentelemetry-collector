@@ -13,11 +13,11 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import useTerminal from './useTerminal';
 import { apiClient } from '@/api/client';
-import type { EnrichedInstance, ApiError } from '@/types/api';
+import type { Instance, ApiError } from '@/types/api';
 
 export interface TerminalPanelProps {
   /** 实例信息 */
-  instance: EnrichedInstance;
+  instance: Instance;
   /** 关闭面板回调 */
   onClose: () => void;
   /** 连接状态变化回调（用于刷新 Arthas 状态） */
@@ -76,7 +76,7 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
 
   const serviceName = instance.service_name || 'unknown';
   const ip = instance.ip || instance.hostname || '';
-  const tunnelAgentId = instance.arthasStatus?.tunnelAgentId || '';
+  const tunnelAgentId = instance.arthas_tunnel_agent_id || '';
 
   // ── WebSocket 数据发送 ──
 
@@ -218,7 +218,7 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
 
     try {
       // 如果 tunnel 未就绪，先尝试 attach
-      if (!instance.arthasStatus?.tunnelReady) {
+      if (!instance.arthas_tunnel_agent_id) {
         terminal.write('\x1b[33m[System] Tunnel not ready, trying to attach Arthas...\x1b[0m\r\n');
         try {
           await apiClient.attachArthas(instance.agent_id);

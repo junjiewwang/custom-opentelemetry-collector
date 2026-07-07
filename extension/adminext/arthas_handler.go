@@ -10,16 +10,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// ArthasAgentResponse represents an agent with Arthas tunnel connection.
-// Fields match the simplified ConnectedAgent from arthastunnelext.
-type ArthasAgentResponse struct {
-	AgentID     string `json:"agent_id"`
-	AppID       string `json:"app_id"`
-	ServiceName string `json:"service_name,omitempty"`
-	IP          string `json:"ip,omitempty"`
-	Version     string `json:"version,omitempty"`
-	ConnectedAt int64  `json:"connected_at"`
-	LastPingAt  int64  `json:"last_ping_at"`
+// getTunnelAgentIDs returns a set of agent IDs that currently have an Arthas tunnel connection.
+func (e *Extension) getTunnelAgentIDs() map[string]struct{} {
+	if e.arthasTunnel == nil {
+		return nil
+	}
+	agents := e.arthasTunnel.ListConnectedAgents()
+	set := make(map[string]struct{}, len(agents))
+	for _, a := range agents {
+		set[a.AgentID] = struct{}{}
+	}
+	return set
 }
 
 // WSTokenRequest represents a request to generate a WebSocket token.
@@ -57,35 +58,6 @@ func (e *Extension) generateWSToken(w http.ResponseWriter, r *http.Request) {
 	response := WSTokenResponse{
 		Token:     token.Token,
 		ExpiresIn: 30, // 30 seconds
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		e.logger.Error("Failed to encode response", zap.Error(err))
-	}
-}
-
-// listArthasAgents returns all agents with active tunnel connections.
-// The response uses snake_case field names to match the backend ConnectedAgent struct.
-func (e *Extension) listArthasAgents(w http.ResponseWriter, r *http.Request) {
-	if e.arthasTunnel == nil {
-		http.Error(w, `{"error":"Arthas tunnel not configured"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	agents := e.arthasTunnel.ListConnectedAgents()
-
-	response := make([]ArthasAgentResponse, 0, len(agents))
-	for _, agent := range agents {
-		response = append(response, ArthasAgentResponse{
-			AgentID:     agent.AgentID,
-			AppID:       agent.AppID,
-			ServiceName: agent.ServiceName,
-			IP:          agent.IP,
-			Version:     agent.Version,
-			ConnectedAt: agent.ConnectedAt.UnixMilli(),
-			LastPingAt:  agent.LastPingAt.UnixMilli(),
-		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

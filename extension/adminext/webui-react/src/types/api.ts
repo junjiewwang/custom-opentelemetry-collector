@@ -78,16 +78,7 @@ export interface Instance {
   status: AgentStatus | null;
   registered_at: number;         // Unix 毫秒时间戳
   last_heartbeat: number;        // Unix 毫秒时间戳
-}
-
-/** 前端合并后的实例（包含 Arthas 状态） */
-export interface EnrichedInstance extends Instance {
-  arthasStatus: {
-    state: 'running' | 'stopped';
-    arthasVersion: string;
-    tunnelReady: boolean;
-    tunnelAgentId: string;
-  };
+  arthas_tunnel_agent_id?: string; // Arthas tunnel connection agent ID (from server)
 }
 
 export interface InstanceStats {
@@ -271,11 +262,6 @@ export interface AgentConfig {
 // ============================================================================
 // Arthas
 // ============================================================================
-
-export interface ArthasAgent {
-  agent_id: string;
-  connected_at: string;
-}
 
 // ============================================================================
 // 菜单项

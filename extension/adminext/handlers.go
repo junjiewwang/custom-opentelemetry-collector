@@ -24,6 +24,28 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
+// instanceResponse wraps AgentInfo with Arthas tunnel status.
+type instanceResponse struct {
+	*agentregistry.AgentInfo
+	TunnelAgentID string `json:"arthas_tunnel_agent_id,omitempty"`
+}
+
+// withTunnel enriches AgentInfo slice with tunnel connection status.
+func (e *Extension) withTunnel(instances []*agentregistry.AgentInfo) []instanceResponse {
+	tunnelIDs := e.getTunnelAgentIDs()
+	result := make([]instanceResponse, len(instances))
+	for i, inst := range instances {
+		ir := instanceResponse{AgentInfo: inst}
+		if tunnelIDs != nil {
+			if _, ok := tunnelIDs[inst.AgentID]; ok {
+				ir.TunnelAgentID = inst.AgentID
+			}
+		}
+		result[i] = ir
+	}
+	return result
+}
+
 // ============================================================================
 // Health Check
 // ============================================================================
@@ -463,7 +485,7 @@ func (e *Extension) listAppInstances(w http.ResponseWriter, r *http.Request) {
 
 	e.writeJSON(w, http.StatusOK, map[string]any{
 		"app_id":    appID,
-		"instances": instances,
+		"instances": e.withTunnel(instances),
 		"total":     len(instances),
 	})
 }
@@ -616,7 +638,7 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 	// Sort instances after filtering
 	agentregistry.SortAgents(instances, sortOpts)
 
-	e.writeJSON(w, http.StatusOK, listResponse("instances", instances, len(instances)))
+	e.writeJSON(w, http.StatusOK, listResponse("instances", e.withTunnel(instances), len(instances)))
 }
 
 func (e *Extension) getInstanceStats(w http.ResponseWriter, r *http.Request) {
