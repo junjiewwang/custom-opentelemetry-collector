@@ -41,7 +41,16 @@ function lookbackMs(lookback: string): number {
 }
 
 function formatDateTime(date: Date): string {
-  return date.toISOString().slice(0, 16); // "2026-07-01T12:00"
+  // datetime-local expects LOCAL time (no timezone marker).
+  // Use local components, not toISOString() (which is UTC).
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    date.getFullYear() +
+    '-' + pad(date.getMonth() + 1) +
+    '-' + pad(date.getDate()) +
+    'T' + pad(date.getHours()) +
+    ':' + pad(date.getMinutes())
+  );
 }
 
 function applyLookback(lb: string): [string, string] {

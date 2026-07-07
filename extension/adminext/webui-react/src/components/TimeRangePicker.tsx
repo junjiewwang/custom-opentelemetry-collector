@@ -40,7 +40,16 @@ const PRESET_MS: Record<string, number> = {
 };
 
 function formatDateTime(d: Date): string {
-  return d.toISOString().slice(0, 16);
+  // datetime-local expects LOCAL time (no timezone marker).
+  // Use toISOString-aligned LOCAL components to avoid UTC drift.
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    d.getFullYear() +
+    '-' + pad(d.getMonth() + 1) +
+    '-' + pad(d.getDate()) +
+    'T' + pad(d.getHours()) +
+    ':' + pad(d.getMinutes())
+  );
 }
 
 function applyPreset(value: string): { start: string; end: string } {
