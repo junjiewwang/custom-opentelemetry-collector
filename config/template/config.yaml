@@ -93,11 +93,11 @@ extensions:
       
       # Engine-specific pool — isolated from regular workload to prevent
       # taskengine batch operations from starving agent heartbeats.
-      # Uses larger pool + longer timeouts for potentially heavyweight ops (ZRANGE/MGET).
+      # Uses separate DB (1) + larger pool + longer timeouts.
       engine:
         addr: "[[.Service.redis_apm.host]]:[[.Service.redis_apm.port]]"
         password: "[[ with .Service.redis_apm.user]][[.]]:[[end]][[.Service.redis_apm.pass]]"
-        db: 0
+        db: 1
         pool_size: 30
         dial_timeout: 10s
         read_timeout: 15s
