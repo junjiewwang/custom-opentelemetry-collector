@@ -45,6 +45,7 @@ type RedisConfig struct {
 
 	// Connection pool settings
 	PoolSize     int           `mapstructure:"pool_size"`
+	MinIdleConns int           `mapstructure:"min_idle_conns"`
 	DialTimeout  time.Duration `mapstructure:"dial_timeout"`
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
@@ -136,14 +137,17 @@ func (cfg *RedisConfig) ApplyDefaults() {
 	if cfg.PoolSize <= 0 {
 		cfg.PoolSize = 10
 	}
+	if cfg.MinIdleConns <= 0 {
+		cfg.MinIdleConns = cfg.PoolSize / 2 // 50% of pool kept warm
+	}
 	if cfg.DialTimeout <= 0 {
-		cfg.DialTimeout = 5 * time.Second
+		cfg.DialTimeout = 10 * time.Second
 	}
 	if cfg.ReadTimeout <= 0 {
-		cfg.ReadTimeout = 3 * time.Second
+		cfg.ReadTimeout = 30 * time.Second
 	}
 	if cfg.WriteTimeout <= 0 {
-		cfg.WriteTimeout = 3 * time.Second
+		cfg.WriteTimeout = 10 * time.Second
 	}
 }
 

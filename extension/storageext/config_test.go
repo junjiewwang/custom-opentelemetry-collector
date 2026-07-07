@@ -267,9 +267,9 @@ func TestConfig_ApplyDefaults_RedisDefaults(t *testing.T) {
 
 	rc := cfg.Redis["default"]
 	assert.Equal(t, 10, rc.PoolSize)
-	assert.Equal(t, 5*time.Second, rc.DialTimeout)
-	assert.Equal(t, 3*time.Second, rc.ReadTimeout)
-	assert.Equal(t, 3*time.Second, rc.WriteTimeout)
+	assert.Equal(t, 10*time.Second, rc.DialTimeout)
+	assert.Equal(t, 30*time.Second, rc.ReadTimeout)
+	assert.Equal(t, 10*time.Second, rc.WriteTimeout)
 }
 
 func TestConfig_ApplyDefaults_NacosDefaults(t *testing.T) {

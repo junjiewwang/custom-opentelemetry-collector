@@ -16,6 +16,7 @@ func (defaultRedisProvider) Create(cfg RedisConfig) (redis.UniversalClient, erro
 		Password:     cfg.Password,
 		DB:           cfg.DB,
 		PoolSize:     cfg.PoolSize,
+		MinIdleConns: cfg.MinIdleConns,
 		DialTimeout:  cfg.DialTimeout,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
