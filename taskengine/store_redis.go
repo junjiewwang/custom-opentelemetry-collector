@@ -347,8 +347,9 @@ func filterAndPage(tasks []*Task, query ListQuery) *ListPage {
 // listRunningTasks queries running tasks via ZSET index.
 // Falls back to the slow SCAN path when the index is empty (cold-start / rebuild).
 func (s *RedisStore) listRunningTasks(ctx context.Context, query ListQuery) (*ListPage, error) {
-	// Get all running task keys from ZSET (score = createdAt)
-	taskKeys, err := s.client.ZRange(ctx, s.runningKey(), 0, -1).Result()
+	// Cap to avoid context deadline from reaper (30s)
+	cap := int64(min(queryLimit(query), zrangeMaxTasks))
+	taskKeys, err := s.client.ZRange(ctx, s.runningKey(), 0, cap-1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("zrange running tasks: %w", err)
 	}
@@ -460,7 +461,10 @@ func (s *RedisStore) listTasksSlow(ctx context.Context, query ListQuery) (*ListP
 }
 
 // getTasksChunked fetches tasks in batches to avoid oversized MGET payloads.
-const taskMGetChunkSize = 50
+const (
+	taskMGetChunkSize = 20 // MGET batch size to avoid single oversized operation
+	zrangeMaxTasks    = 200 // max running tasks per ZRANGE to stay within context deadline
+)
 
 func (s *RedisStore) getTasksChunked(ctx context.Context, taskIDs []string) ([]*Task, error) {
 	if len(taskIDs) == 0 {
