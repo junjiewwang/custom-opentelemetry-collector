@@ -79,6 +79,10 @@ func (s *RedisStore) groupKey(groupID string) string {
 	return fmt.Sprintf("%s:group:%s", s.prefix, groupID)
 }
 
+func (s *RedisStore) runningKey() string {
+	return fmt.Sprintf("%s:running_tasks", s.prefix)
+}
+
 func (s *RedisStore) eventChannel(eventType TaskEventType) string {
 	return fmt.Sprintf("%s:events:%s", s.prefix, eventType)
 }
@@ -173,13 +177,14 @@ func (s *RedisStore) GetTasks(ctx context.Context, taskIDs []string) ([]*Task, e
 	return tasks, nil
 }
 
-// updateTaskStatusScript is a Lua script that atomically validates and applies a status transition.
-// This prevents race conditions where two nodes try to claim the same task.
+// updateTaskStatusScript atomically validates and applies a status transition
+// plus maintains the running_tasks ZSET index and terminal TTL.
 //
 // KEYS[1] = task key
+// KEYS[2] = running ZSET key (for O(logN) reaper queries)
 // ARGV[1] = new status
 // ARGV[2] = claimedBy (may be empty)
-// Returns: 1 = updated, 0 = task not found, -1 = invalid transition, -2 = already terminal
+// Returns: 1 = updated, 0 = not found, -1 = invalid transition, -2 = already terminal
 var updateTaskStatusScript = redis.NewScript(`
 local data = redis.call('GET', KEYS[1])
 if not data then
@@ -213,20 +218,33 @@ if not allowed or not allowed[newStatus] then
     return -1
 end
 
--- Apply transition
+-- ─── Apply transition ───
 task.status = newStatus
 if claimedBy ~= "" then
     task.claimedBy = claimedBy
 end
 
 redis.call('SET', KEYS[1], cjson.encode(task))
+
+-- ─── ZSET index: add/remove from running_tasks ───
+if newStatus == 'running' then
+    redis.call('ZADD', KEYS[2], task.createdAt, KEYS[1])
+elseif currentStatus == 'running' then
+    redis.call('ZREM', KEYS[2], KEYS[1])
+end
+
+-- ─── Terminal TTL: auto-expire completed tasks after 14 days ───
+if terminalStates[newStatus] then
+    redis.call('EXPIRE', KEYS[1], 1209600)
+end
+
 return 1
 `)
 
 // UpdateTaskStatus atomically validates and applies a status transition.
 func (s *RedisStore) UpdateTaskStatus(ctx context.Context, taskID string, status TaskStatus, claimedBy string) error {
 	result, err := updateTaskStatusScript.Run(ctx, s.client,
-		[]string{s.taskKey(taskID)},
+		[]string{s.taskKey(taskID), s.runningKey()},
 		string(status), claimedBy,
 	).Int()
 	if err != nil {
@@ -274,69 +292,42 @@ func (s *RedisStore) DeleteTask(ctx context.Context, taskID string) error {
 }
 
 // ListTasks returns a paginated list of tasks.
-// NOTE: For simplicity, this scans group members or uses SCAN. In production,
-// consider secondary indexes (ZSET by createdAt) for efficient pagination.
 func (s *RedisStore) ListTasks(ctx context.Context, query ListQuery) (*ListPage, error) {
-	limit := query.Limit
-	if limit <= 0 {
-		limit = 100
+	// Fast path: running tasks via ZSET index (O(logN) vs O(N) SCAN)
+	if query.Status == StatusRunning && query.GroupID == "" {
+		return s.listRunningTasks(ctx, query)
 	}
 
-	var taskIDs []string
-
+	// Slow path with group filtering
 	if query.GroupID != "" {
-		// Get from group set
 		ids, err := s.client.SMembers(ctx, s.groupKey(query.GroupID)).Result()
 		if err != nil {
 			return nil, fmt.Errorf("list tasks for group %s: %w", query.GroupID, err)
 		}
-		taskIDs = ids
-	} else {
-		// Scan pattern — less efficient but works for general queries
-		pattern := fmt.Sprintf("%s:task:*", s.prefix)
-		var cursor uint64
-		var keys []string
-		for {
-			var batch []string
-			var err error
-			batch, cursor, err = s.client.Scan(ctx, cursor, pattern, 200).Result()
-			if err != nil {
-				return nil, fmt.Errorf("scan tasks: %w", err)
-			}
-			keys = append(keys, batch...)
-			if cursor == 0 {
-				break
-			}
+		tasks, err := s.getTasksChunked(ctx, ids)
+		if err != nil {
+			return nil, fmt.Errorf("batch get tasks: %w", err)
 		}
-		// Extract task IDs from keys
-		prefixLen := len(fmt.Sprintf("%s:task:", s.prefix))
-		for _, key := range keys {
-			if len(key) > prefixLen {
-				taskIDs = append(taskIDs, key[prefixLen:])
-			}
-		}
+		return filterAndPage(tasks, query), nil
 	}
 
-	// Batch-fetch all tasks in a single MGET round-trip
-	fetchedTasks, err := s.GetTasks(ctx, taskIDs)
-	if err != nil {
-		return nil, fmt.Errorf("batch get tasks: %w", err)
-	}
+	// Slow path: full SCAN
+	return s.listTasksSlow(ctx, query)
+}
 
-	// Apply filters
-	var allTasks []*Task
-	for _, task := range fetchedTasks {
+func filterAndPage(tasks []*Task, query ListQuery) *ListPage {
+	var filtered []*Task
+	for _, task := range tasks {
 		if query.TaskType != "" && task.Type != query.TaskType {
 			continue
 		}
 		if query.Status != "" && task.Status != query.Status {
 			continue
 		}
-		allTasks = append(allTasks, task)
+		filtered = append(filtered, task)
 	}
-
-	total := len(allTasks)
-	// Apply pagination
+	total := len(filtered)
+	limit := queryLimit(query)
 	start := query.Offset
 	if start > total {
 		start = total
@@ -345,13 +336,156 @@ func (s *RedisStore) ListTasks(ctx context.Context, query ListQuery) (*ListPage,
 	if end > total {
 		end = total
 	}
+	return &ListPage{
+		Tasks:  filtered[start:end],
+		Total:  total,
+		Offset: query.Offset,
+		Limit:  limit,
+	}
+}
 
+// listRunningTasks queries running tasks via ZSET index.
+// Falls back to the slow SCAN path when the index is empty (cold-start / rebuild).
+func (s *RedisStore) listRunningTasks(ctx context.Context, query ListQuery) (*ListPage, error) {
+	// Get all running task keys from ZSET (score = createdAt)
+	taskKeys, err := s.client.ZRange(ctx, s.runningKey(), 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("zrange running tasks: %w", err)
+	}
+
+	// Fall back to slow path if ZSET is empty (may need bootstrap)
+	if len(taskKeys) == 0 {
+		return s.listTasksSlow(ctx, query)
+	}
+
+	// Extract task IDs from keys
+	taskIDs := make([]string, len(taskKeys))
+	prefixLen := len(fmt.Sprintf("%s:task:", s.prefix))
+	for i, key := range taskKeys {
+		if len(key) > prefixLen {
+			taskIDs[i] = key[prefixLen:]
+		}
+	}
+
+	// Batch fetch with chunking
+	tasks, err := s.getTasksChunked(ctx, taskIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch get tasks: %w", err)
+	}
+
+	// Apply filters (Status is already guaranteed RUNNING by ZSET membership)
+	var filtered []*Task
+	for _, task := range tasks {
+		if query.TaskType != "" && task.Type != query.TaskType {
+			continue
+		}
+		filtered = append(filtered, task)
+	}
+
+	total := len(filtered)
+	start := query.Offset
+	if start > total {
+		start = total
+	}
+	end := start + queryLimit(query)
+	if end > total {
+		end = total
+	}
+
+	return &ListPage{
+		Tasks:  filtered[start:end],
+		Total:  total,
+		Offset: query.Offset,
+		Limit:  queryLimit(query),
+	}, nil
+}
+
+// listTasksSlow is the original SCAN-based implementation (used as fallback).
+func (s *RedisStore) listTasksSlow(ctx context.Context, query ListQuery) (*ListPage, error) {
+	limit := queryLimit(query)
+	pattern := fmt.Sprintf("%s:task:*", s.prefix)
+	var cursor uint64
+	var keys []string
+	for {
+		var batch []string
+		var err error
+		batch, cursor, err = s.client.Scan(ctx, cursor, pattern, 200).Result()
+		if err != nil {
+			return nil, fmt.Errorf("scan tasks: %w", err)
+		}
+		keys = append(keys, batch...)
+		if cursor == 0 {
+			break
+		}
+	}
+	prefixLen := len(fmt.Sprintf("%s:task:", s.prefix))
+	taskIDs := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if len(key) > prefixLen {
+			taskIDs = append(taskIDs, key[prefixLen:])
+		}
+	}
+
+	tasks, err := s.getTasksChunked(ctx, taskIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch get tasks: %w", err)
+	}
+
+	var allTasks []*Task
+	for _, task := range tasks {
+		if query.Status != "" && task.Status != query.Status {
+			continue
+		}
+		if query.TaskType != "" && task.Type != query.TaskType {
+			continue
+		}
+		allTasks = append(allTasks, task)
+	}
+
+	total := len(allTasks)
+	start := query.Offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
 	return &ListPage{
 		Tasks:  allTasks[start:end],
 		Total:  total,
 		Offset: query.Offset,
 		Limit:  limit,
 	}, nil
+}
+
+// getTasksChunked fetches tasks in batches to avoid oversized MGET payloads.
+const taskMGetChunkSize = 50
+
+func (s *RedisStore) getTasksChunked(ctx context.Context, taskIDs []string) ([]*Task, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+	var all []*Task
+	for i := 0; i < len(taskIDs); i += taskMGetChunkSize {
+		end := i + taskMGetChunkSize
+		if end > len(taskIDs) {
+			end = len(taskIDs)
+		}
+		batch, err := s.GetTasks(ctx, taskIDs[i:end])
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, batch...)
+	}
+	return all, nil
+}
+
+func queryLimit(query ListQuery) int {
+	if query.Limit <= 0 {
+		return 100
+	}
+	return query.Limit
 }
 
 // ─── Queue Operations ───
