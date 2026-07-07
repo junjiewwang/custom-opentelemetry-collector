@@ -24,6 +24,22 @@ export interface TerminalPanelProps {
   onStatusChange?: () => void;
 }
 
+// isArthasAPIJson returns true when data is a JSON payload from Arthas HTTP API,
+// i.e. an initialization message that should NOT be rendered as terminal output.
+// Such messages arrive when the agent flushes its internal pending-response queue
+// over a newly opened openTunnel WebSocket before entering interactive TUI mode.
+function isArthasAPIJson(data: string): boolean {
+  if (data.length === 0 || data[0] !== '{') {
+    return false;
+  }
+  try {
+    JSON.parse(data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // WS 消息协议（与旧版一致）
 interface WSInputMessage {
   action: 'read' | 'resize';
@@ -267,6 +283,9 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
         } else if (event.data instanceof Blob) {
           event.data.arrayBuffer().then(buf => {
             const decoded = new TextDecoder('utf-8').decode(new Uint8Array(buf));
+            if (!relayReadyRef.current && isArthasAPIJson(decoded)) {
+              return;
+            }
             terminal.write(decoded);
             // Blob 类型也需要检测 ready 状态
             if (!relayReadyRef.current && decoded.includes('[+]')) {
@@ -280,6 +299,14 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
               }, 150);
             }
           });
+          return;
+        }
+
+        // Drain Arthas HTTP API JSON initialization messages.
+        // When the relay opens, the agent may flush pending HTTP API responses
+        // as JSON before switching to interactive TUI mode.  We discard those
+        // frames so the terminal stays clean.
+        if (!relayReadyRef.current && isArthasAPIJson(text)) {
           return;
         }
 
