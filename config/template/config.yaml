@@ -91,6 +91,18 @@ extensions:
         read_timeout: 3s
         write_timeout: 3s
       
+      # Engine-specific pool — isolated from regular workload to prevent
+      # taskengine batch operations from starving agent heartbeats.
+      # Uses larger pool + longer timeouts for potentially heavyweight ops (ZRANGE/MGET).
+      engine:
+        addr: "[[.Service.redis_apm.host]]:[[.Service.redis_apm.port]]"
+        password: "[[ with .Service.redis_apm.user]][[.]]:[[end]][[.Service.redis_apm.pass]]"
+        db: 0
+        pool_size: 30
+        dial_timeout: 10s
+        read_timeout: 15s
+        write_timeout: 10s
+      
       # Example: Cluster mode
       # cluster:
       #   addrs:
@@ -266,7 +278,7 @@ extensions:
     #              Uses Redis for distributed coordination when storage extension is available.
     task_manager:
       type: engine  # "memory", "redis", or "engine" (engine: unified taskengine, recommended)
-      redis_name: default
+      redis_name: engine  # isolated pool — won't starve agent heartbeats
       key_prefix: "otel:tasks"
       result_ttl: 24h  # TTL for task results
       workers: 4
@@ -445,7 +457,7 @@ extensions:
     # # Task manager (shares same backend as controlplane)
     # task_manager:
     #   type: redis
-    #   redis_name: default
+    #   redis_name: engine  # isolated pool — won't starve agent heartbeats
     #   key_prefix: "otel:tasks"
     #   result_ttl: 24h
     #   workers: 4
