@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -147,6 +148,18 @@ func (s *redisRuntimeSnapshotStore) handleDirtyEvents() {
 			if !s.started.Load() {
 				return
 			}
+			// Reconnect on connection loss (Redis idle timeout, network blip, restart).
+			// The dedicated pub/sub connection is not managed by go-redis's connection pool
+			// and will not auto-reconnect after EOF.  We rebuild it here so dirty-event
+			// invalidation resumes; missed events are tolerated — the L1→L2 fallback path
+			// (syncInterval) guarantees eventual consistency.
+			if isConnectionClosed(err) {
+				s.logger.Warn("Runtime snapshot dirty channel lost, reconnecting")
+				if newPubsub := s.reconnectPubsub(); newPubsub != nil {
+					s.pubsub = newPubsub
+				}
+				continue
+			}
 			s.logger.Warn("Receive runtime snapshot dirty event failed", zap.Error(err))
 			continue
 		}
@@ -165,6 +178,30 @@ func (s *redisRuntimeSnapshotStore) handleDirtyEvents() {
 			s.logger.Warn("Mark local runtime snapshot dirty from event failed", zap.Error(err))
 		}
 	}
+}
+
+// isConnectionClosed returns true when the pub/sub connection has been permanently
+// closed (server-side timeout, network loss, Redis restart).  Go-redis returns
+// io.EOF / io.ErrUnexpectedEOF when reading from a closed pub/sub connection.
+func isConnectionClosed(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// reconnectPubsub tears down the dead pub/sub and creates a fresh subscription.
+// Returns nil on failure; the caller will retry on the next loop iteration.
+func (s *redisRuntimeSnapshotStore) reconnectPubsub() *redis.PubSub {
+	if s.pubsub != nil {
+		_ = s.pubsub.Close()
+	}
+	pubsub := s.client.Subscribe(context.Background(), s.dirtyChannel())
+	// Wait for subscription confirmation.
+	if _, err := pubsub.Receive(context.Background()); err != nil {
+		s.logger.Warn("Failed to re-subscribe runtime snapshot dirty channel", zap.Error(err))
+		_ = pubsub.Close()
+		return nil
+	}
+	s.logger.Info("Reconnected runtime snapshot dirty channel")
+	return pubsub
 }
 
 func (s *redisRuntimeSnapshotStore) Get(ctx context.Context, agentID string) (*agentRuntimeSnapshotCacheEntry, error) {
