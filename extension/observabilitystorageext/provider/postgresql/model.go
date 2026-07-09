@@ -6,6 +6,7 @@ package postgresql
 import (
 	"encoding/json"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
@@ -65,15 +66,12 @@ func extractServiceName(resource pcommon.Resource) string {
 	return "unknown"
 }
 
-// extractAppID extracts the app_id from resource attributes.
+// extractAppID extracts the app_id from resource attributes without sanitization
+// (PostgreSQL stores it as a plain field value and uses parameterized queries,
+// so no character restrictions apply). Delegates to the shared canonical
+// implementation to avoid maintaining a duplicate extraction rule.
 func extractAppID(resource pcommon.Resource) string {
-	if v, ok := resource.Attributes().Get("app_id"); ok {
-		return v.AsString()
-	}
-	if v, ok := resource.Attributes().Get("app.id"); ok {
-		return v.AsString()
-	}
-	return ""
+	return storedmodel.ExtractAppID(resource.Attributes())
 }
 
 // eventsToJSON converts span events to JSON bytes.

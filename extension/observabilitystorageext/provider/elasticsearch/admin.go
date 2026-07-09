@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.uber.org/zap"
 )
 
@@ -127,9 +128,15 @@ func (a *Admin) Purge(ctx context.Context, indexPrefix string, timestampField st
 
 // PurgeByApp deletes documents for a specific app_id older than `before`.
 // Uses app-scoped index pattern for better performance.
+//
+// The AppID is sanitized using the same storedmodel.SanitizeAppID function
+// (with Lowercase: false) that TraceWriter.WriteSpans uses when constructing
+// index names on write. Using a different sanitization here previously
+// caused this method's index pattern to never match the actual (mixed-case)
+// indices — see docs/2026-07-09/appid-sanitize-unification-design.md §2.2.
 func (a *Admin) PurgeByApp(ctx context.Context, indexPrefix string, timestampField string, appID string, before time.Time) (int64, error) {
 	// Use app-scoped index pattern to limit search scope.
-	sanitizedAppID := sanitizeAppID(appID)
+	sanitizedAppID := storedmodel.SanitizeAppID(appID, storedmodel.SanitizeOptions{Lowercase: false})
 	indexPattern := indexPrefix + "-" + sanitizedAppID + "-*"
 	a.logger.Info("Purging data by app",
 		zap.String("index_pattern", indexPattern),

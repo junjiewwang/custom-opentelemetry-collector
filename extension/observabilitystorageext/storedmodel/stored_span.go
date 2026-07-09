@@ -13,8 +13,6 @@
 package storedmodel
 
 import (
-	"strings"
-
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
@@ -196,30 +194,13 @@ func getAttrStr(attrs pcommon.Map, key string, default_ string) string {
 	return default_
 }
 
-// getAppIDAttr extracts the app ID from resource attributes.
-// Defensive sanitization: replaces characters unsafe for storage provider index/table names.
-// Does NOT lowercase — providers (ES) handle case normalization internally.
+// getAppIDAttr extracts the app ID from resource attributes and applies the
+// shared storage-safe sanitization (see SanitizeAppID). Does NOT lowercase —
+// verified against the production ES cluster that uppercase index names are
+// allowed (docs/2026-07-09/appid-sanitize-unification-design.md §2.1), and
+// PostgreSQL has no such character restriction at all.
 func getAppIDAttr(attrs pcommon.Map) string {
-	for _, key := range []string{"app_id", "app.id"} {
-		if val, ok := attrs.Get(key); ok {
-			if id := val.AsString(); id != "" {
-				return sanitizeAppIDForStorage(id)
-			}
-		}
-	}
-	return ""
-}
-
-// sanitizeAppIDForStorage replaces characters that are unsafe for storage
-// provider identifiers (index names, table names).  Does NOT lowercase —
-// providers handle case normalization themselves (e.g. ES auto-lowercases).
-func sanitizeAppIDForStorage(id string) string {
-	r := strings.NewReplacer(
-		" ", "-", "/", "-", "\\", "-",
-		"*", "-", "?", "-",
-		"\"", "", "<", "", ">", "",
-	)
-	return r.Replace(id)
+	return SanitizeAppID(ExtractAppID(attrs), SanitizeOptions{Lowercase: false})
 }
 
 // convertEvents converts OTLP span events to StoredEvent slice.

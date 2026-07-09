@@ -41,35 +41,15 @@ func (w *TraceWriter) Stop() {
 	w.buffer.Stop()
 }
 
-// WriteTraces converts ptrace.Traces to StoredSpan documents and buffers them.
+// WriteTraces converts ptrace.Traces to StoredSpan documents and writes them
+// via WriteSpans. Deprecated: callers should convert to []StoredSpan once at
+// the extension layer and call WriteSpans directly (see extension.go
+// WriteTraces), avoiding a second, independent conversion path here.
+// This method is kept only for direct callers/tests and now delegates to the
+// same canonical conversion + write path as WriteSpans, so AppID handling
+// (and any other conversion logic) can never drift between the two entry points.
 func (w *TraceWriter) WriteTraces(ctx context.Context, td ptrace.Traces) error {
-	resourceSpans := td.ResourceSpans()
-	for i := 0; i < resourceSpans.Len(); i++ {
-		rs := resourceSpans.At(i)
-		resource := rs.Resource()
-
-		appID := getAppID(resource)
-		if appID == "" {
-			return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write traces without app-level data isolation")
-		}
-
-		scopeSpans := rs.ScopeSpans()
-		for j := 0; j < scopeSpans.Len(); j++ {
-			ss := scopeSpans.At(j)
-			spans := ss.Spans()
-			for k := 0; k < spans.Len(); k++ {
-				span := spans.At(k)
-				doc := w.convertSpan(span, ss, resource)
-				doc.AppID = appID
-				indexName := w.getIndexName(appID, span.StartTimestamp().AsTime())
-
-				if err := w.buffer.Add(indexName, doc); err != nil {
-					return fmt.Errorf("failed to buffer trace document: %w", err)
-				}
-			}
-		}
-	}
-	return nil
+	return w.WriteSpans(ctx, w.convertTraces(td))
 }
 
 // WriteSpans writes pre-converted StoredSpan documents to Elasticsearch.
@@ -95,6 +75,29 @@ func (w *TraceWriter) Flush(ctx context.Context) error {
 // convertSpan converts an OTLP span to the canonical StoredSpan format.
 func (w *TraceWriter) convertSpan(span ptrace.Span, scope ptrace.ScopeSpans, resource pcommon.Resource) storedmodel.StoredSpan {
 	return storedmodel.ConvertOTLPSpan(span, scope, resource)
+}
+
+// convertTraces converts all spans in ptrace.Traces to the canonical
+// StoredSpan format, reusing convertSpan for each span. This is the single
+// conversion path shared by both WriteTraces (deprecated) and any future
+// direct caller, so there is exactly one place where OTLP→StoredSpan
+// conversion happens for this writer.
+func (w *TraceWriter) convertTraces(td ptrace.Traces) []StoredSpan {
+	resourceSpans := td.ResourceSpans()
+	var spans []StoredSpan
+	for i := 0; i < resourceSpans.Len(); i++ {
+		rs := resourceSpans.At(i)
+		resource := rs.Resource()
+		scopeSpans := rs.ScopeSpans()
+		for j := 0; j < scopeSpans.Len(); j++ {
+			ss := scopeSpans.At(j)
+			sp := ss.Spans()
+			for k := 0; k < sp.Len(); k++ {
+				spans = append(spans, w.convertSpan(sp.At(k), ss, resource))
+			}
+		}
+	}
+	return spans
 }
 
 // getIndexName returns the app-scoped, date-based index name for a given timestamp.

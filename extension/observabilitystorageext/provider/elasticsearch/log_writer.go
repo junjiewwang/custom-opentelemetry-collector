@@ -42,16 +42,15 @@ func (w *LogWriter) Stop() {
 }
 
 // WriteLogs converts plog.Logs to ES documents and buffers them.
+// AppID validation happens per log record (not per resource) because
+// storedmodel.ConvertOTLPLog is the single source of truth for AppID
+// extraction/sanitization — validating its output directly avoids
+// re-implementing a duplicate, potentially inconsistent check here.
 func (w *LogWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 	resourceLogs := ld.ResourceLogs()
 	for i := 0; i < resourceLogs.Len(); i++ {
 		rl := resourceLogs.At(i)
 		res := rl.Resource()
-		appID := getAppID(res)
-
-		if appID == "" {
-			return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write logs without app-level data isolation")
-		}
 
 		scopeLogs := rl.ScopeLogs()
 		for j := 0; j < scopeLogs.Len(); j++ {
@@ -60,6 +59,9 @@ func (w *LogWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 			for k := 0; k < logRecords.Len(); k++ {
 				lr := logRecords.At(k)
 				doc := w.logRecordToDoc(lr, res)
+				if doc.AppID == "" {
+					return fmt.Errorf("app_id is required in resource attributes (app_id or app.id), refusing to write logs without app-level data isolation")
+				}
 				indexName := w.getIndexName(doc.AppID, lr.Timestamp().AsTime())
 
 				if err := w.buffer.Add(indexName, doc); err != nil {

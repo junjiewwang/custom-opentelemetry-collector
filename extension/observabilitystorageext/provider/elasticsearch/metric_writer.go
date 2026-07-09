@@ -41,16 +41,15 @@ func (w *MetricWriter) Stop() {
 }
 
 // WriteMetrics converts OTLP metrics to StoredMetricDataPoint documents.
+// AppID validation happens per data point (not per resource) because
+// storedmodel.ConvertOTLPMetric is the single source of truth for AppID
+// extraction/sanitization — validating its output directly avoids
+// re-implementing a duplicate, potentially inconsistent check here.
 func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
 	resourceMetrics := md.ResourceMetrics()
 	for i := 0; i < resourceMetrics.Len(); i++ {
 		rm := resourceMetrics.At(i)
 		res := rm.Resource()
-		appID := getAppID(res)
-
-		if appID == "" {
-			return fmt.Errorf("app_id is required, refusing to write metrics without app-level data isolation")
-		}
 
 		scopeMetrics := rm.ScopeMetrics()
 		for j := 0; j < scopeMetrics.Len(); j++ {
@@ -60,6 +59,9 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 				metric := metrics.At(k)
 				points := storedmodel.ConvertOTLPMetric(metric, res)
 				for _, pt := range points {
+					if pt.AppID == "" {
+						return fmt.Errorf("app_id is required, refusing to write metrics without app-level data isolation")
+					}
 					indexName := w.getIndexName(pt.AppID, time.Unix(0, pt.TimeUnixNano))
 					if err := w.buffer.Add(indexName, pt); err != nil {
 						return fmt.Errorf("failed to buffer metric document: %w", err)
