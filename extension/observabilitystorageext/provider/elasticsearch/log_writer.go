@@ -60,8 +60,7 @@ func (w *LogWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 			for k := 0; k < logRecords.Len(); k++ {
 				lr := logRecords.At(k)
 				doc := w.logRecordToDoc(lr, res)
-				doc.AppID = appID
-				indexName := w.getIndexName(appID, lr.Timestamp().AsTime())
+				indexName := w.getIndexName(doc.AppID, lr.Timestamp().AsTime())
 
 				if err := w.buffer.Add(indexName, doc); err != nil {
 					return fmt.Errorf("failed to buffer log document: %w", err)

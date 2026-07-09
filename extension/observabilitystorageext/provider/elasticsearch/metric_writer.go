@@ -60,8 +60,7 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 				metric := metrics.At(k)
 				points := storedmodel.ConvertOTLPMetric(metric, res)
 				for _, pt := range points {
-					pt.AppID = appID
-					indexName := w.getIndexName(appID, time.Unix(0, pt.TimeUnixNano))
+					indexName := w.getIndexName(pt.AppID, time.Unix(0, pt.TimeUnixNano))
 					if err := w.buffer.Add(indexName, pt); err != nil {
 						return fmt.Errorf("failed to buffer metric document: %w", err)
 					}
