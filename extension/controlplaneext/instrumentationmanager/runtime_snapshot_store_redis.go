@@ -154,7 +154,7 @@ func (s *redisRuntimeSnapshotStore) handleDirtyEvents() {
 			// invalidation resumes; missed events are tolerated — the L1→L2 fallback path
 			// (syncInterval) guarantees eventual consistency.
 			if isConnectionClosed(err) {
-				s.logger.Warn("Runtime snapshot dirty channel lost, reconnecting")
+				s.logger.Debug("Runtime snapshot dirty channel lost, reconnecting")
 				if newPubsub := s.reconnectPubsub(); newPubsub != nil {
 					s.pubsub = newPubsub
 				}
@@ -200,7 +200,7 @@ func (s *redisRuntimeSnapshotStore) reconnectPubsub() *redis.PubSub {
 		_ = pubsub.Close()
 		return nil
 	}
-	s.logger.Info("Reconnected runtime snapshot dirty channel")
+	s.logger.Debug("Reconnected runtime snapshot dirty channel")
 	return pubsub
 }
 
