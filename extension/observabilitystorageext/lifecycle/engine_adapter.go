@@ -328,12 +328,15 @@ func (o *DistributedPurgeOrchestrator) planTasks(
 			continue
 		}
 
-		o.logger.Info("Expired scan completed",
-			zap.String("signal", string(signal)),
-			zap.Duration("retention", retention.Duration),
-			zap.Time("cutoff", cutoff),
-			zap.Int("expired_count", len(expired)),
-		)
+		// Log level: Info when work found, Debug for zero-result health-check beats.
+		if len(expired) > 0 {
+			o.logger.Info("Expired scan completed",
+				zap.String("signal", string(signal)),
+				zap.Duration("retention", retention.Duration),
+				zap.Time("cutoff", cutoff),
+				zap.Int("expired_count", len(expired)),
+			)
+		}
 
 		for _, indexName := range expired {
 			tasks = append(tasks, PurgeTask{
@@ -346,7 +349,9 @@ func (o *DistributedPurgeOrchestrator) planTasks(
 		}
 	}
 
-	o.logger.Info("Planning complete", zap.Int64("epoch", epoch), zap.Int("total_tasks", len(tasks)))
+	if len(tasks) > 0 {
+		o.logger.Info("Planning complete", zap.Int64("epoch", epoch), zap.Int("total_tasks", len(tasks)))
+	}
 	return epoch, tasks
 }
 

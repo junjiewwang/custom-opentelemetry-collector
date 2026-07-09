@@ -269,7 +269,7 @@ func (s *LifecycleScheduler) purgeAppsWithOverrides(ctx context.Context) {
 		return
 	}
 
-	s.logger.Info("Checking per-app retention overrides", zap.Int("app_count", len(overrides)))
+	s.logger.Debug("Checking per-app retention overrides", zap.Int("app_count", len(overrides)))
 
 	for _, entry := range overrides {
 		for signal, perAppDur := range entry.Overrides {
