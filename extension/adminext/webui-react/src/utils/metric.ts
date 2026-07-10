@@ -18,12 +18,13 @@ export function seriesToChartSeries(result: MetricRangeResult): ChartSeries[] {
   if (!result.data || result.data.length === 0) return [];
 
   return result.data.map((series) => {
-    const name = formatMetricLabels(series.labels);
+    const safeLabels = series.labels ?? {};
+    const name = formatMetricLabels(safeLabels);
     return {
       name,
-      labels: series.labels,
+      labels: safeLabels,
       data: series.values.map((tv) => ({
-        time: Number(tv.timeUnixNano) / 1_000_000, // 纳秒转毫秒
+        time: Number(tv.timeUnixMilli), // millisecond Unix timestamp
         value: tv.value,
       })),
     };
@@ -32,11 +33,14 @@ export function seriesToChartSeries(result: MetricRangeResult): ChartSeries[] {
 
 /**
  * 格式化 Metric labels 为人类可读字符串。
+ * Null-safe: handles null or undefined labels gracefully.
  */
-export function formatMetricLabels(labels: Record<string, string>): string {
+export function formatMetricLabels(labels: Record<string, string> | null | undefined): string {
+  if (!labels || typeof labels !== 'object') return 'value';
+
   const filtered = Object.entries(labels).filter(([k]) => k !== '__name__' && k !== 'metric');
   if (filtered.length === 0) {
-    return labels['__name__'] ?? labels['metric'] ?? 'unknown';
+    return labels['__name__'] ?? labels['metric'] ?? 'value';
   }
   const metricName = labels['__name__'] ?? labels['metric'] ?? '';
   const labelStr = filtered.map(([k, v]) => `${k}="${v}"`).join(', ');

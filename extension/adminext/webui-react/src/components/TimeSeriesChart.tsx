@@ -1,18 +1,18 @@
 /**
- * TimeSeriesChart 组件 - ECharts 时间序列折线/面积图
+ * TimeSeriesChart 组件 - Grafana-style ECharts 时间序列图
  *
- * 基于 echarts-for-react 封装，用于 Prometheus 指标数据可视化。
- *
- * 功能：
- * - 支持 line / area 图表类型
+ * 基于 echarts-for-react 封装，参考 Grafana Time Series Panel 设计：
+ * - DataZoom 框选缩放 + 底部滑块
+ * - Cross-hair tooltip（按值降序排列）
+ * - Legend 统计表（min/max/avg/last）
+ * - 阈值线（SLO / alert level）
+ * - 渐变面积图（可选）
  * - 自适应 Y 轴格式化（按 unit 类型）
- * - 自适应 X 轴时间刻度
- * - 图例展示（可点击切换系列）
- * - Tooltip 数值格式化
  * - 响应式尺寸
+ * - 图表点击回调（跨信号联动）
  */
 
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import * as echarts from 'echarts/core';
 import { LineChart } from 'echarts/charts';
@@ -21,11 +21,16 @@ import {
   LegendComponent,
   GridComponent,
   DataZoomComponent,
+  MarkLineComponent,
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import EmptyState from '@/components/EmptyState';
 import type { ChartSeries } from '@/types/metric';
-import { formatYAxisValue, CHART_COLORS } from '@/utils/metric';
+import { formatYAxisValue } from '@/utils/metric';
+import {
+  buildTimeSeriesOption,
+  computeSeriesStats,
+} from '@/components/charts/chartTheme';
 
 // 注册 ECharts 组件（Tree-shaking 按需加载）
 echarts.use([
@@ -34,20 +39,24 @@ echarts.use([
   LegendComponent,
   GridComponent,
   DataZoomComponent,
+  MarkLineComponent,
   CanvasRenderer,
 ]);
 
 interface TimeSeriesChartProps {
-  /** 图表系列数据 */
   series: ChartSeries[];
-  /** 图表类型 */
   chartType?: 'line' | 'area';
-  /** Y 轴单位 */
   unit?: string;
-  /** 图表高度 */
   height?: number;
-  /** 是否加载中 */
   loading?: boolean;
+  showDataZoom?: boolean;
+  legendPlacement?: 'bottom' | 'right';
+  /** Show min/max/avg/last in legend (default false) */
+  showLegendStats?: boolean;
+  /** Horizontal threshold line (SLO / alert) */
+  threshold?: { value: number; label: string; color?: string };
+  /** Callback when user clicks a data point on the chart */
+  onChartClick?: (params: { seriesName: string; time: number; value: number }) => void;
 }
 
 export default function TimeSeriesChart({
@@ -56,107 +65,51 @@ export default function TimeSeriesChart({
   unit,
   height = 280,
   loading = false,
+  showDataZoom = true,
+  legendPlacement = 'bottom',
+  showLegendStats = false,
+  threshold,
+  onChartClick,
 }: TimeSeriesChartProps) {
+  const yAxisFormatter = useMemo(
+    () => (value: number) => formatYAxisValue(value, unit),
+    [unit],
+  );
+
   const option = useMemo(() => {
     if (series.length === 0) return {};
+    return buildTimeSeriesOption({
+      series,
+      chartType,
+      yAxisFormatter,
+      showDataZoom,
+      legendPlacement,
+      showLegendStats,
+      threshold,
+    });
+  }, [series, chartType, yAxisFormatter, showDataZoom, legendPlacement, showLegendStats, threshold]);
 
-    const isArea = chartType === 'area';
+  // Stats for potential external use (e.g. PanelCard footer)
+  const stats = useMemo(
+    () => (showLegendStats ? computeSeriesStats(series) : undefined),
+    [series, yAxisFormatter, showLegendStats],
+  );
 
-    return {
-      tooltip: {
-        trigger: 'axis' as const,
-        backgroundColor: 'rgba(255, 255, 255, 0.95)',
-        borderColor: '#e5e7eb',
-        borderWidth: 1,
-        textStyle: {
-          color: '#374151',
-          fontSize: 12,
-        },
-        formatter: (params: Array<{ seriesName: string; value: [number, number]; color: string }>) => {
-          if (!params || params.length === 0) return '';
-          const firstParam = params[0]!;
-          const time = new Date(firstParam.value[0]).toLocaleString('zh-CN');
-          let html = `<div style="font-weight:600;margin-bottom:4px">${time}</div>`;
-          for (const p of params) {
-            const val = formatYAxisValue(p.value[1], unit);
-            html += `<div style="display:flex;align-items:center;gap:6px;margin:2px 0">
-              <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color}"></span>
-              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${p.seriesName}</span>
-              <span style="font-weight:600">${val}</span>
-            </div>`;
-          }
-          return html;
-        },
-      },
-      legend: {
-        show: series.length > 1 && series.length <= 10,
-        bottom: 0,
-        textStyle: { fontSize: 11, color: '#6b7280' },
-        itemWidth: 12,
-        itemHeight: 8,
-        type: 'scroll' as const,
-      },
-      grid: {
-        top: 16,
-        right: 16,
-        bottom: series.length > 1 && series.length <= 10 ? 40 : 8,
-        left: 0,
-        containLabel: true,
-      },
-      xAxis: {
-        type: 'time' as const,
-        axisLine: { lineStyle: { color: '#e5e7eb' } },
-        axisTick: { show: false },
-        axisLabel: {
-          color: '#9ca3af',
-          fontSize: 11,
-          formatter: (value: number) => {
-            const date = new Date(value);
-            const hours = date.getHours().toString().padStart(2, '0');
-            const mins = date.getMinutes().toString().padStart(2, '0');
-            return `${hours}:${mins}`;
-          },
-        },
-        splitLine: { show: false },
-      },
-      yAxis: {
-        type: 'value' as const,
-        axisLine: { show: false },
-        axisTick: { show: false },
-        axisLabel: {
-          color: '#9ca3af',
-          fontSize: 11,
-          formatter: (value: number) => formatYAxisValue(value, unit),
-        },
-        splitLine: {
-          lineStyle: { color: '#f3f4f6', type: 'dashed' as const },
-        },
-      },
-      series: series.map((s, i) => ({
-        name: s.name,
-        type: 'line' as const,
-        data: s.data.map(d => [d.time, d.value]),
-        smooth: true,
-        symbol: 'none',
-        lineStyle: {
-          width: 2,
-          color: CHART_COLORS[i % CHART_COLORS.length],
-        },
-        itemStyle: {
-          color: CHART_COLORS[i % CHART_COLORS.length],
-        },
-        areaStyle: isArea
-          ? {
-              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: CHART_COLORS[i % CHART_COLORS.length] + '40' },
-                { offset: 1, color: CHART_COLORS[i % CHART_COLORS.length] + '05' },
-              ]),
-            }
-          : undefined,
-      })),
-    };
-  }, [series, chartType, unit]);
+  // ECharts click event handler
+  const handleChartClick = useCallback(
+    (params: unknown) => {
+      if (!onChartClick) return;
+      const p = params as { seriesName?: string; value?: [number, number] };
+      if (p.seriesName && p.value?.[0]) {
+        onChartClick({ seriesName: p.seriesName, time: p.value[0], value: p.value[1] });
+      }
+    },
+    [onChartClick],
+  );
 
+  const onEvents = onChartClick ? { click: handleChartClick } : undefined;
+
+  // -- Loading State ----------------------------------------------------
   if (loading) {
     return (
       <div style={{ height }} className="bg-gray-50 rounded-lg">
@@ -171,25 +124,47 @@ export default function TimeSeriesChart({
     );
   }
 
+  // -- Empty State ------------------------------------------------------
   if (series.length === 0) {
     return (
       <div style={{ height }} className="bg-gray-50 rounded-lg">
-        <EmptyState
-          icon="fas fa-chart-line"
-          title="No data"
-          size="sm"
-        />
+        <EmptyState icon="fas fa-chart-line" title="No data" size="sm" />
       </div>
     );
   }
 
+  // -- Chart Render -----------------------------------------------------
   return (
-    <ReactEChartsCore
-      echarts={echarts}
-      option={option}
-      style={{ height, width: '100%' }}
-      notMerge={true}
-      lazyUpdate={true}
-    />
+    <div>
+      <ReactEChartsCore
+        echarts={echarts}
+        option={option}
+        style={{ height, width: '100%' }}
+        notMerge={true}
+        lazyUpdate={true}
+        onEvents={onEvents}
+      />
+      {/* Legend Stats Footer (below chart, Grafana-style) */}
+      {stats && stats.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400">
+          {stats.map((s, i) => (
+            <div key={s.name} className="flex items-center gap-2">
+              <span
+                className="inline-block w-3 h-3 rounded-full flex-shrink-0"
+                style={{
+                  backgroundColor: [
+                    '#5470c6', '#91cc75', '#fac858', '#ee6666',
+                  ][i % 4],
+                }}
+              />
+              <span className="truncate max-w-[120px]">{s.name}</span>
+              <span className="tabular-nums">
+                min:{yAxisFormatter(s.min)} max:{yAxisFormatter(s.max)} avg:{yAxisFormatter(s.avg)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

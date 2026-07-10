@@ -439,33 +439,50 @@ class ApiClient {
     return this.request<MetricResult>('GET', `/observability/metrics/query?${query.toString()}`);
   }
 
-  /** Metric range query */
+  /** Metric range query — aligned with InfluxQL Query Builder */
   metricQueryRange(params: MetricRangeQueryParams): Promise<MetricRangeResult> {
     const query = new URLSearchParams();
     query.set('metric', params.metric);
     if (params.service) query.set('service', params.service);
     if (params.labels) query.set('labels', params.labels);
+    if (params.labelMatch) query.set('labelMatch', params.labelMatch);
     query.set('start', String(params.start));
     query.set('end', String(params.end));
     query.set('step', params.step);
+    if (params.aggregation) query.set('aggregation', params.aggregation);
+    if (params.groupBy) query.set('groupBy', params.groupBy);
+    if (params.fill) query.set('fill', params.fill);
+    if (params.seriesLimit) query.set('seriesLimit', String(params.seriesLimit));
     return this.request<MetricRangeResult>('GET', `/observability/metrics/query_range?${query.toString()}`);
   }
 
-  /** 获取所有 metric 名称 */
-  getMetricNames(): Promise<{ data: string[] }> {
-    return this.request<{ data: string[] }>('GET', '/observability/metrics/names');
+  /** 获取所有 metric 名称（支持时间范围） */
+  getMetricNames(start?: number, end?: number): Promise<{ data: string[] }> {
+    const params = new URLSearchParams();
+    if (start) params.set('start', String(start));
+    if (end) params.set('end', String(end));
+    const qs = params.toString();
+    return this.request<{ data: string[] }>('GET', `/observability/metrics/names${qs ? '?' + qs : ''}`);
   }
 
-  /** 获取所有 label 名称 */
-  getMetricLabels(): Promise<{ data: string[] }> {
-    return this.request<{ data: string[] }>('GET', '/observability/metrics/labels');
+  /** 获取所有 label 名称（支持时间范围） */
+  getMetricLabels(start?: number, end?: number): Promise<{ data: string[] }> {
+    const params = new URLSearchParams();
+    if (start) params.set('start', String(start));
+    if (end) params.set('end', String(end));
+    const qs = params.toString();
+    return this.request<{ data: string[] }>('GET', `/observability/metrics/labels${qs ? '?' + qs : ''}`);
   }
 
-  /** 获取指定 label 的值 */
-  getMetricLabelValues(labelName: string): Promise<{ data: string[] }> {
+  /** 获取指定 label 的值（支持时间范围） */
+  getMetricLabelValues(labelName: string, start?: number, end?: number): Promise<{ data: string[] }> {
+    const params = new URLSearchParams();
+    if (start) params.set('start', String(start));
+    if (end) params.set('end', String(end));
+    const qs = params.toString();
     return this.request<{ data: string[] }>(
       'GET',
-      `/observability/metrics/labels/${encodeURIComponent(labelName)}/values`,
+      `/observability/metrics/labels/${encodeURIComponent(labelName)}/values${qs ? '?' + qs : ''}`,
     );
   }
 
