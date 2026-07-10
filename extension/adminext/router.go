@@ -22,6 +22,7 @@ func (e *Extension) newRouter() http.Handler {
 
 	// Global middleware (must be defined before any routes)
 	r.Use(middleware.Recoverer)
+	r.Use(e.tracingMiddleware)
 	r.Use(e.loggingMiddleware)
 	if e.config.CORS.Enabled {
 		r.Use(e.corsMiddleware)
@@ -284,6 +285,29 @@ func (e *Extension) newRouter() http.Handler {
 				r.Head("/ping", e.handleInfluxDBPing)  // Health check HEAD variant
 				r.Post("/query", e.handleInfluxDBQuery)
 				r.Get("/query", e.handleInfluxDBQuery) // Grafana may use GET with params
+			})
+		}
+
+		// ============================================================================
+		// Prometheus v1 Compatible API (for Grafana Prometheus data source)
+		// ============================================================================
+		// Grafana configuration:
+		//   Type: Prometheus
+		//   URL: http://<collector>:8088/api/v2/prometheus
+		//   Access: Server (proxy)
+		//   Auth: Basic Auth (same as admin API)
+		if e.storageMetricReader != nil {
+			r.Route("/prometheus/api/v1", func(r chi.Router) {
+				r.Get("/query", e.handlePromQuery)
+				r.Post("/query", e.handlePromQuery)
+				r.Get("/query_range", e.handlePromQueryRange)
+				r.Post("/query_range", e.handlePromQueryRange)
+				r.Get("/labels", e.handlePromLabels)
+				r.Post("/labels", e.handlePromLabels)
+				r.Get("/label/{labelName}/values", e.handlePromLabelValues)
+				r.Get("/series", e.handlePromSeries)
+				r.Post("/series", e.handlePromSeries)
+				r.Get("/metadata", e.handlePromMetadata)
 			})
 		}
 
