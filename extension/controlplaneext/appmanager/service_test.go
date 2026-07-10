@@ -42,6 +42,7 @@ func newTestAppService(t *testing.T) *AppService {
 		&sequentialGen{prefix: "app"},
 		&sequentialGen{prefix: "tok"},
 		DefaultRetentionLimits(),
+		nil, // no seed apps in tests
 		zaptest.NewLogger(t),
 	)
 }

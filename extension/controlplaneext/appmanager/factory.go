@@ -35,6 +35,7 @@ func NewTokenManager(logger *zap.Logger, config Config, redisClient redis.Univer
 		NewIDGenerator(),
 		NewTokenGenerator(),
 		DefaultRetentionLimits(),
+		config.SeedApps,
 		logger,
 	)
 

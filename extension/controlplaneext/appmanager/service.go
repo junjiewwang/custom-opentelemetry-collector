@@ -145,12 +145,13 @@ type AppService struct {
 	idGen    IDGenerator
 	tokenGen TokenGenerator
 	limits   RetentionLimits
+	seedApps []SeedAppConfig
 	logger   *zap.Logger
 }
 
 // NewAppService creates a new AppService with the given dependencies.
 // All parameters are required.
-func NewAppService(repo AppRepository, idGen IDGenerator, tokenGen TokenGenerator, limits RetentionLimits, logger *zap.Logger) *AppService {
+func NewAppService(repo AppRepository, idGen IDGenerator, tokenGen TokenGenerator, limits RetentionLimits, seedApps []SeedAppConfig, logger *zap.Logger) *AppService {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -159,6 +160,7 @@ func NewAppService(repo AppRepository, idGen IDGenerator, tokenGen TokenGenerato
 		idGen:    idGen,
 		tokenGen: tokenGen,
 		limits:   limits,
+		seedApps: seedApps,
 		logger:   logger,
 	}
 }
@@ -451,7 +453,53 @@ func (s *AppService) DeleteRetention(ctx context.Context, appID string, signal S
 
 // Start is a no-op provided for TokenManager interface compatibility.
 func (s *AppService) Start(ctx context.Context) error {
-	s.logger.Info("AppService started")
+	// Auto-register seed apps (built-in apps like collector's own telemetry).
+	// Idempotent: if an app with the same name already exists, it is skipped.
+	for _, seed := range s.seedApps {
+		if err := s.ensureSeedApp(ctx, seed); err != nil {
+			s.logger.Error("Failed to register seed app",
+				zap.String("name", seed.Name),
+				zap.Error(err),
+			)
+			// Continue with other seed apps instead of failing the whole startup.
+		}
+	}
+	s.logger.Info("AppService started", zap.Int("seed_apps_registered", len(s.seedApps)))
+	return nil
+}
+
+// ensureSeedApp creates a seed app if one with the same name does not already exist.
+func (s *AppService) ensureSeedApp(ctx context.Context, seed SeedAppConfig) error {
+	// Check if app with this name already exists (walk the list - seed apps are few).
+	apps, err := s.repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range apps {
+		if a.Name == seed.Name {
+			s.logger.Info("Seed app already exists, skipping",
+				zap.String("name", seed.Name),
+				zap.String("id", a.ID),
+			)
+			return nil
+		}
+	}
+
+	req := &CreateAppRequest{
+		Name:        seed.Name,
+		Token:       seed.Token,
+		Description: seed.Description,
+	}
+	app, err := s.CreateApp(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	s.logger.Info("Seed app registered",
+		zap.String("name", app.Name),
+		zap.String("id", app.ID),
+		zap.String("token", app.Token),
+	)
 	return nil
 }
 
