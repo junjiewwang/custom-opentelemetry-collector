@@ -579,3 +579,158 @@ func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 		Time:   time.UnixMilli(doc.TimeUnixMilli),
 	}
 }
+
+// QueryRaw returns raw sample points for series matching the criteria.
+// Unlike QueryRange which returns aggregated buckets, QueryRaw returns
+// original data points (sorted by time ASC) for PromQL functions like
+// rate() and increase() that need the original sample sequence.
+//
+// Uses ES composite aggregation to group by label set, then top_hits
+// within each group to retrieve individual sample points.
+func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]MetricRawSeries, error) {
+	// 1. Build ES filter (metric name + labels + labelMatch + service + time range).
+	esQuery := r.buildRawQueryFilter(query)
+	if _, isMatchAll := esQuery["match_all"]; esQuery != nil && isMatchAll {
+		esQuery = map[string]any{"match_all": map[string]any{}}
+	}
+
+	// 2. Set reasonable limit, capped to ES top_hits max_inner_result_window (default 100).
+	limit := query.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+
+	// 3. Use composite aggregation by label set + top_hits within each group.
+	// Each group returns raw (timestamp, value) pairs sorted by time ASC.
+	aggs := map[string]any{
+		"by_series": map[string]any{
+			"composite": map[string]any{
+				"size":    100, // max 100 distinct series
+				"sources": []map[string]any{
+					{"labels_hash": map[string]any{
+						"terms": map[string]any{
+							"field": FieldMetricLabels,
+						},
+					}},
+				},
+			},
+			"aggs": map[string]any{
+				"samples": map[string]any{
+					"top_hits": map[string]any{
+						"size":    limit,
+						"sort":    []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "asc"}}},
+						"_source": []string{FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels},
+					},
+				},
+			},
+		},
+	}
+
+	searchReq := &SearchRequest{
+		Query:        esQuery,
+		Size:         0,
+		Aggregations: aggs,
+	}
+
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("metric raw query failed: %w", err)
+	}
+
+	return r.parseRawResult(resp)
+}
+
+// buildRawQueryFilter builds an ES bool query from a MetricRawQuery.
+func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) map[string]any {
+	qb := esq.NewBuilder()
+
+	if query.MetricName != "" {
+		qb.Term(FieldName, query.MetricName)
+	}
+	if query.ServiceName != "" {
+		qb.Term(FieldServiceName, query.ServiceName)
+	}
+	for k, v := range query.Labels {
+		qb.Term(fmt.Sprintf(FieldMetricLabels+".%s", k), v)
+	}
+
+	// labelMatch: regex filtering
+	for k, pattern := range query.LabelMatch {
+		fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", k)
+		qb.Raw(map[string]any{
+			"regexp": map[string]any{
+				fieldPath: map[string]any{"value": pattern},
+			},
+		})
+	}
+
+	baseQuery := qb.Build()
+
+	// Add time range filter.
+	must := []map[string]any{baseQuery}
+	timeFilter := r.timeRangeQuery(query.TimeRange)
+	if _, isMatchAll := timeFilter["match_all"]; !isMatchAll {
+		must = append(must, timeFilter)
+	}
+
+	return map[string]any{"bool": map[string]any{"must": must}}
+}
+
+// parseRawResult parses the ES composite+top_hits response into MetricRawSeries.
+func (r *MetricReader) parseRawResult(resp *SearchResponse) ([]MetricRawSeries, error) {
+	raw, ok := resp.Aggregations["by_series"]
+	if !ok {
+		return nil, nil
+	}
+
+	var composite struct {
+		Buckets []struct {
+			Key     map[string]any `json:"key"`
+			Samples struct {
+				Hits struct {
+					Hits []SearchHit `json:"hits"`
+				} `json:"hits"`
+			} `json:"samples"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(raw, &composite); err != nil {
+		return nil, fmt.Errorf("failed to parse QueryRaw result: %w", err)
+	}
+
+	result := make([]MetricRawSeries, 0, len(composite.Buckets))
+	for _, bucket := range composite.Buckets {
+		hits := bucket.Samples.Hits.Hits
+		if len(hits) == 0 {
+			continue
+		}
+
+		samples := make([]MetricSample, 0, len(hits))
+		var labels map[string]string
+		for _, hit := range hits {
+			var doc struct {
+				TimeUnixMilli int64             `json:"timeUnixMilli"`
+				Value         float64           `json:"value"`
+				Labels        map[string]string `json:"labels"`
+			}
+			if err := json.Unmarshal(hit.Source, &doc); err != nil {
+				continue
+			}
+			if labels == nil {
+				labels = doc.Labels
+			}
+			samples = append(samples, MetricSample{
+				TimestampMs: doc.TimeUnixMilli,
+				Value:       doc.Value,
+			})
+		}
+		if labels == nil {
+			labels = make(map[string]string)
+		}
+		result = append(result, MetricRawSeries{
+			Labels:  labels,
+			Samples: samples,
+		})
+	}
+
+	return result, nil
+}

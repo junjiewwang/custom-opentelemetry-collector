@@ -216,3 +216,28 @@ type MetricSeries struct {
 	Labels map[string]string
 	Values []MetricDataPoint
 }
+
+// MetricRawQuery holds parameters for a raw sample point query.
+// Returns original data points without aggregation, sorted by time ASC.
+// Used by PromQL functions like rate()/increase().
+type MetricRawQuery struct {
+	AppID       string            // required: identifies which app's data to query
+	MetricName  string
+	Labels      map[string]string // exact match
+	LabelMatch  map[string]string // regex match
+	ServiceName string
+	TimeRange   TimeRange
+	Limit       int // max samples per series, default 10000
+}
+
+// MetricRawSeries is a raw time series with original sample points.
+type MetricRawSeries struct {
+	Labels  map[string]string
+	Samples []MetricSample
+}
+
+// MetricSample is a single raw sample point.
+type MetricSample struct {
+	TimestampMs int64
+	Value       float64
+}

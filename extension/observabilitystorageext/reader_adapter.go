@@ -267,6 +267,37 @@ func (a *metricReaderAdapter) QueryRange(ctx context.Context, query MetricRangeQ
 	return convertMetricRangeResult(result), nil
 }
 
+func (a *metricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQuery) ([]MetricRawSeries, error) {
+	esQuery := elasticsearch.MetricRawQuery{
+		AppID:       query.AppID,
+		MetricName:  query.MetricName,
+		Labels:      query.Labels,
+		LabelMatch:  query.LabelMatch,
+		ServiceName: query.ServiceName,
+		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		Limit:       query.Limit,
+	}
+	rawSeries, err := a.inner.QueryRaw(ctx, esQuery)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]MetricRawSeries, len(rawSeries))
+	for i, s := range rawSeries {
+		samples := make([]MetricSample, len(s.Samples))
+		for j, sm := range s.Samples {
+			samples[j] = MetricSample{
+				TimestampMs: sm.TimestampMs,
+				Value:       sm.Value,
+			}
+		}
+		result[i] = MetricRawSeries{
+			Labels:  s.Labels,
+			Samples: samples,
+		}
+	}
+	return result, nil
+}
+
 func (a *metricReaderAdapter) ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error) {
 	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListMetricNames(ctx, esTimeRange)

@@ -154,6 +154,11 @@ type MetricReader interface {
 	// QueryRange executes a range metric query.
 	QueryRange(ctx context.Context, query MetricRangeQuery) (*MetricRangeResult, error)
 
+	// QueryRaw returns raw sample points for series matching the criteria.
+	// Returns original data points without aggregation, sorted by time ASC.
+	// Used by PromQL functions like rate()/increase() that need the original sample sequence.
+	QueryRaw(ctx context.Context, query MetricRawQuery) ([]MetricRawSeries, error)
+
 	// ListMetricNames returns all available metric names.
 	ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error)
 

@@ -261,6 +261,31 @@ type MetricTimeValue struct {
 	Value         float64 `json:"value"`
 }
 
+// MetricRawQuery holds parameters for a raw sample point query.
+// Returns original data points without aggregation, sorted by time ASC.
+// Used by PromQL rate()/increase() which need the original sample sequence.
+type MetricRawQuery struct {
+	AppID       string            `json:"appId,omitempty"`
+	MetricName  string            `json:"metric"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	LabelMatch  map[string]string `json:"labelMatch,omitempty"`
+	ServiceName string            `json:"service,omitempty"`
+	TimeRange   TimeRange         `json:"timeRange"`
+	Limit       int               `json:"limit,omitempty"` // max samples per series, default 10000
+}
+
+// MetricRawSeries is a raw time series with original sample points.
+type MetricRawSeries struct {
+	Labels  map[string]string `json:"labels"`
+	Samples []MetricSample    `json:"samples"`
+}
+
+// MetricSample is a single raw sample point (timestamp in milliseconds + value).
+type MetricSample struct {
+	TimestampMs int64   `json:"t"`
+	Value       float64 `json:"v"`
+}
+
 // ═══════════════════════════════════════════════════
 // Log Types — aligned with OTLP Log model
 // ═══════════════════════════════════════════════════
