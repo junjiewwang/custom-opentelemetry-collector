@@ -339,6 +339,13 @@ extensions:
       type: redis  # "memory" or "redis"
       redis_name: default
       key_prefix: "otel:apps"
+      # Built-in apps auto-registered on startup (idempotent — skip if exists).
+      # collector_self is the built-in app for the collector's own internal telemetry.
+      # Its token is injected into internal spans via service.telemetry.resource.
+      seed_apps:
+        - name: collector-self
+          token: collector-self-monitoring-token
+          description: "Collector internal self-monitoring telemetry"
 
   # Admin extension - Management HTTP API interface
   # Provides REST APIs for frontend management
@@ -791,18 +798,18 @@ service:
       # tokenauth processor validates token from resource attributes
       # Place it before other processors for early rejection of invalid data
       processors: [tokenauth, memory_limiter, batch]
-      exporters: [otlphttp/jaeger, spanmetrics, observability_storage]
+      exporters: [spanmetrics, observability_storage]
     
     # Metrics from spanmetrics connector
     metrics/spanmetrics:
       receivers: [spanmetrics]
       processors: [batch]
-      exporters: [prometheusremotewrite, observability_storage]
+      exporters: [observability_storage]
     
     metrics:
       receivers: [agent_gateway]
       processors: [tokenauth, memory_limiter, batch]
-      exporters: [prometheusremotewrite, observability_storage]
+      exporters: [observability_storage]
     
     logs:
       receivers: [agent_gateway]
@@ -821,3 +828,26 @@ service:
               prometheus:
                 host: 0.0.0.0
                 port: 8888
+    # Collector internal traces (OTel spans for adminext HTTP handlers, etc.).
+    # Uses seed_apps (see controlplane config) for the "collector-self" built-in token,
+    # so internal spans pass tokenauth and get stored to ES via the normal traces pipeline.
+    #
+    # For local debugging without ES storage:
+    # traces:
+    #   processors:
+    #     - batch:
+    #         exporter:
+    #           stdout: {}
+    #
+    # For production — uses the main agent_gateway with built-in self-monitoring token:
+    traces:
+      processors:
+        - batch:
+            exporter:
+              otlp:
+                protocol: http/protobuf
+                endpoint: http://localhost:4318
+    resource:
+      # Inject the self-monitoring token so tokenauth processor allows these spans.
+      # Must match the seed_apps token in the controlplane config.
+      token: collector-self-monitoring-token
