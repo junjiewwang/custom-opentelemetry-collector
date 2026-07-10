@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/extensioncapabilities"
+	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/adminext/observability"
@@ -118,6 +119,13 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	if e.started {
 		return nil
 	}
+
+	// Register the collector SDK's TracerProvider as global.
+	// The collector framework creates a real TracerProvider (with backend exporters)
+	// but does not call otel.SetTracerProvider(). Without this, otel.Tracer() returns
+	// a no-op tracer and our tracing middleware generates no spans.
+	tp := e.settings.TelemetrySettings.TracerProvider
+	otel.SetTracerProvider(tp)
 
 	e.logger.Info("Starting admin extension",
 		zap.String("endpoint", e.config.HTTP.Endpoint),
