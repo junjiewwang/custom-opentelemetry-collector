@@ -227,15 +227,19 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 		if err == nil && freshConfig != nil {
 			// Check if it's actually newer than what we had
 			if config == nil || freshConfig.Version != config.Version || freshConfig.Etag != config.Etag {
-				h.logger.Info("Found updated config in Nacos during immediate check",
-					zap.String("service", req.ServiceName),
-					zap.String("old_version", func() string {
-						if config == nil {
-							return "none"
-						}
-						return config.Version
-					}()),
-					zap.String("new_version", freshConfig.Version))
+				if config == nil {
+					// First load for this service state — expected on startup or after idle cleanup.
+					// Use Debug level to avoid log spam in multi-replica or frequent-poll scenarios.
+					h.logger.Debug("Loaded config from Nacos (first load for this state)",
+						zap.String("service", req.ServiceName),
+						zap.String("version", freshConfig.Version))
+				} else {
+					// Genuine config update detected — worth Info-level visibility.
+					h.logger.Info("Found updated config in Nacos during immediate check",
+						zap.String("service", req.ServiceName),
+						zap.String("old_version", config.Version),
+						zap.String("new_version", freshConfig.Version))
+				}
 
 				state.config.Set(freshConfig)
 				config = freshConfig
