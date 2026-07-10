@@ -173,13 +173,25 @@ type MetricQuery struct {
 }
 
 // MetricRangeQuery holds parameters for a range metric query.
+// Semantically aligned with Grafana InfluxDB Query Builder:
+//
+//	SELECT <aggregation>("value") FROM <MetricName>
+//	WHERE <Labels>/<LabelMatch> AND time >= start AND time <= end
+//	GROUP BY time(<Step>), <GroupBy...>
+//	FILL(<Fill>) SLIMIT <SeriesLimit> LIMIT <Limit>
 type MetricRangeQuery struct {
 	AppID       string // required: identifies which app's data to query
 	MetricName  string
-	Labels      map[string]string
+	Labels      map[string]string // WHERE tag = 'value'
+	LabelMatch  map[string]string // WHERE tag =~ /regex/
 	ServiceName string
 	TimeRange   TimeRange
+	Aggregation string   // SELECT <func>, default "avg"
 	Step        time.Duration
+	GroupBy     []string // GROUP BY "tag1", "tag2"
+	Fill        string   // FILL(strategy), default "null"
+	Limit       int      // LIMIT (data points), default 10000
+	SeriesLimit int      // SLIMIT (series count), default 100
 }
 
 // MetricResult holds the result of an instant metric query.

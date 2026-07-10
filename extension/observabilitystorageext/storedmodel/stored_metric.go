@@ -11,14 +11,16 @@ import (
 // StoredMetricDataPoint is the unified storage type for metric data points.
 // Each data point becomes a separate document. Field names align with OTLP JSON.
 type StoredMetricDataPoint struct {
-	TimeUnixNano int64          `json:"timeUnixNano"`
-	Name         string         `json:"name"`
-	Type         string         `json:"type"`
-	Value        float64        `json:"value"`
-	Labels       map[string]any `json:"labels,omitempty"`
-	Resource     map[string]any `json:"resource,omitempty"`
-	ServiceName  string         `json:"serviceName"`
-	AppID        string         `json:"appId,omitempty"`
+	// TimeUnixMilli is the epoch millisecond timestamp (converted from OTLP nanosecond).
+	// Stored as ES date type with epoch_millis format for native date_histogram support.
+	TimeUnixMilli int64          `json:"timeUnixMilli"`
+	Name          string         `json:"name"`
+	Type          string         `json:"type"`
+	Value         float64        `json:"value"`
+	Labels        map[string]any `json:"labels,omitempty"`
+	Resource      map[string]any `json:"resource,omitempty"`
+	ServiceName   string         `json:"serviceName"`
+	AppID         string         `json:"appId,omitempty"`
 }
 
 // ConvertOTLPMetric converts an OTLP metric to one or more StoredMetricDataPoint.
@@ -58,7 +60,7 @@ func convertNumberPoints(dps any, kind string, base StoredMetricDataPoint) []Sto
 		for i := 0; i < pts.Len(); i++ {
 			dp := pts.At(i)
 			pt := base
-			pt.TimeUnixNano = int64(dp.Timestamp())
+			pt.TimeUnixMilli = int64(dp.Timestamp()) / 1e6
 			pt.Type = kind
 			pt.Labels = pcommonMapToFlat(dp.Attributes())
 			switch dp.ValueType() {
@@ -80,7 +82,7 @@ func convertHistogramPoints(dps pmetric.HistogramDataPointSlice, base StoredMetr
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
 		pt := base
-		pt.TimeUnixNano = int64(dp.Timestamp())
+		pt.TimeUnixMilli = int64(dp.Timestamp()) / 1e6
 		pt.Type = "histogram"
 		pt.Labels = pcommonMapToFlat(dp.Attributes())
 		if dp.HasSum() {
@@ -96,7 +98,7 @@ func convertSummaryPoints(dps pmetric.SummaryDataPointSlice, base StoredMetricDa
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
 		pt := base
-		pt.TimeUnixNano = int64(dp.Timestamp())
+		pt.TimeUnixMilli = int64(dp.Timestamp()) / 1e6
 		pt.Type = "summary"
 		pt.Labels = pcommonMapToFlat(dp.Attributes())
 		pt.Value = dp.Sum()

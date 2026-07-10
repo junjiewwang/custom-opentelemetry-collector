@@ -369,25 +369,29 @@ func (r *LogReader) timeRangeFilter(tr TimeRange) map[string]any {
 }
 
 // calculateInterval determines the date_histogram interval based on the time range.
+// Delegates to esq.SafeInterval for unified bucket-count safety, ensuring that
+// the interval always produces buckets ≤ DefaultMaxBuckets (10000).
 func (r *LogReader) calculateInterval(tr TimeRange) string {
-	if tr.Start.IsZero() || tr.End.IsZero() {
-		return "1h"
+	duration := time.Duration(0)
+	if !tr.Start.IsZero() && !tr.End.IsZero() {
+		duration = tr.End.Sub(tr.Start)
 	}
-	duration := tr.End.Sub(tr.Start)
-	switch {
-	case duration <= 1*time.Hour:
-		return "1m"
-	case duration <= 6*time.Hour:
-		return "5m"
-	case duration <= 24*time.Hour:
-		return "15m"
-	case duration <= 7*24*time.Hour:
-		return "1h"
-	case duration <= 30*24*time.Hour:
-		return "6h"
-	default:
-		return "1d"
+
+	interval, clamped := esq.SafeInterval(esq.BucketParams{
+		Duration:   duration,
+		Step:       0, // auto-calculate
+		MaxBuckets: esq.DefaultMaxBuckets,
+	})
+
+	if clamped {
+		r.logger.Warn("log stats interval clamped to avoid too_many_buckets",
+			zap.String("clamped_interval", interval),
+			zap.Duration("duration", duration),
+			zap.Int("max_buckets", esq.DefaultMaxBuckets),
+		)
 	}
+
+	return interval
 }
 
 // hitsToLogRecords converts ES search hits into LogRecord objects.

@@ -209,13 +209,25 @@ type MetricQuery struct {
 }
 
 // MetricRangeQuery holds parameters for a range metric query.
+// Semantically aligned with Grafana InfluxDB Query Builder:
+//
+//	SELECT <aggregation>("value") FROM <MetricName>
+//	WHERE <Labels>/<LabelMatch> AND time >= start AND time <= end
+//	GROUP BY time(<Step>), <GroupBy...>
+//	FILL(<Fill>) SLIMIT <SeriesLimit> LIMIT <Limit>
 type MetricRangeQuery struct {
 	AppID       string            `json:"appId,omitempty"`
 	MetricName  string            `json:"metric"`
 	Labels      map[string]string `json:"labels,omitempty"`
+	LabelMatch  map[string]string `json:"labelMatch,omitempty"`
 	ServiceName string            `json:"service,omitempty"`
 	TimeRange   TimeRange         `json:"timeRange"`
+	Aggregation string            `json:"aggregation,omitempty"` // default "avg"
 	Step        time.Duration     `json:"step"`
+	GroupBy     []string          `json:"groupBy,omitempty"`     // label keys to group by
+	Fill        string            `json:"fill,omitempty"`        // default "null"
+	Limit       int               `json:"limit,omitempty"`       // default 10000
+	SeriesLimit int               `json:"seriesLimit,omitempty"` // default 100
 }
 
 // MetricResult holds the result of an instant metric query.
@@ -230,10 +242,10 @@ type MetricRangeResult struct {
 
 // MetricDataPoint is a single metric value at a point in time.
 type MetricDataPoint struct {
-	Metric       string            `json:"metric,omitempty"`
-	Labels       map[string]string `json:"labels"`
-	Value        float64           `json:"value"`
-	TimeUnixNano string            `json:"timeUnixNano"`
+	Metric        string            `json:"metric,omitempty"`
+	Labels        map[string]string `json:"labels"`
+	Value         float64           `json:"value"`
+	TimeUnixMilli string            `json:"timeUnixMilli"`
 }
 
 // MetricSeries is a series of metric values over time.
@@ -245,8 +257,8 @@ type MetricSeries struct {
 
 // MetricTimeValue is a single time-value pair in a metric series.
 type MetricTimeValue struct {
-	TimeUnixNano string  `json:"timeUnixNano"`
-	Value        float64 `json:"value"`
+	TimeUnixMilli string  `json:"timeUnixMilli"`
+	Value         float64 `json:"value"`
 }
 
 // ═══════════════════════════════════════════════════
@@ -482,6 +494,14 @@ func TimeToUnixNano(t time.Time) string {
 		return ""
 	}
 	return strconv.FormatInt(t.UnixNano(), 10)
+}
+
+// TimeToUnixMilli converts a time.Time to a millisecond string.
+func TimeToUnixMilli(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return strconv.FormatInt(t.UnixMilli(), 10)
 }
 
 // NormalizeSpanKind converts various span kind strings to OTel standard enum values.

@@ -250,9 +250,15 @@ func (a *metricReaderAdapter) QueryRange(ctx context.Context, query MetricRangeQ
 		AppID:       query.AppID,
 		MetricName:  query.MetricName,
 		Labels:      query.Labels,
+		LabelMatch:  query.LabelMatch,
 		ServiceName: query.ServiceName,
 		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		Aggregation: query.Aggregation,
 		Step:        query.Step,
+		GroupBy:     query.GroupBy,
+		Fill:        query.Fill,
+		Limit:       query.Limit,
+		SeriesLimit: query.SeriesLimit,
 	}
 	result, err := a.inner.QueryRange(ctx, esQuery)
 	if err != nil {
@@ -357,9 +363,9 @@ func convertMetricResult(src *elasticsearch.MetricResult) *MetricResult {
 	data := make([]MetricDataPoint, len(src.Data))
 	for i, d := range src.Data {
 		data[i] = MetricDataPoint{
-			Labels:       d.Labels,
-			Value:        d.Value,
-			TimeUnixNano: TimeToUnixNano(d.Time),
+			Labels:        d.Labels,
+			Value:         d.Value,
+			TimeUnixMilli: TimeToUnixMilli(d.Time),
 		}
 	}
 	return &MetricResult{Data: data}
@@ -368,16 +374,26 @@ func convertMetricResult(src *elasticsearch.MetricResult) *MetricResult {
 func convertMetricRangeResult(src *elasticsearch.MetricRangeResult) *MetricRangeResult {
 	series := make([]MetricSeries, len(src.Data))
 	for i, s := range src.Data {
-		values := make([]MetricTimeValue, len(s.Values))
-		for j, v := range s.Values {
-			values[j] = MetricTimeValue{
-				TimeUnixNano: TimeToUnixNano(v.Time),
-				Value:        v.Value,
+		// Filter out NilValue sentinel points (empty buckets for fill=null).
+		// Fill strategies (0/previous/linear) will have already replaced these.
+		values := make([]MetricTimeValue, 0, len(s.Values))
+		for _, v := range s.Values {
+			if isNilValue(v.Value) {
+				continue
 			}
+			values = append(values, MetricTimeValue{
+				TimeUnixMilli: TimeToUnixMilli(v.Time),
+				Value:         v.Value,
+			})
 		}
 		series[i] = MetricSeries{Labels: s.Labels, Values: values}
 	}
 	return &MetricRangeResult{Data: series}
+}
+
+// isNilValue returns true if the value is the sentinel for empty/nil metric points.
+func isNilValue(v float64) bool {
+	return v != v // NaN check: NaN != NaN is always true
 }
 
 // ═══════════════════════════════════════════════════

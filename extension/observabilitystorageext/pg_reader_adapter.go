@@ -112,9 +112,9 @@ func (a *pgMetricReaderAdapter) Query(ctx context.Context, query MetricQuery) (*
 	data := make([]MetricDataPoint, len(result.Samples))
 	for i, s := range result.Samples {
 		data[i] = MetricDataPoint{
-			Labels:       s.Labels,
-			Value:        s.Value,
-			TimeUnixNano: TimeToUnixNano(s.Timestamp),
+			Labels:        s.Labels,
+			Value:         s.Value,
+			TimeUnixMilli: TimeToUnixMilli(s.Timestamp),
 		}
 	}
 	return &MetricResult{Data: data}, nil
@@ -137,8 +137,8 @@ func (a *pgMetricReaderAdapter) QueryRange(ctx context.Context, query MetricRang
 		values := make([]MetricTimeValue, len(s.DataPoints))
 		for j, dp := range s.DataPoints {
 			values[j] = MetricTimeValue{
-				TimeUnixNano: TimeToUnixNano(dp.Timestamp),
-				Value:        dp.Value,
+				TimeUnixMilli: TimeToUnixMilli(dp.Timestamp),
+				Value:         dp.Value,
 			}
 		}
 		data[i] = MetricSeries{Labels: s.Labels, Values: values}

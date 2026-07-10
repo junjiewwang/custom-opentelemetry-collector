@@ -62,7 +62,7 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 					if pt.AppID == "" {
 						return fmt.Errorf("app_id is required, refusing to write metrics without app-level data isolation")
 					}
-					indexName := w.getIndexName(pt.AppID, time.Unix(0, pt.TimeUnixNano))
+					indexName := w.getIndexName(pt.AppID, time.UnixMilli(pt.TimeUnixMilli))
 					if err := w.buffer.Add(indexName, pt); err != nil {
 						return fmt.Errorf("failed to buffer metric document: %w", err)
 					}
@@ -80,7 +80,7 @@ func (w *MetricWriter) WriteMetricPoints(ctx context.Context, points []storedmod
 		if appID == "" {
 			return fmt.Errorf("app_id is required for metric data")
 		}
-		indexName := w.getIndexName(appID, time.Unix(0, dp.TimeUnixNano))
+		indexName := w.getIndexName(appID, time.UnixMilli(dp.TimeUnixMilli))
 		if err := w.buffer.Add(indexName, dp); err != nil {
 			return fmt.Errorf("failed to buffer metric document: %w", err)
 		}

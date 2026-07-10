@@ -306,7 +306,10 @@ func (a *Admin) createMetricTemplate(ctx context.Context) error {
 			},
 			"mappings": map[string]any{
 				"properties": map[string]any{
-					FieldMetricTimeUnixNano: map[string]any{"type": "long"},
+					FieldMetricTimeUnixMilli: map[string]any{
+				"type":   "date",
+				"format": "epoch_millis",
+			},
 					FieldName:               map[string]any{"type": "keyword"},
 					FieldMetricType:         map[string]any{"type": "keyword"},
 					FieldMetricValue:        map[string]any{"type": "double"},

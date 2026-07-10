@@ -277,7 +277,7 @@ func (w *MetricWriter) WriteMetricPoints(ctx context.Context, points []storedmod
 			MetricType:  dp.Type,
 			ServiceName: dp.ServiceName,
 			AppID:       dp.AppID,
-			Timestamp:   time.Unix(0, dp.TimeUnixNano),
+			Timestamp:   time.UnixMilli(dp.TimeUnixMilli),
 			Value:       &v,
 			Labels:      labelsJSON,
 			Resource:    resJSON,

@@ -87,9 +87,9 @@ func StoredLogRecordToPublic(lr storedmodel.StoredLogRecord) LogRecord {
 // StoredMetricDataPointToPublic converts a stored metric data point to public format.
 func StoredMetricDataPointToPublic(dp storedmodel.StoredMetricDataPoint) MetricDataPoint {
 	return MetricDataPoint{
-		Labels:       toStringMap(dp.Labels),
-		Value:        dp.Value,
-		TimeUnixNano: strconv.FormatInt(dp.TimeUnixNano, 10),
+		Labels:        toStringMap(dp.Labels),
+		Value:         dp.Value,
+		TimeUnixMilli: strconv.FormatInt(dp.TimeUnixMilli, 10),
 	}
 }
 

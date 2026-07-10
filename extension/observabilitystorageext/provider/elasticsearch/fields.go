@@ -48,10 +48,12 @@ const (
 // ═══════════════════════ Metric Fields (StoredMetricDataPoint) ═══════════════
 
 const (
-	FieldMetricTimeUnixNano = "timeUnixNano"
-	FieldMetricType         = "type"
-	FieldMetricValue        = "value"
-	FieldMetricLabels       = "labels"
+	// FieldMetricTimeUnixMilli is the epoch millisecond timestamp field.
+	// Stored as ES date type with epoch_millis format for native date_histogram support.
+	FieldMetricTimeUnixMilli = "timeUnixMilli"
+	FieldMetricType          = "type"
+	FieldMetricValue         = "value"
+	FieldMetricLabels        = "labels"
 )
 
 // ═══════════════════════ Shared Fields ═══════════════════════

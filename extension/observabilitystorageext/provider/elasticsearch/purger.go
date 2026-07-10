@@ -311,11 +311,11 @@ func (p *Purger) timestampField(signal lifecycle.SignalType) string {
 	case lifecycle.SignalTrace:
 		return FieldStartTimeUnixNano
 	case lifecycle.SignalMetric:
-		return FieldMetricTimeUnixNano
+		return FieldMetricTimeUnixMilli
 	case lifecycle.SignalLog:
 		return FieldLogTimeUnixNano
 	default:
-		return FieldMetricTimeUnixNano
+		return FieldMetricTimeUnixMilli
 	}
 }
 
