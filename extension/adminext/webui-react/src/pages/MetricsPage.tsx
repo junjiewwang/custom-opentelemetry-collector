@@ -36,7 +36,7 @@ export default function MetricsPage() {
   const { timeRange, setTimeRange, getParams } = useTimeRange('1h');
 
   // -- Backend Availability ----------------------------------------------
-  const { available, metricNames } = useMetricAvailability();
+  const { available, metricNames, labelNames } = useMetricAvailability();
 
   // -- Metric Query ------------------------------------------------------
   const metricQuery = useMetricQuery(getParams);
@@ -145,7 +145,7 @@ export default function MetricsPage() {
           {activeTab === 'query' && (
             <div>
               <div className="mb-6">
-                <MetricQueryPanel query={metricQuery} metricNames={metricNames} />
+                <MetricQueryPanel query={metricQuery} metricNames={metricNames} labelNames={labelNames} />
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <div className="flex items-center justify-between mb-4">

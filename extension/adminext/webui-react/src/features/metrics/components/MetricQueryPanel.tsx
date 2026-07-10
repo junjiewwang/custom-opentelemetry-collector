@@ -5,9 +5,11 @@
  * - Metric name 搜索（Combobox）
  * - Aggregation 函数选择（下拉）
  * - Service / Group By / Fill 参数
+ * - GROUP BY labels 多选标签下拉框
  * - 示例 metric 快捷按钮
  */
 
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import MetricNameCombobox from '@/features/metrics/components/MetricNameCombobox';
 import { AGGREGATION_OPTIONS, FILL_OPTIONS } from '@/types/metric';
 import type { UseMetricQueryReturn } from '@/features/metrics/hooks/useMetricQuery';
@@ -15,6 +17,7 @@ import type { UseMetricQueryReturn } from '@/features/metrics/hooks/useMetricQue
 interface MetricQueryPanelProps {
   query: UseMetricQueryReturn;
   metricNames: string[];
+  labelNames: string[];
 }
 
 const EXAMPLE_METRICS = [
@@ -25,7 +28,7 @@ const EXAMPLE_METRICS = [
   { label: 'Goroutines', metric: 'go_goroutines' },
 ];
 
-export default function MetricQueryPanel({ query, metricNames }: MetricQueryPanelProps) {
+export default function MetricQueryPanel({ query, metricNames, labelNames }: MetricQueryPanelProps) {
   const {
     metricInput, setMetricInput,
     serviceFilter, setServiceFilter,
@@ -34,6 +37,65 @@ export default function MetricQueryPanel({ query, metricNames }: MetricQueryPane
     fill, setFill,
     loading, error, executeQuery,
   } = query;
+
+  // -- GROUP BY tag multi-select state ---------------------------------
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [filterText, setFilterText] = useState('');
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Parse current groupBy string into tag array
+  const selectedTags = useMemo(
+    () => groupBy ? groupBy.split(',').map(s => s.trim()).filter(Boolean) : [],
+    [groupBy],
+  );
+
+  // Available labels not yet selected, filtered by typed text
+  const availableLabels = useMemo(
+    () => labelNames.filter(l => !selectedTags.includes(l) && l.toLowerCase().includes(filterText.toLowerCase())),
+    [labelNames, selectedTags, filterText],
+  );
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+        setFilterText('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const addTag = useCallback((label: string) => {
+    const newTags = [...selectedTags, label].filter((v, i, a) => a.indexOf(v) === i);
+    setGroupBy(newTags.join(','));
+    setFilterText('');
+    inputRef.current?.focus();
+  }, [selectedTags, setGroupBy]);
+
+  const removeTag = useCallback((label: string) => {
+    setGroupBy(selectedTags.filter(t => t !== label).join(','));
+  }, [selectedTags, setGroupBy]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      if (filterText.trim() && labelNames.includes(filterText.trim())) {
+        e.preventDefault();
+        addTag(filterText.trim());
+      } else {
+        setDropdownOpen(false);
+        executeQuery();
+      }
+    } else if (e.key === 'Escape') {
+      setDropdownOpen(false);
+      setFilterText('');
+    } else if (e.key === 'Backspace' && filterText === '' && selectedTags.length > 0) {
+      const lastTag = selectedTags[selectedTags.length - 1];
+      if (lastTag) removeTag(lastTag);
+    }
+  }, [filterText, labelNames, addTag, removeTag, selectedTags, executeQuery]);
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -88,16 +150,61 @@ export default function MetricQueryPanel({ query, metricNames }: MetricQueryPane
           />
         </div>
 
-        <div className="flex-1">
+        <div className="flex-1" ref={dropdownRef}>
           <label className="block text-xs font-medium text-gray-400 mb-1">GROUP BY labels</label>
-          <input
-            type="text"
-            value={groupBy}
-            onChange={(e) => setGroupBy(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && executeQuery()}
-            placeholder="e.g. service_name,method (comma-separated)"
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-          />
+          <div
+            className={`flex items-center flex-wrap gap-1 px-2 py-1.5 border rounded-lg text-sm cursor-text transition-colors ${
+              dropdownOpen ? 'ring-2 ring-primary-500 border-primary-500' : 'border-gray-200'
+            }`}
+            onClick={() => { setDropdownOpen(true); inputRef.current?.focus(); }}
+          >
+            {selectedTags.map(tag => (
+              <span
+                key={tag}
+                className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary-50 text-primary-700 text-xs rounded-full border border-primary-200"
+              >
+                {tag}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); removeTag(tag); }}
+                  className="text-primary-400 hover:text-primary-600 leading-none"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <input
+              ref={inputRef}
+              type="text"
+              value={filterText}
+              onChange={(e) => { setFilterText(e.target.value); setDropdownOpen(true); }}
+              onFocus={() => setDropdownOpen(true)}
+              onKeyDown={handleKeyDown}
+              placeholder={selectedTags.length === 0 ? 'Select labels to group by...' : ''}
+              className="flex-1 min-w-[100px] bg-transparent outline-none text-sm py-0.5"
+            />
+          </div>
+          {dropdownOpen && labelNames.length > 0 && (
+            <div className="relative">
+              <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                {availableLabels.length > 0 ? (
+                  availableLabels.map(label => (
+                    <div
+                      key={label}
+                      onClick={() => addTag(label)}
+                      className="px-3 py-2 text-sm cursor-pointer hover:bg-primary-50 transition-colors"
+                    >
+                      <span className="text-gray-700">{label}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="px-3 py-2 text-sm text-gray-400">
+                    {filterText ? 'No matching labels' : 'All labels selected'}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="w-32">

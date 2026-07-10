@@ -13,11 +13,13 @@ import { apiClient } from '@/api/client';
 export interface UseMetricAvailabilityReturn {
   available: boolean | null; // null=checking, true=available, false=unavailable
   metricNames: string[];
+  labelNames: string[];      // available label keys for GROUP BY dropdown
 }
 
 export function useMetricAvailability(): UseMetricAvailabilityReturn {
   const [available, setAvailable] = useState<boolean | null>(null);
   const [metricNames, setMetricNames] = useState<string[]>([]);
+  const [labelNames, setLabelNames] = useState<string[]>([]);
 
   useEffect(() => {
     checkAvailability();
@@ -26,6 +28,7 @@ export function useMetricAvailability(): UseMetricAvailabilityReturn {
   useEffect(() => {
     if (available) {
       loadMetricNames();
+      loadLabelNames();
     }
   }, [available]);
 
@@ -47,7 +50,16 @@ export function useMetricAvailability(): UseMetricAvailabilityReturn {
     }
   };
 
-  return { available, metricNames };
+  const loadLabelNames = async () => {
+    try {
+      const resp = await apiClient.getMetricLabels();
+      setLabelNames(resp.data ?? []);
+    } catch {
+      setLabelNames([]);
+    }
+  };
+
+  return { available, metricNames, labelNames };
 }
 
 export default useMetricAvailability;
