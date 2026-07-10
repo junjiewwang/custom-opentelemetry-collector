@@ -797,7 +797,7 @@ service:
     metrics/spanmetrics:
       receivers: [spanmetrics]
       processors: [batch]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheusremotewrite, observability_storage]
     
     metrics:
       receivers: [agent_gateway]
