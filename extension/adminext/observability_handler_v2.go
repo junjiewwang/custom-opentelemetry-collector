@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 )
@@ -188,6 +189,22 @@ func (e *Extension) handleMetricQueryRangeV2(w http.ResponseWriter, r *http.Requ
 	}
 
 	query := parseMetricRangeQuery(r)
+
+	// Warn if the user-specified step would produce an excessive number of
+	// buckets — the MetricReader will clamp safely, but early detection
+	// in access logs helps identify problematic callers.
+	if query.Step > 0 && !query.TimeRange.Start.IsZero() && !query.TimeRange.End.IsZero() {
+		duration := query.TimeRange.End.Sub(query.TimeRange.Start)
+		buckets := int64(duration) / int64(query.Step)
+		if buckets > 10000 {
+			e.logger.Warn("metric range query step would produce excessive buckets, will be clamped by reader",
+				zap.Duration("step", query.Step),
+				zap.Duration("duration", duration),
+				zap.Int64("estimated_buckets", buckets),
+			)
+		}
+	}
+
 	result, err := e.storageMetricReader.QueryRange(r.Context(), query)
 	if err != nil {
 		e.writeError(w, http.StatusInternalServerError, err.Error())
@@ -671,6 +688,10 @@ func parseMetricQuery(r *http.Request) observabilitystorageext.MetricQuery {
 }
 
 // parseMetricRangeQuery extracts range metric query parameters.
+// GET /api/v2/observability/metrics/query_range?metric=xxx&service=xxx&start=xxx&end=xxx&step=xxx
+//
+//	&labels=key:value,key:value&labelMatch=key:/regex/&aggregation=avg
+//	&groupBy=service_name,method&fill=null&seriesLimit=100&limit=10000
 func parseMetricRangeQuery(r *http.Request) observabilitystorageext.MetricRangeQuery {
 	q := r.URL.Query()
 	query := observabilitystorageext.MetricRangeQuery{
@@ -697,12 +718,69 @@ func parseMetricRangeQuery(r *http.Request) observabilitystorageext.MetricRangeQ
 		}
 	}
 
-	// Parse labels
+	// Parse labels (exact match)
 	if v := q.Get("labels"); v != "" {
 		query.Labels = parseTags(v)
 	}
 
+	// Parse labelMatch (regex match, format: key:/pattern/,key2:/pattern2/)
+	if v := q.Get("labelMatch"); v != "" {
+		query.LabelMatch = parseLabelMatch(v)
+	}
+
+	// Parse aggregation function
+	if v := q.Get("aggregation"); v != "" {
+		query.Aggregation = v
+	}
+
+	// Parse groupBy (comma-separated label keys)
+	if v := q.Get("groupBy"); v != "" {
+		query.GroupBy = strings.Split(v, ",")
+	}
+
+	// Parse fill strategy
+	if v := q.Get("fill"); v != "" {
+		query.Fill = v
+	}
+
+	// Parse limit
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			query.Limit = n
+		}
+	}
+
+	// Parse seriesLimit
+	if v := q.Get("seriesLimit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			query.SeriesLimit = n
+		}
+	}
+
 	return query
+}
+
+// parseLabelMatch parses regex label filters in format "key:/pattern/,key2:/pattern2/".
+func parseLabelMatch(s string) map[string]string {
+	result := make(map[string]string)
+	for _, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		idx := strings.Index(item, ":")
+		if idx <= 0 {
+			continue
+		}
+		key := item[:idx]
+		pattern := item[idx+1:]
+		// Strip surrounding / if present
+		pattern = strings.TrimPrefix(strings.TrimSuffix(pattern, "/"), "/")
+		if key != "" {
+			result[key] = pattern
+		}
+	}
+	return result
 }
 
 // parseLogQuery extracts log search parameters from request.
