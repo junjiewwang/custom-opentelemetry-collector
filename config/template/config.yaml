@@ -280,7 +280,7 @@ extensions:
       type: engine  # "memory", "redis", or "engine" (engine: unified taskengine, recommended)
       redis_name: engine  # isolated pool — won't starve agent heartbeats
       key_prefix: "otel:tasks"
-      result_ttl: 24h  # TTL for task results
+      result_ttl: 1h  # TTL for task results
       workers: 4
       queue_size: 100
       default_timeout: 30s
