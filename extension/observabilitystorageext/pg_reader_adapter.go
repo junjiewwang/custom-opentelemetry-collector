@@ -90,6 +90,21 @@ func (a *pgTraceReaderAdapter) GetDependencies(ctx context.Context, timeRange Ti
 	return deps, nil
 }
 
+func (a *pgTraceReaderAdapter) SearchTraceSummaries(ctx context.Context, query TraceQuery, spss int) (*TraceSummaryResult, error) {
+	// PG provider: lightweight summary search not yet implemented.
+	return &TraceSummaryResult{}, nil
+}
+
+func (a *pgTraceReaderAdapter) GetTagKeys(ctx context.Context, timeRange TimeRange, scope string) ([]string, error) {
+	// PG provider: tag discovery not yet implemented; return empty.
+	return nil, nil
+}
+
+func (a *pgTraceReaderAdapter) GetTagValues(ctx context.Context, tagKey string, timeRange TimeRange, scope string, filterTags map[string]string) ([]string, error) {
+	// PG provider: tag values not yet implemented; return empty.
+	return nil, nil
+}
+
 // --- MetricReader Adapter ---
 
 type pgMetricReaderAdapter struct {

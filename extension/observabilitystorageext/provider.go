@@ -118,7 +118,13 @@ type LogWriter interface {
 // TraceReader queries trace data from the storage backend.
 type TraceReader interface {
 	// SearchTraces searches for traces matching the query parameters.
+	// Returns full trace data (all spans per trace) for detail views.
 	SearchTraces(ctx context.Context, query TraceQuery) (*TraceSearchResult, error)
+
+	// SearchTraceSummaries searches for traces and returns lightweight summaries.
+	// Each summary contains only root info + first spss spans per trace (for preview).
+	// Designed for the Tempo /api/search endpoint to avoid bulk fetching all spans.
+	SearchTraceSummaries(ctx context.Context, query TraceQuery, spss int) (*TraceSummaryResult, error)
 
 	// GetTrace retrieves a single trace by its trace ID.
 	GetTrace(ctx context.Context, traceID string) (*Trace, error)
@@ -131,6 +137,16 @@ type TraceReader interface {
 
 	// GetDependencies returns service-to-service dependencies for the service map.
 	GetDependencies(ctx context.Context, timeRange TimeRange) ([]Dependency, error)
+
+	// GetTagKeys returns all distinct attribute keys for the given scope.
+	// scope: "resource" or "span". Returns sorted distinct keys.
+	GetTagKeys(ctx context.Context, timeRange TimeRange, scope string) ([]string, error)
+
+	// GetTagValues returns distinct values for a specific tag key.
+	// tagKey is in dotted notation (e.g. "http.method").
+	// scope: "resource" or "span".
+	// filterTags: optional filter conditions (e.g. service.name=X) to narrow the scope.
+	GetTagValues(ctx context.Context, tagKey string, timeRange TimeRange, scope string, filterTags map[string]string) ([]string, error)
 }
 
 // SpanReader queries trace spans from storage in the canonical StoredSpan format.
