@@ -399,3 +399,79 @@ func TestParseTagValuesFilter(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTempoSearchParams_IntrinsicFields(t *testing.T) {
+	tests := []struct {
+		name              string
+		queryQ            string
+		wantServiceName   string
+		wantOperationName string
+		wantSpanKind      string
+		wantStatus        string
+		wantTags          map[string]string
+	}{
+		{
+			name:              "name extracted as OperationName and removed from Tags",
+			queryQ:            `{resource.service.name="tapm-api" && name="/api/v1/DescribeApmInfoByAppId"}`,
+			wantServiceName:   "tapm-api",
+			wantOperationName: "/api/v1/DescribeApmInfoByAppId",
+			wantTags:          map[string]string{},
+		},
+		{
+			name:              "name only",
+			queryQ:            `{name="/api/v1/GetUser"}`,
+			wantOperationName: "/api/v1/GetUser",
+			wantTags:          map[string]string{},
+		},
+		{
+			name:            "kind extracted and removed from Tags",
+			queryQ:          `{resource.service.name="my-svc" && kind="server"}`,
+			wantServiceName: "my-svc",
+			wantSpanKind:    "server",
+			wantTags:        map[string]string{},
+		},
+		{
+			name:            "status extracted and removed from Tags",
+			queryQ:          `{resource.service.name="my-svc" && status="error"}`,
+			wantServiceName: "my-svc",
+			wantStatus:      "error",
+			wantTags:        map[string]string{},
+		},
+		{
+			name:              "all intrinsic fields together with regular attribute",
+			queryQ:            `{resource.service.name="my-svc" && name="/api" && kind="client" && status="ok" && span.http.method="GET"}`,
+			wantServiceName:   "my-svc",
+			wantOperationName: "/api",
+			wantSpanKind:      "client",
+			wantStatus:        "ok",
+			wantTags:          map[string]string{"http.method": "GET"},
+		},
+		{
+			name:            "service.name removed from Tags",
+			queryQ:          `{resource.service.name="tapm-api" && span.http.url="/health"}`,
+			wantServiceName: "tapm-api",
+			wantTags:        map[string]string{"http.url": "/health"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := url.Values{}
+			params.Set("q", tt.queryQ)
+			params.Set("start", "1783330816")
+			params.Set("end", "1783935616")
+			req, _ := http.NewRequest("GET", "/api/search?"+params.Encode(), nil)
+
+			query, err := parseTempoSearchParams(req)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.wantServiceName, query.ServiceName, "ServiceName mismatch")
+			assert.Equal(t, tt.wantOperationName, query.OperationName, "OperationName mismatch")
+			assert.Equal(t, tt.wantSpanKind, query.SpanKind, "SpanKind mismatch")
+			assert.Equal(t, tt.wantStatus, query.Status, "Status mismatch")
+			if tt.wantTags != nil {
+				assert.Equal(t, tt.wantTags, query.Tags, "Tags mismatch")
+			}
+		})
+	}
+}

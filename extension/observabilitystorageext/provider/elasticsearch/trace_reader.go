@@ -506,10 +506,14 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 
 	// AND conditions: each tag must match in either attributes or resource.
 	for k, v := range tq.Tags {
-		qb.Should(1,
-			esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
-			esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
-		)
+		if clause := intrinsicTermClause(k, v); clause != nil {
+			qb.Raw(clause)
+		} else {
+			qb.Should(1,
+				esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
+				esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
+			)
+		}
 	}
 
 	// OR conditions: at least one group must match (bool.should with minimum_should_match=1).
@@ -519,10 +523,14 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 			// Each OR group may have multiple AND conditions internally.
 			groupBuilder := esq.NewBuilder()
 			for k, v := range group {
-				groupBuilder.Should(1,
-					esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
-					esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
-				)
+				if clause := intrinsicTermClause(k, v); clause != nil {
+					groupBuilder.Raw(clause)
+				} else {
+					groupBuilder.Should(1,
+						esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
+						esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
+					)
+				}
 			}
 			orClauses = append(orClauses, groupBuilder.Build())
 		}
@@ -530,6 +538,25 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 	}
 
 	return qb.Build()
+}
+
+// intrinsicTermClause returns an ES term clause for intrinsic (non-attribute) fields
+// such as "name", "service.name", "kind", and "status". These fields are stored at the
+// top level in ES and must NOT be queried via attributes.* or resource.*.
+// Returns nil if the key is not an intrinsic field.
+func intrinsicTermClause(key, value string) map[string]any {
+	switch key {
+	case "name":
+		return esq.T(FieldName, value)
+	case "service.name":
+		return esq.T(FieldServiceName, value)
+	case "kind":
+		return esq.T(FieldKind, capitalizeFirst(value))
+	case "status":
+		return esq.T(FieldStatus+".code", capitalizeFirst(value))
+	default:
+		return nil
+	}
 }
 
 // capitalizeFirst returns the string with the first letter capitalized.

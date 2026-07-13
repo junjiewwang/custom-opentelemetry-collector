@@ -1752,9 +1752,24 @@ func parseTempoSearchParams(r *http.Request) (observabilitystorageext.TraceQuery
 		}
 	}
 
-	// Extract service name from tags (service.name is a common filter).
+	// Extract intrinsic fields from tags so they are not incorrectly queried
+	// as attributes.* or resource.* in Elasticsearch.
+	// In ES, these map to top-level fields (e.g., "name", "status.code", "kind").
 	if svc, ok := query.Tags["service.name"]; ok && svc != "" {
 		query.ServiceName = svc
+		delete(query.Tags, "service.name")
+	}
+	if op, ok := query.Tags["name"]; ok && op != "" {
+		query.OperationName = op
+		delete(query.Tags, "name")
+	}
+	if kind, ok := query.Tags["kind"]; ok && kind != "" {
+		query.SpanKind = kind
+		delete(query.Tags, "kind")
+	}
+	if status, ok := query.Tags["status"]; ok && status != "" {
+		query.Status = status
+		delete(query.Tags, "status")
 	}
 
 	return query, nil
