@@ -43,11 +43,15 @@ func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery)
 		ServiceName:   query.ServiceName,
 		OperationName: query.OperationName,
 		Tags:          query.Tags,
+		TagsOr:        query.TagsOr,
 		MinDuration:   query.MinDuration,
 		MaxDuration:   query.MaxDuration,
 		TimeRange:     storedmodel.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
 		Limit:         query.Limit,
 		Offset:        query.Offset,
+		SpanKind:      query.SpanKind,
+		Status:        query.Status,
+		IsRoot:        query.IsRoot,
 	}
 	spans, _, err := a.inner.SearchSpans(ctx, q)
 	if err != nil {
@@ -159,6 +163,58 @@ func (a *traceReaderAdapter) GetDependencies(ctx context.Context, timeRange Time
 		deps[i] = Dependency{Parent: d.Parent, Child: d.Child, CallCount: d.CallCount}
 	}
 	return deps, nil
+}
+
+func (a *traceReaderAdapter) SearchTraceSummaries(ctx context.Context, query TraceQuery, spss int) (*TraceSummaryResult, error) {
+	q := storedmodel.TraceQuery{
+		AppID:         query.AppID,
+		ServiceName:   query.ServiceName,
+		OperationName: query.OperationName,
+		Tags:          query.Tags,
+		TagsOr:        query.TagsOr,
+		MinDuration:   query.MinDuration,
+		MaxDuration:   query.MaxDuration,
+		TimeRange:     storedmodel.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		Limit:         query.Limit,
+		Offset:        query.Offset,
+		SpanKind:      query.SpanKind,
+		Status:        query.Status,
+		IsRoot:        query.IsRoot,
+	}
+	esResult, err := a.inner.SearchTraceSummaries(ctx, q, spss)
+	if err != nil {
+		return nil, err
+	}
+
+	summaries := make([]TraceSummary, len(esResult.Summaries))
+	for i, s := range esResult.Summaries {
+		publicSpans := make([]Span, len(s.SpanSet))
+		for j, ss := range s.SpanSet {
+			publicSpans[j] = StoredSpanToPublic(ss)
+		}
+		summaries[i] = TraceSummary{
+			TraceID:           s.TraceID,
+			RootServiceName:   s.RootServiceName,
+			RootSpanName:      s.RootSpanName,
+			StartTimeUnixNano: s.StartTimeUnixNano,
+			DurationMs:        s.DurationMs,
+			SpanCount:         s.SpanCount,
+			SpanSet:           publicSpans,
+		}
+	}
+
+	return &TraceSummaryResult{
+		Summaries: summaries,
+		Total:     esResult.Total,
+	}, nil
+}
+
+func (a *traceReaderAdapter) GetTagKeys(ctx context.Context, timeRange TimeRange, scope string) ([]string, error) {
+	return a.inner.GetTagKeys(ctx, elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}, scope)
+}
+
+func (a *traceReaderAdapter) GetTagValues(ctx context.Context, tagKey string, timeRange TimeRange, scope string, filterTags map[string]string) ([]string, error) {
+	return a.inner.GetTagValues(ctx, tagKey, elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}, scope, filterTags)
 }
 
 // logReaderAdapter adapts the ES LogReader to the public LogReader interface.

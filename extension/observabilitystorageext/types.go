@@ -108,21 +108,46 @@ type TimeRange struct {
 
 // TraceQuery holds parameters for searching traces.
 type TraceQuery struct {
-	AppID         string            `json:"appId,omitempty"`
-	ServiceName   string            `json:"service,omitempty"`
-	OperationName string            `json:"operation,omitempty"`
-	Tags          map[string]string `json:"tags,omitempty"`
-	MinDuration   time.Duration     `json:"minDuration,omitempty"`
-	MaxDuration   time.Duration     `json:"maxDuration,omitempty"`
-	TimeRange     TimeRange         `json:"timeRange"`
-	Limit         int               `json:"limit,omitempty"`
-	Offset        int               `json:"offset,omitempty"`
+	AppID         string              `json:"appId,omitempty"`
+	ServiceName   string              `json:"service,omitempty"`
+	OperationName string              `json:"operation,omitempty"`
+	Tags          map[string]string   `json:"tags,omitempty"`
+	TagsOr        []map[string]string `json:"tagsOr,omitempty"` // OR groups: each map is ANDed internally, groups are ORed together
+	MinDuration   time.Duration       `json:"minDuration,omitempty"`
+	MaxDuration   time.Duration       `json:"maxDuration,omitempty"`
+	TimeRange     TimeRange           `json:"timeRange"`
+	Limit         int                 `json:"limit,omitempty"`
+	Offset        int                 `json:"offset,omitempty"`
+
+	// ── Intrinsic filters (from TraceQL engine) ──
+	SpanKind string `json:"spanKind,omitempty"` // "client", "server", "internal", "producer", "consumer"
+	Status   string `json:"status,omitempty"`   // "ok", "error", "unset"
+	IsRoot   bool   `json:"isRoot,omitempty"`   // true = filter for root spans only
 }
 
 // TraceSearchResult holds the result of a trace search.
 type TraceSearchResult struct {
 	Traces []Trace `json:"traces"`
 	Total  int64   `json:"total"`
+}
+
+// TraceSummary is a lightweight search result entry — just enough to identify
+// and rank a trace without fetching all its spans. Used by Tempo search API.
+type TraceSummary struct {
+	TraceID           string `json:"traceId"`
+	RootServiceName   string `json:"rootServiceName"`
+	RootSpanName      string `json:"rootSpanName"`
+	StartTimeUnixNano string `json:"startTimeUnixNano"`
+	DurationMs        int64  `json:"durationMs"`
+	SpanCount         int64  `json:"spanCount"`
+	// SpanSet contains the first N spans for preview (controlled by spss param).
+	SpanSet []Span `json:"spanSet,omitempty"`
+}
+
+// TraceSummaryResult holds the result of a lightweight trace search.
+type TraceSummaryResult struct {
+	Summaries []TraceSummary `json:"summaries"`
+	Total     int64          `json:"total"`
 }
 
 // Trace represents a complete trace with all its spans.

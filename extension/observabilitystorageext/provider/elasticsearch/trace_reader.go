@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
@@ -20,6 +22,10 @@ type (
 	StoredEvent = storedmodel.StoredEvent
 	StoredLink  = storedmodel.StoredLink
 )
+
+// MaxResultWindow is the ES default max_result_window (from + size limit).
+// We cap both aggregation bucket size and bulk fetch size to stay within this.
+const MaxResultWindow = 10000
 
 // TraceReader implements trace query operations against Elasticsearch.
 // It uses a two-pass search strategy:
@@ -50,8 +56,16 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 	if limit <= 0 {
 		limit = 20
 	}
+	// Cap limit to prevent ES max_result_window violations downstream.
+	if limit > MaxResultWindow/100 {
+		limit = MaxResultWindow / 100 // 100 spans/trace estimate
+	}
 
 	// Step 1: Find distinct trace_ids matching the filters via aggregation.
+	aggSize := limit + query.Offset
+	if aggSize > MaxResultWindow {
+		aggSize = MaxResultWindow
+	}
 	searchReq := &SearchRequest{
 		Query: esQuery,
 		Size:  0, // We only want aggregation results.
@@ -59,7 +73,7 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 			"traces": map[string]any{
 				"terms": map[string]any{
 					"field": FieldTraceID,
-					"size":  limit + query.Offset,
+					"size":  aggSize,
 					"order": map[string]any{"max_start": "desc"},
 				},
 				"aggs": map[string]any{
@@ -99,6 +113,169 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 		Traces: traces,
 		Total:  totalTraces,
 	}, nil
+}
+
+// SearchTraceSummaries searches for trace summaries using a single ES query:
+// terms aggregation on traceID + top_hits to get only root/first N spans.
+// No bulk fetch — avoids the len(traceIDs)×100 multiplier that hits max_result_window.
+func (r *TraceReader) SearchTraceSummaries(ctx context.Context, query TraceQuery, spss int) (*TraceSummaryResult, error) {
+	if spss <= 0 {
+		spss = 3 // Tempo default
+	}
+	if spss > 100 {
+		spss = 100
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > MaxResultWindow/100 {
+		limit = MaxResultWindow / 100
+	}
+
+	aggSize := limit + query.Offset
+	if aggSize > MaxResultWindow {
+		aggSize = MaxResultWindow
+	}
+
+	searchReq := &SearchRequest{
+		Query: esQuery,
+		Size:  0,
+		Aggregations: map[string]any{
+			"traces": map[string]any{
+				"terms": map[string]any{
+					"field": FieldTraceID,
+					"size":  aggSize,
+					"order": map[string]any{"max_start": "desc"},
+				},
+				"aggs": map[string]any{
+					"max_start": map[string]any{
+						"max": map[string]any{"field": FieldStartTimeUnixNano},
+					},
+					"root_span": map[string]any{
+						"top_hits": map[string]any{
+							"size":  spss,
+							"sort": []map[string]any{
+								{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
+							},
+							"_source": []string{
+								FieldTraceID, FieldName, FieldServiceName,
+								FieldSpanID, FieldParentSpanID,
+								FieldStartTimeUnixNano, FieldDurationNano,
+								FieldKind, FieldAttributes, FieldResource,
+								"status", "events", "links",
+							},
+						},
+					},
+				},
+			},
+			"total_traces": map[string]any{
+				"cardinality": map[string]any{"field": FieldTraceID},
+			},
+		},
+	}
+
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("trace summary search failed: %w", err)
+	}
+
+	return r.parseTraceSummaryResult(resp, query.Offset, limit)
+}
+
+// parseTraceSummaryResult extracts TraceSummary entries from the aggregation response.
+func (r *TraceReader) parseTraceSummaryResult(resp *SearchResponse, offset, limit int) (*TraceSummaryResult, error) {
+	raw, ok := resp.Aggregations["traces"]
+	if !ok {
+		return &TraceSummaryResult{}, nil
+	}
+
+	var agg struct {
+		Buckets []struct {
+			Key      string `json:"key"`
+			RootSpan struct {
+				Hits struct {
+					Hits []SearchHit `json:"hits"`
+				} `json:"hits"`
+			} `json:"root_span"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(raw, &agg); err != nil {
+		return nil, fmt.Errorf("parse trace summary agg: %w", err)
+	}
+
+	// Parse total count
+	var total int64
+	if rawTotal, ok := resp.Aggregations["total_traces"]; ok {
+		var cardAgg struct {
+			Value int64 `json:"value"`
+		}
+		if err := json.Unmarshal(rawTotal, &cardAgg); err == nil {
+			total = cardAgg.Value
+		}
+	}
+
+	// Apply offset/limit
+	if offset >= len(agg.Buckets) {
+		return &TraceSummaryResult{Total: total}, nil
+	}
+	buckets := agg.Buckets[offset:]
+	if len(buckets) > limit {
+		buckets = buckets[:limit]
+	}
+
+	summaries := make([]TraceSummary, 0, len(buckets))
+	for _, b := range buckets {
+		spans, err := r.hitsToStoredSpans(b.RootSpan.Hits.Hits)
+		if err != nil {
+			continue
+		}
+		if len(spans) == 0 {
+			continue
+		}
+
+		ts := TraceSummary{
+			TraceID:   b.Key,
+			SpanCount: int64(len(spans)),
+			SpanSet:   spans,
+		}
+
+		// Root span is the one without parentSpanId, or the first span.
+		for _, ss := range spans {
+			if ss.ParentSpanID == "" {
+				ts.RootServiceName = ss.ServiceName
+				ts.RootSpanName = ss.Name
+				break
+			}
+		}
+		if ts.RootServiceName == "" && len(spans) > 0 {
+			ts.RootServiceName = spans[0].ServiceName
+			ts.RootSpanName = spans[0].Name
+		}
+
+		// Compute start time and duration from the span set.
+		var minStart, maxEnd int64
+		for _, ss := range spans {
+			if minStart == 0 || ss.StartUnixNano < minStart {
+				minStart = ss.StartUnixNano
+			}
+			if ss.EndUnixNano > maxEnd {
+				maxEnd = ss.EndUnixNano
+			}
+		}
+		if minStart > 0 {
+			ts.StartTimeUnixNano = strconv.FormatInt(minStart, 10)
+		}
+		if maxEnd > minStart {
+			ts.DurationMs = (maxEnd - minStart) / int64(time.Millisecond)
+		}
+
+		summaries = append(summaries, ts)
+	}
+
+	return &TraceSummaryResult{Summaries: summaries, Total: total}, nil
 }
 
 // GetTrace retrieves a single trace by its trace ID.
@@ -152,8 +329,15 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 	if limit <= 0 {
 		limit = 20
 	}
+	if limit > MaxResultWindow/100 {
+		limit = MaxResultWindow / 100
+	}
 
 	// Step 1: aggregation to find trace IDs
+	aggSize := limit + query.Offset
+	if aggSize > MaxResultWindow {
+		aggSize = MaxResultWindow
+	}
 	searchReq := &SearchRequest{
 		Query: esQuery,
 		Size:  0,
@@ -161,7 +345,7 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 			"traces": map[string]any{
 				"terms": map[string]any{
 					"field": FieldTraceID,
-					"size":  limit + query.Offset,
+					"size":  aggSize,
 					"order": map[string]any{"max_start": "desc"},
 				},
 				"aggs": map[string]any{
@@ -179,10 +363,14 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 		return nil, traceIDs, err
 	}
 
-	// Step 2: fetch all spans
+	// Step 2: fetch all spans, capped to ES max_result_window.
+	fetchSize := len(traceIDs) * 100
+	if fetchSize > MaxResultWindow {
+		fetchSize = MaxResultWindow
+	}
 	fetchReq := &SearchRequest{
 		Query: esq.TermsQ(FieldTraceID, traceIDs),
-		Size:  len(traceIDs) * 100,
+		Size:  fetchSize,
 	}
 	fetchResp, err := r.client.Search(ctx, r.indexPattern(query.AppID), fetchReq)
 	if err != nil {
@@ -302,6 +490,21 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		qb.Range(FieldDurationNano, nil, tq.MaxDuration.Nanoseconds(), nil, nil)
 	}
 
+	// ── Intrinsic filters (from TraceQL engine) ──
+	if tq.SpanKind != "" {
+		// TraceQL uses lowercase (server, client), ES stores capitalized (Server, Client).
+		qb.Term(FieldKind, capitalizeFirst(tq.SpanKind))
+	}
+	if tq.Status != "" {
+		// TraceQL uses lowercase (error, ok), ES stores capitalized (Error, Ok) in status.code.
+		qb.Term(FieldStatus+".code", capitalizeFirst(tq.Status))
+	}
+	if tq.IsRoot {
+		// Root span: parentSpanId is empty string.
+		qb.Term(FieldParentSpanID, "")
+	}
+
+	// AND conditions: each tag must match in either attributes or resource.
 	for k, v := range tq.Tags {
 		qb.Should(1,
 			esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
@@ -309,7 +512,33 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		)
 	}
 
+	// OR conditions: at least one group must match (bool.should with minimum_should_match=1).
+	if len(tq.TagsOr) > 0 {
+		var orClauses []map[string]any
+		for _, group := range tq.TagsOr {
+			// Each OR group may have multiple AND conditions internally.
+			groupBuilder := esq.NewBuilder()
+			for k, v := range group {
+				groupBuilder.Should(1,
+					esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
+					esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
+				)
+			}
+			orClauses = append(orClauses, groupBuilder.Build())
+		}
+		qb.Should(1, orClauses...)
+	}
+
 	return qb.Build()
+}
+
+// capitalizeFirst returns the string with the first letter capitalized.
+// Used to convert TraceQL lowercase values (server, error) to ES stored format (Server, Error).
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // timeRangeQuery returns a simple time range query using nanosecond long values.
@@ -361,9 +590,14 @@ func (r *TraceReader) parseTraceAggregation(resp *SearchResponse, offset, limit 
 
 // fetchTracesByIDs fetches all spans for the given trace IDs and assembles them into Trace objects.
 func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, appID string) ([]Trace, error) {
+	// Cap size to stay within ES max_result_window (default 10000).
+	size := len(traceIDs) * 100 // Assume average 100 spans per trace.
+	if size > MaxResultWindow {
+		size = MaxResultWindow
+	}
 	searchReq := &SearchRequest{
 		Query: esq.TermsQ(FieldTraceID, traceIDs),
-		Size: len(traceIDs) * 100, // Assume average 100 spans per trace.
+		Size: size,
 		Sort: []map[string]any{
 			{FieldTraceID: map[string]any{"order": "asc"}},
 			{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
@@ -634,7 +868,159 @@ func (r *TraceReader) calculateDependencies(ctx context.Context, timeRange TimeR
 	return deps, nil
 }
 
-// ==================== Span Document Model ====================
+// ==================== Tag Discovery ====================
+
+// GetTagKeys returns all distinct attribute keys for the given scope.
+// Uses sampler aggregation to pick a representative set of documents,
+// then extracts keys from _source in Go (works with flattened field type).
+// scope: "resource" or "span".
+func (r *TraceReader) GetTagKeys(ctx context.Context, timeRange TimeRange, scope string) ([]string, error) {
+	fieldPrefix := FieldAttributes
+	if scope == "resource" {
+		fieldPrefix = FieldResource
+	}
+
+	searchReq := &SearchRequest{
+		Query: r.timeRangeQuery(timeRange),
+		Size:  0,
+		Aggregations: map[string]any{
+			"sample": map[string]any{
+				"sampler": map[string]any{"shard_size": 500},
+				"aggs": map[string]any{
+					"docs": map[string]any{
+						"top_hits": map[string]any{
+							"size":    100,
+							"_source": []string{fieldPrefix},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("get tag keys failed (scope=%s): %w", scope, err)
+	}
+
+	keys, err := r.extractTagKeysFromResponse(resp, fieldPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("extract tag keys failed (scope=%s): %w", scope, err)
+	}
+
+	return keys, nil
+}
+
+// extractTagKeysFromResponse walks the sampler→top_hits results and collects distinct keys
+// from the _source attributes/resource map across all sampled documents.
+func (r *TraceReader) extractTagKeysFromResponse(resp *SearchResponse, fieldPrefix string) ([]string, error) {
+	raw, ok := resp.Aggregations["sample"]
+	if !ok {
+		return nil, nil
+	}
+
+	var sampleAgg struct {
+		Docs struct {
+			Hits struct {
+				Hits []struct {
+					Source json.RawMessage `json:"_source"`
+				} `json:"hits"`
+			} `json:"hits"`
+		} `json:"docs"`
+	}
+	if err := json.Unmarshal(raw, &sampleAgg); err != nil {
+		return nil, fmt.Errorf("unmarshal sample agg: %w", err)
+	}
+
+	keySet := make(map[string]struct{})
+	for _, hit := range sampleAgg.Docs.Hits.Hits {
+		var source map[string]any
+		if err := json.Unmarshal(hit.Source, &source); err != nil {
+			continue
+		}
+		if attrs, ok := source[fieldPrefix].(map[string]any); ok {
+			for k := range attrs {
+				if k != "" {
+					keySet[k] = struct{}{}
+				}
+			}
+		}
+	}
+
+	if len(keySet) == 0 {
+		return nil, nil
+	}
+
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	// Simple sort for deterministic output.
+	sortKeys(keys)
+	return keys, nil
+}
+
+// GetTagValues returns distinct values for a specific tag key within the given scope.
+// Uses terms aggregation on attributes.{key} or resource.{key} (flattened sub-fields).
+// scope: "resource" or "span".
+// filterTags: optional filter conditions to narrow the aggregation scope (e.g. service.name=X).
+func (r *TraceReader) GetTagValues(ctx context.Context, tagKey string, timeRange TimeRange, scope string, filterTags map[string]string) ([]string, error) {
+	fieldPrefix := FieldAttributes
+	if scope == "resource" {
+		fieldPrefix = FieldResource
+	}
+	fieldName := fieldPrefix + "." + tagKey
+
+	// Build query with time range + optional filter conditions.
+	qb := esq.NewBuilder().
+		Raw(esq.TimeRangeFilter(FieldStartTimeUnixNano, timeRange))
+
+	for k, v := range filterTags {
+		qb.Should(1,
+			esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
+			esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
+		)
+	}
+
+	searchReq := &SearchRequest{
+		Query: qb.Build(),
+		Size:  0,
+		Aggregations: map[string]any{
+			"tag_values": map[string]any{
+				"terms": map[string]any{
+					"field": fieldName,
+					"size":  10000,
+				},
+			},
+		},
+	}
+
+	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("get tag values failed (key=%s, scope=%s): %w", tagKey, scope, err)
+	}
+
+	raw, ok := resp.Aggregations["tag_values"]
+	if !ok {
+		return nil, nil
+	}
+
+	values, err := esq.ParseTermsAgg(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse tag values: %w", err)
+	}
+
+	return values, nil
+}
+
+// sortKeys does a simple insertion sort for small key sets (typically < 100).
+func sortKeys(a []string) {
+	for i := 1; i < len(a); i++ {
+		for j := i; j > 0 && a[j] < a[j-1]; j-- {
+			a[j], a[j-1] = a[j-1], a[j]
+		}
+	}
+}
 
 // ==================== Span Document Model ====================
 // spanDocument is replaced by storedmodel.StoredSpan from Layer 1.
