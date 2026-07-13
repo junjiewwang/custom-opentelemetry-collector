@@ -30,6 +30,23 @@ type TraceSearchResult struct {
 	Total  int64
 }
 
+// TraceSummary is a lightweight search result entry (ES local type).
+type TraceSummary struct {
+	TraceID           string
+	RootServiceName   string
+	RootSpanName      string
+	StartTimeUnixNano string
+	DurationMs        int64
+	SpanCount         int64
+	SpanSet           []storedmodel.StoredSpan
+}
+
+// TraceSummaryResult holds the result of a lightweight trace summary search.
+type TraceSummaryResult struct {
+	Summaries []TraceSummary
+	Total     int64
+}
+
 // Trace represents a complete trace with all its spans.
 type Trace struct {
 	TraceID  string
