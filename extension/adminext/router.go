@@ -288,31 +288,66 @@ func (e *Extension) newRouter() http.Handler {
 			})
 		}
 
-		// ============================================================================
-		// Prometheus v1 Compatible API (for Grafana Prometheus data source)
-		// ============================================================================
-		// Grafana configuration:
-		//   Type: Prometheus
-		//   URL: http://<collector>:8088/api/v2/prometheus
-		//   Access: Server (proxy)
-		//   Auth: Basic Auth (same as admin API)
-		if e.storageMetricReader != nil {
-			r.Route("/prometheus/api/v1", func(r chi.Router) {
-				r.Get("/query", e.handlePromQuery)
-				r.Post("/query", e.handlePromQuery)
-				r.Get("/query_range", e.handlePromQueryRange)
-				r.Post("/query_range", e.handlePromQueryRange)
-				r.Get("/labels", e.handlePromLabels)
-				r.Post("/labels", e.handlePromLabels)
-				r.Get("/label/{labelName}/values", e.handlePromLabelValues)
-				r.Get("/series", e.handlePromSeries)
-				r.Post("/series", e.handlePromSeries)
-				r.Get("/metadata", e.handlePromMetadata)
-			})
-		}
+	// ============================================================================
+	// Prometheus v1 Compatible API (for Grafana Prometheus data source)
+	// ============================================================================
+	// Grafana configuration:
+	//   Type: Prometheus
+	//   URL: http://<collector>:8088/api/v2/prometheus
+	//   Access: Server (proxy)
+	//   Auth: Basic Auth (same as admin API)
+	if e.storageMetricReader != nil {
+		r.Route("/prometheus/api/v1", func(r chi.Router) {
+			r.Get("/query", e.handlePromQuery)
+			r.Post("/query", e.handlePromQuery)
+			r.Get("/query_range", e.handlePromQueryRange)
+			r.Post("/query_range", e.handlePromQueryRange)
+			r.Get("/labels", e.handlePromLabels)
+			r.Post("/labels", e.handlePromLabels)
+			r.Get("/label/{labelName}/values", e.handlePromLabelValues)
+			r.Get("/series", e.handlePromSeries)
+			r.Post("/series", e.handlePromSeries)
+			r.Get("/metadata", e.handlePromMetadata)
+		})
+	}
 
-		// ============================================================================
-		// Arthas Tunnel (if enabled)
+	// ============================================================================
+	// Grafana Tempo Compatible API (for Grafana Tempo data source)
+	// ============================================================================
+	// Grafana configuration:
+	//   Type: Tempo
+	//   URL: http://<collector>:8088/api/v2/tempo
+	//   Access: Server (proxy)
+	//   Auth: Basic Auth (same as admin API)
+	// Tempo API — trace endpoints (require storageTraceReader) and metrics (require storageMetricReader).
+	if e.storageTraceReader != nil || e.storageMetricReader != nil {
+		r.Route("/tempo", func(r chi.Router) {
+			if e.storageTraceReader != nil {
+			// V1 endpoints
+			r.Get("/api/echo", e.handleTempoEcho)
+			r.Get("/api/status/buildinfo", e.handleTempoBuildInfo)
+			r.Get("/api/traces/{traceID}", e.handleTempoGetTrace)
+				r.Get("/api/search", e.handleTempoSearch)
+				r.Get("/api/search/tags", e.handleTempoSearchTags)
+				r.Get("/api/search/tag/{tagName}/values", e.handleTempoSearchTagValues)
+
+			// V2 endpoints (Grafana 12+ calls these by default)
+			// Both GET and POST: Grafana may use POST for long TraceQL queries.
+			r.Get("/api/v2/traces/{traceID}", e.handleTempoV2GetTrace)
+			r.Post("/api/v2/traces/{traceID}", e.handleTempoV2GetTrace)
+			r.Get("/api/v2/search", e.handleTempoV2Search)
+			r.Post("/api/v2/search", e.handleTempoV2Search)
+			r.Get("/api/v2/search/tags", e.handleTempoV2SearchTags)
+			r.Get("/api/v2/search/tag/{tagName}/values", e.handleTempoV2SearchTagValues)
+			}
+			if e.storageMetricReader != nil {
+				r.Get("/api/metrics/query_range", e.handleTempoMetricsQueryRange)
+			}
+		})
+	}
+
+	// ============================================================================
+	// Arthas Tunnel (if enabled)
 		// ============================================================================
 		if e.arthasTunnel != nil {
 			r.Route("/arthas", func(r chi.Router) {
