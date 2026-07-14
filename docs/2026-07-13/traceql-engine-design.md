@@ -232,22 +232,80 @@ extension/adminext/traceql/
 - [x] 修改 `parseTempoSearchParams`: 检测高级语法 → 调用新 parser → 提取可用条件
 - [x] 不支持的部分优雅忽略（返回结果，不报错）
 
-### Sprint 5: 结构操作符 + 内存引擎
+### Sprint 5: 结构操作符 + 内存引擎 ✅ 已完成
 **目标**: 支持 `&>>`, `>>`, `>` 结构查询的精确求值  
 **预估**: 3-4 天
 
-- [ ] 实现 span tree builder（从 `parentSpanId` 构建 ancestor/descendant 关系）
-- [ ] 实现结构匹配器: `matchStructural(tree, leftFilter, rightFilter, op) → bool`
-- [ ] 修改 `handleTempoSearch` 流程: 当 AST 含结构操作符时，先 ES 宽搜 → 逐 trace 精确过滤
-- [ ] 性能保护: 结构查询最多精确评估 N 个 trace（避免拉取过多全量 trace）
+- [x] 实现 `evaluator.go`：span tree builder（`BuildSpanTree`）、结构匹配器（`EvaluateStructural`）、条件匹配（`MatchSpanFilter`/`matchCondition`）
+- [x] 支持 6 种结构操作符：`&>>`（祖先）、`>>`（后代）、`>`（子节点）、`~`（兄弟）、`!>`（非子节点）、`!>>`（非后代）
+- [x] 修改 `handleTempoSearch` 流程：当 `plan.HasStructural=true` 时进入两阶段评估
+- [x] Phase 1: ES 宽搜（复用现有 `SearchTraceSummaries`，计划器已将两侧条件合并为 should）
+- [x] Phase 2: 逐 trace 获取全量 span（`GetTrace`）→ 构建 SpanTree → 结构匹配 → 过滤
+- [x] 性能保护：`maxStructuralTraces = 50`（默认上限，超出时截断并记录日志）
+- [x] 修改 `parseTempoSearchParams` 返回值：额外返回 `*traceql.ExecutionPlan`（携带 HasStructural/FullAST）
+- [x] 辅助函数：`convertSpansToSpanData`、`spanKindToString`、`spanStatusToString`、`keyValueString`
+- [x] 单元测试：15 个新测试（SpanTree 构建/关系、条件匹配、结构评估 4 种算子、Grafana 完整查询、helper 函数）
+- [x] 全量测试：traceql 40+ PASS、adminext ALL PASS、observabilitystorageext ALL PASS
 
-### Sprint 6: Select + Pipeline + SpanSet 语义
+### 新增文件
+
+| 文件 | 职责 |
+|------|------|
+| `extension/adminext/traceql/evaluator.go` | 内存后处理引擎：SpanData/SpanTree 构建、结构操作符匹配、条件评估 |
+
+### 关键架构决策
+
+**两阶段评估流程**：
+```
+handleTempoSearch
+  ├─ parseTempoSearchParams → plan + query
+  ├─ plan.HasStructural? 
+  │    ├─ NO  → SearchTraceSummaries → 直接返回（原有路径）
+  │    └─ YES → Phase 1: SearchTraceSummaries（ES 宽搜，计划器已放宽条件）
+  │              └─ Phase 2: 逐 trace GetTrace → BuildSpanTree → EvaluateStructural
+  │                   └─ 过滤 → 返回验证通过的 traces（上限 maxStructuralTraces=50）
+  └─ 构建 Tempo 响应
+```
+
+**SpanTree 实现**：基于 `parentSpanID` 的单向链表向上查找，避免递归构建完整的 n 叉树
+
+**条件匹配**：处理 "=" 和 "!=" 字符串匹配、"<" ">" 等数值匹配、`nestedSetParent<0` 等价翻译为 `ParentSpanID=""`
+
+### Sprint 6: Select + Pipeline + SpanSet 语义 ✅ 已完成
 **目标**: 支持 `| select(...)` 投影，返回 Grafana 期望的 SpanSet 结构  
 **预估**: 2-3 天
 
-- [ ] 实现 select stage: 从 span 中只返回指定字段
-- [ ] 完善 SpanSet 语义: 搜索结果中标记哪些 span 是被匹配的
-- [ ] 支持 Tempo response 中 `spanSets[].matched` 字段的正确计算
+- [x] 实现 `projectSpanWithSelect()` / `resolveSelectField()`：从 span 中仅返回 select 指定的字段
+- [x] 支持系统字段投影：`name`, `kind`, `status`, `status.code`, `status.message`, `duration`, `resource.service.name`, `span.X`/`.X` 属性
+- [x] 增强 `structuralPostFilter`：返回 `structuralVerifyResult`（含 matchedSpanIDs + fullSpans）
+- [x] 新增 `convertStructuralResultToTempoSearchTrace()`：使用 matched span IDs 构建精确的 spanSet
+- [x] 实现 SpanSet 语义：`tempoSpanSet.Matched` 反射实际匹配的 span 数量（不再是 `len(searchSpans)`）
+- [x] 修改 `convertTraceSummaryToTempoSearchTrace`：接受 `selectFields` 参数，应用 select 投影
+- [x] 修改 `handleTempoSearch` 两个分支：非 structural 传递 selectFields，structural 使用新转换器
+- [x] 单元测试：7 个 select projection 测试 + 全量 adminext/traceql/observabilitystorageext PASS
+- [x] 全量测试：adminext 全 PASS、traceql 42+ PASS、observabilitystorageext 全 PASS
+
+### Select 投影支持字段
+
+| select 字段 | 解析来源 | 示例 |
+|------------|---------|------|
+| `name` | `span.Name` | `"GET /api/v1"` |
+| `kind` | `span.Kind` | `"SPAN_KIND_SERVER"` |
+| `status` | `span.Status.Code` | `"STATUS_CODE_OK"` |
+| `status.code` | `span.Status.Code` | `"STATUS_CODE_ERROR"` |
+| `status.message` | `span.Status.Message` | `"something went wrong"` |
+| `duration` | `span.DurationNano` | `"150000000"` |
+| `resource.service.name` | `span.ServiceName` | `"tapm-api"` |
+| `resource.X` | `span.Resource[X]` | 资源属性值 |
+| `span.X` / `.X` | `span.Attributes[X]` | span 属性值 |
+| 裸字段名 `X` | 先查 Attributes，再查 Resource | 属性值 |
+
+### SpanSet 语义变更
+
+**之前**：所有 spans 都在单个 spanSet 中，`Matched = len(searchSpans)`
+**之后**：
+- 非 structural 查询：保持不变（所有 spanSet 中的 spans 都被视为 matched）
+- Structural 查询：`Matched = len(matchedSpanIDs)`（实际结构匹配到的 span 数量）
 
 ---
 
@@ -328,7 +386,7 @@ Sprint 4 已实施完成，包括以下工作：
 
 - 结构操作符 (`&>>`, `>>`) 仅做条件宽搜推给 ES，精确结构匹配待 Sprint 5 实现
 - `| select()` 字段投影解析完成，实际返回字段裁剪待 Sprint 6 实现
-- 暂不支持 `rate()`, `count_over_time()` 等时序聚合函数（已通过 query_range 端点单独处理）
+- `rate()`, `histogram_over_time()`, `quantile_over_time()` 已支持实时聚合（通过 /api/metrics/query_range 端点 → TraceReader.QueryTraceMetrics）
 
 ---
 
@@ -337,4 +395,6 @@ Sprint 4 已实施完成，包括以下工作：
 | 日期 | 变更内容 | 状态 |
 |------|----------|------|
 | 2026-07-13 | 初始方案设计，完成架构设计和路线图规划 | ✅ 已完成 |
-| 2026-07-13 | Sprint 4 实施：TraceQL Parser + Planner + 集成降级 | ✅ 已完成 |
+| 2026-07-14 | Sprint 6 实施：Select + Pipeline + SpanSet 语义（projectSpanWithSelect + structuralVerifyResult + Matched 计数） | ✅ 已完成 |
+| 2026-07-14 | 修复 TraceQL Metrics 查询空数据 bug：date_histogram 单位从毫秒改为纳秒、isRoot 改用 parentSpanId 判断、status 改用 status.code + capitalizeFirst、SpanKind 加 capitalizeFirst | ✅ 已完成 |
+| 2026-07-14 | 修复 /api/metrics/query_range 路由：Grafana 调用此端点进行 metrics 查询，改为优先走 AST parser + TraceReader 实时聚合，修复 extractMetricValue JSON 解析 bug，修复 histogram_over_time 使用错误的 ES aggregation 类型 | ✅ 已完成 |

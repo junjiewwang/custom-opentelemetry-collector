@@ -780,3 +780,31 @@ Failed to convert tempo response to Otlp: proto: illegal wireType 6
 | `router.go` | 移除 `/api/v2/search`，恢复 `/api/v2/traces/{traceID}`（指向 `handleTempoV2GetTrace`），新增 `/api/status/buildinfo` |
 | `tempo_handler.go` | 新增 `handleTempoV2GetTrace` + protobuf 编码层（~180行） |
 | `go.mod` | `go.opentelemetry.io/proto/otlp` 升级为 direct 依赖 |
+
+### 14.2 SearchTraceSummaries DurationMs 始终为 0（2026-07-14）
+
+**现象**：Grafana Tempo search 结果列表中，所有 trace 的 duration 显示为 0ms，尽管 `{duration>1.2s}` 过滤本身工作正常。
+
+**根因分析**：
+- `SearchTraceSummaries` 的 ES 查询中 `_source` 投影包含 `durationNano`，但**不包含** `endTimeUnixNano`
+- `parseTraceSummaryResult` 计算 trace 级别 DurationMs 时使用 `ss.EndUnixNano`（反序列化后始终为 0，因为 ES 未返回该字段）
+- 导致 `maxEnd` 永远 = 0，条件 `maxEnd > minStart` 永不成立，`DurationMs` 始终 = 0
+
+**修复**：改用 `StartUnixNano + DurationNano` 计算每个 span 的结束时间，取代对 `EndUnixNano` 的依赖：
+```go
+// 修改前
+if ss.EndUnixNano > maxEnd {
+    maxEnd = ss.EndUnixNano
+}
+
+// 修改后
+end := ss.StartUnixNano + ss.DurationNano
+if end > maxEnd {
+    maxEnd = end
+}
+```
+
+**变更文件**：
+| 文件 | 变更 |
+|------|------|
+| `provider/elasticsearch/trace_reader.go` | `parseTraceSummaryResult` 中用 `StartUnixNano + DurationNano` 计算 maxEnd |
