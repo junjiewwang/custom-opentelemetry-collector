@@ -258,3 +258,43 @@ type MetricSample struct {
 	TimestampMs int64
 	Value       float64
 }
+
+// ── Trace Metrics Types ────────────────────────────
+
+// TraceMetricsQuery is the ES-local type for a TraceQL metrics query.
+type TraceMetricsQuery struct {
+	AppID         string
+	ServiceName   string
+	OperationName string
+	Tags          map[string]string
+	TagsOr        [][]map[string]string
+	SpanKind      string
+	Status        string
+	IsRoot        bool
+	MinDuration   time.Duration
+	MaxDuration   time.Duration
+	TimeRange     TimeRange
+	Step          time.Duration
+	Function      string   // "rate", "quantile_over_time", "histogram_over_time"
+	Field         string   // intrinsic field, e.g. "duration"
+	Percentiles   []float64
+	ByLabels      []string
+	Sample        bool
+}
+
+// TraceMetricsResult holds the result of a TraceQL metrics query.
+type TraceMetricsResult struct {
+	Series []TraceMetricsSeries
+}
+
+// TraceMetricsSeries is a single time series result.
+type TraceMetricsSeries struct {
+	Labels map[string]string
+	Values []TraceMetricsPoint
+}
+
+// TraceMetricsPoint is a single time-value pair.
+type TraceMetricsPoint struct {
+	TimestampMs int64
+	Value       float64
+}

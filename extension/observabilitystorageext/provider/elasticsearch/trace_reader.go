@@ -256,13 +256,16 @@ func (r *TraceReader) parseTraceSummaryResult(resp *SearchResponse, offset, limi
 		}
 
 		// Compute start time and duration from the span set.
+		// Note: _source projection does not include endTimeUnixNano (to reduce payload),
+		// so we derive end time from StartUnixNano + DurationNano instead.
 		var minStart, maxEnd int64
 		for _, ss := range spans {
 			if minStart == 0 || ss.StartUnixNano < minStart {
 				minStart = ss.StartUnixNano
 			}
-			if ss.EndUnixNano > maxEnd {
-				maxEnd = ss.EndUnixNano
+			end := ss.StartUnixNano + ss.DurationNano
+			if end > maxEnd {
+				maxEnd = end
 			}
 		}
 		if minStart > 0 {
@@ -500,8 +503,12 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		qb.Term(FieldStatus+".code", capitalizeFirst(tq.Status))
 	}
 	if tq.IsRoot {
-		// Root span: parentSpanId is empty string.
-		qb.Term(FieldParentSpanID, "")
+		// Root span: parentSpanId field is absent (omitempty) for new data,
+		// or "0000000000000000" for historical data written before the writer bug fix.
+		qb.Should(1,
+			esq.MustNotQ(esq.ExistsQ(FieldParentSpanID)),       // field absent (new data)
+			esq.T(FieldParentSpanID, "0000000000000000"),        // zero-value (historical data)
+		)
 	}
 
 	// AND conditions: each tag must match in either attributes or resource.
@@ -516,25 +523,49 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
-	// OR conditions: at least one group must match (bool.should with minimum_should_match=1).
-	if len(tq.TagsOr) > 0 {
+	// ── Event filters (nested queries on the events field) ──
+	for _, eventTag := range tq.EventTags {
+		for k, v := range eventTag {
+			qb.Raw(esq.NestedQuery(FieldEvents, esq.T(FieldEvents+"."+k, v)))
+		}
+	}
+	for _, eventOrGroup := range tq.EventTagsOr {
+		var nestedClauses []map[string]any
+		for _, branchMaps := range eventOrGroup {
+			builder := esq.NewBuilder()
+			for _, branchMap := range branchMaps {
+				for k, v := range branchMap {
+					builder.Raw(esq.T(FieldEvents+"."+k, v))
+				}
+			}
+			nestedClauses = append(nestedClauses, esq.NestedQuery(FieldEvents, builder.Build()))
+		}
+		if len(nestedClauses) > 0 {
+			qb.Should(1, nestedClauses...)
+		}
+	}
+
+	// OR conditions: each TagsOr group is an independent bool.should block (AND-ed together).
+	// Within each group, branches are OR-ed (min_should_match=1).
+	for _, orGroup := range tq.TagsOr {
 		var orClauses []map[string]any
-		for _, group := range tq.TagsOr {
-			// Each OR group may have multiple AND conditions internally.
-			groupBuilder := esq.NewBuilder()
-			for k, v := range group {
+		for _, branchMap := range orGroup {
+			builder := esq.NewBuilder()
+			for k, v := range branchMap {
 				if clause := intrinsicTermClause(k, v); clause != nil {
-					groupBuilder.Raw(clause)
+					builder.Raw(clause)
 				} else {
-					groupBuilder.Should(1,
+					builder.Should(1,
 						esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
 						esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
 					)
 				}
 			}
-			orClauses = append(orClauses, groupBuilder.Build())
+			orClauses = append(orClauses, builder.Build())
 		}
-		qb.Should(1, orClauses...)
+		if len(orClauses) > 0 {
+			qb.Should(1, orClauses...)
+		}
 	}
 
 	return qb.Build()

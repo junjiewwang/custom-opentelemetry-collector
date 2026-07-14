@@ -105,6 +105,11 @@ func (a *pgTraceReaderAdapter) GetTagValues(ctx context.Context, tagKey string, 
 	return nil, nil
 }
 
+func (a *pgTraceReaderAdapter) QueryTraceMetrics(ctx context.Context, query TraceMetricsQuery) (*TraceMetricsResult, error) {
+	// PG provider: trace metrics not yet implemented.
+	return nil, fmt.Errorf("QueryTraceMetrics not implemented for PostgreSQL provider")
+}
+
 // --- MetricReader Adapter ---
 
 type pgMetricReaderAdapter struct {

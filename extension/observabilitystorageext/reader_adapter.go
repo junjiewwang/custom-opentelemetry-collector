@@ -217,6 +217,42 @@ func (a *traceReaderAdapter) GetTagValues(ctx context.Context, tagKey string, ti
 	return a.inner.GetTagValues(ctx, tagKey, elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}, scope, filterTags)
 }
 
+func (a *traceReaderAdapter) QueryTraceMetrics(ctx context.Context, query TraceMetricsQuery) (*TraceMetricsResult, error) {
+	esQuery := elasticsearch.TraceMetricsQuery{
+		AppID:         query.AppID,
+		ServiceName:   query.ServiceName,
+		OperationName: query.OperationName,
+		Tags:          query.Tags,
+		TagsOr:        query.TagsOr,
+		SpanKind:      query.SpanKind,
+		Status:        query.Status,
+		IsRoot:        query.IsRoot,
+		MinDuration:   query.MinDuration,
+		MaxDuration:   query.MaxDuration,
+		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		Step:          query.Step,
+		Function:      query.Function,
+		Field:         query.Field,
+		Percentiles:   query.Percentiles,
+		ByLabels:      query.ByLabels,
+		Sample:        query.Sample,
+	}
+	result, err := a.inner.QueryTraceMetrics(ctx, esQuery)
+	if err != nil {
+		return nil, err
+	}
+	// Convert ES-local results to public types.
+	series := make([]TraceMetricsSeries, len(result.Series))
+	for i, s := range result.Series {
+		points := make([]TraceMetricsPoint, len(s.Values))
+		for j, p := range s.Values {
+			points[j] = TraceMetricsPoint{TimestampMs: p.TimestampMs, Value: p.Value}
+		}
+		series[i] = TraceMetricsSeries{Labels: s.Labels, Values: points}
+	}
+	return &TraceMetricsResult{Series: series}, nil
+}
+
 // logReaderAdapter adapts the ES LogReader to the public LogReader interface.
 type logReaderAdapter struct {
 	inner *elasticsearch.LogReader

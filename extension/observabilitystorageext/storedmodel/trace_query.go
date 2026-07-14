@@ -12,7 +12,7 @@ type TraceQuery struct {
 	ServiceName   string
 	OperationName string
 	Tags          map[string]string
-	TagsOr        []map[string]string // OR groups: each map is ANDed internally, groups are ORed together
+	TagsOr        [][]map[string]string // OR groups: outer groups ANDed, inner maps ORed, map entries ANDed
 	MinDuration   time.Duration
 	MaxDuration   time.Duration
 	TimeRange     TimeRange
@@ -23,6 +23,10 @@ type TraceQuery struct {
 	SpanKind string // "client", "server", "internal", "producer", "consumer"
 	Status   string // "ok", "error", "unset"
 	IsRoot   bool   // true = filter for root spans only (parentSpanId = "")
+
+	// ── Event filters (from TraceQL event:* scope) ──
+	EventTags   []map[string]string   // AND conditions on span events (requires nested query)
+	EventTagsOr [][][]map[string]string // OR groups of event conditions
 }
 
 // TimeRange defines a time window for queries.

@@ -143,7 +143,45 @@ func T(field, value string) map[string]any {
 	return TermQ(field, value)
 }
 
+// MustNot adds a must_not compound clause, wrapping the given sub-clauses
+// in a bool.must_not (all must not match).
+//
+//	ES: {"bool": {"must_not": subClauses}}
+func (b *Builder) MustNot(subClauses ...map[string]any) *Builder {
+	b.mustClauses = append(b.mustClauses, map[string]any{
+		"bool": map[string]any{"must_not": subClauses},
+	})
+	return b
+}
+
 // MustClauses returns the accumulated must clauses (for composition).
 func (b *Builder) MustClauses() []map[string]any {
 	return b.mustClauses
+}
+
+// ExistsQ returns a standalone exists query clause.
+//
+//	ES: {"exists": {"field": field}}
+func ExistsQ(field string) map[string]any {
+	return map[string]any{"exists": map[string]any{"field": field}}
+}
+
+// MustNotQ returns a standalone bool.must_not clause wrapping the given sub-clauses.
+//
+//	ES: {"bool": {"must_not": subClauses}}
+func MustNotQ(subClauses ...map[string]any) map[string]any {
+	return map[string]any{"bool": map[string]any{"must_not": subClauses}}
+}
+
+// NestedQuery wraps a query in a nested query for querying nested documents.
+// Used for event and link scopes in TraceQL.
+//
+//	ES: {"nested": {"path": path, "query": innerQuery}}
+func NestedQuery(path string, innerQuery map[string]any) map[string]any {
+	return map[string]any{
+		"nested": map[string]any{
+			"path":  path,
+			"query": innerQuery,
+		},
+	}
 }

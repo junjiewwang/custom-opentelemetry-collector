@@ -138,9 +138,12 @@ func safeDuration(start, end pcommon.Timestamp) int64 {
 }
 
 // toParentID returns a hex string for the parent span ID, or empty for root spans.
+// A zero SpanID ([8]byte{0,...}) is treated as "no parent" (root span).
+// Note: pcommon.SpanID.String() returns "" for zero values, but we also guard
+// against the 16-char hex zero representation as a defensive measure.
 func toParentID(parentID pcommon.SpanID) string {
 	s := parentID.String()
-	if s == "" || s == "000000000000000" {
+	if s == "" || s == "0000000000000000" {
 		return ""
 	}
 	return s

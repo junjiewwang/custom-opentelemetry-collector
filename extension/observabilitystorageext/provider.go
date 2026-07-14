@@ -147,6 +147,11 @@ type TraceReader interface {
 	// scope: "resource" or "span".
 	// filterTags: optional filter conditions (e.g. service.name=X) to narrow the scope.
 	GetTagValues(ctx context.Context, tagKey string, timeRange TimeRange, scope string, filterTags map[string]string) ([]string, error)
+
+	// QueryTraceMetrics executes a TraceQL metrics query (rate/quantile/histogram)
+	// and returns time-series data. The query contains span filters and a metrics
+	// function stage extracted from the TraceQL pipeline.
+	QueryTraceMetrics(ctx context.Context, query TraceMetricsQuery) (*TraceMetricsResult, error)
 }
 
 // SpanReader queries trace spans from storage in the canonical StoredSpan format.

@@ -112,7 +112,7 @@ type TraceQuery struct {
 	ServiceName   string              `json:"service,omitempty"`
 	OperationName string              `json:"operation,omitempty"`
 	Tags          map[string]string   `json:"tags,omitempty"`
-	TagsOr        []map[string]string `json:"tagsOr,omitempty"` // OR groups: each map is ANDed internally, groups are ORed together
+	TagsOr        [][]map[string]string `json:"tagsOr,omitempty"` // OR groups: outer groups ANDed, inner maps ORed, map entries ANDed
 	MinDuration   time.Duration       `json:"minDuration,omitempty"`
 	MaxDuration   time.Duration       `json:"maxDuration,omitempty"`
 	TimeRange     TimeRange           `json:"timeRange"`
@@ -123,6 +123,10 @@ type TraceQuery struct {
 	SpanKind string `json:"spanKind,omitempty"` // "client", "server", "internal", "producer", "consumer"
 	Status   string `json:"status,omitempty"`   // "ok", "error", "unset"
 	IsRoot   bool   `json:"isRoot,omitempty"`   // true = filter for root spans only
+
+	// ── Event filters (from TraceQL event:* scope) ──
+	EventTags   []map[string]string     `json:"eventTags,omitempty"`
+	EventTagsOr [][][]map[string]string `json:"eventTagsOr,omitempty"`
 }
 
 // TraceSearchResult holds the result of a trace search.
