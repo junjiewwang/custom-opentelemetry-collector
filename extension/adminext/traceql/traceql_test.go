@@ -301,7 +301,9 @@ func TestPlanStructural(t *testing.T) {
 	plan := Plan(ast)
 	assert.True(t, plan.HasStructural)
 	assert.True(t, plan.IsRoot)
-	assert.Equal(t, "server", plan.SpanKind)
+	// SpanKind is relaxed for structural queries — ES search is only for broad
+	// candidate fetching; exact structural matching happens in post-processing.
+	assert.Empty(t, plan.SpanKind, "structural queries should relax SpanKind to avoid over-filtering ES candidates")
 }
 
 func TestPlanOrGroups(t *testing.T) {
@@ -309,9 +311,11 @@ func TestPlanOrGroups(t *testing.T) {
 	require.NoError(t, err)
 
 	plan := Plan(ast)
-	require.Len(t, plan.TagsOr, 2)
-	assert.Equal(t, map[string]string{"kind": "client"}, plan.TagsOr[0])
-	assert.Equal(t, map[string]string{"kind": "server"}, plan.TagsOr[1])
+	// TagsOr is now [][]map[string]string: 1 outer group with 2 branches.
+	require.Len(t, plan.TagsOr, 1)
+	require.Len(t, plan.TagsOr[0], 2)
+	assert.Equal(t, map[string]string{"kind": "client"}, plan.TagsOr[0][0])
+	assert.Equal(t, map[string]string{"kind": "server"}, plan.TagsOr[0][1])
 }
 
 func TestPlanGrafanaQuery(t *testing.T) {
@@ -322,10 +326,42 @@ func TestPlanGrafanaQuery(t *testing.T) {
 	plan := Plan(ast)
 	assert.True(t, plan.HasStructural)
 	assert.True(t, plan.IsRoot)
-	assert.Equal(t, "server", plan.SpanKind)
+	// SpanKind is relaxed for structural queries to avoid over-filtering ES candidates.
+	assert.Empty(t, plan.SpanKind, "structural queries should relax SpanKind")
 	assert.Contains(t, plan.SelectFields, "status")
 	assert.Contains(t, plan.SelectFields, "resource.service.name")
 	assert.Contains(t, plan.SelectFields, "name")
+}
+
+func TestPlanGrafanaQueryWithNestedSetSelect(t *testing.T) {
+	// This is the exact query Grafana sends for Service Structure view.
+	input := `({nestedSetParent<0 && true } &>> { kind = server }) || ({nestedSetParent<0 && true }) | select(status, resource.service.name, name, nestedSetParent, nestedSetLeft, nestedSetRight)`
+	ast, err := Parse(input)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.True(t, plan.HasStructural, "should detect structural operator")
+	assert.True(t, plan.IsRoot, "should detect root span filter")
+	assert.Empty(t, plan.SpanKind, "structural queries must NOT push SpanKind to ES")
+	assert.Empty(t, plan.Status, "structural queries must NOT push Status to ES")
+	// Select fields should be preserved.
+	assert.Contains(t, plan.SelectFields, "nestedSetParent")
+	assert.Contains(t, plan.SelectFields, "nestedSetLeft")
+	assert.Contains(t, plan.SelectFields, "nestedSetRight")
+	assert.Contains(t, plan.SelectFields, "resource.service.name")
+	assert.Contains(t, plan.SelectFields, "name")
+	assert.Contains(t, plan.SelectFields, "status")
+}
+
+func TestPlanStructuralRelaxDoesNotAffectNonStructural(t *testing.T) {
+	// Non-structural queries should NOT have conditions relaxed.
+	ast, err := Parse(`{ kind = server && resource.service.name = "my-svc" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.False(t, plan.HasStructural)
+	assert.Equal(t, "server", plan.SpanKind, "non-structural query should preserve SpanKind")
+	assert.Equal(t, "my-svc", plan.ServiceName, "non-structural query should preserve ServiceName")
 }
 
 // ═══════════════════════════════════════════════════
@@ -345,6 +381,11 @@ func TestIsAdvancedQuery(t *testing.T) {
 		{`{ kind = server } >> { .db.type = "redis" }`, true},
 		// Quoted structural operator should NOT trigger.
 		{`{ .method = "&>>" }`, false},
+		// Parenthesized OR inside single span filter.
+		{`{(kind="internal" || kind="server") && resource.service.name="tapm-api"}`, true},
+		{`{(status="error" || status="unset")}`, true},
+		// Quoted || should NOT trigger.
+		{`{ .attr = "a||b" }`, false},
 	}
 
 	for _, tt := range tests {
@@ -352,4 +393,694 @@ func TestIsAdvancedQuery(t *testing.T) {
 			assert.Equal(t, tt.want, IsAdvancedQuery(tt.input))
 		})
 	}
+}
+
+// ═══════════════════════════════════════════════════
+// Parenthesized OR Group Tests
+// ═══════════════════════════════════════════════════
+
+func TestParseParenthesizedOrGroup(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantCond    []Condition
+		wantOrGroup [][]Condition
+	}{
+		{
+			name:  "simple OR group with AND condition",
+			input: `{(kind="internal" || kind="server") && resource.service.name="tapm-api"}`,
+			wantCond: []Condition{
+				{Scope: "resource", Key: "service.name", Operator: "=", Value: "tapm-api"},
+			},
+			wantOrGroup: [][]Condition{
+				{{Key: "kind", Operator: "=", Value: "internal"}},
+				{{Key: "kind", Operator: "=", Value: "server"}},
+			},
+		},
+		{
+			name:  "OR group with string values",
+			input: `{(name="/api/v1" || name="/api/v2") && resource.service.name="my-svc"}`,
+			wantCond: []Condition{
+				{Scope: "resource", Key: "service.name", Operator: "=", Value: "my-svc"},
+			},
+			wantOrGroup: [][]Condition{
+				{{Key: "name", Operator: "=", Value: "/api/v1"}},
+				{{Key: "name", Operator: "=", Value: "/api/v2"}},
+			},
+		},
+		{
+			name:  "OR group only, no AND conditions",
+			input: `{(status="error" || status="unset")}`,
+			wantCond: nil,
+			wantOrGroup: [][]Condition{
+				{{Key: "status", Operator: "=", Value: "error"}},
+				{{Key: "status", Operator: "=", Value: "unset"}},
+			},
+		},
+		{
+			name:  "OR group at beginning then AND condition",
+			input: `{(kind="client" || kind="server") && span.http.method="GET"}`,
+			wantCond: []Condition{
+				{Scope: "span", Key: "http.method", Operator: "=", Value: "GET"},
+			},
+			wantOrGroup: [][]Condition{
+				{{Key: "kind", Operator: "=", Value: "client"}},
+				{{Key: "kind", Operator: "=", Value: "server"}},
+			},
+		},
+		{
+			name:  "multiple OR groups with AND condition",
+			input: `{(kind="server" || kind="client") && (status="error" || status="ok") && resource.service.name="svc"}`,
+			wantCond: []Condition{
+				{Scope: "resource", Key: "service.name", Operator: "=", Value: "svc"},
+			},
+			wantOrGroup: [][]Condition{
+				{{Key: "kind", Operator: "=", Value: "server"}},
+				{{Key: "kind", Operator: "=", Value: "client"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ast, err := Parse(tt.input)
+			require.NoError(t, err)
+			require.NotNil(t, ast)
+
+			sf, ok := ast.(*SpanFilter)
+			require.True(t, ok, "expected SpanFilter, got %T", ast)
+
+			// Check AND conditions.
+			if tt.wantCond == nil {
+				assert.Empty(t, sf.Conditions)
+			} else {
+				require.Len(t, sf.Conditions, len(tt.wantCond))
+				for i, want := range tt.wantCond {
+					assert.Equal(t, want.Scope, sf.Conditions[i].Scope, "cond[%d] scope", i)
+					assert.Equal(t, want.Key, sf.Conditions[i].Key, "cond[%d] key", i)
+					assert.Equal(t, want.Operator, sf.Conditions[i].Operator, "cond[%d] operator", i)
+					assert.Equal(t, want.Value, sf.Conditions[i].Value, "cond[%d] value", i)
+				}
+			}
+
+			// Check OR groups (first group only for single-group cases).
+			require.GreaterOrEqual(t, len(sf.OrGroups), 1, "expected at least 1 OrGroup")
+			firstGroup := sf.OrGroups[0]
+			require.Len(t, firstGroup, len(tt.wantOrGroup))
+			for i, wantBranch := range tt.wantOrGroup {
+				require.Len(t, firstGroup[i], len(wantBranch))
+				for j, wantCond := range wantBranch {
+					assert.Equal(t, wantCond.Key, firstGroup[i][j].Key, "orGroup[0][%d][%d] key", i, j)
+					assert.Equal(t, wantCond.Value, firstGroup[i][j].Value, "orGroup[0][%d][%d] value", i, j)
+				}
+			}
+		})
+	}
+}
+
+// TestParseMultipleOrGroups verifies that multiple parenthesized OR groups
+// within a single span filter are correctly parsed as separate OrGroup entries.
+func TestParseMultipleOrGroups(t *testing.T) {
+	input := `{(kind="server" || kind="client") && (status="error" || status="ok") && resource.service.name="svc"}`
+
+	ast, err := Parse(input)
+	require.NoError(t, err)
+
+	sf, ok := ast.(*SpanFilter)
+	require.True(t, ok)
+
+	// 2 independent OR groups.
+	require.Len(t, sf.OrGroups, 2)
+
+	// Group 0: kind server || client
+	group0 := sf.OrGroups[0]
+	require.Len(t, group0, 2)
+	assert.Len(t, group0[0], 1)
+	assert.Equal(t, "kind", group0[0][0].Key)
+	assert.Equal(t, "server", group0[0][0].Value)
+	assert.Len(t, group0[1], 1)
+	assert.Equal(t, "kind", group0[1][0].Key)
+	assert.Equal(t, "client", group0[1][0].Value)
+
+	// Group 1: status error || ok
+	group1 := sf.OrGroups[1]
+	require.Len(t, group1, 2)
+	assert.Len(t, group1[0], 1)
+	assert.Equal(t, "status", group1[0][0].Key)
+	assert.Equal(t, "error", group1[0][0].Value)
+	assert.Len(t, group1[1], 1)
+	assert.Equal(t, "status", group1[1][0].Key)
+	assert.Equal(t, "ok", group1[1][0].Value)
+
+	// AND condition: resource.service.name = "svc"
+	require.Len(t, sf.Conditions, 1)
+	assert.Equal(t, "resource", sf.Conditions[0].Scope)
+	assert.Equal(t, "service.name", sf.Conditions[0].Key)
+	assert.Equal(t, "svc", sf.Conditions[0].Value)
+}
+
+// TestPlanMultipleOrGroups verifies that multiple OR groups produce
+// separate TagsOr groups in the execution plan.
+func TestPlanMultipleOrGroups(t *testing.T) {
+	ast, err := Parse(`{(kind="server" || kind="client") && (status="error" || status="ok") && resource.service.name="svc"}`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.Equal(t, "svc", plan.ServiceName)
+
+	// 2 outer OR groups.
+	require.Len(t, plan.TagsOr, 2)
+
+	// Group 0: kind branches
+	require.Len(t, plan.TagsOr[0], 2)
+	assert.Equal(t, map[string]string{"kind": "server"}, plan.TagsOr[0][0])
+	assert.Equal(t, map[string]string{"kind": "client"}, plan.TagsOr[0][1])
+
+	// Group 1: status branches
+	require.Len(t, plan.TagsOr[1], 2)
+	assert.Equal(t, map[string]string{"status": "error"}, plan.TagsOr[1][0])
+	assert.Equal(t, map[string]string{"status": "ok"}, plan.TagsOr[1][1])
+}
+
+// TestParseOrGroupWithAttributes verifies OR groups that mix attributes
+// and intrinsic fields.
+func TestParseOrGroupWithAttributes(t *testing.T) {
+	input := `{(span.http.method="GET" || span.http.method="POST") && resource.service.name="my-svc"}`
+
+	ast, err := Parse(input)
+	require.NoError(t, err)
+
+	sf, ok := ast.(*SpanFilter)
+	require.True(t, ok)
+
+	// AND condition.
+	require.Len(t, sf.Conditions, 1)
+	assert.Equal(t, "service.name", sf.Conditions[0].Key)
+	assert.Equal(t, "my-svc", sf.Conditions[0].Value)
+
+	// OR group.
+	require.Len(t, sf.OrGroups, 1)
+	group := sf.OrGroups[0]
+	require.Len(t, group, 2)
+	assert.Equal(t, "http.method", group[0][0].Key)
+	assert.Equal(t, "GET", group[0][0].Value)
+	assert.Equal(t, "http.method", group[1][0].Key)
+	assert.Equal(t, "POST", group[1][0].Value)
+}
+
+// TestStringRoundTrip verifies that SpanFilter.String() produces valid
+// output that can be re-parsed.
+func TestStringRoundTrip(t *testing.T) {
+	tests := []string{
+		`{ resource.service.name = "tapm-api" && (kind = internal || kind = server) }`,
+		`{ (status = error || status = unset) }`,
+		`{ resource.service.name = "svc" && (status = error || status = ok) && (kind = server || kind = client) }`,
+	}
+
+	for _, input := range tests {
+		t.Run(input, func(t *testing.T) {
+			ast, err := Parse(input)
+			require.NoError(t, err)
+
+			str := ast.String()
+			// Re-parse the string output.
+			reparsed, err := Parse(str)
+			require.NoError(t, err, "failed to re-parse String() output: %s", str)
+
+			// Both should be SpanFilters with same conditions.
+			sf1, ok1 := ast.(*SpanFilter)
+			sf2, ok2 := reparsed.(*SpanFilter)
+			require.True(t, ok1)
+			require.True(t, ok2)
+
+			assert.Equal(t, len(sf1.Conditions), len(sf2.Conditions), "conditions count mismatch")
+			assert.Equal(t, len(sf1.OrGroups), len(sf2.OrGroups), "orGroups count mismatch")
+		})
+	}
+}
+
+func TestPlanParenthesizedOrGroup(t *testing.T) {
+	tests := []struct {
+		name              string
+		input             string
+		wantServiceName   string
+		wantTags          map[string]string
+		wantOrGroupCount  int             // number of outer OR groups
+		wantFirstBranchCount int          // branches in first OR group
+		wantFirstBranch0  map[string]string
+		wantFirstBranch1  map[string]string
+	}{
+		{
+			name:              "kind OR with service.name AND",
+			input:             `{(kind="internal" || kind="server") && resource.service.name="tapm-api"}`,
+			wantServiceName:   "tapm-api",
+			wantTags:          map[string]string{},
+			wantOrGroupCount:  1,
+			wantFirstBranchCount: 2,
+			wantFirstBranch0:  map[string]string{"kind": "internal"},
+			wantFirstBranch1:  map[string]string{"kind": "server"},
+		},
+		{
+			name:              "status OR only",
+			input:             `{(status="error" || status="unset")}`,
+			wantServiceName:   "",
+			wantTags:          map[string]string{},
+			wantOrGroupCount:  1,
+			wantFirstBranchCount: 2,
+			wantFirstBranch0:  map[string]string{"status": "error"},
+			wantFirstBranch1:  map[string]string{"status": "unset"},
+		},
+		{
+			name:              "OR group with regular attribute AND condition",
+			input:             `{(kind="client" || kind="server") && span.http.method="GET"}`,
+			wantServiceName:   "",
+			wantTags:          map[string]string{"http.method": "GET"},
+			wantOrGroupCount:  1,
+			wantFirstBranchCount: 2,
+			wantFirstBranch0:  map[string]string{"kind": "client"},
+			wantFirstBranch1:  map[string]string{"kind": "server"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ast, err := Parse(tt.input)
+			require.NoError(t, err)
+
+			plan := Plan(ast)
+			assert.Equal(t, tt.wantServiceName, plan.ServiceName)
+			assert.Equal(t, tt.wantTags, plan.Tags)
+
+			require.Len(t, plan.TagsOr, tt.wantOrGroupCount, "TagsOr outer group count")
+			if tt.wantOrGroupCount >= 1 {
+				firstGroup := plan.TagsOr[0]
+				require.Len(t, firstGroup, tt.wantFirstBranchCount, "first group branch count")
+				if tt.wantFirstBranchCount >= 1 {
+					assert.Equal(t, tt.wantFirstBranch0, firstGroup[0])
+				}
+				if tt.wantFirstBranchCount >= 2 {
+					assert.Equal(t, tt.wantFirstBranch1, firstGroup[1])
+				}
+			}
+		})
+	}
+}
+
+func TestParseParenthesizedOrGroupErrorCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "unclosed parenthesis",
+			input: `{(kind="internal" || kind="server"}`,
+		},
+		{
+			name:  "nested parentheses not supported",
+			input: `{((kind="internal" || kind="server")) && service.name="svc"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(tt.input)
+			assert.Error(t, err)
+		})
+	}
+}
+
+// ═══════════════════════════════════════════════════
+// Evaluator — SpanTree Tests
+// ═══════════════════════════════════════════════════
+
+func makeTestSpan(id, parentID, kind, name, service string) SpanData {
+	return SpanData{
+		SpanID:       id,
+		ParentSpanID: parentID,
+		Kind:         kind,
+		Name:         name,
+		ServiceName:  service,
+		StatusCode:   "ok",
+	}
+}
+
+func TestBuildSpanTree(t *testing.T) {
+	spans := []SpanData{
+		makeTestSpan("root", "", "server", "root", "svc"),
+		makeTestSpan("child1", "root", "internal", "child1", "svc"),
+		makeTestSpan("child2", "root", "client", "child2", "svc"),
+		makeTestSpan("grandchild", "child1", "internal", "gc", "svc"),
+	}
+
+	tree := BuildSpanTree(spans)
+
+	// Root check.
+	assert.NotNil(t, tree.GetSpan("root"))
+	assert.Empty(t, tree.GetSpan("root").ParentSpanID)
+
+	// Children.
+	assert.Len(t, tree.Children("root"), 2)
+	assert.Len(t, tree.Children("child1"), 1)
+	assert.Empty(t, tree.Children("grandchild"))
+}
+
+func TestSpanTreeRelationships(t *testing.T) {
+	spans := []SpanData{
+		makeTestSpan("root", "", "server", "root", "svc"),
+		makeTestSpan("A", "root", "internal", "A", "svc"),
+		makeTestSpan("B", "root", "client", "B", "svc"),
+		makeTestSpan("A1", "A", "internal", "A1", "svc"),
+	}
+
+	tree := BuildSpanTree(spans)
+
+	// Ancestor / Descendant.
+	assert.True(t, tree.IsAncestor("root", "A"))
+	assert.True(t, tree.IsAncestor("root", "A1"))
+	assert.True(t, tree.IsDescendant("A", "A1"))
+	assert.False(t, tree.IsAncestor("A", "B"))
+	assert.False(t, tree.IsDescendant("root", "root")) // not own ancestor
+
+	// Child.
+	assert.True(t, tree.IsChild("root", "A"))
+	assert.False(t, tree.IsChild("root", "A1")) // grandchild, not direct
+	assert.False(t, tree.IsChild("A", "B"))
+
+	// Sibling.
+	assert.True(t, tree.IsSibling("A", "B"))
+	assert.False(t, tree.IsSibling("A", "A1"))
+}
+
+// ═══════════════════════════════════════════════════
+// Evaluator — SpanFilter Matching Tests
+// ═══════════════════════════════════════════════════
+
+func TestMatchSpanFilter_Kind(t *testing.T) {
+	ast, err := Parse(`{ kind = server }`)
+	require.NoError(t, err)
+	sf := ast.(*SpanFilter)
+
+	span := makeTestSpan("s1", "", "server", "test", "svc")
+	assert.True(t, MatchSpanFilter(sf, &span))
+
+	span.Kind = "client"
+	assert.False(t, MatchSpanFilter(sf, &span))
+}
+
+func TestMatchSpanFilter_ServiceName(t *testing.T) {
+	ast, err := Parse(`{ resource.service.name = "tapm-api" }`)
+	require.NoError(t, err)
+	sf := ast.(*SpanFilter)
+
+	span := makeTestSpan("s1", "", "server", "test", "tapm-api")
+	assert.True(t, MatchSpanFilter(sf, &span))
+
+	span.ServiceName = "other-svc"
+	assert.False(t, MatchSpanFilter(sf, &span))
+}
+
+func TestMatchSpanFilter_Status(t *testing.T) {
+	ast, err := Parse(`{ status = error }`)
+	require.NoError(t, err)
+	sf := ast.(*SpanFilter)
+
+	span := makeTestSpan("s1", "", "server", "test", "svc")
+	span.StatusCode = "error"
+	assert.True(t, MatchSpanFilter(sf, &span))
+
+	span.StatusCode = "ok"
+	assert.False(t, MatchSpanFilter(sf, &span))
+}
+
+func TestMatchSpanFilter_Name(t *testing.T) {
+	ast, err := Parse(`{ name = "/api/v1" }`)
+	require.NoError(t, err)
+	sf := ast.(*SpanFilter)
+
+	span := makeTestSpan("s1", "", "server", "/api/v1", "svc")
+	assert.True(t, MatchSpanFilter(sf, &span))
+
+	span.Name = "/api/v2"
+	assert.False(t, MatchSpanFilter(sf, &span))
+}
+
+func TestMatchSpanFilter_MultipleConditions(t *testing.T) {
+	ast, err := Parse(`{ kind = server && resource.service.name = "tapm-api" }`)
+	require.NoError(t, err)
+	sf := ast.(*SpanFilter)
+
+	span := makeTestSpan("s1", "", "server", "test", "tapm-api")
+	assert.True(t, MatchSpanFilter(sf, &span))
+
+	span.Kind = "client"
+	assert.False(t, MatchSpanFilter(sf, &span))
+}
+
+// ═══════════════════════════════════════════════════
+// Evaluator — Structural Expression Tests
+// ═══════════════════════════════════════════════════
+
+func TestEvaluateStructural_Ancestor(t *testing.T) {
+	// Parse {kind = server} &>> {kind = internal}
+	ast, err := Parse(`{ kind = server } &>> { kind = internal }`)
+	require.NoError(t, err)
+	structExpr := ast.(*StructuralExpr)
+	assert.Equal(t, "&>>", structExpr.Operator)
+
+	spans := []SpanData{
+		makeTestSpan("root", "", "server", "root-svc", "tapm-api"),
+		makeTestSpan("internal1", "root", "internal", "inner-call", "tapm-api"),
+		makeTestSpan("internal2", "root", "internal", "inner-call-2", "tapm-api"),
+		makeTestSpan("leaf", "internal1", "client", "outgoing", "tapm-api"),
+	}
+	tree := BuildSpanTree(spans)
+
+	matches := EvaluateStructural(structExpr, tree)
+
+	// root (server) should match internal1 and internal2 (descendants)
+	// leaf is client, doesn't match right filter
+	require.Len(t, matches, 2)
+
+	// Both matches should have root as left span.
+	for _, m := range matches {
+		assert.Equal(t, "root", m.LeftSpanID)
+	}
+	rightIDs := make(map[string]bool)
+	for _, m := range matches {
+		rightIDs[m.RightSpanID] = true
+	}
+	assert.True(t, rightIDs["internal1"])
+	assert.True(t, rightIDs["internal2"])
+}
+
+func TestEvaluateStructural_Child(t *testing.T) {
+	ast, err := Parse(`{ kind = server } > { kind = internal }`)
+	require.NoError(t, err)
+	structExpr := ast.(*StructuralExpr)
+	assert.Equal(t, ">", structExpr.Operator)
+
+	spans := []SpanData{
+		makeTestSpan("root", "", "server", "root-svc", "tapm-api"),
+		makeTestSpan("direct-child", "root", "internal", "inner", "tapm-api"),
+		makeTestSpan("grandchild", "direct-child", "internal", "gc", "tapm-api"),
+	}
+	tree := BuildSpanTree(spans)
+
+	matches := EvaluateStructural(structExpr, tree)
+	// root > direct-child: yes, root > grandchild: no (not direct)
+	require.Len(t, matches, 1)
+	assert.Equal(t, "root", matches[0].LeftSpanID)
+	assert.Equal(t, "direct-child", matches[0].RightSpanID)
+}
+
+func TestEvaluateStructural_NoMatch(t *testing.T) {
+	ast, err := Parse(`{ kind = server } >> { kind = server }`)
+	require.NoError(t, err)
+	structExpr := ast.(*StructuralExpr)
+
+	spans := []SpanData{
+		makeTestSpan("root", "", "server", "root", "svc"),
+		makeTestSpan("child", "root", "internal", "child", "svc"),
+	}
+	tree := BuildSpanTree(spans)
+
+	matches := EvaluateStructural(structExpr, tree)
+	// Both left and right filters match "root", but root is not its own descendant.
+	assert.Empty(t, matches)
+}
+
+func TestEvaluateStructural_GrafanaQuery(t *testing.T) {
+	// Full Grafana query: ({nestedSetParent<0 && true} &>> {kind = server}) || ({nestedSetParent<0 && true})
+	// We only evaluate the structural part for left OR branch.
+	ast, err := Parse(`{ nestedSetParent < 0 } &>> { kind = server }`)
+	require.NoError(t, err)
+	structExpr := ast.(*StructuralExpr)
+
+	spans := []SpanData{
+		makeTestSpan("root", "", "server", "root-span", "my-svc"),
+		{SpanID: "child", ParentSpanID: "root", Kind: "server", Name: "child-svc", ServiceName: "my-svc", StatusCode: "ok"},
+		{SpanID: "non-server", ParentSpanID: "root", Kind: "client", Name: "outgoing", ServiceName: "my-svc", StatusCode: "ok"},
+	}
+	tree := BuildSpanTree(spans)
+
+	// The left filter is {nestedSetParent < 0}. In evaluator, nestedSetParent is not a SpanData field.
+	// But we treat it as looking for root spans (ParentSpanID=""). So we just need to
+	// manually set up a SpanFilter check differently. For this test, we know root has empty parent.
+	matches := EvaluateStructural(structExpr, tree)
+	// Root matches both kind=server and nestedSetParent<0, and child also matches kind=server.
+	// So root >> child is a match.
+	assert.NotEmpty(t, matches)
+}
+
+// ═══════════════════════════════════════════════════
+// Evaluator — Helper Tests
+// ═══════════════════════════════════════════════════
+
+func TestHasStructuralExpr(t *testing.T) {
+	// Simple filter — no structural.
+	ast, _ := Parse(`{ kind = server }`)
+	assert.False(t, HasStructuralExpr(ast))
+
+	// Structural expression.
+	ast, _ = Parse(`{ kind = server } >> { name = "test" }`)
+	assert.True(t, HasStructuralExpr(ast))
+
+	// Pipeline with structural.
+	ast, _ = Parse(`{ kind = server } >> { name = "test" } | select(name)`)
+	assert.True(t, HasStructuralExpr(ast))
+
+	// OR with structural on one side.
+	ast, _ = Parse(`({kind = server} >> {name = "test"}) || ({kind = client})`)
+	assert.True(t, HasStructuralExpr(ast))
+}
+
+func TestFindStructuralExpr(t *testing.T) {
+	// Direct.
+	ast, _ := Parse(`{ kind = server } >> { name = "test" }`)
+	s := findStructuralExpr(ast)
+	require.NotNil(t, s)
+	assert.Equal(t, ">>", s.Operator)
+
+	// Pipeline wrapped.
+	ast, _ = Parse(`{ kind = server } >> { name = "test" } | select(name)`)
+	s = findStructuralExpr(ast)
+	require.NotNil(t, s)
+	assert.Equal(t, ">>", s.Operator)
+
+	// OR wrapped.
+	ast, _ = Parse(`({kind = server} >> {name = "test"}) || ({kind = client})`)
+	s = findStructuralExpr(ast)
+	require.NotNil(t, s)
+	assert.Equal(t, ">>", s.Operator)
+}
+
+// ═══════════════════════════════════════════════════
+// EvaluateTraceStructural — OR combination tests
+// ═══════════════════════════════════════════════════
+
+func TestEvaluateTraceStructural_OrWithStructuralAndFilter(t *testing.T) {
+	// Simulates the Grafana query:
+	// ({nestedSetParent<0 && true} &>> {kind = server}) || ({nestedSetParent<0 && true})
+	// A trace should match if EITHER the structural branch OR the simple filter matches.
+
+	// Build a trace with a root span (server kind) and a child span (client kind).
+	spans := []SpanData{
+		{
+			SpanID:       "root-1",
+			ParentSpanID: "",
+			Name:         "GET /api",
+			Kind:         "server",
+			ServiceName:  "frontend",
+			StatusCode:   "ok",
+		},
+		{
+			SpanID:       "child-1",
+			ParentSpanID: "root-1",
+			Name:         "DB query",
+			Kind:         "client",
+			ServiceName:  "frontend",
+			StatusCode:   "ok",
+		},
+	}
+
+	// Test 1: Query with structural &>> — root span is ancestor of server span.
+	// ({kind = server} &>> {kind = client}) — root(server) is ancestor of child(client).
+	ast, err := Parse(`({kind = server} &>> {kind = client}) || ({kind = internal})`)
+	require.NoError(t, err)
+
+	result := EvaluateTraceStructural(ast, spans)
+	require.NotNil(t, result, "structural branch should match: root(server) &>> child(client)")
+	assert.True(t, result.HasMatch)
+	// Should have matched root-1 and child-1.
+	foundRoot := false
+	foundChild := false
+	for _, m := range result.Matches {
+		if m.LeftSpanID == "root-1" {
+			foundRoot = true
+		}
+		if m.RightSpanID == "child-1" {
+			foundChild = true
+		}
+	}
+	assert.True(t, foundRoot, "root-1 should be in matches as left span")
+	assert.True(t, foundChild, "child-1 should be in matches as right span")
+
+	// Test 2: Only the filter branch matches (no structural match).
+	// ({kind = producer} &>> {kind = consumer}) || ({kind = server})
+	// Structural branch doesn't match (no producer/consumer), but filter branch matches root.
+	ast, err = Parse(`({kind = producer} &>> {kind = consumer}) || ({kind = server})`)
+	require.NoError(t, err)
+
+	result = EvaluateTraceStructural(ast, spans)
+	require.NotNil(t, result, "filter branch should match: root has kind=server")
+	assert.True(t, result.HasMatch)
+	// Should contain root-1 as a synthetic match from the SpanFilter branch.
+	foundSynthetic := false
+	for _, m := range result.Matches {
+		if m.LeftSpanID == "root-1" && m.RightSpanID == "root-1" {
+			foundSynthetic = true
+		}
+	}
+	assert.True(t, foundSynthetic, "root-1 should appear as synthetic self-match from SpanFilter")
+
+	// Test 3: Neither branch matches.
+	ast, err = Parse(`({kind = producer} &>> {kind = consumer}) || ({kind = internal})`)
+	require.NoError(t, err)
+
+	result = EvaluateTraceStructural(ast, spans)
+	assert.Nil(t, result, "neither branch should match")
+}
+
+func TestEvaluateTraceStructural_OrWithPipeline(t *testing.T) {
+	// Simulates: ({nestedSetParent<0} &>> {kind = server}) || ({nestedSetParent<0}) | select(...)
+	// The pipeline wrapper (select) should be unwrapped before evaluating OR branches.
+
+	spans := []SpanData{
+		{
+			SpanID:       "root-1",
+			ParentSpanID: "",
+			Name:         "GET /",
+			Kind:         "server",
+			ServiceName:  "web",
+			StatusCode:   "ok",
+		},
+		{
+			SpanID:       "child-1",
+			ParentSpanID: "root-1",
+			Name:         "DB call",
+			Kind:         "client",
+			ServiceName:  "web",
+			StatusCode:   "ok",
+		},
+	}
+
+	// Parse with pipeline: structural OR filter | select.
+	ast, err := Parse(`({kind = server} &>> {kind = client}) || ({kind = server}) | select(name)`)
+	require.NoError(t, err)
+
+	result := EvaluateTraceStructural(ast, spans)
+	require.NotNil(t, result)
+	assert.True(t, result.HasMatch)
+	// Both branches should contribute matches.
+	assert.True(t, len(result.Matches) >= 2, "both structural and filter branches should match")
 }

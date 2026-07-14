@@ -340,7 +340,10 @@ func (e *Extension) newRouter() http.Handler {
 			r.Get("/api/v2/search/tags", e.handleTempoV2SearchTags)
 			r.Get("/api/v2/search/tag/{tagName}/values", e.handleTempoV2SearchTagValues)
 			}
-			if e.storageMetricReader != nil {
+			// TraceQL metrics (/api/metrics/query_range) requires either:
+			// - storageTraceReader (primary: real-time aggregation from raw spans)
+			// - storageMetricReader (fallback: pre-aggregated spanmetrics)
+			if e.storageTraceReader != nil || e.storageMetricReader != nil {
 				r.Get("/api/metrics/query_range", e.handleTempoMetricsQueryRange)
 			}
 		})

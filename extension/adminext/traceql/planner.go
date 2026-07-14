@@ -20,7 +20,14 @@ type ExecutionPlan struct {
 	Tags map[string]string
 
 	// TagsOr are OR-grouped conditions for ES bool.should.
-	TagsOr []map[string]string
+	// Outer groups are AND-ed together (each becomes a separate bool.should block).
+	// Within each group, maps are OR-ed (all in one bool.should with min_should_match=1).
+	// Within each map, entries are AND-ed.
+	//
+	// Example: {(kind=server || kind=client) && (status=error || status=ok)}
+	// TagsOr: [[{kind:server},{kind:client}], [{status:error},{status:ok}]]
+	// ES: must=[should[server,client], should[error,ok]]
+	TagsOr [][]map[string]string
 
 	// ServiceName is extracted from resource.service.name for dedicated ES field.
 	ServiceName string
@@ -41,6 +48,13 @@ type ExecutionPlan struct {
 	MinDuration time.Duration
 	MaxDuration time.Duration
 
+	// EventTags are conditions scoped to the event scope (e.g., event:name = "exception").
+	// These require ES nested queries on the events field.
+	EventTags map[string]string
+
+	// EventTagsOr holds parenthesized OR groups with event-scoped conditions.
+	EventTagsOr [][][]map[string]string
+
 	// ── Post-processing indicators ──
 	// HasStructural means the query contains &>>, >>, >, ~ operators
 	// and requires in-memory structural matching after ES search.
@@ -48,6 +62,12 @@ type ExecutionPlan struct {
 
 	// SelectFields from | select() pipeline stage.
 	SelectFields []string
+
+	// MetricsStage from | rate() / quantile_over_time() / histogram_over_time() pipeline stage.
+	MetricsStage *MetricsStage
+
+	// HasMetrics is true when the query contains a metrics pipeline stage.
+	HasMetrics bool
 
 	// FullAST is the complete parsed AST for post-processing phases.
 	FullAST Expr
@@ -73,7 +93,39 @@ func Plan(ast Expr) *ExecutionPlan {
 	// Walk the AST and extract conditions.
 	plan.extract(ast)
 
+	// For structural queries, the ES search is only used for candidate fetching.
+	// Conditions extracted from DIFFERENT span filters (e.g., left and right of &>>)
+	// should NOT be AND-ed together in ES because they refer to different spans.
+	// Relax intrinsic filters that came from different structural arms to avoid
+	// filtering out valid candidate traces at the ES level.
+	if plan.HasStructural {
+		plan.relaxStructuralConditions()
+	}
+
 	return plan
+}
+
+// relaxStructuralConditions loosens the ES search conditions for structural queries.
+// For structural queries, ES search serves only as a broad candidate filter — the
+// exact structural matching is performed in-memory during post-processing.
+//
+// The problem: when a query like `{nestedSetParent<0} &>> {kind=server}` is planned,
+// both IsRoot=true and SpanKind="server" are extracted and AND-ed into the ES query.
+// This means ES only finds spans that are BOTH root AND kind=server, but these
+// conditions target DIFFERENT spans in the structural relationship.
+//
+// Solution: for structural queries, clear SpanKind and Status since they likely
+// come from the non-root side of the structural expression. Keep IsRoot because
+// it helps narrow candidates (finding traces that have root spans).
+func (p *ExecutionPlan) relaxStructuralConditions() {
+	// Clear conditions that likely came from the non-root filter in a structural expr.
+	// These would incorrectly narrow the ES search when AND-ed with IsRoot.
+	p.SpanKind = ""
+	p.Status = ""
+	// Keep IsRoot — it helps find trace candidates by identifying root span presence.
+	// Keep ServiceName/OperationName — if present, they usually come from the same
+	// filter as IsRoot (e.g., {resource.service.name="X" && nestedSetParent<0}).
+	// Keep Tags/TagsOr — they may still be useful as broadened candidate filters.
 }
 
 // extract recursively walks the AST and populates the plan.
@@ -106,6 +158,10 @@ func (p *ExecutionPlan) extract(expr Expr) {
 			if sel, ok := stage.(*SelectStage); ok {
 				p.SelectFields = sel.Fields
 			}
+			if ms, ok := stage.(*MetricsStage); ok {
+				p.HasMetrics = true
+				p.MetricsStage = ms
+			}
 		}
 
 	case *TrueExpr:
@@ -115,8 +171,32 @@ func (p *ExecutionPlan) extract(expr Expr) {
 
 // extractFromSpanFilter extracts pushable conditions from a span filter.
 func (p *ExecutionPlan) extractFromSpanFilter(sf *SpanFilter) {
+	// Extract AND conditions (top-level).
 	for _, cond := range sf.Conditions {
 		p.extractCondition(cond)
+	}
+
+	// Extract parenthesized OR groups.
+	// Each OrGroup is a [][]Condition — becomes its own TagsOr group.
+	for _, orGroup := range sf.OrGroups {
+		var groupMaps []map[string]string
+		for _, branch := range orGroup {
+			branchMap := make(map[string]string)
+			for _, cond := range branch {
+				if cond.Operator == "=" {
+					valStr := condValueToString(cond.Value)
+					if valStr != "" {
+						branchMap[cond.Key] = valStr
+					}
+				}
+			}
+			if len(branchMap) > 0 {
+				groupMaps = append(groupMaps, branchMap)
+			}
+		}
+		if len(groupMaps) > 0 {
+			p.TagsOr = append(p.TagsOr, groupMaps)
+		}
 	}
 }
 
@@ -160,8 +240,8 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 		}
 
-	// ── Intrinsic: duration ──
-	case key == "duration" && cond.Scope == "":
+	// ── Intrinsic: duration (span or trace scope) ──
+	case key == "duration" && (cond.Scope == "" || cond.Scope == "trace"):
 		if d, ok := cond.Value.(time.Duration); ok {
 			switch cond.Operator {
 			case ">", ">=":
@@ -171,8 +251,33 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 		}
 
+	// ── Intrinsic: trace:rootName / trace:rootService ──
+	case key == "rootName" && cond.Scope == "trace":
+		if cond.Operator == "=" && valStr != "" {
+			if p.Tags == nil {
+				p.Tags = make(map[string]string)
+			}
+			p.Tags["rootName"] = valStr
+		}
+	case key == "rootService" && cond.Scope == "trace":
+		if cond.Operator == "=" && valStr != "" {
+			if p.Tags == nil {
+				p.Tags = make(map[string]string)
+			}
+			p.Tags["rootService"] = valStr
+		}
+
 	// ── Generic attribute conditions (pushable as Tags) ──
 	default:
+		if cond.Scope == "event" {
+			if cond.Operator == "=" && valStr != "" {
+				if p.EventTags == nil {
+					p.EventTags = make(map[string]string)
+				}
+				p.EventTags[key] = valStr
+			}
+			return
+		}
 		if cond.Operator == "=" && valStr != "" {
 			p.Tags[key] = valStr
 		}
@@ -180,7 +285,7 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 }
 
 // extractOrConditions handles OR expressions.
-// Strategy: if it's a flat OR of simple span filters, produce TagsOr groups.
+// Strategy: if it's a flat OR of simple span filters, produce a single TagsOr group.
 // Otherwise, extract all conditions as broadened filters for candidate search.
 func (p *ExecutionPlan) extractOrConditions(or *OrExpr) {
 	groups := flattenOrGroups(or)
@@ -191,20 +296,24 @@ func (p *ExecutionPlan) extractOrConditions(or *OrExpr) {
 		return
 	}
 
-	// All leaf nodes are SpanFilters — produce OR groups.
+	// All leaf nodes are SpanFilters — produce one OR group.
+	var orGroup []map[string]string
 	for _, sf := range groups {
-		group := make(map[string]string)
+		m := make(map[string]string)
 		for _, cond := range sf.Conditions {
 			if cond.Operator == "=" {
 				valStr := condValueToString(cond.Value)
 				if valStr != "" {
-					group[cond.Key] = valStr
+					m[cond.Key] = valStr
 				}
 			}
 		}
-		if len(group) > 0 {
-			p.TagsOr = append(p.TagsOr, group)
+		if len(m) > 0 {
+			orGroup = append(orGroup, m)
 		}
+	}
+	if len(orGroup) > 0 {
+		p.TagsOr = append(p.TagsOr, orGroup)
 	}
 }
 
@@ -251,8 +360,12 @@ func condValueToString(v any) string {
 	}
 }
 
+// Deprecated: IsAdvancedQuery is no longer used for routing in parseTempoSearchParams.
+// All TraceQL queries now go through the unified AST parser (Parse → Plan).
+// This function is retained only for backward compatibility with tests.
+//
 // IsAdvancedQuery returns true if the raw TraceQL string contains syntax
-// that requires the new parser (structural ops, pipeline, etc).
+// that requires the new parser (structural ops, pipeline, parenthesized OR, etc).
 func IsAdvancedQuery(raw string) bool {
 	// Quick heuristic checks before full parsing.
 	if raw == "" || raw == "{}" {
@@ -272,6 +385,11 @@ func IsAdvancedQuery(raw string) bool {
 		}
 	}
 	if braceCount > 1 {
+		return true
+	}
+	// Check for || inside a single span filter (parenthesized OR groups).
+	// e.g., {(kind="internal" || kind="server") && resource.service.name="tapm-api"}
+	if braceCount == 1 && containsUnquoted(raw, "||") {
 		return true
 	}
 	return false

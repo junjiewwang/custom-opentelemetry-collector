@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/encoding/protowire"
 
 	"go.opentelemetry.io/collector/custom/extension/adminext/traceql"
@@ -100,10 +102,20 @@ type tempoKeyValue struct {
 }
 
 type tempoAnyValue struct {
-	StringValue *string  `json:"stringValue,omitempty"`
-	IntValue    *string  `json:"intValue,omitempty"` // int64 as string (proto jsonpb compatibility)
-	DoubleValue *float64 `json:"doubleValue,omitempty"`
-	BoolValue   *bool    `json:"boolValue,omitempty"`
+	StringValue *string            `json:"stringValue,omitempty"`
+	IntValue    *string            `json:"intValue,omitempty"` // int64 as string (proto jsonpb compatibility)
+	DoubleValue *float64           `json:"doubleValue,omitempty"`
+	BoolValue   *bool              `json:"boolValue,omitempty"`
+	Value       *tempoAnyValueAlt  `json:"Value,omitempty"` // proto backward-compatible fallback format
+}
+
+// tempoAnyValueAlt provides proto-compatible snake_case field names
+// used as a fallback by Grafana traces-drilldown for older backends.
+type tempoAnyValueAlt struct {
+	StringValue *string  `json:"string_value,omitempty"`
+	IntValue    *string  `json:"int_value,omitempty"`
+	DoubleValue *float64 `json:"double_value,omitempty"`
+	BoolValue   *bool    `json:"bool_value,omitempty"`
 }
 
 type tempoSpanEvent struct {
@@ -141,6 +153,7 @@ type tempoSpanSet struct {
 
 type tempoSearchSpan struct {
 	SpanID            string           `json:"spanID"`
+	Name              string           `json:"name,omitempty"`
 	StartTimeUnixNano string           `json:"startTimeUnixNano"`
 	DurationNanos     string           `json:"durationNanos"`
 	Attributes        []tempoKeyValue  `json:"attributes"`
@@ -216,7 +229,7 @@ type tempoMetricSample struct {
 // traceqlMetricsQuery holds parsed TraceQL metrics query components.
 type traceqlMetricsQuery struct {
 	Tags       map[string]string // filter conditions
-	TagsOr     []map[string]string // OR filter groups (||)
+	TagsOr     [][]map[string]string // OR filter groups (||), outer groups ANDed
 	Function   string            // rate, count_over_time, quantile_over_time, etc.
 	FuncParam  float64           // function parameter (e.g. quantile 0.95)
 	GroupBy    []string          // by(labels)
@@ -488,9 +501,23 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 
 	rawQuery := r.URL.RawQuery
 
-	query, err := parseTempoSearchParams(r)
+	plan, query, err := parseTempoSearchParams(r)
 	if err != nil {
 		e.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Extract select fields from plan (for | select(...) projection).
+	var selectFields []string
+	if plan != nil {
+		selectFields = plan.SelectFields
+	}
+
+	// ── Metrics Query Path ──
+	// When the query contains a metrics pipeline stage (rate/quantile_over_time/etc.),
+	// execute as an ES aggregation query and return time-series data.
+	if plan != nil && plan.HasMetrics && plan.MetricsStage != nil {
+		e.executeTempoMetricsQuery(w, r, plan, query)
 		return
 	}
 
@@ -510,10 +537,37 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build Tempo-format search response from summaries.
+	// If the query has structural operators, do two-phase evaluation:
+	// 1. ES broad search (already done above)
+	// 2. Per-trace structural matching (fetch full traces, verify structure)
+	if plan != nil && plan.HasStructural && plan.FullAST != nil {
+		verified := e.structuralPostFilter(r.Context(), result.Summaries, plan, query.Limit)
+		e.logger.Debug("tempo structural search completed",
+			zap.String("query", rawQuery),
+			zap.Int("candidates", len(result.Summaries)),
+			zap.Int("verified", len(verified)),
+		)
+		// Build response from verified traces with matched span info.
+		searchTraces := make([]tempoSearchTrace, 0, len(verified))
+		for _, sr := range verified {
+			st := convertStructuralResultToTempoSearchTrace(sr, selectFields, spss)
+			searchTraces = append(searchTraces, st)
+		}
+		resp := tempoSearchResponse{
+			Traces: searchTraces,
+			Metrics: tempoSearchMetrics{
+				InspectedTraces: result.Total,
+				InspectedBytes:  "0",
+			},
+		}
+		e.writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Build Tempo-format search response from summaries (non-structural path).
 	searchTraces := make([]tempoSearchTrace, 0, len(result.Summaries))
 	for _, s := range result.Summaries {
-		st := convertTraceSummaryToTempoSearchTrace(s)
+		st := convertTraceSummaryToTempoSearchTrace(s, selectFields)
 		searchTraces = append(searchTraces, st)
 	}
 
@@ -533,6 +587,226 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+// structuralPostFilter performs two-phase evaluation for queries with structural operators.
+// Phase 1 (ES broad search) is already done — we have candidate TraceSummaries.
+// Phase 2: for each candidate, fetch full trace spans and verify the structural relationship.
+// Returns only the summaries whose traces contain at least one matching structural pair.
+//
+// Performance: capped at maxStructuralTraces (default 50) to avoid excessive trace fetches.
+const maxStructuralTraces = 50
+
+// structuralVerifyResult holds the result of structural verification for a single trace.
+type structuralVerifyResult struct {
+	summary       observabilitystorageext.TraceSummary
+	fullSpans     []observabilitystorageext.Span
+	matchedSpanIDs map[string]bool // spanIDs that matched the structural expression
+}
+
+// nestedSetInfo holds the computed nested set model values for a span.
+type nestedSetInfo struct {
+	Parent int // parent span's Left value; -1 for root
+	Left   int // DFS pre-order entry number
+	Right  int // DFS pre-order exit number
+}
+
+// structuralPostFilterConcurrency controls the maximum number of concurrent
+// GetTrace calls during structural post-filtering. Each call fetches a full
+// trace from the storage backend (e.g., ES), which is IO-bound.
+// 10 workers provides ~5x speedup for typical maxStructuralTraces=50 batches
+// without overloading the storage backend.
+const structuralPostFilterConcurrency = 10
+
+func (e *Extension) structuralPostFilter(
+	ctx context.Context,
+	candidates []observabilitystorageext.TraceSummary,
+	plan *traceql.ExecutionPlan,
+	limit int,
+) []structuralVerifyResult {
+	if len(candidates) == 0 || plan.FullAST == nil {
+		return nil
+	}
+
+	// Cap the number of traces to evaluate structurally.
+	evalCount := len(candidates)
+	if evalCount > maxStructuralTraces {
+		evalCount = maxStructuralTraces
+		e.logger.Debug("structural search: capping evaluation",
+			zap.Int("candidates", len(candidates)),
+			zap.Int("max", maxStructuralTraces),
+		)
+	}
+
+	// Concurrent GetTrace + structural evaluation.
+	// Each goroutine independently fetches a trace from storage and evaluates
+	// the structural condition. Results are collected via a buffered channel
+	// sized to prevent blocking.
+	type verifyResult struct {
+		sr *structuralVerifyResult
+	}
+
+	resultCh := make(chan verifyResult, evalCount)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(structuralPostFilterConcurrency)
+
+	for i := 0; i < evalCount; i++ {
+		s := candidates[i]
+		g.Go(func() error {
+			trace, err := e.storageTraceReader.GetTrace(gctx, s.TraceID)
+			if err != nil {
+				e.logger.Debug("structural search: skip trace fetch error",
+					zap.String("traceID", s.TraceID), zap.Error(err))
+				return nil
+			}
+			if trace == nil || len(trace.Spans) == 0 {
+				return nil
+			}
+
+			// Convert to evaluator-friendly SpanData and evaluate structurally.
+			spanData := convertSpansToSpanData(trace.Spans)
+			result := traceql.EvaluateTraceStructural(plan.FullAST, spanData)
+			if result == nil || !result.HasMatch {
+				return nil
+			}
+			result.SetTraceResultTraceID(s.TraceID)
+
+			// Collect matched span IDs.
+			matchedIDs := make(map[string]bool, len(result.Matches)*2)
+			for _, m := range result.Matches {
+				matchedIDs[m.LeftSpanID] = true
+				matchedIDs[m.RightSpanID] = true
+			}
+
+			resultCh <- verifyResult{sr: &structuralVerifyResult{
+				summary:        s,
+				fullSpans:      trace.Spans,
+				matchedSpanIDs: matchedIDs,
+			}}
+			return nil
+		})
+	}
+
+	// Close result channel after all goroutines complete.
+	go func() {
+		_ = g.Wait()
+		close(resultCh)
+	}()
+
+	// Collect all verified results.
+	var verified []structuralVerifyResult
+	for vr := range resultCh {
+		verified = append(verified, *vr.sr)
+	}
+
+	// Apply limit if specified.
+	if limit > 0 && len(verified) > limit {
+		verified = verified[:limit]
+	}
+
+	return verified
+}
+
+// convertSpansToSpanData converts observabilitystorageext Span objects to evaluator SpanData.
+func convertSpansToSpanData(spans []observabilitystorageext.Span) []traceql.SpanData {
+	result := make([]traceql.SpanData, 0, len(spans))
+	for _, s := range spans {
+		sd := traceql.SpanData{
+			SpanID:       s.SpanID,
+			ParentSpanID: s.ParentSpanID,
+			Name:         s.Name,
+			Kind:         spanKindToString(s.Kind),
+			ServiceName:  s.ServiceName,
+			StatusCode:   spanStatusToString(s.Status),
+		}
+
+		// Parse timestamps.
+		if t, err := parseInt64(s.StartTimeUnixNano); err == nil {
+			sd.StartUnixNano = t
+		}
+		if t, err := parseInt64(s.EndTimeUnixNano); err == nil {
+			sd.EndUnixNano = t
+		}
+		if t, err := parseInt64(s.DurationNano); err == nil {
+			sd.DurationNano = t
+		}
+
+		// Flatten attributes.
+		sd.Attributes = make(map[string]string, len(s.Attributes))
+		for _, attr := range s.Attributes {
+			sd.Attributes[attr.Key] = keyValueString(attr)
+		}
+
+		// Flatten resource attributes.
+		sd.Resource = make(map[string]string, len(s.Resource))
+		for _, attr := range s.Resource {
+			sd.Resource[attr.Key] = keyValueString(attr)
+		}
+
+		result = append(result, sd)
+	}
+	return result
+}
+
+// spanKindToString converts SpanKind to lowercase short form.
+// Handles all formats stored in ES: OTel enum ("SPAN_KIND_SERVER"), ptrace.SpanKind.String() ("Server"),
+// and lowercase ("server"). Delegates to NormalizeSpanKind for robust multi-format normalization.
+func spanKindToString(kind observabilitystorageext.SpanKind) string {
+	normalized := observabilitystorageext.NormalizeSpanKind(string(kind))
+	switch normalized {
+	case observabilitystorageext.SpanKindInternal:
+		return "internal"
+	case observabilitystorageext.SpanKindServer:
+		return "server"
+	case observabilitystorageext.SpanKindClient:
+		return "client"
+	case observabilitystorageext.SpanKindProducer:
+		return "producer"
+	case observabilitystorageext.SpanKindConsumer:
+		return "consumer"
+	default:
+		return "unspecified"
+	}
+}
+
+// spanStatusToString converts SpanStatus to the status code string ("ok"/"error"/"unset").
+// Handles all formats stored in ES: OTel enum ("STATUS_CODE_OK"), ptrace.StatusCode.String() ("Ok"),
+// and lowercase ("ok"). Delegates to NormalizeStatusCode for robust multi-format normalization.
+func spanStatusToString(status observabilitystorageext.SpanStatus) string {
+	normalized := observabilitystorageext.NormalizeStatusCode(string(status.Code))
+	switch normalized {
+	case observabilitystorageext.StatusCodeOk:
+		return "ok"
+	case observabilitystorageext.StatusCodeError:
+		return "error"
+	default:
+		return "unset"
+	}
+}
+
+// keyValueString converts a KeyValue's AnyValue to its string representation.
+func keyValueString(kv observabilitystorageext.KeyValue) string {
+	if kv.Value.StringValue != nil {
+		return *kv.Value.StringValue
+	}
+	if kv.Value.IntValue != nil {
+		return fmt.Sprintf("%d", *kv.Value.IntValue)
+	}
+	if kv.Value.DoubleValue != nil {
+		return fmt.Sprintf("%f", *kv.Value.DoubleValue)
+	}
+	if kv.Value.BoolValue != nil {
+		if *kv.Value.BoolValue {
+			return "true"
+		}
+		return "false"
+	}
+	return ""
+}
+
+// parseInt64 safely parses a string to int64.
+func parseInt64(s string) (int64, error) {
+	return strconv.ParseInt(s, 10, 64)
+}
+
 // ── Handler: /api/v2/search ────────────────────────
 
 // handleTempoV2Search handles GET /api/v2/search.
@@ -546,7 +820,7 @@ func (e *Extension) handleTempoV2Search(w http.ResponseWriter, r *http.Request) 
 
 	rawQuery := r.URL.RawQuery
 
-	query, err := parseTempoSearchParams(r)
+	_, query, err := parseTempoSearchParams(r)
 	if err != nil {
 		e.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -622,7 +896,7 @@ func (e *Extension) handleTempoV2Search(w http.ResponseWriter, r *http.Request) 
 }
 
 // convertTraceSummaryToTempoSearchTrace converts a TraceSummary to a Tempo search result entry.
-func convertTraceSummaryToTempoSearchTrace(s observabilitystorageext.TraceSummary) tempoSearchTrace {
+func convertTraceSummaryToTempoSearchTrace(s observabilitystorageext.TraceSummary, selectFields []string) tempoSearchTrace {
 	st := tempoSearchTrace{
 		TraceID:           s.TraceID,
 		RootServiceName:   s.RootServiceName,
@@ -631,13 +905,21 @@ func convertTraceSummaryToTempoSearchTrace(s observabilitystorageext.TraceSummar
 		DurationMs:        s.DurationMs,
 	}
 
+	// Pre-compute nested set model if select requests nested set fields.
+	var nsInfo map[string]nestedSetInfo
+	if needsNestedSet(selectFields) {
+		nsInfo = computeNestedSet(s.SpanSet)
+	}
+
 	searchSpans := make([]tempoSearchSpan, 0, len(s.SpanSet))
 	for _, sp := range s.SpanSet {
+		projected := projectSpanWithSelect(sp, selectFields, nsInfo)
 		searchSpans = append(searchSpans, tempoSearchSpan{
 			SpanID:            sp.SpanID,
+			Name:              projected.Name,
 			StartTimeUnixNano: sp.StartTimeUnixNano,
 			DurationNanos:     sp.DurationNano,
-			Attributes:        publicKeyValuesToTempo(sp.Attributes),
+			Attributes:        projected.Attributes,
 		})
 	}
 
@@ -646,6 +928,172 @@ func convertTraceSummaryToTempoSearchTrace(s observabilitystorageext.TraceSummar
 		Matched: len(searchSpans),
 	}}
 	return st
+}
+
+// convertStructuralResultToTempoSearchTrace builds a tempoSearchTrace from a structural
+// verification result. Uses full trace data to:
+// 1. Build spanSet entries from structurally matched spans
+// 2. Apply select projection if selectFields is non-empty
+//
+// Special case: when selectFields includes nestedSet fields (nestedSetParent/Left/Right),
+// Grafana needs ALL spans in the trace to render the Service Structure hierarchy tree.
+// In this case, we return all spans (up to spss) rather than just matched endpoints.
+func convertStructuralResultToTempoSearchTrace(
+	sr structuralVerifyResult,
+	selectFields []string,
+	spss int,
+) tempoSearchTrace {
+	st := tempoSearchTrace{
+		TraceID:           sr.summary.TraceID,
+		RootServiceName:   sr.summary.RootServiceName,
+		RootTraceName:     sr.summary.RootSpanName,
+		StartTimeUnixNano: sr.summary.StartTimeUnixNano,
+		DurationMs:        sr.summary.DurationMs,
+	}
+
+	// Pre-compute nested set model on full trace spans if select requests nested set fields.
+	includeAllSpans := needsNestedSet(selectFields)
+	var nsInfo map[string]nestedSetInfo
+	if includeAllSpans {
+		nsInfo = computeNestedSet(sr.fullSpans)
+	}
+
+	// Build spanSet.
+	// When nestedSet fields are selected (Grafana Service Structure), include ALL spans
+	// so the frontend can reconstruct the full hierarchy tree.
+	// Otherwise, only include structurally matched spans.
+	var resultSpans []tempoSearchSpan
+	for _, sp := range sr.fullSpans {
+		if !includeAllSpans && !sr.matchedSpanIDs[sp.SpanID] {
+			continue
+		}
+		projected := projectSpanWithSelect(sp, selectFields, nsInfo)
+		resultSpans = append(resultSpans, tempoSearchSpan{
+			SpanID:            sp.SpanID,
+			Name:              projected.Name,
+			StartTimeUnixNano: sp.StartTimeUnixNano,
+			DurationNanos:     sp.DurationNano,
+			Attributes:        projected.Attributes,
+		})
+		// Limit spans per spanSet (spss).
+		if len(resultSpans) >= spss {
+			break
+		}
+	}
+
+	matchedCount := len(sr.fullSpans)
+	if includeAllSpans {
+		matchedCount = len(sr.fullSpans)
+	} else {
+		matchedCount = len(sr.matchedSpanIDs)
+	}
+	if len(resultSpans) == 0 {
+		resultSpans = make([]tempoSearchSpan, 0)
+	}
+
+	st.SpanSets = []tempoSpanSet{{
+		Spans:   resultSpans,
+		Matched: matchedCount,
+	}}
+	return st
+}
+
+// ── Nested Set Model ──────────────────────────────
+
+// computeNestedSet computes nested set model (left/right/parent) for a list of spans
+// using DFS traversal based on parentSpanID relationships.
+// Returns a map from spanID to nestedSetInfo.
+func computeNestedSet(spans []observabilitystorageext.Span) map[string]nestedSetInfo {
+	if len(spans) == 0 {
+		return nil
+	}
+
+	// Build adjacency: parentSpanID → children
+	children := make(map[string][]string, len(spans))
+	spanIndex := make(map[string]int, len(spans))
+	var roots []string
+	for i, sp := range spans {
+		spanIndex[sp.SpanID] = i
+		if sp.ParentSpanID == "" {
+			roots = append(roots, sp.SpanID)
+		} else {
+			children[sp.ParentSpanID] = append(children[sp.ParentSpanID], sp.SpanID)
+		}
+	}
+
+	// Sort children by start time for deterministic order.
+	for pid := range children {
+		sort.Slice(children[pid], func(i, j int) bool {
+			si := spanIndex[children[pid][i]]
+			sj := spanIndex[children[pid][j]]
+			return spans[si].StartTimeUnixNano < spans[sj].StartTimeUnixNano
+		})
+	}
+
+	// Handle orphan spans (parentSpanID not found in this span set).
+	for _, sp := range spans {
+		if sp.ParentSpanID != "" {
+			if _, exists := spanIndex[sp.ParentSpanID]; !exists {
+				roots = append(roots, sp.SpanID)
+			}
+		}
+	}
+
+	// Sort roots by start time.
+	sort.Slice(roots, func(i, j int) bool {
+		si := spanIndex[roots[i]]
+		sj := spanIndex[roots[j]]
+		return spans[si].StartTimeUnixNano < spans[sj].StartTimeUnixNano
+	})
+
+	// DFS traversal to assign left/right numbers.
+	result := make(map[string]nestedSetInfo, len(spans))
+	counter := 1
+
+	var dfs func(spanID string, parentLeft int)
+	dfs = func(spanID string, parentLeft int) {
+		left := counter
+		counter++
+		cids := children[spanID]
+		for _, childID := range cids {
+			dfs(childID, left)
+		}
+		right := counter
+		counter++
+		result[spanID] = nestedSetInfo{
+			Parent: parentLeft,
+			Left:   left,
+			Right:  right,
+		}
+	}
+
+	for _, rootID := range roots {
+		dfs(rootID, -1)
+	}
+
+	// Spans not reached by DFS (disconnected) get fallback values.
+	for _, sp := range spans {
+		if _, ok := result[sp.SpanID]; !ok {
+			left := counter
+			counter++
+			right := counter
+			counter++
+			result[sp.SpanID] = nestedSetInfo{Parent: -1, Left: left, Right: right}
+		}
+	}
+
+	return result
+}
+
+// needsNestedSet checks if any select field requires nested set computation.
+func needsNestedSet(selectFields []string) bool {
+	for _, f := range selectFields {
+		switch f {
+		case "nestedSetParent", "nestedSetLeft", "nestedSetRight":
+			return true
+		}
+	}
+	return false
 }
 
 // ── Handler: /api/search/tags ──────────────────────
@@ -1042,37 +1490,111 @@ func parseTagValuesFilter(r *http.Request) map[string]string {
 	return andTags
 }
 
-// ── Handler: /api/metrics/query_range (TraceQL Metrics) ──
+// ── TraceQL Metrics Search Path ─────────────────────
 
-// handleTempoMetricsQueryRange handles GET /api/metrics/query_range.
-// Accepts TraceQL metrics queries and translates them to MetricRangeQuery calls.
-// Supported functions: rate(), count_over_time() — both map to calls_total.
-func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
+// executeTempoMetricsQuery runs a TraceQL metrics query (rate/quantile_over_time/etc.)
+// using ES aggregations and returns time-series data.
+func (e *Extension) executeTempoMetricsQuery(w http.ResponseWriter, r *http.Request, plan *traceql.ExecutionPlan, query observabilitystorageext.TraceQuery) {
+	ms := plan.MetricsStage
+	if ms == nil {
+		e.writeError(w, http.StatusBadRequest, "missing metrics stage in execution plan")
 		return
 	}
 
+	timeRange := parseTempoTimeRange(r)
+	step := parseTempoMetricsStep(r, timeRange)
+
+	metricsQuery := observabilitystorageext.TraceMetricsQuery{
+		AppID:         query.AppID,
+		ServiceName:   plan.ServiceName,
+		OperationName: plan.OperationName,
+		Tags:          plan.Tags,
+		TagsOr:        plan.TagsOr,
+		SpanKind:      plan.SpanKind,
+		Status:        plan.Status,
+		IsRoot:        plan.IsRoot,
+		MinDuration:   plan.MinDuration,
+		MaxDuration:   plan.MaxDuration,
+		TimeRange:     timeRange,
+		Step:          step,
+		Function:      string(ms.Function),
+		Field:         ms.Field,
+		Percentiles:   ms.Percentiles,
+		ByLabels:      ms.ByLabels,
+		Sample:        ms.Sample,
+	}
+
+	result, err := e.storageTraceReader.QueryTraceMetrics(r.Context(), metricsQuery)
+	if err != nil {
+		e.logger.Error("tempo metrics query failed", zap.String("function", string(ms.Function)), zap.Error(err))
+		e.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	e.writeJSON(w, http.StatusOK, result)
+}
+
+// parseTempoMetricsStep extracts the step interval from the request.
+func parseTempoMetricsStep(r *http.Request, timeRange observabilitystorageext.TimeRange) time.Duration {
+	stepStr := r.URL.Query().Get("step")
+	if stepStr != "" {
+		if d, err := parseTempoDuration(stepStr); err == nil && d > 0 {
+			return d
+		}
+	}
+	// Auto-compute: ~60 buckets across the time range.
+	defaultStep := timeRange.End.Sub(timeRange.Start) / 60
+	if defaultStep < 15*time.Second {
+		defaultStep = 15 * time.Second
+	}
+	return defaultStep
+}
+
+// ── Handler: /api/metrics/query_range (TraceQL Metrics) ──
+
+// handleTempoMetricsQueryRange handles GET /api/metrics/query_range.
+// Two execution paths:
+//  1. Primary (real-time): Parse TraceQL via AST, use TraceReader.QueryTraceMetrics
+//     to aggregate directly from raw spans. This always works if traces exist.
+//  2. Fallback: Use pre-aggregated spanmetrics via MetricReader.QueryRange.
+//     Only used when AST parsing fails AND MetricReader is available.
+func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request) {
 	rawQ := r.URL.Query().Get("q")
 	if rawQ == "" {
 		e.writeError(w, http.StatusBadRequest, "parameter 'q' is required")
 		return
 	}
 
-	// Parse TraceQL metrics query.
+	// Parse time range and step.
+	timeRange := parseTempoTimeRange(r)
+	step := parseTempoMetricsStep(r, timeRange)
+
+	// ── Primary path: AST parser + TraceReader real-time aggregation ──
+	// This handles all TraceQL intrinsics (nestedSetParent<0, status, duration, etc.)
+	// correctly via the unified planner.
+	if e.storageTraceReader != nil {
+		ast, err := traceql.Parse(rawQ)
+		if err == nil && ast != nil {
+			plan := traceql.Plan(ast)
+			if plan != nil && plan.HasMetrics && plan.MetricsStage != nil {
+				e.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
+				return
+			}
+		}
+	}
+
+	// ── Fallback path: pre-aggregated spanmetrics via MetricReader ──
+	if e.storageMetricReader == nil {
+		e.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
+		return
+	}
+
+	// Parse using legacy parser for MetricReader path.
 	parsed, err := parseTraceQLMetricsQuery(rawQ)
 	if err != nil {
 		e.logger.Warn("tempo metrics: invalid query", zap.String("q", rawQ), zap.Error(err))
 		e.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid TraceQL metrics query: %v", err))
 		return
-	}
-
-	// Parse time range and step.
-	timeRange := parseTempoTimeRange(r)
-	stepStr := r.URL.Query().Get("step")
-	step, err := parseTempoDuration(stepStr)
-	if err != nil || step <= 0 {
-		step = 15 * time.Second
 	}
 
 	// Build MetricRangeQuery from parsed TraceQL.
@@ -1090,7 +1612,7 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 		Fill:        "null",
 	}
 
-	e.logger.Debug("tempo metrics: executing query",
+	e.logger.Debug("tempo metrics: executing via MetricReader (fallback)",
 		zap.String("metric", metricName),
 		zap.String("function", parsed.Function),
 		zap.Float64("param", parsed.FuncParam),
@@ -1110,6 +1632,77 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 	// Convert to Tempo metrics format.
 	resp := convertMetricRangeToTempoMetrics(result)
 	e.writeJSON(w, http.StatusOK, resp)
+}
+
+// executeTempoMetricsQueryRange runs a TraceQL metrics query via TraceReader
+// and writes the response in Tempo /api/metrics/query_range format.
+func (e *Extension) executeTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request, plan *traceql.ExecutionPlan, timeRange observabilitystorageext.TimeRange, step time.Duration) {
+	ms := plan.MetricsStage
+
+	metricsQuery := observabilitystorageext.TraceMetricsQuery{
+		ServiceName:   plan.ServiceName,
+		OperationName: plan.OperationName,
+		Tags:          plan.Tags,
+		TagsOr:        plan.TagsOr,
+		SpanKind:      plan.SpanKind,
+		Status:        plan.Status,
+		IsRoot:        plan.IsRoot,
+		MinDuration:   plan.MinDuration,
+		MaxDuration:   plan.MaxDuration,
+		TimeRange:     timeRange,
+		Step:          step,
+		Function:      string(ms.Function),
+		Field:         ms.Field,
+		Percentiles:   ms.Percentiles,
+		ByLabels:      ms.ByLabels,
+		Sample:        ms.Sample,
+	}
+
+	result, err := e.storageTraceReader.QueryTraceMetrics(r.Context(), metricsQuery)
+	if err != nil {
+		e.logger.Error("tempo metrics query_range failed",
+			zap.String("function", string(ms.Function)), zap.Error(err))
+		e.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Convert TraceMetricsResult to Tempo metrics response format.
+	resp := convertTraceMetricsToTempoResponse(result)
+	e.writeJSON(w, http.StatusOK, resp)
+}
+
+// convertTraceMetricsToTempoResponse converts a TraceMetricsResult (from TraceReader
+// real-time aggregation) to the Tempo /api/metrics/query_range response format.
+func convertTraceMetricsToTempoResponse(result *observabilitystorageext.TraceMetricsResult) tempoMetricsResponse {
+	series := make([]tempoMetricSeries, 0, len(result.Series))
+	for _, s := range result.Series {
+		labels := make([]tempoMetricLabel, 0, len(s.Labels))
+		for k, v := range s.Labels {
+			labels = append(labels, tempoMetricLabel{Key: k, Value: v})
+		}
+
+		samples := make([]tempoMetricSample, 0, len(s.Values))
+		for _, p := range s.Values {
+			samples = append(samples, tempoMetricSample{
+				TimestampMs: p.TimestampMs,
+				Value:       p.Value,
+			})
+		}
+
+		if len(samples) > 0 {
+			series = append(series, tempoMetricSeries{
+				Labels:  labels,
+				Samples: samples,
+			})
+		}
+	}
+
+	return tempoMetricsResponse{
+		Series: series,
+		Metrics: tempoSearchMetrics{
+			InspectedBytes: "0",
+		},
+	}
 }
 
 // ── TraceQL Metrics Parser ────────────────────────────
@@ -1191,13 +1784,19 @@ func parseTraceQLMetricsFuncWithParam(stage string) (string, float64, bool) {
 }
 
 // parseTraceQLOrFilter parses a filter with || (OR) conditions.
-// Returns AND conditions in `tags`, and each OR group in `tagsOr`.
+// Returns AND conditions in `tags`, and each OR group as a TagsOr group.
 // e.g. {key1=val1 || key2=val2 && key3=val3}
-//   → tags: {"key3": "val3"}, tagsOr: [{"key1": "val1"}, {"key2": "val2"}]
+//   → tags: {"key3": "val3"}, tagsOr: [[{"key1": "val1"}, {"key2": "val2"}]]
 //
 // Also handles parenthesized OR groups from Grafana:
 // {(span.kind="internal" || span.kind="client" || span.kind="server")}
-func parseTraceQLOrFilter(raw string) (map[string]string, []map[string]string) {
+//
+// NOTE: The Tempo trace search path now uses the unified AST parser (traceql.Parse
+// → traceql.Plan) for all queries. This legacy parser is retained for:
+//   1. Graceful degradation when the AST parser fails on malformed input
+//   2. The metrics query path (parseTraceQLMetricsQuery) which calls this directly
+//   3. The tag values filter path (parseTagValuesFilter)
+func parseTraceQLOrFilter(raw string) (map[string]string, [][]map[string]string) {
 	// Strip outer { ... }
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, "{") || !strings.HasSuffix(raw, "}") {
@@ -1222,6 +1821,7 @@ func parseTraceQLOrFilter(raw string) (map[string]string, []map[string]string) {
 	}
 
 	// Found || — each group may have && conditions.
+	// Wrap all OR branches in a single outer group (legacy parser groups all || as one should block).
 	var tagsOr []map[string]string
 	for _, part := range orParts {
 		part = strings.TrimSpace(part)
@@ -1234,7 +1834,10 @@ func parseTraceQLOrFilter(raw string) (map[string]string, []map[string]string) {
 		}
 	}
 
-	return nil, tagsOr
+	if len(tagsOr) == 0 {
+		return nil, nil
+	}
+	return nil, [][]map[string]string{tagsOr}
 }
 
 // stripOuterParens removes a single layer of balanced outer parentheses.
@@ -1534,6 +2137,7 @@ func publicKeyValuesToTempo(kvs []observabilitystorageext.KeyValue) []tempoKeyVa
 
 // publicAnyValueToTempo converts a public AnyValue to Tempo format.
 // Note: intValue is converted to string (proto jsonpb compatibility).
+// Also populates the Value.* fallback field for Grafana traces-drilldown compatibility.
 func publicAnyValueToTempo(v observabilitystorageext.AnyValue) tempoAnyValue {
 	tv := tempoAnyValue{}
 
@@ -1541,15 +2145,19 @@ func publicAnyValueToTempo(v observabilitystorageext.AnyValue) tempoAnyValue {
 	case v.StringValue != nil:
 		s := *v.StringValue
 		tv.StringValue = &s
+		tv.Value = &tempoAnyValueAlt{StringValue: &s}
 	case v.IntValue != nil:
 		s := strconv.FormatInt(*v.IntValue, 10)
 		tv.IntValue = &s
+		tv.Value = &tempoAnyValueAlt{IntValue: &s}
 	case v.DoubleValue != nil:
 		d := *v.DoubleValue
 		tv.DoubleValue = &d
+		tv.Value = &tempoAnyValueAlt{DoubleValue: &d}
 	case v.BoolValue != nil:
 		b := *v.BoolValue
 		tv.BoolValue = &b
+		tv.Value = &tempoAnyValueAlt{BoolValue: &b}
 	}
 	return tv
 }
@@ -1557,6 +2165,191 @@ func publicAnyValueToTempo(v observabilitystorageext.AnyValue) tempoAnyValue {
 // isEmptyTempoValue returns true if the value is a nil/zero value (all fields nil).
 func isEmptyTempoValue(v tempoAnyValue) bool {
 	return v.StringValue == nil && v.IntValue == nil && v.DoubleValue == nil && v.BoolValue == nil
+}
+
+// ═══════════════════════════════════════════════════
+// Select Projection — | select(field1, field2, ...)
+// ═══════════════════════════════════════════════════
+
+// projectSpanWithSelect returns a filtered set of attributes for a span,
+// including only the fields specified in selectFields plus system fields.
+// If selectFields is empty, returns the original attributes (no projection).
+//
+// nsInfo (may be nil) provides pre-computed nested set model values for
+// intrinsic fields like nestedSetParent/Left/Right.
+//
+// Supported select fields:
+//   - name              → span operation name
+//   - kind               → span kind (client/server/internal/...)
+//   - status             → span status (ok/error/unset)
+//   - status.code        → span status code
+//   - status.message     → span status message
+//   - duration           → span duration in nanoseconds
+//   - resource.service.name → service name
+//   - resource.X         → resource attribute X
+//   - .X / span.X        → span attribute X
+//   - plain X            → check both span attributes and resource attributes
+//   - nestedSetParent / nestedSetLeft / nestedSetRight → nested set model
+// projectSpanWithSelectResult holds the result of span projection, separating
+// the top-level span name from attributes for Grafana compatibility.
+type projectSpanWithSelectResult struct {
+	Name       string          // top-level span name (extracted from "name" select field)
+	Attributes []tempoKeyValue // remaining projected attributes
+}
+
+func projectSpanWithSelect(span observabilitystorageext.Span, selectFields []string, nsInfo map[string]nestedSetInfo) projectSpanWithSelectResult {
+	if len(selectFields) == 0 {
+		return projectSpanWithSelectResult{
+			Name:       span.Name,
+			Attributes: publicKeyValuesToTempo(span.Attributes),
+		}
+	}
+
+	result := make([]tempoKeyValue, 0, len(selectFields))
+	spanName := ""
+	for _, field := range selectFields {
+		// "name" is promoted to a top-level span field for Grafana compatibility.
+		// Grafana reads span.name directly, not from attributes.
+		if field == "name" {
+			spanName = span.Name
+			continue
+		}
+		val := resolveSelectField(span, field, nsInfo)
+		if val == nil {
+			continue
+		}
+		// Grafana expects attribute keys without scope prefixes.
+		// e.g., "resource.service.name" → "service.name"
+		key := tempoAttributeKey(field)
+		result = append(result, tempoKeyValue{Key: key, Value: *val})
+	}
+	return projectSpanWithSelectResult{Name: spanName, Attributes: result}
+}
+
+// tempoAttributeKey converts a scoped field name to the key format Grafana expects.
+// Grafana's traces-drilldown plugin reads attributes with keys like "service.name",
+// not "resource.service.name". Strip the scope prefix for compatibility.
+func tempoAttributeKey(field string) string {
+	if strings.HasPrefix(field, "resource.") {
+		return field[len("resource."):]
+	}
+	if strings.HasPrefix(field, "span.") {
+		return field[len("span."):]
+	}
+	return field
+}
+
+// resolveSelectField resolves a single select field to a tempoAnyValue.
+// Returns nil if the field cannot be resolved.
+func resolveSelectField(span observabilitystorageext.Span, field string, nsInfo map[string]nestedSetInfo) *tempoAnyValue {
+	// Strip scope prefix (dot notation and colon notation).
+	key := field
+	scope := ""
+	if strings.HasPrefix(field, "resource.") {
+		scope = "resource"
+		key = field[len("resource."):]
+	} else if strings.HasPrefix(field, "span.") {
+		scope = "span"
+		key = field[len("span."):]
+	} else if strings.HasPrefix(field, "event.") {
+		scope = "event"
+		key = field[len("event."):]
+	} else if strings.HasPrefix(field, "trace.") {
+		scope = "trace"
+		key = field[len("trace."):]
+	} else if strings.HasPrefix(field, ".") {
+		scope = "span"
+		key = field[1:]
+	} else if idx := strings.Index(field, ":"); idx > 0 {
+		// Colon prefix intrinsics: event:name, trace:duration, span:status
+		scope = field[:idx]
+		key = field[idx+1:]
+	}
+
+	// ── System / intrinsic fields ──
+	switch key {
+	case "name":
+		if span.Name != "" {
+			return strVal(span.Name)
+		}
+	case "kind":
+		return strVal(string(span.Kind))
+	case "status":
+		return strVal(string(span.Status.Code))
+	case "status.code":
+		return strVal(string(span.Status.Code))
+	case "status.message":
+		if span.Status.Message != "" {
+			return strVal(span.Status.Message)
+		}
+	case "duration":
+		return strVal(span.DurationNano)
+	case "service.name":
+		if scope == "resource" || scope == "" {
+			return strVal(span.ServiceName)
+		}
+
+	// ── Nested set model intrinsic fields ──
+	case "nestedSetParent":
+		if nsInfo != nil {
+			if info, ok := nsInfo[span.SpanID]; ok {
+				return intVal(info.Parent)
+			}
+		}
+		if span.ParentSpanID == "" {
+			return intVal(-1)
+		}
+		return intVal(1)
+
+	case "nestedSetLeft":
+		if nsInfo != nil {
+			if info, ok := nsInfo[span.SpanID]; ok {
+				return intVal(info.Left)
+			}
+		}
+		return intVal(1)
+
+	case "nestedSetRight":
+		if nsInfo != nil {
+			if info, ok := nsInfo[span.SpanID]; ok {
+				return intVal(info.Right)
+			}
+		}
+		return intVal(2)
+	}
+
+	// ── Resource attributes ──
+	if scope == "resource" || scope == "" {
+		for _, attr := range span.Resource {
+			if attr.Key == key {
+				tv := publicAnyValueToTempo(attr.Value)
+				return &tv
+			}
+		}
+	}
+
+	// ── Span attributes ──
+	if scope == "span" || scope == "" {
+		for _, attr := range span.Attributes {
+			if attr.Key == key {
+				tv := publicAnyValueToTempo(attr.Value)
+				return &tv
+			}
+		}
+	}
+
+	return nil
+}
+
+// strVal creates a tempoAnyValue holding a string.
+func strVal(s string) *tempoAnyValue {
+	return &tempoAnyValue{StringValue: &s, Value: &tempoAnyValueAlt{StringValue: &s}}
+}
+
+// intVal creates a tempoAnyValue holding an integer (as string per proto jsonpb convention).
+func intVal(n int) *tempoAnyValue {
+	s := strconv.Itoa(n)
+	return &tempoAnyValue{IntValue: &s, Value: &tempoAnyValueAlt{IntValue: &s}}
 }
 
 // publicEventsToTempo converts public SpanEvent list to Tempo format.
@@ -1619,28 +2412,28 @@ func anyToTempoValue(v any) tempoAnyValue {
 	switch val := v.(type) {
 	case string:
 		s := val
-		return tempoAnyValue{StringValue: &s}
+		return tempoAnyValue{StringValue: &s, Value: &tempoAnyValueAlt{StringValue: &s}}
 	case int:
 		s := strconv.FormatInt(int64(val), 10)
-		return tempoAnyValue{IntValue: &s}
+		return tempoAnyValue{IntValue: &s, Value: &tempoAnyValueAlt{IntValue: &s}}
 	case int64:
 		s := strconv.FormatInt(val, 10)
-		return tempoAnyValue{IntValue: &s}
+		return tempoAnyValue{IntValue: &s, Value: &tempoAnyValueAlt{IntValue: &s}}
 	case int32:
 		s := strconv.FormatInt(int64(val), 10)
-		return tempoAnyValue{IntValue: &s}
+		return tempoAnyValue{IntValue: &s, Value: &tempoAnyValueAlt{IntValue: &s}}
 	case float64:
 		d := val
-		return tempoAnyValue{DoubleValue: &d}
+		return tempoAnyValue{DoubleValue: &d, Value: &tempoAnyValueAlt{DoubleValue: &d}}
 	case float32:
 		d := float64(val)
-		return tempoAnyValue{DoubleValue: &d}
+		return tempoAnyValue{DoubleValue: &d, Value: &tempoAnyValueAlt{DoubleValue: &d}}
 	case bool:
 		b := val
-		return tempoAnyValue{BoolValue: &b}
+		return tempoAnyValue{BoolValue: &b, Value: &tempoAnyValueAlt{BoolValue: &b}}
 	default:
 		s := fmt.Sprintf("%v", val)
-		return tempoAnyValue{StringValue: &s}
+		return tempoAnyValue{StringValue: &s, Value: &tempoAnyValueAlt{StringValue: &s}}
 	}
 }
 
@@ -1648,11 +2441,13 @@ func anyToTempoValue(v any) tempoAnyValue {
 
 // parseTempoSearchParams extracts Tempo search parameters from the request.
 // Tempo uses tags=service.name%3Dmy-svc, start/end in Unix seconds.
-func parseTempoSearchParams(r *http.Request) (observabilitystorageext.TraceQuery, error) {
+// Returns the ExecutionPlan for structural queries (may be nil for simple queries).
+func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabilitystorageext.TraceQuery, error) {
 	q := r.URL.Query()
 	query := observabilitystorageext.TraceQuery{
 		TimeRange: parseTempoTimeRange(r),
 	}
+	var plan *traceql.ExecutionPlan
 
 	// Parse tags: tags=service.name%3Dmy-svc (URL-encoded key=value) or tags=key:value
 	if tagsStr := q.Get("tags"); tagsStr != "" {
@@ -1662,55 +2457,49 @@ func parseTempoSearchParams(r *http.Request) (observabilitystorageext.TraceQuery
 	}
 
 	// Parse TraceQL q parameter. Takes priority over tags.
+	// All TraceQL queries go through the unified AST parser + planner,
+	// which correctly handles all operators (=, >, <, >=, <=, !=, =~)
+	// and intrinsic fields (duration, kind, status, name, etc.).
 	if traceQL := q.Get("q"); traceQL != "" {
-		if traceql.IsAdvancedQuery(traceQL) {
-			// Advanced TraceQL: use new AST parser + planner for condition extraction.
-			ast, err := traceql.Parse(traceQL)
-			if err == nil && ast != nil {
-				plan := traceql.Plan(ast)
-				// Apply extracted conditions to query.
-				for k, v := range plan.Tags {
-					query.Tags[k] = v
-				}
-				if len(plan.TagsOr) > 0 {
-					query.TagsOr = plan.TagsOr
-				}
-				if plan.ServiceName != "" {
-					query.ServiceName = plan.ServiceName
-				}
-				if plan.OperationName != "" {
-					query.OperationName = plan.OperationName
-				}
-				if plan.SpanKind != "" {
-					query.SpanKind = plan.SpanKind
-				}
-				if plan.Status != "" {
-					query.Status = plan.Status
-				}
-				if plan.IsRoot {
-					query.IsRoot = true
-				}
-				if plan.MinDuration > 0 {
-					query.MinDuration = plan.MinDuration
-				}
-				if plan.MaxDuration > 0 {
-					query.MaxDuration = plan.MaxDuration
-				}
+		ast, err := traceql.Parse(traceQL)
+		if err == nil && ast != nil {
+			plan = traceql.Plan(ast)
+			// Apply extracted conditions to query.
+			for k, v := range plan.Tags {
+				query.Tags[k] = v
 			}
-			// If parsing fails, fall through to legacy parser (graceful degradation).
-			if err != nil {
-				andTags, orTags := parseTraceQLOrFilter(traceQL)
-				if andTags != nil {
-					for k, v := range andTags {
-						query.Tags[k] = v
-					}
-				}
-				if len(orTags) > 0 {
-					query.TagsOr = orTags
-				}
+			if len(plan.TagsOr) > 0 {
+				query.TagsOr = plan.TagsOr
 			}
-		} else {
-			// Simple TraceQL: use existing lightweight parser.
+			if plan.ServiceName != "" {
+				query.ServiceName = plan.ServiceName
+			}
+			if plan.OperationName != "" {
+				query.OperationName = plan.OperationName
+			}
+			if plan.SpanKind != "" {
+				query.SpanKind = plan.SpanKind
+			}
+			if plan.Status != "" {
+				query.Status = plan.Status
+			}
+			if plan.IsRoot {
+				query.IsRoot = true
+			}
+			if plan.MinDuration > 0 {
+				query.MinDuration = plan.MinDuration
+			}
+			if plan.MaxDuration > 0 {
+				query.MaxDuration = plan.MaxDuration
+			}
+			if len(plan.EventTags) > 0 {
+				query.EventTags = []map[string]string{plan.EventTags}
+			}
+			if len(plan.EventTagsOr) > 0 {
+				query.EventTagsOr = plan.EventTagsOr
+			}
+		} else if err != nil {
+			// Graceful degradation: if AST parser fails, fall back to legacy parser.
 			andTags, orTags := parseTraceQLOrFilter(traceQL)
 			if andTags != nil {
 				for k, v := range andTags {
@@ -1772,7 +2561,7 @@ func parseTempoSearchParams(r *http.Request) (observabilitystorageext.TraceQuery
 		delete(query.Tags, "status")
 	}
 
-	return query, nil
+	return plan, query, nil
 }
 
 // parseTempoTimeRange extracts start/end from Tempo search parameters.

@@ -135,10 +135,12 @@ func (p *Parser) parseGrouped() (Expr, error) {
 // ═══════════════════════════════════════════════════
 
 // parseSpanFilter parses: { condition1 && condition2 && ... }
+// Also supports parenthesized OR groups: {(cond1 || cond2) && cond3}
 func (p *Parser) parseSpanFilter() (Expr, error) {
 	p.advance() // consume {
 
 	var conditions []Condition
+	var orGroups [][][]Condition
 
 	for p.peek().Type != TokenRBrace && p.peek().Type != TokenEOF {
 		// Handle "true" literal.
@@ -147,6 +149,21 @@ func (p *Parser) parseSpanFilter() (Expr, error) {
 			// Skip "true" — it's a no-op condition.
 			if p.peek().Type == TokenAnd {
 				p.advance() // consume &&
+			}
+			continue
+		}
+
+		// Handle parenthesized OR group: (cond1 || cond2 || cond3)
+		if p.peek().Type == TokenLParen {
+			group, err := p.parseOrGroup()
+			if err != nil {
+				return nil, err
+			}
+			orGroups = append(orGroups, group)
+
+			// Consume optional && after the group.
+			if p.peek().Type == TokenAnd {
+				p.advance()
 			}
 			continue
 		}
@@ -168,7 +185,69 @@ func (p *Parser) parseSpanFilter() (Expr, error) {
 	}
 	p.advance() // consume }
 
-	return &SpanFilter{Conditions: conditions}, nil
+	return &SpanFilter{Conditions: conditions, OrGroups: orGroups}, nil
+}
+
+// parseOrGroup parses a parenthesized OR group: ( cond1 || cond2 || cond3 )
+// Each OR branch may itself contain && conditions.
+// Returns [][]Condition where:
+//   - Outer slice represents OR branches
+//   - Inner slice represents AND-ed conditions within each branch
+//
+// Examples:
+//
+//	(kind="internal" || kind="server")    → [[{kind="internal"}], [{kind="server"}]]
+//	(name="GET" || name="POST")           → [[{name="GET"}], [{name="POST"}]]
+func (p *Parser) parseOrGroup() ([][]Condition, error) {
+	p.advance() // consume (
+
+	var branches [][]Condition // branches within this OR group
+	var currentBranch []Condition
+
+	for p.peek().Type != TokenRParen && p.peek().Type != TokenEOF {
+		// Handle nested parentheses (recursive) — future extension point.
+		if p.peek().Type == TokenLParen {
+			// For now, nested parens are not supported inside an OR group.
+			return nil, fmt.Errorf("nested parentheses not supported inside OR group at position %d", p.peek().Pos)
+		}
+
+		if p.peek().Type == TokenOr {
+			// End of current OR branch, start new one.
+			p.advance()
+			if len(currentBranch) > 0 {
+				branches = append(branches, currentBranch)
+				currentBranch = nil
+			}
+			continue
+		}
+
+		if p.peek().Type == TokenAnd {
+			p.advance() // consume && within a branch
+			continue
+		}
+
+		cond, err := p.parseCondition()
+		if err != nil {
+			return nil, fmt.Errorf("in OR group: %w", err)
+		}
+		currentBranch = append(currentBranch, cond)
+	}
+
+	// Don't forget the last branch.
+	if len(currentBranch) > 0 {
+		branches = append(branches, currentBranch)
+	}
+
+	if p.peek().Type != TokenRParen {
+		return nil, fmt.Errorf("expected ')' at position %d, got %s", p.peek().Pos, p.peek().Literal)
+	}
+	p.advance() // consume )
+
+	if len(branches) == 0 {
+		return nil, fmt.Errorf("empty OR group at position %d", p.peek().Pos)
+	}
+
+	return branches, nil
 }
 
 // parseCondition parses a single condition: [scope.]key op value
@@ -219,7 +298,10 @@ func (p *Parser) parseValue() (any, error) {
 	case TokenFalse:
 		return false, nil
 	case TokenIdent:
-		// Unquoted string value (e.g., "error", "server", "client").
+		// Unquoted string value (e.g., "error", "server", "client") or special "nil".
+		if tok.Literal == "nil" {
+			return nil, nil
+		}
 		return tok.Literal, nil
 	default:
 		return nil, fmt.Errorf("expected value at position %d, got %q", tok.Pos, tok.Literal)
@@ -246,11 +328,14 @@ func (p *Parser) parsePipeline(input Expr) (Expr, error) {
 	return pipeline, nil
 }
 
-// parsePipelineStage parses a single pipeline stage (currently only select()).
+// parsePipelineStage parses a single pipeline stage.
 func (p *Parser) parsePipelineStage() (PipelineStage, error) {
 	tok := p.peek()
-	if tok.Type == TokenSelect {
+	switch tok.Type {
+	case TokenSelect:
 		return p.parseSelectStage()
+	case TokenRate, TokenQuantileOverTime, TokenHistogramOverTime:
+		return p.parseMetricsStage()
 	}
 	// Unknown stage — skip tokens until next | or EOF as graceful degradation.
 	return p.parseUnknownStage()
@@ -286,6 +371,156 @@ func (p *Parser) parseSelectStage() (*SelectStage, error) {
 	p.advance() // consume )
 
 	return &SelectStage{Fields: fields}, nil
+}
+
+// parseMetricsStage parses metrics pipeline stages:
+//
+//	rate()
+//	quantile_over_time(duration, 0.5, 0.95, 0.99)
+//	histogram_over_time(duration)
+//
+// With optional suffixes:
+//   - by(label1, label2) — group-by labels
+//   - with(sample=true)  — sample hint
+func (p *Parser) parseMetricsStage() (*MetricsStage, error) {
+	tok := p.peek()
+
+	var fn MetricsFunc
+	switch tok.Type {
+	case TokenRate:
+		fn = MetricsRate
+	case TokenQuantileOverTime:
+		fn = MetricsQuantileOverTime
+	case TokenHistogramOverTime:
+		fn = MetricsHistogramOverTime
+	default:
+		return nil, fmt.Errorf("expected rate/quantile_over_time/histogram_over_time at position %d", tok.Pos)
+	}
+	p.advance() // consume function name
+
+	// Parse function arguments: (field, percentile1, percentile2, ...)
+	if p.peek().Type != TokenLParen {
+		return nil, fmt.Errorf("expected '(' after %s at position %d", fn, p.peek().Pos)
+	}
+	p.advance() // consume (
+
+	var field string
+	var percentiles []float64
+
+	if p.peek().Type != TokenRParen {
+		// First argument: the intrinsic field (e.g., "duration").
+		fieldTok := p.peek()
+		if fieldTok.Type != TokenIdent {
+			return nil, fmt.Errorf("expected field name in %s() at position %d", fn, fieldTok.Pos)
+		}
+		field = fieldTok.Literal
+		p.advance()
+
+		// Additional arguments: percentiles for quantile_over_time.
+		for p.peek().Type == TokenComma {
+			p.advance() // consume ,
+			nextTok := p.peek()
+			switch nextTok.Type {
+			case TokenNumber:
+				n, err := parseNumericValue(nextTok.Literal)
+				if err != nil {
+					return nil, fmt.Errorf("invalid percentile value at position %d: %w", nextTok.Pos, err)
+				}
+				f, ok := toFloat64(n)
+				if !ok {
+					return nil, fmt.Errorf("expected numeric percentile at position %d, got %q", nextTok.Pos, nextTok.Literal)
+				}
+				percentiles = append(percentiles, f)
+				p.advance()
+			case TokenIdent:
+				// Identifiers like "duration" wrapped again? Not expected here.
+				return nil, fmt.Errorf("expected percentile number at position %d, got %q", nextTok.Pos, nextTok.Literal)
+			default:
+				return nil, fmt.Errorf("unexpected token %q in %s() arguments at position %d", nextTok.Literal, fn, nextTok.Pos)
+			}
+		}
+	}
+
+	if p.peek().Type != TokenRParen {
+		return nil, fmt.Errorf("expected ')' at position %d, got %q", p.peek().Pos, p.peek().Literal)
+	}
+	p.advance() // consume )
+
+	stage := &MetricsStage{
+		Function:    fn,
+		Field:       field,
+		Percentiles: percentiles,
+	}
+
+	// Parse optional by(label1, label2).
+	if p.peek().Type == TokenBy {
+		p.advance() // consume "by"
+		if p.peek().Type != TokenLParen {
+			return nil, fmt.Errorf("expected '(' after 'by' at position %d", p.peek().Pos)
+		}
+		p.advance() // consume (
+
+		for p.peek().Type != TokenRParen && p.peek().Type != TokenEOF {
+			labelTok := p.peek()
+			if labelTok.Type == TokenIdent || labelTok.Type == TokenString {
+				stage.ByLabels = append(stage.ByLabels, labelTok.Literal)
+				p.advance()
+			} else {
+				return nil, fmt.Errorf("unexpected token %q in by() at position %d", labelTok.Literal, labelTok.Pos)
+			}
+			if p.peek().Type == TokenComma {
+				p.advance()
+			}
+		}
+		if p.peek().Type != TokenRParen {
+			return nil, fmt.Errorf("expected ')' after by() at position %d", p.peek().Pos)
+		}
+		p.advance() // consume )
+	}
+
+	// Parse optional with(sample=true).
+	if p.peek().Type == TokenWith {
+		p.advance() // consume "with"
+		if p.peek().Type != TokenLParen {
+			return nil, fmt.Errorf("expected '(' after 'with' at position %d", p.peek().Pos)
+		}
+		p.advance() // consume (
+
+		// Parse key=value pairs inside with().
+		for p.peek().Type != TokenRParen && p.peek().Type != TokenEOF {
+			keyTok := p.peek()
+			if keyTok.Type != TokenIdent {
+				return nil, fmt.Errorf("expected key in with() at position %d", keyTok.Pos)
+			}
+			key := keyTok.Literal
+			p.advance()
+
+			if p.peek().Type != TokenEq {
+				return nil, fmt.Errorf("expected '=' after key %q in with() at position %d", key, p.peek().Pos)
+			}
+			p.advance() // consume =
+
+			valTok := p.peek()
+			p.advance()
+
+			switch key {
+			case "sample":
+				if valTok.Literal == "true" || valTok.Type == TokenTrue {
+					stage.Sample = true
+				}
+			}
+
+			if p.peek().Type == TokenComma {
+				p.advance()
+			}
+		}
+		if p.peek().Type != TokenRParen {
+			return nil, fmt.Errorf("expected ')' after with() at position %d", p.peek().Pos)
+		}
+		p.advance() // consume )
+	}
+
+	return stage, nil
 }
 
 // parseUnknownStage skips tokens for an unknown pipeline stage (graceful degradation).
@@ -328,14 +563,22 @@ func (p *Parser) advance() Token {
 // parseScopeAndKey splits "resource.service.name" → ("resource", "service.name")
 // and ".http.method" → ("", "http.method")
 // and "kind" → ("", "kind")
+// and "event:name" → ("event", "name")  (colon-prefix intrinsic scope)
+// and "trace:duration" → ("trace", "duration")
 func parseScopeAndKey(raw string) (scope, key string) {
 	// Leading dot: unscoped attribute.
 	if strings.HasPrefix(raw, ".") {
 		return "", raw[1:]
 	}
 
-	// Check for explicit scope prefixes.
-	for _, prefix := range []string{"resource.", "span."} {
+	// TraceQL standard intrinsic prefixes: event:name, link:traceID, span:status, etc.
+	// These use colon (:) instead of dot (.) to distinguish intrinsics from attributes.
+	if idx := strings.Index(raw, ":"); idx > 0 {
+		return raw[:idx], raw[idx+1:]
+	}
+
+	// Check for explicit scope prefixes with dot notation.
+	for _, prefix := range []string{"resource.", "span.", "event.", "trace."} {
 		if strings.HasPrefix(raw, prefix) {
 			return strings.TrimSuffix(prefix, "."), raw[len(prefix):]
 		}
@@ -362,6 +605,8 @@ func tokenToOperator(tt TokenType) (string, bool) {
 		return ">=", true
 	case TokenRegex:
 		return "=~", true
+	case TokenNotRegex:
+		return "!~", true
 	default:
 		return "", false
 	}
@@ -399,4 +644,16 @@ func hasDurationSuffix(s string) bool {
 		}
 	}
 	return false
+}
+
+// toFloat64 converts a numeric value to float64.
+func toFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	default:
+		return 0, false
+	}
 }

@@ -34,6 +34,7 @@ const (
 	TokenEq                     // =
 	TokenNeq                    // !=
 	TokenRegex                  // =~
+	TokenNotRegex               // !~
 	TokenLt                     // <
 	TokenGt                     // >  (reused from TokenChild in different context)
 	TokenLte                    // <=
@@ -44,6 +45,11 @@ const (
 	TokenTrue                   // true
 	TokenFalse                  // false
 	TokenSelect                 // select
+	TokenBy                     // by
+	TokenWith                   // with
+	TokenRate                   // rate
+	TokenQuantileOverTime       // quantile_over_time
+	TokenHistogramOverTime      // histogram_over_time
 	TokenComma                  // ,
 	TokenDot                    // . (leading dot for unscoped attributes)
 )
@@ -183,6 +189,10 @@ func (l *Lexer) readBang(pos int) (Token, error) {
 		l.pos++
 		return Token{Type: TokenNeq, Literal: "!=", Pos: pos}, nil
 	}
+	if l.pos < len(l.input) && l.input[l.pos] == '~' {
+		l.pos++
+		return Token{Type: TokenNotRegex, Literal: "!~", Pos: pos}, nil
+	}
 	if l.pos < len(l.input) && l.input[l.pos] == '>' {
 		l.pos++
 		if l.pos < len(l.input) && l.input[l.pos] == '>' {
@@ -297,6 +307,18 @@ func (l *Lexer) readIdent(pos int) (Token, error) {
 		return Token{Type: TokenFalse, Literal: literal, Pos: pos}, nil
 	case "select":
 		return Token{Type: TokenSelect, Literal: literal, Pos: pos}, nil
+	case "by":
+		return Token{Type: TokenBy, Literal: literal, Pos: pos}, nil
+	case "with":
+		return Token{Type: TokenWith, Literal: literal, Pos: pos}, nil
+	case "rate":
+		return Token{Type: TokenRate, Literal: literal, Pos: pos}, nil
+	case "quantile_over_time":
+		return Token{Type: TokenQuantileOverTime, Literal: literal, Pos: pos}, nil
+	case "histogram_over_time":
+		return Token{Type: TokenHistogramOverTime, Literal: literal, Pos: pos}, nil
+	case "nil":
+		return Token{Type: TokenIdent, Literal: literal, Pos: pos}, nil
 	}
 
 	return Token{Type: TokenIdent, Literal: literal, Pos: pos}, nil

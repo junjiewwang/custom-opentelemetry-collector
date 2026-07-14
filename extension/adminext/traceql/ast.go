@@ -5,7 +5,10 @@
 // It provides lexing, parsing (to AST), and condition extraction for downstream ES queries.
 package traceql
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ═══════════════════════════════════════════════════
 // Node Types
@@ -15,13 +18,14 @@ import "fmt"
 type NodeType int
 
 const (
-	NodeSpanFilter  NodeType = iota // { conditions }
-	NodeStructural                  // &>>, >>, >, ~, !>, !>>
-	NodePipeline                    // |
-	NodeSelect                      // select(fields...)
-	NodeOr                          // ||
-	NodeAnd                         // &&  (implicit inside span filter)
-	NodeComparison                  // key op value
+	NodeSpanFilter        NodeType = iota // { conditions }
+	NodeStructural                        // &>>, >>, >, ~, !>, !>>
+	NodePipeline                          // |
+	NodeSelect                            // select(fields...)
+	NodeMetrics                           // rate(), quantile_over_time(), histogram_over_time()
+	NodeOr                                // ||
+	NodeAnd                               // &&  (implicit inside span filter)
+	NodeComparison                        // key op value
 )
 
 // ═══════════════════════════════════════════════════
@@ -38,21 +42,41 @@ type Expr interface {
 // Concrete AST Nodes
 // ═══════════════════════════════════════════════════
 
-// SpanFilter represents a span selector: { cond1 && cond2 && ... }
+// SpanFilter represents a span selector with mixed AND/OR conditions.
+//
+//	Conditions: AND-ed flat conditions (e.g., resource.service.name="tapm-api")
+//	OrGroups:   parenthesized OR groups inside the span filter, AND-ed with Conditions.
+//	            Each element of OrGroups is an independent OR group.
+//	            Each OR group contains branches that are OR-ed together.
+//	            Each branch contains conditions that are AND-ed together.
+//
+// Example: {(kind="internal" || kind="server") && resource.service.name="tapm-api"}
+//
+//	Conditions: [{resource.service.name = "tapm-api"}]
+//	OrGroups:   [[[{kind = "internal"}], [{kind = "server"}]]]
 type SpanFilter struct {
-	Conditions []Condition
+	Conditions []Condition     // AND conditions (mutually AND-ed)
+	OrGroups   [][][]Condition // Parenthesized OR groups, AND-ed with Conditions.
 }
 
 func (s *SpanFilter) Type() NodeType { return NodeSpanFilter }
 func (s *SpanFilter) String() string {
-	out := "{ "
-	for i, c := range s.Conditions {
-		if i > 0 {
-			out += " && "
-		}
-		out += c.String()
+	var parts []string
+	for _, c := range s.Conditions {
+		parts = append(parts, c.String())
 	}
-	return out + " }"
+	for _, orGroup := range s.OrGroups {
+		var orParts []string
+		for _, branch := range orGroup {
+			var branchParts []string
+			for _, c := range branch {
+				branchParts = append(branchParts, c.String())
+			}
+			orParts = append(orParts, strings.Join(branchParts, " && "))
+		}
+		parts = append(parts, "("+strings.Join(orParts, " || ")+")")
+	}
+	return "{ " + strings.Join(parts, " && ") + " }"
 }
 
 // Condition represents a single comparison: key op value
@@ -131,6 +155,59 @@ func (s *SelectStage) String() string {
 		out += f
 	}
 	return out + ")"
+}
+
+// ── Metrics Pipeline Stages ──────────────────────
+
+// MetricsFunc identifies the type of a metrics pipeline stage.
+type MetricsFunc string
+
+const (
+	MetricsRate             MetricsFunc = "rate"
+	MetricsQuantileOverTime MetricsFunc = "quantile_over_time"
+	MetricsHistogramOverTime MetricsFunc = "histogram_over_time"
+)
+
+// MetricsStage represents a metrics pipeline stage:
+//
+//	rate()
+//	quantile_over_time(duration, 0.5, 0.95, 0.99)
+//	histogram_over_time(duration)
+//
+// with optional:
+//   - by(label1, label2) — group-by labels
+//   - with(sample=true)  — sample hint
+type MetricsStage struct {
+	Function    MetricsFunc // rate / quantile_over_time / histogram_over_time
+	Field       string      // the intrinsic field (e.g., "duration")
+	Percentiles []float64   // for quantile_over_time
+	ByLabels    []string    // group-by labels from by(...)
+	Sample      bool        // with(sample=true)
+}
+
+func (m *MetricsStage) stageType() string { return "metrics" }
+func (m *MetricsStage) Type() NodeType    { return NodeMetrics }
+func (m *MetricsStage) String() string {
+	var sb strings.Builder
+	sb.WriteString(string(m.Function))
+	sb.WriteString("(")
+	if m.Field != "" {
+		sb.WriteString(m.Field)
+		for _, p := range m.Percentiles {
+			sb.WriteString(", ")
+			sb.WriteString(fmt.Sprintf("%g", p))
+		}
+	}
+	sb.WriteString(")")
+	if len(m.ByLabels) > 0 {
+		sb.WriteString(" by(")
+		sb.WriteString(strings.Join(m.ByLabels, ", "))
+		sb.WriteString(")")
+	}
+	if m.Sample {
+		sb.WriteString(" with(sample=true)")
+	}
+	return sb.String()
 }
 
 // OrExpr represents: exprA || exprB
