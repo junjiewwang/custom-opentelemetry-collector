@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
+	"go.opentelemetry.io/collector/extension/extensioncapabilities"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -62,7 +63,10 @@ type ObservabilityStorage struct {
 }
 
 // Ensure the extension implements the required interfaces.
-var _ extension.Extension = (*ObservabilityStorage)(nil)
+var (
+	_ extension.Extension             = (*ObservabilityStorage)(nil)
+	_ extensioncapabilities.Dependent = (*ObservabilityStorage)(nil)
+)
 
 // newObservabilityStorageExtension creates a new instance of the extension.
 func newObservabilityStorageExtension(
@@ -74,6 +78,20 @@ func newObservabilityStorageExtension(
 		config: config,
 		logger: set.Logger,
 	}, nil
+}
+
+// Dependencies implements extensioncapabilities.Dependent.
+// This ensures that the controlplane and storage extensions are fully started
+// before this extension, so that GetTaskEngine() and GetRedis() are available.
+func (e *ObservabilityStorage) Dependencies() []component.ID {
+	var deps []component.ID
+	if e.config.Scheduler.Enabled && e.config.Scheduler.ControlplaneExtension != "" {
+		deps = append(deps, component.MustNewID(e.config.Scheduler.ControlplaneExtension))
+	}
+	if e.config.Scheduler.Enabled && e.config.Scheduler.StorageExtension != "" {
+		deps = append(deps, component.MustNewID(e.config.Scheduler.StorageExtension))
+	}
+	return deps
 }
 
 // Start initializes the storage provider and its backend connections.
