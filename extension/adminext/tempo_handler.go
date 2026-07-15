@@ -21,6 +21,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/adminext/traceql"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/unitconv"
 
 	v1common "go.opentelemetry.io/proto/otlp/common/v1"
 	v1resource "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -1630,6 +1631,18 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 		e.logger.Error("tempo metrics: query failed", zap.Error(err))
 		e.writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// Normalize duration units to seconds (Tempo protocol standard).
+	// MetricReader returns duration values in milliseconds; unitconv handles the conversion.
+	// For non-duration functions (rate, count_over_time), sourceUnit is DurationUnitNone → no-op.
+	sourceUnit := unitconv.SourceUnitForMetricReader(parsed.Function, "duration")
+	if sourceUnit != unitconv.DurationUnitNone {
+		for i := range result.Data {
+			for j := range result.Data[i].Values {
+				result.Data[i].Values[j].Value = unitconv.ToSeconds(result.Data[i].Values[j].Value, sourceUnit)
+			}
+		}
 	}
 
 	// Convert to Tempo metrics format.

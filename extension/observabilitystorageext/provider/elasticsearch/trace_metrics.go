@@ -10,6 +10,7 @@ import (
 	"math"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/unitconv"
 	"go.uber.org/zap"
 )
 
@@ -271,6 +272,8 @@ func (r *TraceReader) fieldForIntrinsic(name string) string {
 	case "duration":
 		return FieldDurationNano
 	default:
+		r.logger.Warn("trace metrics: unknown intrinsic field, falling back to duration",
+			zap.String("field", name))
 		return FieldDurationNano
 	}
 }
@@ -316,6 +319,9 @@ func (r *TraceReader) parseSingleSeries(raw map[string]json.RawMessage, bucketAg
 		return nil, fmt.Errorf("parse histogram: %w", err)
 	}
 
+	// Determine source unit for duration normalization (once per series, not per point).
+	sourceUnit := unitconv.SourceUnitForTraceReader(query.Function, query.Field)
+
 	var values []TraceMetricsPoint
 	for _, b := range agg.Buckets {
 		val, err := r.extractMetricValue(b.Metric, query)
@@ -327,12 +333,16 @@ func (r *TraceReader) parseSingleSeries(raw map[string]json.RawMessage, bucketAg
 		if query.Function == "rate" && stepSeconds > 0 {
 			val = val / stepSeconds
 		}
+		// Normalize duration units to seconds (Tempo protocol standard).
+		// For non-duration functions, sourceUnit is DurationUnitNone → no-op.
+		val = unitconv.ToSeconds(val, sourceUnit)
+
 		// Bucket key is in nanoseconds (histogram on long field returns float64).
 		// Convert to milliseconds for Grafana consumption.
 		tsMs := int64(b.Key) / 1_000_000
 		values = append(values, TraceMetricsPoint{
 			TimestampMs: tsMs,
-			Value:       math.Round(val*1000) / 1000, // 3 decimal places
+			Value:       math.Round(val*1e6) / 1e6, // 6 decimal places for sub-ms precision in seconds
 		})
 	}
 
