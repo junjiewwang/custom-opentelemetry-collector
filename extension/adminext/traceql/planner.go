@@ -195,7 +195,7 @@ func (p *ExecutionPlan) extractFromSpanFilter(sf *SpanFilter) {
 				if cond.Operator == "=" {
 					valStr := condValueToString(cond.Value)
 					if valStr != "" {
-						branchMap[cond.Key] = valStr
+						branchMap[scopedKey(cond.Scope, cond.Key)] = valStr
 					}
 				}
 			}
@@ -339,20 +339,23 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 			return
 		}
+		// Preserve scope prefix so that AttributeResolver can correctly map
+		// resource-scoped attributes to their ES field path.
+		fullKey := scopedKey(cond.Scope, key)
 		switch cond.Operator {
 		case "=":
 			if valStr != "" {
-				p.Tags[key] = valStr
+				p.Tags[fullKey] = valStr
 			}
 		case "!=":
 			if isNil {
-				p.addTagExists(key)
+				p.addTagExists(fullKey)
 			} else if valStr != "" {
-				p.addTagNot(key, valStr)
+				p.addTagNot(fullKey, valStr)
 			}
 		case "=~":
 			if valStr != "" {
-				p.addTagRegex(key, valStr)
+				p.addTagRegex(fullKey, valStr)
 			}
 		}
 	}
@@ -383,6 +386,17 @@ func (p *ExecutionPlan) addTagRegex(key, pattern string) {
 	p.TagsRegex[key] = pattern
 }
 
+// scopedKey returns "scope.key" if scope is non-empty, otherwise just "key".
+// This ensures resource-scoped attributes (e.g. resource.app_id) are preserved
+// with their scope prefix so that AttributeResolver can correctly map them
+// to the ES field path (e.g. "resource.app_id" instead of "attributes.app_id").
+func scopedKey(scope, key string) string {
+	if scope != "" {
+		return scope + "." + key
+	}
+	return key
+}
+
 // extractOrConditions handles OR expressions.
 // Strategy: if it's a flat OR of simple span filters, produce a single TagsOr group.
 // Otherwise, extract all conditions as broadened filters for candidate search.
@@ -403,7 +417,7 @@ func (p *ExecutionPlan) extractOrConditions(or *OrExpr) {
 			if cond.Operator == "=" {
 				valStr := condValueToString(cond.Value)
 				if valStr != "" {
-					m[cond.Key] = valStr
+					m[scopedKey(cond.Scope, cond.Key)] = valStr
 				}
 			}
 		}

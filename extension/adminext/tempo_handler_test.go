@@ -455,13 +455,13 @@ func TestParseTempoSearchParams_IntrinsicFields(t *testing.T) {
 			wantOperationName: "/api",
 			wantSpanKind:      "client",
 			wantStatus:        "ok",
-			wantTags:          map[string]string{"http.method": "GET"},
+			wantTags:          map[string]string{"span.http.method": "GET"},
 		},
 		{
 			name:            "service.name removed from Tags",
 			queryQ:          `{resource.service.name="tapm-api" && span.http.url="/health"}`,
 			wantServiceName: "tapm-api",
-			wantTags:        map[string]string{"http.url": "/health"},
+			wantTags:        map[string]string{"span.http.url": "/health"},
 		},
 	}
 

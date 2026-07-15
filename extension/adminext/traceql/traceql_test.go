@@ -267,6 +267,48 @@ func TestPlanSimpleFilter(t *testing.T) {
 	assert.False(t, plan.HasStructural)
 }
 
+func TestPlanResourceScopedAttribute(t *testing.T) {
+	// resource.app_id should be stored with scope prefix so that
+	// AttributeResolver maps it to ES field "resource.app_id" (not "attributes.app_id").
+	ast, err := Parse(`{ nestedSetParent < 0 && resource.app_id = "z1l8pFk0vpogGHVL" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.True(t, plan.IsRoot)
+	assert.Equal(t, "z1l8pFk0vpogGHVL", plan.Tags["resource.app_id"],
+		"resource-scoped attribute must preserve scope prefix in Tags key")
+	// Verify it does NOT appear without prefix.
+	assert.Empty(t, plan.Tags["app_id"],
+		"resource-scoped attribute must NOT be stored without scope prefix")
+}
+
+func TestPlanResourceScopedNegation(t *testing.T) {
+	// resource.cluster != "staging" should produce TagsNot with scope prefix.
+	ast, err := Parse(`{ resource.cluster != "staging" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.Equal(t, "staging", plan.TagsNot["resource.cluster"])
+}
+
+func TestPlanResourceScopedExists(t *testing.T) {
+	// resource.env != nil should produce TagsExists with scope prefix.
+	ast, err := Parse(`{ resource.env != nil }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.Contains(t, plan.TagsExists, "resource.env")
+}
+
+func TestPlanResourceScopedRegex(t *testing.T) {
+	// resource.host.name =~ "prod-.*" should produce TagsRegex with scope prefix.
+	ast, err := Parse(`{ resource.host.name =~ "prod-.*" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.Equal(t, "prod-.*", plan.TagsRegex["resource.host.name"])
+}
+
 func TestPlanIntrinsics(t *testing.T) {
 	ast, err := Parse(`{ kind = server && status = error && name = "GET /api" }`)
 	require.NoError(t, err)
@@ -654,7 +696,7 @@ func TestPlanParenthesizedOrGroup(t *testing.T) {
 			name:              "OR group with regular attribute AND condition",
 			input:             `{(kind="client" || kind="server") && span.http.method="GET"}`,
 			wantServiceName:   "",
-			wantTags:          map[string]string{"http.method": "GET"},
+			wantTags:          map[string]string{"span.http.method": "GET"},
 			wantOrGroupCount:  1,
 			wantFirstBranchCount: 2,
 			wantFirstBranch0:  map[string]string{"kind": "client"},
