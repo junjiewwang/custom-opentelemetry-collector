@@ -104,17 +104,19 @@ func (f *ComponentFactory) CreateConfigManagerWithOnDemand(cfg configmanager.Con
 //   - "redis": Redis-backed store (production)
 //   - "engine": explicit engine mode (same as "redis" when storage is available)
 func (f *ComponentFactory) CreateTaskManager(cfg taskmanager.Config) (taskmanager.TaskManager, error) {
-	engine, err := f.createTaskEngine(cfg)
+	engine, store, err := f.createTaskEngine(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create task engine: %w", err)
 	}
-	return taskmanager.NewTaskManager(f.logger, cfg, engine)
+	return taskmanager.NewTaskManager(f.logger, cfg, engine, taskmanager.WithServiceStore(store))
 }
 
 // createTaskEngine creates a taskengine.Engine based on the TaskManager config.
 // The engine store type matches the underlying config: if redis is configured,
 // use RedisStore; otherwise fallback to MemoryStore.
-func (f *ComponentFactory) createTaskEngine(cfg taskmanager.Config) (taskengine.Engine, error) {
+// Returns both the engine and the underlying store so that the store can be
+// injected into service-level components (e.g., Reaper's optimized path).
+func (f *ComponentFactory) createTaskEngine(cfg taskmanager.Config) (taskengine.Engine, taskengine.Store, error) {
 	engineCfg := taskengine.EngineConfig{
 		DefaultTimeout:    cfg.DefaultTimeout,
 		DefaultMaxRetries: 0, // Controlplane tasks don't retry by default
@@ -149,7 +151,7 @@ func (f *ComponentFactory) createTaskEngine(cfg taskmanager.Config) (taskengine.
 	}
 
 	engine := taskengine.NewEngine(store, nil, f.logger.Named("task-engine"), engineCfg)
-	return engine, nil
+	return engine, store, nil
 }
 
 // CreateAgentRegistry creates the appropriate AgentRegistry based on config.

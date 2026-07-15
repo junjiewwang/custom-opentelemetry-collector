@@ -15,15 +15,15 @@ import (
 // This is the unified factory function using taskengine.Engine as the backend.
 //
 // For engine creation logic, see ComponentFactory.createTaskEngine() in component_factory.go.
-func NewTaskManager(logger *zap.Logger, config Config, engine taskengine.Engine) (TaskManager, error) {
+func NewTaskManager(logger *zap.Logger, config Config, engine taskengine.Engine, opts ...ServiceOption) (TaskManager, error) {
 	if engine == nil {
 		return nil, errors.New("engine is required for task manager")
 	}
-	return NewTaskServiceEngine(engine, logger.Named("service-engine"), config), nil
+	return NewTaskServiceEngine(engine, logger.Named("service-engine"), config, opts...), nil
 }
 
 // NewTaskManagerWithEngine is an alias for NewTaskManager.
 // Kept for backward compatibility with callers that explicitly used this name.
-func NewTaskManagerWithEngine(logger *zap.Logger, config Config, engine taskengine.Engine) (TaskManager, error) {
-	return NewTaskManager(logger, config, engine)
+func NewTaskManagerWithEngine(logger *zap.Logger, config Config, engine taskengine.Engine, opts ...ServiceOption) (TaskManager, error) {
+	return NewTaskManager(logger, config, engine, opts...)
 }

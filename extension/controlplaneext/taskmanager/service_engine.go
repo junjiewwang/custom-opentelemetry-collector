@@ -26,21 +26,43 @@ import (
 //   - StaleTaskReaperEngine is integrated for timeout detection.
 type TaskServiceEngine struct {
 	engine taskengine.Engine
+	store  taskengine.Store // optional: enables Reaper optimized path
 	logger *zap.Logger
 	config Config
 	helper *TaskHelper
 	reaper *StaleTaskReaperEngine
 }
 
+// ServiceOption configures optional dependencies for TaskServiceEngine.
+type ServiceOption func(*TaskServiceEngine)
+
+// WithServiceStore injects a Store to enable the optimized Reaper path.
+func WithServiceStore(store taskengine.Store) ServiceOption {
+	return func(s *TaskServiceEngine) {
+		s.store = store
+	}
+}
+
 // NewTaskServiceEngine creates a new engine-backed TaskManager implementation.
-func NewTaskServiceEngine(engine taskengine.Engine, logger *zap.Logger, config Config) *TaskServiceEngine {
-	return &TaskServiceEngine{
+func NewTaskServiceEngine(engine taskengine.Engine, logger *zap.Logger, config Config, opts ...ServiceOption) *TaskServiceEngine {
+	svc := &TaskServiceEngine{
 		engine: engine,
 		logger: logger,
 		config: config,
 		helper: NewTaskHelper(),
-		reaper: NewStaleTaskReaperEngine(logger.Named("engine-reaper"), config.StaleTaskReaper, engine),
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+
+	// Build reaper options based on available dependencies.
+	var reaperOpts []ReaperOption
+	if svc.store != nil {
+		reaperOpts = append(reaperOpts, WithStore(svc.store))
+	}
+	svc.reaper = NewStaleTaskReaperEngine(logger.Named("engine-reaper"), config.StaleTaskReaper, engine, reaperOpts...)
+
+	return svc
 }
 
 // Ensure TaskServiceEngine implements TaskManager at compile time.
