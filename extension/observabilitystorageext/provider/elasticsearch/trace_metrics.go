@@ -114,8 +114,9 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 		})
 	}
 
+	resolver := &AttributeResolver{}
 	for k, v := range query.Tags {
-		field := r.fieldForAttribute(k)
+		field := resolver.Resolve(k).ESField
 		must = append(must, map[string]any{"term": map[string]any{field: v}})
 	}
 
@@ -125,7 +126,7 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 		for _, branch := range orGroup {
 			branchMust := []map[string]any{}
 			for k, v := range branch {
-				field := r.fieldForAttribute(k)
+				field := resolver.Resolve(k).ESField
 				branchMust = append(branchMust, map[string]any{"term": map[string]any{field: v}})
 			}
 			if len(branchMust) == 1 {
@@ -139,6 +140,36 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 				"bool": map[string]any{"should": should, "minimum_should_match": 1},
 			})
 		}
+	}
+
+	// Handle TagsNot (Sprint 2): != value → must_not + term.
+	for k, v := range query.TagsNot {
+		field := resolver.Resolve(k).ESField
+		must = append(must, map[string]any{
+			"bool": map[string]any{
+				"must_not": []map[string]any{{"term": map[string]any{field: v}}},
+			},
+		})
+	}
+
+	// Handle TagsExists (Sprint 2): != nil → exists.
+	for _, k := range query.TagsExists {
+		field := resolver.Resolve(k).ESField
+		must = append(must, map[string]any{
+			"exists": map[string]any{"field": field},
+		})
+	}
+
+	// Handle TagsRegex (Sprint 2): =~ regex → regexp query.
+	for k, pattern := range query.TagsRegex {
+		field := resolver.Resolve(k).ESField
+		must = append(must, map[string]any{
+			"regexp": map[string]any{
+				field: map[string]any{
+					"value": pattern,
+				},
+			},
+		})
 	}
 
 	if len(must) == 1 {
@@ -172,12 +203,13 @@ func (r *TraceReader) buildMetricsAggTree(query TraceMetricsQuery, histogramAgg 
 		},
 	}
 
+	resolver := &AttributeResolver{}
 	for i := len(query.ByLabels) - 1; i >= 0; i-- {
 		label := query.ByLabels[i]
 		outerAggs = map[string]any{
 			"by_" + label: map[string]any{
 				"terms": map[string]any{
-					"field": r.fieldForAttribute(label),
+					"field": resolver.Resolve(label).ESField,
 					"size":  1000,
 				},
 				"aggs": outerAggs,
@@ -240,23 +272,6 @@ func (r *TraceReader) fieldForIntrinsic(name string) string {
 		return FieldDurationNano
 	default:
 		return FieldDurationNano
-	}
-}
-
-// fieldForAttribute maps a TraceQL attribute name to the ES field pattern.
-func (r *TraceReader) fieldForAttribute(name string) string {
-	switch name {
-	case "service.name":
-		return FieldServiceName
-	case "name":
-		return FieldName
-	case "kind":
-		return FieldKind
-	case "status":
-		return FieldStatus
-	default:
-		// Use nested path for custom attributes: attributes.key, resource.key
-		return "attributes." + name
 	}
 }
 

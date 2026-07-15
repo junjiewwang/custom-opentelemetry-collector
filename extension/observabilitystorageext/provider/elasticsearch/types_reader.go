@@ -280,6 +280,11 @@ type TraceMetricsQuery struct {
 	Percentiles   []float64
 	ByLabels      []string
 	Sample        bool
+
+	// ── Negation / Existence / Regex filters (Sprint 2) ──
+	TagsNot    map[string]string // != value → must_not term
+	TagsExists []string          // != nil → exists
+	TagsRegex  map[string]string // =~ → regexp
 }
 
 // TraceMetricsResult holds the result of a TraceQL metrics query.

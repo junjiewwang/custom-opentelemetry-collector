@@ -118,3 +118,144 @@ func TestBuildTraceSearchQuery_NotRoot(t *testing.T) {
 	// Should NOT contain parentSpanId filtering
 	assert.NotContains(t, queryStr, `"parentSpanId"`)
 }
+
+// ═══════════════════════════════════════════════════
+// Sprint 2: TagsNot / TagsExists / TagsRegex Tests
+// ═══════════════════════════════════════════════════
+
+func TestBuildTraceSearchQuery_TagsNot(t *testing.T) {
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		TagsNot: map[string]string{
+			"name":    "foo",
+			"http.method": "OPTIONS",
+		},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// Should contain must_not clauses
+	assert.Contains(t, queryStr, `"must_not"`)
+	// Intrinsic name → FieldName
+	assert.Contains(t, queryStr, `"name":"foo"`)
+	// Custom attribute → attributes.xxx
+	assert.Contains(t, queryStr, `"attributes.http.method":"OPTIONS"`)
+}
+
+func TestBuildTraceSearchQuery_TagsExists(t *testing.T) {
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		TagsExists: []string{"service.name", "http.method"},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// Should contain exists queries
+	assert.Contains(t, queryStr, `"exists"`)
+	// Intrinsic service.name → serviceName
+	assert.Contains(t, queryStr, `"field":"serviceName"`)
+	// Custom attribute → should check attributes and resource
+	assert.Contains(t, queryStr, `"should"`)
+	assert.Contains(t, queryStr, `"attributes.http.method"`)
+	assert.Contains(t, queryStr, `"resource.http.method"`)
+}
+
+func TestBuildTraceSearchQuery_TagsRegex(t *testing.T) {
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		TagsRegex: map[string]string{
+			"name":        "^api",
+			"http.method": "GET|POST",
+		},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// Should contain regexp queries
+	assert.Contains(t, queryStr, `"regexp"`)
+	// Intrinsic name → FieldName regexp
+	assert.Contains(t, queryStr, `"name":{"value":"^api"`)
+	// Custom attribute → attributes.http.method regexp
+	assert.Contains(t, queryStr, `"attributes.http.method":{"value":"GET|POST"`)
+}
+
+// ═══════════════════════════════════════════════════
+// Sprint 3: status.message nested intrinsic
+// ═══════════════════════════════════════════════════
+
+func TestBuildTraceSearchQuery_StatusMessage(t *testing.T) {
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		Tags: map[string]string{
+			"status.message": "timeout",
+		},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// Should use intrinsic field path, not attributes.*
+	assert.Contains(t, queryStr, `"status.message"`)
+	assert.NotContains(t, queryStr, `"attributes.status.message"`)
+}
+
+func TestBuildTraceSearchQuery_StatusMessageExists(t *testing.T) {
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		TagsExists: []string{"status.message"},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// Should generate exists on status.message, not attributes.status.message
+	assert.Contains(t, queryStr, `"field":"status.message"`)
+}

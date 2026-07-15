@@ -568,6 +568,50 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
+	// ── TagsNot (Sprint 2): != value → must_not + term ──
+	for k, v := range tq.TagsNot {
+		if clause := intrinsicTermClause(k, v); clause != nil {
+			qb.Raw(esq.MustNotQ(clause))
+		} else {
+			qb.Raw(esq.MustNotQ(
+				esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
+			))
+			qb.Raw(esq.MustNotQ(
+				esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
+			))
+		}
+	}
+
+	// ── TagsExists (Sprint 2): != nil → exists ──
+	for _, k := range tq.TagsExists {
+		if field := intrinsicField(k); field != "" {
+			qb.Raw(esq.ExistsQ(field))
+		} else {
+			qb.Should(1,
+				esq.ExistsQ(FieldAttributes+"."+k),
+				esq.ExistsQ(FieldResource+"."+k),
+			)
+		}
+	}
+
+	// ── TagsRegex (Sprint 2): =~ regex → regexp ──
+	for k, pattern := range tq.TagsRegex {
+		if field := intrinsicField(k); field != "" {
+			qb.Raw(map[string]any{
+				"regexp": map[string]any{field: map[string]any{"value": pattern}},
+			})
+		} else {
+			qb.Should(1,
+				map[string]any{
+					"regexp": map[string]any{FieldAttributes + "." + k: map[string]any{"value": pattern}},
+				},
+				map[string]any{
+					"regexp": map[string]any{FieldResource + "." + k: map[string]any{"value": pattern}},
+				},
+			)
+		}
+	}
+
 	return qb.Build()
 }
 
@@ -585,8 +629,30 @@ func intrinsicTermClause(key, value string) map[string]any {
 		return esq.T(FieldKind, capitalizeFirst(value))
 	case "status":
 		return esq.T(FieldStatus+".code", capitalizeFirst(value))
+	case "status.message":
+		return esq.T(FieldStatus+".message", value)
 	default:
 		return nil
+	}
+}
+
+// intrinsicField returns the ES document field path for an intrinsic TraceQL key.
+// Returns empty string if the key is not an intrinsic field.
+// Used by exists and regexp queries which don't need a value for term matching.
+func intrinsicField(key string) string {
+	switch key {
+	case "name":
+		return FieldName
+	case "service.name":
+		return FieldServiceName
+	case "kind":
+		return FieldKind
+	case "status":
+		return FieldStatus + ".code"
+	case "status.message":
+		return FieldStatus + ".message"
+	default:
+		return ""
 	}
 }
 
