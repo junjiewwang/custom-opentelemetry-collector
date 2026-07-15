@@ -25,8 +25,16 @@ type TraceQuery struct {
 	IsRoot   bool   // true = filter for root spans only (parentSpanId = "")
 
 	// ── Event filters (from TraceQL event:* scope) ──
-	EventTags   []map[string]string   // AND conditions on span events (requires nested query)
+	EventTags   []map[string]string     // AND conditions on span events (requires nested query)
 	EventTagsOr [][][]map[string]string // OR groups of event conditions
+
+	// ── Negation / Existence / Regex filters (Sprint 2) ──
+	// TagsNot: != value conditions → ES must_not + term.
+	TagsNot map[string]string
+	// TagsExists: != nil conditions → ES exists query.
+	TagsExists []string
+	// TagsRegex: =~ regex conditions → ES regexp query.
+	TagsRegex map[string]string
 }
 
 // TimeRange defines a time window for queries.

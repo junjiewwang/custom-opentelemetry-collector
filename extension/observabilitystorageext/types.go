@@ -127,6 +127,11 @@ type TraceQuery struct {
 	// ── Event filters (from TraceQL event:* scope) ──
 	EventTags   []map[string]string     `json:"eventTags,omitempty"`
 	EventTagsOr [][][]map[string]string `json:"eventTagsOr,omitempty"`
+
+	// ── Negation / Existence / Regex filters (Sprint 2) ──
+	TagsNot    map[string]string `json:"tagsNot,omitempty"`    // != value conditions → ES must_not + term
+	TagsExists []string          `json:"tagsExists,omitempty"` // != nil conditions → ES exists query
+	TagsRegex  map[string]string `json:"tagsRegex,omitempty"`  // =~ regex conditions → ES regexp query
 }
 
 // TraceSearchResult holds the result of a trace search.

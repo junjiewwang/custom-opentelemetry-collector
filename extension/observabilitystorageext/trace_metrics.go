@@ -33,6 +33,11 @@ type TraceMetricsQuery struct {
 	Percentiles []float64 // for quantile_over_time
 	ByLabels    []string   // group-by labels
 	Sample      bool       // sample hint (ignored in basic impl)
+
+	// ── Negation / Existence / Regex filters (Sprint 2) ──
+	TagsNot    map[string]string // != value conditions → ES must_not + term
+	TagsExists []string          // != nil conditions → ES exists query
+	TagsRegex  map[string]string // =~ regex conditions → ES regexp query
 }
 
 // TraceMetricsSeries is a single time series result from a metrics query.

@@ -1510,6 +1510,9 @@ func (e *Extension) executeTempoMetricsQuery(w http.ResponseWriter, r *http.Requ
 		OperationName: plan.OperationName,
 		Tags:          plan.Tags,
 		TagsOr:        plan.TagsOr,
+		TagsNot:       plan.TagsNot,
+		TagsExists:    plan.TagsExists,
+		TagsRegex:     plan.TagsRegex,
 		SpanKind:      plan.SpanKind,
 		Status:        plan.Status,
 		IsRoot:        plan.IsRoot,
@@ -2497,6 +2500,15 @@ func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabil
 			}
 			if len(plan.EventTagsOr) > 0 {
 				query.EventTagsOr = plan.EventTagsOr
+			}
+			if len(plan.TagsNot) > 0 {
+				query.TagsNot = plan.TagsNot
+			}
+			if len(plan.TagsExists) > 0 {
+				query.TagsExists = plan.TagsExists
+			}
+			if len(plan.TagsRegex) > 0 {
+				query.TagsRegex = plan.TagsRegex
 			}
 		} else if err != nil {
 			// Graceful degradation: if AST parser fails, fall back to legacy parser.
