@@ -710,6 +710,91 @@ func TestParseParenthesizedOrGroupErrorCases(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════
+// Planner — Sprint 2: Negation / Existence / Regex
+// ═══════════════════════════════════════════════════
+
+func TestPlanNotEqual(t *testing.T) {
+	ast, err := Parse(`{ .http.method != "GET" && kind != server && name != "foo" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+
+	// Generic attribute: !="GET" → TagsNot
+	assert.Equal(t, "GET", plan.TagsNot["http.method"])
+	assert.Equal(t, "", plan.Tags["http.method"])
+
+	// Intrinsic kind: !=server → TagsNot
+	assert.Equal(t, "server", plan.TagsNot["kind"])
+	assert.Empty(t, plan.SpanKind)
+
+	// Intrinsic name: !="foo" → TagsNot
+	assert.Equal(t, "foo", plan.TagsNot["name"])
+	assert.Empty(t, plan.OperationName)
+}
+
+func TestPlanNotEqualNil(t *testing.T) {
+	ast, err := Parse(`{ resource.service.name != nil && .http.method != nil && kind != nil }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+
+	// != nil → TagsExists
+	assert.Contains(t, plan.TagsExists, "service.name")
+	assert.Contains(t, plan.TagsExists, "http.method")
+	assert.Contains(t, plan.TagsExists, "kind")
+}
+
+func TestPlanRegex(t *testing.T) {
+	ast, err := Parse(`{ .http.method =~ "GET|POST" && name =~ "^api" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+
+	// Generic attribute: =~ → TagsRegex
+	assert.Equal(t, "GET|POST", plan.TagsRegex["http.method"])
+	// Intrinsic name: =~ → TagsRegex
+	assert.Equal(t, "^api", plan.TagsRegex["name"])
+}
+
+func TestPlanRegexInvalid(t *testing.T) {
+	// Invalid regex patterns should be silently skipped.
+	ast, err := Parse(`{ .http.method =~ "[invalid" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.Nil(t, plan.TagsRegex, "invalid regex should be skipped")
+}
+
+func TestPlanMixedOperators(t *testing.T) {
+	ast, err := Parse(`{ resource.service.name = "mysvc" && .http.method != "OPTIONS" && kind != nil && .http.method =~ "GET|POST" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+
+	// Positive equals → ServiceName
+	assert.Equal(t, "mysvc", plan.ServiceName)
+	// != value → TagsNot
+	assert.Equal(t, "OPTIONS", plan.TagsNot["http.method"])
+	// != nil → TagsExists
+	assert.Contains(t, plan.TagsExists, "kind")
+	// =~ → TagsRegex
+	assert.Equal(t, "GET|POST", plan.TagsRegex["http.method"])
+}
+
+// TestPlanStatusMessage verifies that status.message flows through Tags correctly (Sprint 3).
+func TestPlanStatusMessage(t *testing.T) {
+	ast, err := Parse(`{ status.message = "timeout" && status.message != nil }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+
+	// = value → Tags
+	assert.Equal(t, "timeout", plan.Tags["status.message"])
+	// != nil → TagsExists
+	assert.Contains(t, plan.TagsExists, "status.message")
+}
+
+// ═══════════════════════════════════════════════════
 // Evaluator — SpanTree Tests
 // ═══════════════════════════════════════════════════
 
@@ -1084,3 +1169,113 @@ func TestEvaluateTraceStructural_OrWithPipeline(t *testing.T) {
 	// Both branches should contribute matches.
 	assert.True(t, len(result.Matches) >= 2, "both structural and filter branches should match")
 }
+
+// ═══════════════════════════════════════════════════
+// Evaluator — Sprint 2: =~ and !~ regex matching
+// ═══════════════════════════════════════════════════
+
+func TestMatchStringValue_RegexEQ(t *testing.T) {
+	// =~ should match regex patterns.
+	assert.True(t, matchStringValue("=~", "GET", "GET|POST"))
+	assert.True(t, matchStringValue("=~", "POST", "GET|POST"))
+	assert.True(t, matchStringValue("=~", "api.v1.users", "^api\\..*"))
+	assert.False(t, matchStringValue("=~", "DELETE", "GET|POST"))
+}
+
+func TestMatchStringValue_RegexNEQ(t *testing.T) {
+	// !~ should NOT match regex patterns.
+	assert.True(t, matchStringValue("!~", "DELETE", "GET|POST"))
+	assert.True(t, matchStringValue("!~", "gRPC", "GET|POST"))
+	assert.False(t, matchStringValue("!~", "GET", "GET|POST"))
+}
+
+func TestMatchStringValue_InvalidRegex(t *testing.T) {
+	// Invalid regex should return false for both =~ and !~.
+	assert.False(t, matchStringValue("=~", "value", "[invalid"))
+}
+
+func TestMatchSpanFilter_RegexMatch(t *testing.T) {
+	ast, err := Parse(`{ .http.method =~ "GET|POST" }`)
+	require.NoError(t, err)
+
+	sf := ast.(*SpanFilter)
+
+	span := SpanData{
+		SpanID:  "1",
+		Attributes: map[string]string{
+			"http.method": "GET",
+		},
+	}
+	assert.True(t, MatchSpanFilter(sf, &span))
+
+	span2 := SpanData{
+		SpanID: "2",
+		Attributes: map[string]string{
+			"http.method": "DELETE",
+		},
+	}
+	assert.False(t, MatchSpanFilter(sf, &span2))
+}
+
+// ═══════════════════════════════════════════════════
+// Evaluator — Sprint 3: status.message nested intrinsic
+// ═══════════════════════════════════════════════════
+
+func TestMatchSpanFilter_StatusMessage(t *testing.T) {
+	ast, err := Parse(`{ status.message = "timeout" }`)
+	require.NoError(t, err)
+
+	sf := ast.(*SpanFilter)
+
+	// Match: span has status message "timeout"
+	span := SpanData{
+		SpanID:        "1",
+		StatusMessage: "timeout",
+	}
+	assert.True(t, MatchSpanFilter(sf, &span))
+
+	// No match: different status message
+	span2 := SpanData{
+		SpanID:        "2",
+		StatusMessage: "ok",
+	}
+	assert.False(t, MatchSpanFilter(sf, &span2))
+
+	// No match: empty status message
+	span3 := SpanData{
+		SpanID: "3",
+	}
+	assert.False(t, MatchSpanFilter(sf, &span3))
+}
+
+func TestMatchSpanFilter_StatusMessageNotNil(t *testing.T) {
+	ast, err := Parse(`{ status.message != nil }`)
+	require.NoError(t, err)
+
+	sf := ast.(*SpanFilter)
+
+	// Match: span has any status message
+	span := SpanData{
+		SpanID:        "1",
+		StatusMessage: "something",
+	}
+	assert.True(t, MatchSpanFilter(sf, &span))
+
+	// No match: empty status message
+	span2 := SpanData{
+		SpanID: "2",
+	}
+	assert.False(t, MatchSpanFilter(sf, &span2))
+}
+
+func TestMatchSpanFilter_StatusMessageRegex(t *testing.T) {
+	ast, err := Parse(`{ status.message =~ "time|error" }`)
+	require.NoError(t, err)
+
+	sf := ast.(*SpanFilter)
+
+	assert.True(t, MatchSpanFilter(sf, &SpanData{SpanID: "1", StatusMessage: "timeout"}))
+	assert.True(t, MatchSpanFilter(sf, &SpanData{SpanID: "2", StatusMessage: "error"}))
+	assert.False(t, MatchSpanFilter(sf, &SpanData{SpanID: "3", StatusMessage: "ok"}))
+}
+

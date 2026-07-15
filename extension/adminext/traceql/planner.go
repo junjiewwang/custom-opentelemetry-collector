@@ -4,6 +4,7 @@
 package traceql
 
 import (
+	"regexp"
 	"time"
 )
 
@@ -59,6 +60,14 @@ type ExecutionPlan struct {
 	// HasStructural means the query contains &>>, >>, >, ~ operators
 	// and requires in-memory structural matching after ES search.
 	HasStructural bool
+
+	// ── Negation / Existence / Regex filters (Sprint 2) ──
+	// TagsNot: != value conditions → ES must_not term.
+	TagsNot map[string]string
+	// TagsExists: != nil conditions → ES exists query.
+	TagsExists []string
+	// TagsRegex: =~ regex conditions → ES regexp query.
+	TagsRegex map[string]string
 
 	// SelectFields from | select() pipeline stage.
 	SelectFields []string
@@ -201,35 +210,87 @@ func (p *ExecutionPlan) extractFromSpanFilter(sf *SpanFilter) {
 }
 
 // extractCondition maps a single condition to the appropriate plan field.
+// Supports =, !=, != nil, and =~ operators (Sprint 2).
 func (p *ExecutionPlan) extractCondition(cond Condition) {
-	// Only exact-match (=) conditions are pushable to ES term queries.
-	// Range conditions are handled separately for duration.
 	key := cond.Key
 	valStr := condValueToString(cond.Value)
+	isNil := cond.Value == nil
 
 	switch {
 	// ── Intrinsic: service.name (usually resource-scoped) ──
 	case key == "service.name" && (cond.Scope == "resource" || cond.Scope == ""):
-		if cond.Operator == "=" && valStr != "" {
-			p.ServiceName = valStr
+		switch cond.Operator {
+		case "=":
+			if valStr != "" {
+				p.ServiceName = valStr
+			}
+		case "!=":
+			if isNil {
+				p.addTagExists("service.name")
+			} else if valStr != "" {
+				p.addTagNot("service.name", valStr)
+			}
+		case "=~":
+			if valStr != "" {
+				p.addTagRegex("service.name", valStr)
+			}
 		}
 
 	// ── Intrinsic: name (operation name) ──
 	case key == "name" && cond.Scope == "" && cond.IsIntrinsic():
-		if cond.Operator == "=" && valStr != "" {
-			p.OperationName = valStr
+		switch cond.Operator {
+		case "=":
+			if valStr != "" {
+				p.OperationName = valStr
+			}
+		case "!=":
+			if isNil {
+				p.addTagExists("name")
+			} else if valStr != "" {
+				p.addTagNot("name", valStr)
+			}
+		case "=~":
+			if valStr != "" {
+				p.addTagRegex("name", valStr)
+			}
 		}
 
 	// ── Intrinsic: kind ──
 	case key == "kind" && cond.Scope == "" && cond.IsIntrinsic():
-		if cond.Operator == "=" && valStr != "" {
-			p.SpanKind = valStr
+		switch cond.Operator {
+		case "=":
+			if valStr != "" {
+				p.SpanKind = valStr
+			}
+		case "!=":
+			if isNil {
+				p.addTagExists("kind")
+			} else if valStr != "" {
+				p.addTagNot("kind", valStr)
+			}
+		case "=~":
+			if valStr != "" {
+				p.addTagRegex("kind", valStr)
+			}
 		}
 
 	// ── Intrinsic: status ──
 	case key == "status" && cond.Scope == "" && cond.IsIntrinsic():
-		if cond.Operator == "=" && valStr != "" {
-			p.Status = valStr
+		switch cond.Operator {
+		case "=":
+			if valStr != "" {
+				p.Status = valStr
+			}
+		case "!=":
+			if isNil {
+				p.addTagExists("status")
+			} else if valStr != "" {
+				p.addTagNot("status", valStr)
+			}
+		case "=~":
+			if valStr != "" {
+				p.addTagRegex("status", valStr)
+			}
 		}
 
 	// ── Intrinsic: nestedSetParent < 0 (root span) ──
@@ -267,7 +328,7 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			p.Tags["rootService"] = valStr
 		}
 
-	// ── Generic attribute conditions (pushable as Tags) ──
+	// ── Generic attribute conditions (pushable as Tags/TagsNot/TagsExists/TagsRegex) ──
 	default:
 		if cond.Scope == "event" {
 			if cond.Operator == "=" && valStr != "" {
@@ -278,10 +339,48 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 			return
 		}
-		if cond.Operator == "=" && valStr != "" {
-			p.Tags[key] = valStr
+		switch cond.Operator {
+		case "=":
+			if valStr != "" {
+				p.Tags[key] = valStr
+			}
+		case "!=":
+			if isNil {
+				p.addTagExists(key)
+			} else if valStr != "" {
+				p.addTagNot(key, valStr)
+			}
+		case "=~":
+			if valStr != "" {
+				p.addTagRegex(key, valStr)
+			}
 		}
 	}
+}
+
+// addTagNot records a != negation condition.
+func (p *ExecutionPlan) addTagNot(key, val string) {
+	if p.TagsNot == nil {
+		p.TagsNot = make(map[string]string)
+	}
+	p.TagsNot[key] = val
+}
+
+// addTagExists records a != nil existence condition.
+func (p *ExecutionPlan) addTagExists(key string) {
+	p.TagsExists = append(p.TagsExists, key)
+}
+
+// addTagRegex records a =~ regex condition, with Compile pre-validation.
+func (p *ExecutionPlan) addTagRegex(key, pattern string) {
+	// Validate regex at plan time to fail early on invalid patterns.
+	if _, err := regexp.Compile(pattern); err != nil {
+		return // skip invalid regex silently (degraded filtering)
+	}
+	if p.TagsRegex == nil {
+		p.TagsRegex = make(map[string]string)
+	}
+	p.TagsRegex[key] = pattern
 }
 
 // extractOrConditions handles OR expressions.

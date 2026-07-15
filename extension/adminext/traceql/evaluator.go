@@ -3,6 +3,8 @@
 
 package traceql
 
+import "regexp"
+
 // ═══════════════════════════════════════════════════
 // Span Data Model for TraceQL Evaluation
 // ═══════════════════════════════════════════════════
@@ -194,6 +196,13 @@ func matchCondition(cond Condition, span *SpanData) bool {
 	case key == "service.name":
 		return matchStringValue(cond.Operator, span.ServiceName, cond.Value)
 
+	// ── Intrinsic: status.message (nested intrinsic, Sprint 3) ──
+	case key == "status.message" && cond.Scope == "":
+		if cond.Operator == "!=" && cond.Value == nil {
+			return span.StatusMessage != ""
+		}
+		return matchStringValue(cond.Operator, span.StatusMessage, cond.Value)
+
 	// ── Generic attribute/resource (check both) ──
 	default:
 		// Check attributes first, then resource.
@@ -208,6 +217,7 @@ func matchCondition(cond Condition, span *SpanData) bool {
 }
 
 // matchStringValue compares a string field against a condition value.
+// Supports =, !=, =~ (regex match), and !~ (regex not match) operators.
 func matchStringValue(op string, fieldValue string, condValue any) bool {
 	valStr, ok := condValue.(string)
 	if !ok {
@@ -219,6 +229,12 @@ func matchStringValue(op string, fieldValue string, condValue any) bool {
 		return fieldValue == valStr
 	case "!=":
 		return fieldValue != valStr
+	case "=~":
+		matched, err := regexp.MatchString(valStr, fieldValue)
+		return err == nil && matched
+	case "!~":
+		matched, err := regexp.MatchString(valStr, fieldValue)
+		return err != nil || !matched
 	default:
 		return false
 	}
