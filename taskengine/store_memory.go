@@ -254,18 +254,37 @@ func (s *MemoryStore) GetResult(_ context.Context, taskID string) (*TaskResult, 
 
 // ─── Progress ───
 
-func (s *MemoryStore) GetProgress(ctx context.Context, taskType TaskType, groupID string) (*Progress, error) {
-	page, err := s.ListTasks(ctx, ListQuery{
-		TaskType: taskType,
-		GroupID:  groupID,
-		Limit:    100000,
-	})
-	if err != nil {
-		return nil, err
+// GetProgress computes task progress directly from in-memory structures.
+// Mirrors the optimized RedisStore approach: iterates group members and
+// aggregates status counts without copying full Task objects.
+func (s *MemoryStore) GetProgress(_ context.Context, taskType TaskType, groupID string) (*Progress, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Determine candidate task IDs
+	var candidates []string
+	if groupID != "" {
+		candidates = s.groups[groupID]
+	} else {
+		// No group filter — iterate all tasks
+		candidates = make([]string, 0, len(s.tasks))
+		for id := range s.tasks {
+			candidates = append(candidates, id)
+		}
 	}
 
-	p := &Progress{Total: page.Total}
-	for _, task := range page.Tasks {
+	p := &Progress{}
+	for _, id := range candidates {
+		task, ok := s.tasks[id]
+		if !ok {
+			continue
+		}
+		// Apply taskType filter
+		if taskType != "" && task.Type != taskType {
+			continue
+		}
+
+		p.Total++
 		switch task.Status {
 		case StatusPending:
 			p.Pending++
@@ -340,6 +359,64 @@ func (s *MemoryStore) SubscribeEvents(ctx context.Context) (<-chan TaskEvent, er
 	}()
 
 	return ch, nil
+}
+
+// ─── Reaper Optimized Path ───
+
+// GetOverdueRunningTasks returns IDs of running tasks whose deadline has passed.
+// Iterates in-memory map and filters by createdAt + timeout < nowMillis.
+func (s *MemoryStore) GetOverdueRunningTasks(_ context.Context, nowMillis int64) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var overdueIDs []string
+	for _, task := range s.tasks {
+		if task.Status != StatusRunning {
+			continue
+		}
+		// Compute deadline: createdAt + timeout (in millis)
+		timeoutMs := task.Timeout.Milliseconds()
+		if timeoutMs == 0 {
+			timeoutMs = 120000 // default 120s
+		}
+		deadline := task.CreatedAt + timeoutMs
+		if deadline <= nowMillis {
+			overdueIDs = append(overdueIDs, task.ID)
+		}
+		// Backpressure: max 500 per call
+		if len(overdueIDs) >= 500 {
+			break
+		}
+	}
+	return overdueIDs, nil
+}
+
+// ─── Metadata-Only Access ───
+
+// GetTaskMeta retrieves only the metadata of a task (no Payload).
+func (s *MemoryStore) GetTaskMeta(_ context.Context, taskID string) (*TaskMeta, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	task, ok := s.tasks[taskID]
+	if !ok {
+		return nil, nil
+	}
+	return taskToMeta(task), nil
+}
+
+// GetTasksMeta retrieves metadata for multiple tasks in batch.
+func (s *MemoryStore) GetTasksMeta(_ context.Context, taskIDs []string) ([]*TaskMeta, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	metas := make([]*TaskMeta, 0, len(taskIDs))
+	for _, id := range taskIDs {
+		if task, ok := s.tasks[id]; ok {
+			metas = append(metas, taskToMeta(task))
+		}
+	}
+	return metas, nil
 }
 
 // ─── Lifecycle ───

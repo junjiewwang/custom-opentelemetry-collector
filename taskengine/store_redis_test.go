@@ -274,3 +274,136 @@ func TestRedisStore_ZSET_Scores(t *testing.T) {
 			"scores should be non-decreasing: %f >= %f", results[i].Score, results[i-1].Score)
 	}
 }
+
+// ─── GetProgress Tests (Plan C: SMEMBERS + Pipeline HGET) ───
+
+func TestRedisStore_GetProgress_BasicCounts(t *testing.T) {
+	store := newTestRedisStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	groupID := "epoch-test-1"
+
+	// Create tasks in a group with mixed statuses
+	tasks := []struct {
+		id     string
+		status TaskStatus
+	}{
+		{"prog-1", StatusPending},
+		{"prog-2", StatusPending},
+		{"prog-3", StatusRunning},
+		{"prog-4", StatusSuccess},
+		{"prog-5", StatusFailed},
+		{"prog-6", StatusTimeout},
+		{"prog-7", StatusCancelled},
+		{"prog-8", StatusSkipped}, // counts as Completed
+	}
+
+	for _, tc := range tasks {
+		task := &Task{
+			ID:        tc.id,
+			Type:      TaskTypePurgeIndex,
+			Status:    StatusPending,
+			CreatedAt: now.UnixMilli(),
+			GroupID:   groupID,
+			Timeout:   2 * time.Minute,
+			Routing:   TaskRouting{Strategy: RoutingBroadcast},
+		}
+		require.NoError(t, store.SaveTask(ctx, task))
+
+		// Transition to target status
+		if tc.status == StatusRunning {
+			require.NoError(t, store.UpdateTaskStatus(ctx, tc.id, StatusRunning, "node-1"))
+		} else if tc.status != StatusPending {
+			require.NoError(t, store.UpdateTaskStatus(ctx, tc.id, StatusRunning, "node-1"))
+			require.NoError(t, store.UpdateTaskStatus(ctx, tc.id, tc.status, ""))
+		}
+	}
+
+	// Query progress
+	progress, err := store.GetProgress(ctx, "", groupID)
+	require.NoError(t, err)
+
+	assert.Equal(t, 8, progress.Total)
+	assert.Equal(t, 2, progress.Pending)
+	assert.Equal(t, 1, progress.Running)
+	assert.Equal(t, 2, progress.Completed) // success + skipped
+	assert.Equal(t, 1, progress.Failed)
+	assert.Equal(t, 1, progress.Timeout)
+	assert.Equal(t, 1, progress.Cancelled)
+}
+
+func TestRedisStore_GetProgress_WithTypeFilter(t *testing.T) {
+	store := newTestRedisStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	groupID := "epoch-type-filter"
+
+	// Create tasks with different types in the same group
+	purgeTask := &Task{
+		ID:        "type-purge-1",
+		Type:      TaskTypePurgeIndex,
+		Status:    StatusPending,
+		CreatedAt: now.UnixMilli(),
+		GroupID:   groupID,
+		Timeout:   2 * time.Minute,
+		Routing:   TaskRouting{Strategy: RoutingBroadcast},
+	}
+	otherTask := &Task{
+		ID:        "type-other-1",
+		Type:      TaskType("other_type"),
+		Status:    StatusPending,
+		CreatedAt: now.UnixMilli(),
+		GroupID:   groupID,
+		Timeout:   2 * time.Minute,
+		Routing:   TaskRouting{Strategy: RoutingBroadcast},
+	}
+
+	require.NoError(t, store.SaveTask(ctx, purgeTask))
+	require.NoError(t, store.SaveTask(ctx, otherTask))
+
+	// Filter by TaskTypePurgeIndex — should only count 1
+	progress, err := store.GetProgress(ctx, TaskTypePurgeIndex, groupID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, progress.Total)
+	assert.Equal(t, 1, progress.Pending)
+
+	// No filter — should count 2
+	progressAll, err := store.GetProgress(ctx, "", groupID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, progressAll.Total)
+}
+
+func TestRedisStore_GetProgress_EmptyGroup(t *testing.T) {
+	store := newTestRedisStore(t)
+	ctx := context.Background()
+
+	// Query non-existent group
+	progress, err := store.GetProgress(ctx, "", "non-existent-group")
+	require.NoError(t, err)
+	assert.Equal(t, 0, progress.Total)
+	assert.Equal(t, 0, progress.Pending)
+	assert.Equal(t, 0, progress.Running)
+}
+
+func TestRedisStore_GetProgress_FallbackLegacy_NoGroupID(t *testing.T) {
+	store := newTestRedisStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Save tasks without group (legacy path)
+	task := &Task{
+		ID:        "legacy-prog-1",
+		Type:      TaskTypePurgeIndex,
+		Status:    StatusPending,
+		CreatedAt: now.UnixMilli(),
+		Timeout:   2 * time.Minute,
+		Routing:   TaskRouting{Strategy: RoutingBroadcast},
+	}
+	require.NoError(t, store.SaveTask(ctx, task))
+
+	// GetProgress without groupID should fall back to legacy ListTasks path
+	progress, err := store.GetProgress(ctx, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, progress.Total)
+	assert.Equal(t, 1, progress.Pending)
+}

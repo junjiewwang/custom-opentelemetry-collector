@@ -3,7 +3,10 @@
 
 package taskengine
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Store abstracts the persistence layer for the task engine.
 // It handles task CRUD, queue operations, result storage, and event publishing.
@@ -76,6 +79,27 @@ type Store interface {
 	//   - MemoryStore: in-process channel fan-out from PublishEvent
 	SubscribeEvents(ctx context.Context) (<-chan TaskEvent, error)
 
+	// ─── Reaper Optimized Path ───
+
+	// GetOverdueRunningTasks returns task IDs whose deadline (createdAt + timeout)
+	// has been exceeded. This is a lightweight O(logN+K) query on the running index
+	// that avoids full task deserialization.
+	//
+	// The nowMillis parameter is the current time in unix milliseconds.
+	// Returns at most 500 task IDs per call (backpressure).
+	GetOverdueRunningTasks(ctx context.Context, nowMillis int64) ([]string, error)
+
+	// ─── Metadata-Only Access ───
+
+	// GetTaskMeta retrieves only the metadata of a task (no Payload).
+	// Useful for Reaper validation and Progress queries where Payload is not needed.
+	// Returns nil, nil if not found.
+	GetTaskMeta(ctx context.Context, taskID string) (*TaskMeta, error)
+
+	// GetTasksMeta retrieves metadata for multiple tasks in a single batch.
+	// Missing tasks are silently omitted.
+	GetTasksMeta(ctx context.Context, taskIDs []string) ([]*TaskMeta, error)
+
 	// ─── Lifecycle ───
 
 	// Start initializes store resources (connections, background goroutines).
@@ -83,4 +107,19 @@ type Store interface {
 
 	// Close releases all store resources.
 	Close() error
+}
+
+// TaskMeta contains task metadata without the heavy Payload field.
+// Used by Reaper and Progress for lightweight queries.
+type TaskMeta struct {
+	ID         string        `json:"id"`
+	Type       TaskType      `json:"type"`
+	Status     TaskStatus    `json:"status"`
+	CreatedAt  int64         `json:"createdAt"`
+	Timeout    time.Duration `json:"timeout"`
+	ClaimedBy  string        `json:"claimedBy,omitempty"`
+	GroupID    string        `json:"groupId,omitempty"`
+	Priority   int32         `json:"priority"`
+	MaxRetries int           `json:"maxRetries"`
+	RetryCount int           `json:"retryCount"`
 }
