@@ -208,7 +208,7 @@ func TestIsDurationFunction(t *testing.T) {
 		want     bool
 	}{
 		{"quantile_over_time", "duration", true},
-		{"histogram_over_time", "duration", true},
+		{"histogram_over_time", "duration", false}, // histogram_over_time returns count, not duration
 		{"rate", "duration", false},
 		{"count_over_time", "duration", false},
 		{"quantile_over_time", "other_field", false},
@@ -239,7 +239,7 @@ func TestSourceUnitForTraceReader(t *testing.T) {
 		want     DurationSourceUnit
 	}{
 		{"quantile_over_time", "duration", DurationUnitNanoseconds},
-		{"histogram_over_time", "duration", DurationUnitNanoseconds},
+		{"histogram_over_time", "duration", DurationUnitNone}, // histogram_over_time returns count, not duration
 		{"rate", "duration", DurationUnitNone},
 		{"count_over_time", "duration", DurationUnitNone},
 		{"quantile_over_time", "other", DurationUnitNone},
@@ -263,7 +263,7 @@ func TestSourceUnitForMetricReader(t *testing.T) {
 		want     DurationSourceUnit
 	}{
 		{"quantile_over_time", "duration", DurationUnitMilliseconds},
-		{"histogram_over_time", "duration", DurationUnitMilliseconds},
+		{"histogram_over_time", "duration", DurationUnitNone}, // histogram_over_time returns count, not duration
 		{"rate", "duration", DurationUnitNone},
 		{"count_over_time", "duration", DurationUnitNone},
 		{"quantile_over_time", "other", DurationUnitNone},

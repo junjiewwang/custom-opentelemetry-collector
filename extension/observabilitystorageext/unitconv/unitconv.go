@@ -74,17 +74,17 @@ func NormalizeSlice(values []float64, sourceUnit DurationSourceUnit) {
 //
 // Functions that return duration values:
 //   - quantile_over_time(duration, ...) — percentile of span duration
-//   - histogram_over_time(duration)     — average duration in histogram buckets
 //
 // Functions that do NOT return duration values:
-//   - rate()           — returns spans/second (already unit-correct)
-//   - count_over_time  — returns count (no unit)
+//   - histogram_over_time(duration) — returns span COUNT per bucket (value_count), not duration
+//   - rate()                        — returns spans/second (already unit-correct)
+//   - count_over_time               — returns count (no unit)
 func IsDurationFunction(function, field string) bool {
 	if field != "duration" {
 		return false
 	}
 	switch function {
-	case "quantile_over_time", "histogram_over_time":
+	case "quantile_over_time":
 		return true
 	default:
 		return false
