@@ -215,8 +215,8 @@ type tempoMetricSeries struct {
 }
 
 type tempoMetricLabel struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key   string        `json:"key"`
+	Value tempoAnyValue `json:"value"`
 }
 
 type tempoMetricSample struct {
@@ -1681,7 +1681,7 @@ func convertTraceMetricsToTempoResponse(result *observabilitystorageext.TraceMet
 	for _, s := range result.Series {
 		labels := make([]tempoMetricLabel, 0, len(s.Labels))
 		for k, v := range s.Labels {
-			labels = append(labels, tempoMetricLabel{Key: k, Value: v})
+			labels = append(labels, tempoMetricLabel{Key: k, Value: stringToTempoAnyValue(v)})
 		}
 
 		samples := make([]tempoMetricSample, 0, len(s.Values))
@@ -2038,7 +2038,7 @@ func convertMetricRangeToTempoMetrics(result *observabilitystorageext.MetricRang
 	for _, s := range result.Data {
 		labels := make([]tempoMetricLabel, 0, len(s.Labels))
 		for k, v := range s.Labels {
-			labels = append(labels, tempoMetricLabel{Key: k, Value: v})
+			labels = append(labels, tempoMetricLabel{Key: k, Value: stringToTempoAnyValue(v)})
 		}
 
 		samples := make([]tempoMetricSample, 0, len(s.Values))
@@ -2405,6 +2405,12 @@ func mapToTempoKeyValues(m map[string]any) []tempoKeyValue {
 		return nil
 	}
 	return result
+}
+
+// stringToTempoAnyValue wraps a string into a typed Tempo AnyValue.
+// Used for metrics series labels where values are always strings.
+func stringToTempoAnyValue(s string) tempoAnyValue {
+	return tempoAnyValue{StringValue: &s, Value: &tempoAnyValueAlt{StringValue: &s}}
 }
 
 // anyToTempoValue converts interface{} to Tempo AnyValue.
