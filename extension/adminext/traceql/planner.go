@@ -123,18 +123,233 @@ func Plan(ast Expr) *ExecutionPlan {
 // This means ES only finds spans that are BOTH root AND kind=server, but these
 // conditions target DIFFERENT spans in the structural relationship.
 //
-// Solution: for structural queries, clear SpanKind and Status since they likely
-// come from the non-root side of the structural expression. Keep IsRoot because
-// it helps narrow candidates (finding traces that have root spans).
+// Solution: compute the intersection of root-side conditions across all OR branches.
+// Only conditions that appear in ALL branches' root filters are safe to push to ES.
+// This preserves useful narrowing (e.g., status=error when all branches require it)
+// while avoiding over-filtering from non-root span conditions.
 func (p *ExecutionPlan) relaxStructuralConditions() {
-	// Clear conditions that likely came from the non-root filter in a structural expr.
-	// These would incorrectly narrow the ES search when AND-ed with IsRoot.
-	p.SpanKind = ""
-	p.Status = ""
-	// Keep IsRoot — it helps find trace candidates by identifying root span presence.
-	// Keep ServiceName/OperationName — if present, they usually come from the same
-	// filter as IsRoot (e.g., {resource.service.name="X" && nestedSetParent<0}).
-	// Keep Tags/TagsOr — they may still be useful as broadened candidate filters.
+	// Compute safe-to-push conditions by intersecting root-side filters across OR branches.
+	safe := computeSafeStructuralConditions(p.FullAST)
+
+	// Only keep conditions that are confirmed safe across all branches.
+	if !safe.IsRoot {
+		p.IsRoot = false
+	}
+	if !safe.HasStatus {
+		p.Status = ""
+	}
+	if !safe.HasSpanKind {
+		p.SpanKind = ""
+	}
+	if !safe.HasServiceName {
+		p.ServiceName = ""
+	}
+	if !safe.HasOperationName {
+		p.OperationName = ""
+	}
+	// Tags from non-root filters could be incorrect — clear tags that aren't in safe set.
+	if len(safe.SafeTags) == 0 {
+		p.Tags = make(map[string]string)
+	} else {
+		for k := range p.Tags {
+			if _, ok := safe.SafeTags[k]; !ok {
+				delete(p.Tags, k)
+			}
+		}
+	}
+	// TagsOr are complex to intersect — clear them for structural queries
+	// to avoid over-filtering.
+	p.TagsOr = nil
+}
+
+// safeConditions represents conditions that are safe to push to ES for structural queries.
+// A condition is "safe" if it appears in the root-side filter of ALL OR branches,
+// meaning any matching trace must satisfy it regardless of which branch matches.
+type safeConditions struct {
+	IsRoot           bool
+	HasStatus        bool
+	Status           string
+	HasSpanKind      bool
+	SpanKind         string
+	HasServiceName   bool
+	ServiceName      string
+	HasOperationName bool
+	OperationName    string
+	SafeTags         map[string]string
+}
+
+// computeSafeStructuralConditions analyzes the AST to find conditions that are common
+// to the root-side filters of ALL OR branches. These can safely be pushed to ES
+// without risking exclusion of valid candidate traces.
+//
+// For a query like:
+//
+//	({nestedSetParent<0 && status=error} &>> {status=error}) || ({nestedSetParent<0 && status=error})
+//
+// Both branches have root filters with nestedSetParent<0 and status=error,
+// so IsRoot=true and Status="error" are safe to push to ES.
+//
+// For a query like:
+//
+//	({nestedSetParent<0} &>> {kind=server}) || ({nestedSetParent<0 && status=error})
+//
+// Only IsRoot is common — status=error is only in one branch, kind=server is non-root.
+func computeSafeStructuralConditions(ast Expr) safeConditions {
+	// Collect root-side filters from all OR branches.
+	branches := collectRootFilters(unwrapPipelineForPlanner(ast))
+	if len(branches) == 0 {
+		// Fallback: no recognizable root filters found.
+		// Only keep IsRoot as safe (conservative default).
+		return safeConditions{IsRoot: true}
+	}
+
+	// Start with the first branch's conditions, then intersect with the rest.
+	result := extractFilterConditions(branches[0])
+	for i := 1; i < len(branches); i++ {
+		other := extractFilterConditions(branches[i])
+		result = intersectConditions(result, other)
+	}
+
+	return result
+}
+
+// collectRootFilters extracts the "root-side" SpanFilter from each OR branch.
+// For a StructuralExpr, the root-side is the Left operand (typically has nestedSetParent<0).
+// For a plain SpanFilter, it IS the root filter.
+// For an OrExpr, recursively collect from both sides.
+func collectRootFilters(expr Expr) []*SpanFilter {
+	if expr == nil {
+		return nil
+	}
+
+	switch e := expr.(type) {
+	case *SpanFilter:
+		return []*SpanFilter{e}
+
+	case *StructuralExpr:
+		// For structural expressions, the left side is the root-span filter.
+		if leftFilter, ok := e.Left.(*SpanFilter); ok {
+			return []*SpanFilter{leftFilter}
+		}
+		// Left could be a nested structural — recursively extract.
+		return collectRootFilters(e.Left)
+
+	case *OrExpr:
+		left := collectRootFilters(e.Left)
+		right := collectRootFilters(e.Right)
+		if left == nil || right == nil {
+			// If either branch can't provide a root filter, we can't safely intersect.
+			return nil
+		}
+		return append(left, right...)
+
+	case *PipelineExpr:
+		return collectRootFilters(e.Input)
+
+	default:
+		return nil
+	}
+}
+
+// extractFilterConditions extracts intrinsic conditions from a SpanFilter.
+func extractFilterConditions(sf *SpanFilter) safeConditions {
+	sc := safeConditions{
+		SafeTags: make(map[string]string),
+	}
+	if sf == nil {
+		return sc
+	}
+
+	for _, cond := range sf.Conditions {
+		if cond.Operator != "=" {
+			// Only equality conditions can be safely pushed as term queries.
+			// Still handle special cases like nestedSetParent < 0.
+			if cond.Key == "nestedSetParent" && cond.Operator == "<" {
+				if n, ok := cond.Value.(int64); ok && n <= 0 {
+					sc.IsRoot = true
+				}
+			}
+			continue
+		}
+
+		valStr := condValueToString(cond.Value)
+		key := cond.Key
+
+		switch {
+		case key == "status" && cond.IsIntrinsic():
+			sc.HasStatus = true
+			sc.Status = valStr
+		case key == "kind" && cond.IsIntrinsic():
+			sc.HasSpanKind = true
+			sc.SpanKind = valStr
+		case key == "service.name" && (cond.Scope == "resource" || cond.Scope == ""):
+			sc.HasServiceName = true
+			sc.ServiceName = valStr
+		case key == "name" && cond.IsIntrinsic():
+			sc.HasOperationName = true
+			sc.OperationName = valStr
+		case key == "nestedSetParent":
+			// Skip — handled above for < operator.
+		default:
+			if valStr != "" {
+				sc.SafeTags[scopedKey(cond.Scope, key)] = valStr
+			}
+		}
+	}
+
+	return sc
+}
+
+// intersectConditions returns the intersection of two safeConditions.
+// A condition is retained only if it appears with the same value in both.
+func intersectConditions(a, b safeConditions) safeConditions {
+	result := safeConditions{
+		SafeTags: make(map[string]string),
+	}
+
+	// IsRoot: keep only if both have it.
+	result.IsRoot = a.IsRoot && b.IsRoot
+
+	// Status: keep only if both have same value.
+	if a.HasStatus && b.HasStatus && a.Status == b.Status {
+		result.HasStatus = true
+		result.Status = a.Status
+	}
+
+	// SpanKind: keep only if both have same value.
+	if a.HasSpanKind && b.HasSpanKind && a.SpanKind == b.SpanKind {
+		result.HasSpanKind = true
+		result.SpanKind = a.SpanKind
+	}
+
+	// ServiceName: keep only if both have same value.
+	if a.HasServiceName && b.HasServiceName && a.ServiceName == b.ServiceName {
+		result.HasServiceName = true
+		result.ServiceName = a.ServiceName
+	}
+
+	// OperationName: keep only if both have same value.
+	if a.HasOperationName && b.HasOperationName && a.OperationName == b.OperationName {
+		result.HasOperationName = true
+		result.OperationName = a.OperationName
+	}
+
+	// Tags: keep only tags present in both with same value.
+	for k, v := range a.SafeTags {
+		if bv, ok := b.SafeTags[k]; ok && bv == v {
+			result.SafeTags[k] = v
+		}
+	}
+
+	return result
+}
+
+// unwrapPipelineForPlanner extracts the Input from a PipelineExpr (for planner use).
+func unwrapPipelineForPlanner(expr Expr) Expr {
+	if p, ok := expr.(*PipelineExpr); ok {
+		return p.Input
+	}
+	return expr
 }
 
 // extract recursively walks the AST and populates the plan.
@@ -155,11 +370,12 @@ func (p *ExecutionPlan) extract(expr Expr) {
 
 	case *StructuralExpr:
 		p.HasStructural = true
-		// Extract pushable conditions from both sides of structural expr.
-		// These become widened (should) conditions for ES — exact structural
-		// matching happens in post-processing.
+		// Only extract from the LEFT side of structural expressions.
+		// The left side is typically the root-span filter (e.g., {nestedSetParent<0 && status=error}).
+		// The right side targets DIFFERENT spans (descendants/children), so its conditions
+		// should NOT be mixed into the same ES query — they would incorrectly narrow results.
+		// relaxStructuralConditions() will further refine what's safe to keep.
 		p.extract(e.Left)
-		p.extract(e.Right)
 
 	case *PipelineExpr:
 		p.extract(e.Input)

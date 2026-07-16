@@ -343,9 +343,8 @@ func TestPlanStructural(t *testing.T) {
 	plan := Plan(ast)
 	assert.True(t, plan.HasStructural)
 	assert.True(t, plan.IsRoot)
-	// SpanKind is relaxed for structural queries — ES search is only for broad
-	// candidate fetching; exact structural matching happens in post-processing.
-	assert.Empty(t, plan.SpanKind, "structural queries should relax SpanKind to avoid over-filtering ES candidates")
+	// SpanKind from the right side of &>> is not extracted (only left/root-side is extracted).
+	assert.Empty(t, plan.SpanKind, "SpanKind from non-root structural arm should not be pushed to ES")
 }
 
 func TestPlanOrGroups(t *testing.T) {
@@ -368,8 +367,8 @@ func TestPlanGrafanaQuery(t *testing.T) {
 	plan := Plan(ast)
 	assert.True(t, plan.HasStructural)
 	assert.True(t, plan.IsRoot)
-	// SpanKind is relaxed for structural queries to avoid over-filtering ES candidates.
-	assert.Empty(t, plan.SpanKind, "structural queries should relax SpanKind")
+	// SpanKind from non-root structural arm is not extracted, and not common across branches.
+	assert.Empty(t, plan.SpanKind, "SpanKind from non-root structural arm should not be pushed to ES")
 	assert.Contains(t, plan.SelectFields, "status")
 	assert.Contains(t, plan.SelectFields, "resource.service.name")
 	assert.Contains(t, plan.SelectFields, "name")
@@ -384,8 +383,8 @@ func TestPlanGrafanaQueryWithNestedSetSelect(t *testing.T) {
 	plan := Plan(ast)
 	assert.True(t, plan.HasStructural, "should detect structural operator")
 	assert.True(t, plan.IsRoot, "should detect root span filter")
-	assert.Empty(t, plan.SpanKind, "structural queries must NOT push SpanKind to ES")
-	assert.Empty(t, plan.Status, "structural queries must NOT push Status to ES")
+	assert.Empty(t, plan.SpanKind, "SpanKind from non-root structural arm should not be pushed to ES")
+	assert.Empty(t, plan.Status, "Status not present in any root filter — should be empty")
 	// Select fields should be preserved.
 	assert.Contains(t, plan.SelectFields, "nestedSetParent")
 	assert.Contains(t, plan.SelectFields, "nestedSetLeft")
@@ -404,6 +403,58 @@ func TestPlanStructuralRelaxDoesNotAffectNonStructural(t *testing.T) {
 	assert.False(t, plan.HasStructural)
 	assert.Equal(t, "server", plan.SpanKind, "non-structural query should preserve SpanKind")
 	assert.Equal(t, "my-svc", plan.ServiceName, "non-structural query should preserve ServiceName")
+}
+
+func TestPlanStructuralRelaxPreservesCommonConditions(t *testing.T) {
+	// When all OR branches have the same root-side condition, it should be preserved.
+	// This is the exact Grafana error-search query that was failing.
+	input := `({nestedSetParent<0 && true && status = error} &>> { status = error }) || ({nestedSetParent<0 && true && status = error})`
+	ast, err := Parse(input)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.True(t, plan.HasStructural)
+	assert.True(t, plan.IsRoot, "IsRoot should be preserved — both branches have nestedSetParent<0")
+	assert.Equal(t, "error", plan.Status, "Status should be preserved — both branches have status=error in root filter")
+}
+
+func TestPlanStructuralRelaxClearsNonCommonConditions(t *testing.T) {
+	// When only one branch has a condition, it should be cleared.
+	input := `({nestedSetParent<0} &>> {kind = server}) || ({nestedSetParent<0 && status = error})`
+	ast, err := Parse(input)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.True(t, plan.HasStructural)
+	assert.True(t, plan.IsRoot, "IsRoot should be preserved — both branches have nestedSetParent<0")
+	assert.Empty(t, plan.SpanKind, "SpanKind should be cleared — only in right side of structural expr")
+	assert.Empty(t, plan.Status, "Status should be cleared — only in one OR branch's root filter")
+}
+
+func TestPlanStructuralRelaxPreservesServiceName(t *testing.T) {
+	// When both branches have the same service.name, it should be preserved.
+	input := `({nestedSetParent<0 && resource.service.name = "my-svc"} &>> {kind = server}) || ({nestedSetParent<0 && resource.service.name = "my-svc"})`
+	ast, err := Parse(input)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.True(t, plan.HasStructural)
+	assert.True(t, plan.IsRoot)
+	assert.Equal(t, "my-svc", plan.ServiceName, "ServiceName should be preserved — common to both branches")
+	assert.Empty(t, plan.SpanKind, "SpanKind should be cleared — only in right side of structural expr")
+}
+
+func TestPlanStructuralSimpleNoOr(t *testing.T) {
+	// Simple structural without OR — only left-side conditions should be kept.
+	input := `{nestedSetParent<0 && status = error} &>> {kind = server}`
+	ast, err := Parse(input)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.True(t, plan.HasStructural)
+	assert.True(t, plan.IsRoot)
+	assert.Equal(t, "error", plan.Status, "Status from left/root filter should be preserved")
+	assert.Empty(t, plan.SpanKind, "SpanKind from right/non-root filter should NOT be extracted")
 }
 
 // ═══════════════════════════════════════════════════
