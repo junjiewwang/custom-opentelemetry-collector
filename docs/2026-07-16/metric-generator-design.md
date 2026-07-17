@@ -391,8 +391,8 @@ overrides:
 │                            │                                               │
 │                            ▼                                               │
 │  ┌──────────────────────────────────────────────────┐                     │
-│  │      AppDiscovery (APP 级隔离管理)                 │                    │
-│  │  GetOrCreate(tenantID, appID) → AppMetricSpace    │                    │
+│  │      AppAggregatorManager (APP 聚合管理)             │                    │
+│  │  GetOrCreate(tenantID, appID) → AppAggregator     │                    │
 │  └────────────────────────┬─────────────────────────┘                     │
 │                            │                                               │
 │                            ▼                                               │
@@ -435,7 +435,7 @@ overrides:
 | 组件 | 职责 | 设计原则 |
 |------|------|----------|
 | **ContextResolver** | 从 Context 提取 AppID（由 tokenauth processor 注入），通过 ControlPlane 映射获取 TenantID，从 Resource 提取 ServiceName，加载配置 | 单一职责；与认证中间件解耦 |
-| **AppDiscovery** | 管理 APP 级聚合空间的生命周期：自动创建、限制、回收 | 高内聚；隔离管理集中 |
+| **AppAggregatorManager** | 管理 APP 级聚合空间的生命周期：自动创建、限制、回收 | 高内聚；隔离管理集中 |
 | **SpanRouter** | 将 Span 分发到对应的 Generator | 开闭原则；新增 Generator 无需修改 Router |
 | **RED Generator** | Per-APP 隔离的 Rate/Error/Duration 指标 | 接口隔离；每个 APP 独立基数空间 |
 | **ServiceGraph Generator** | Per-ServiceGroup 的 Edge 配对和拓扑指标 | 关注点分离；支持跨 APP 串联 |
@@ -469,7 +469,7 @@ type metricGenConnector struct {
     metricsConsumer consumer.Metrics        // 下游 metrics consumer
     controlPlane    ControlPlane            // 控制面接口（AppID → TenantID 映射）
     tenantCache     *TenantCache            // AppID → TenantID 本地缓存
-    appDiscovery    *AppDiscovery           // APP 级隔离管理
+    appMgr          *AppAggregatorManager   // APP 聚合空间生命周期管理
     overrideMgr     *OverrideManager        // 分层配置覆盖
     generators      []Generator             // 可插拔的指标生成器
     sgRouter        *ServiceGraphRouter     // ServiceGraph 路由器
@@ -497,8 +497,8 @@ func (c *metricGenConnector) Capabilities() consumer.Capabilities {
 }
 
 func (c *metricGenConnector) Start(ctx context.Context, host component.Host) error {
-    // 启动 APP 发现（含定时清理）
-    c.appDiscovery.Start(ctx)
+    // 启动 APP 聚合管理（含后台 idle 清理）
+    c.appMgr.Start(ctx)
     
     // 启动各 Generator
     for _, gen := range c.generators {
@@ -539,11 +539,8 @@ func (c *metricGenConnector) ConsumeTraces(ctx context.Context, td ptrace.Traces
             continue  // 跳过已禁用的 APP
         }
         
-        // 获取/创建该 APP 的聚合空间
-        appSpace := c.appDiscovery.GetOrCreate(tenantID, appID, c.overrideMgr)
-        if appSpace == nil {
-            continue  // 超过 maxAppsPerTenant 限制
-        }
+        // 获取/创建该 APP 的聚合空间（超限时返回 overflow 聚合器）
+        appAgg := c.appMgr.GetOrCreate(tenantID, appID, c.overrideMgr)
         
         sss := rs.ScopeSpans()
         for j := 0; j < sss.Len(); j++ {
@@ -555,7 +552,7 @@ func (c *metricGenConnector) ConsumeTraces(ctx context.Context, td ptrace.Traces
                 
                 // 1. RED Generator: per-APP 隔离处理
                 for _, gen := range c.generators {
-                    gen.ProcessSpan(ctx, tenantID, appID, serviceName, appSpace, resource, span)
+                    gen.ProcessSpan(ctx, tenantID, appID, serviceName, appAgg, resource, span)
                 }
                 
                 // 2. ServiceGraph: 通过 ServiceGroupRouter 路由到正确的 EdgeStore
@@ -590,7 +587,7 @@ func (c *metricGenConnector) resolveTenantID(ctx context.Context, appID string) 
 func (c *metricGenConnector) Shutdown(ctx context.Context) error {
     close(c.done)
     c.flusher.Stop(ctx)
-    c.appDiscovery.Stop()
+    c.appMgr.Stop()
     c.overrideMgr.Stop()
     
     // Drain EdgeStore: 强制过期所有 pending Edge，触发虚拟节点推断
@@ -636,11 +633,11 @@ type Generator interface {
     Start(ctx context.Context) error
 
     // ProcessSpan 处理单个 Span，提取并累积指标数据
-    // tenantID: APP 归属的租户 ID（从 AppID 推导）
+    // tenantID: APP 归属的租户 ID（从 AppID 经 ControlPlane 推导）
     // appID: 应用标识（由 tokenauth processor 注入）
     // serviceName: 服务名（从 resource.attributes["service.name"] 提取）
-    // appSpace: 该 APP 的隔离聚合空间
-    ProcessSpan(ctx context.Context, tenantID, appID, serviceName string, appSpace *AppMetricSpace, resource pcommon.Resource, span ptrace.Span)
+    // appAgg: 该 APP 的聚合空间（由 AppAggregatorManager 管理生命周期）
+    ProcessSpan(ctx context.Context, tenantID, appID, serviceName string, appAgg *AppAggregator, resource pcommon.Resource, span ptrace.Span)
 
     // CollectAll 收集所有聚合窗口内的指标
     // 由 MetricFlusher 定时调用，遍历所有活跃 APP 收集指标
@@ -689,12 +686,11 @@ type REDConfig struct {
     SamplingCorrectionEnabled bool
 }
 
-func (g *REDGenerator) ProcessSpan(ctx context.Context, tenantID, appID, serviceName string, appSpace *AppMetricSpace, resource pcommon.Resource, span ptrace.Span) {
+func (g *REDGenerator) ProcessSpan(ctx context.Context, tenantID, appID, serviceName string, appAgg *AppAggregator, resource pcommon.Resource, span ptrace.Span) {
     am := g.getOrCreateAppMetrics(AppKey{TenantID: tenantID, AppID: appID})
 
     // 1. 基数检查（per-APP 隔离的基数限制）
-    if appSpace.IsCardinalityExceeded() {
-        appSpace.RecordOverflow()
+    if appAgg.IsCardinalityExceeded() {
         return
     }
 
@@ -972,22 +968,54 @@ func buildEdgeKey(traceID pcommon.TraceID, spanID pcommon.SpanID) uint64 {
 
 启用前缀后，每条 Edge 会同时输出 Client 视角和 Server 视角的指标，方便按服务角色分别查询。
 
-### 4.5 MetricAggregator（Per-APP 聚合管理器）
+### 4.5 APP 聚合管理（AppAggregator + AppAggregatorManager）
+
+本节统一定义 APP 级聚合空间的数据结构和生命周期管理。整个设计只有这一套 struct，§6 的隔离决策由此实现。
+
+#### 4.5.1 AppAggregator（Per-APP 聚合空间）
 
 ```go
-// AppAggregator 每个 APP 独立的聚合器
-// 管理该 APP 的所有指标 series、基数控制、过期清理
+// AppAggregator 每个 APP 独立的聚合空间
+// 职责：管理该 APP 的所有指标 series、基数控制、过期清理
+// 生命周期由 AppAggregatorManager 管理（idle 回收 + 容量保护）
 type AppAggregator struct {
-    tenantID         string
-    appID            string
-    seriesCache      *lru.Cache[uint64, *MetricSeries]  // hash(labels) → Series
-    cardinalityLimit int
-    currentCardinality atomic.Int64
-    lastActive       time.Time
-    mu               sync.RWMutex
+    TenantID           string                            // 所属 Tenant（用于鉴权和分组）
+    AppID              string                            // APP 标识（来自 tokenauth Context）
+    Config             *AppMetricConfig                  // 该 APP 的最终配置（经 OverrideManager 合并后）
+    seriesCache        *lru.Cache[uint64, *MetricSeries] // hash(labels) → Series
+    cardinalityLimit   int                               // 基数上限
+    currentCardinality atomic.Int64                      // 当前基数使用量
+    LastActive         time.Time                         // 最后活跃时间（用于 idle 回收）
+    clock              Clock                             // 可注入时钟
+    mu                 sync.RWMutex
 }
 
-// 基数控制：达到上限时走 overflow 桶（OTel 标准溢出机制）
+// AppMetricConfig 单个 APP 的指标配置（由 OverrideManager 按优先级合并后提供）
+type AppMetricConfig struct {
+    // RED 配置
+    Dimensions       []Dimension     // 该 APP 启用的维度
+    Histogram        HistogramConfig // 直方图桶配置
+    Namespace        string          // 指标命名空间前缀
+    
+    // 限制配置
+    CardinalityLimit int             // 基数限制
+    RateLimit        int             // Span 处理速率上限（spans/s）
+    
+    // 控制开关
+    Enabled          bool            // 是否启用指标生成
+    EnableRED        bool            // 是否启用 RED 指标
+    EnableServiceGraph bool          // 是否参与 ServiceGraph
+    
+    // ServiceGraph 关联配置
+    ServiceGroups    []string        // 该 APP 所属的 ServiceGroup（用于跨 APP 串联）
+}
+
+// IsCardinalityExceeded 检查该 APP 是否已达基数上限
+func (aa *AppAggregator) IsCardinalityExceeded() bool {
+    return aa.currentCardinality.Load() >= int64(aa.cardinalityLimit)
+}
+
+// CheckCardinality 基数控制：达到上限时走 overflow 桶（OTel 标准溢出机制）
 func (aa *AppAggregator) CheckCardinality(key uint64) (uint64, bool) {
     current := aa.currentCardinality.Load()
     if current >= int64(aa.cardinalityLimit) {
@@ -1022,7 +1050,7 @@ func (aa *AppAggregator) RecordSpan(key uint64, attrs pcommon.Map, duration time
         series.Errors.Add(weight)
     }
     
-    aa.lastActive = aa.clock.Now()
+    aa.LastActive = aa.clock.Now()
 }
 
 // Collect 收集并重置该 APP 的所有 series（用于 flush）
@@ -1037,6 +1065,117 @@ func (aa *AppAggregator) Collect() []*MetricSeries {
         }
     }
     return result
+}
+
+// Close 最后一次 flush + 释放资源
+func (aa *AppAggregator) Close() {
+    // 最后一次 Collect（丢弃或上报由 Manager 决定）
+    aa.seriesCache.Purge()
+}
+```
+
+#### 4.5.2 AppAggregatorManager（生命周期管理）
+
+```go
+// AppAggregatorManager 管理所有 APP 聚合空间的生命周期
+// 职责：
+//   1. 按需创建 AppAggregator（首次看到某 APP 时自动创建）
+//   2. 容量保护：单 Tenant 超过 MaxAppsPerTenant 时合并到 __overflow__
+//   3. Idle 回收：定期清理长时间无数据的 APP 聚合空间，释放内存
+// 对应配置：AppIsolationConfig
+type AppAggregatorManager struct {
+    activeApps       map[AppKey]*AppAggregator
+    maxAppsPerTenant int           // 对应 AppIsolationConfig.MaxAppsPerTenant
+    idleTimeout      time.Duration // 对应 AppIsolationConfig.IdleTimeout
+    cleanupInterval  time.Duration // 对应 AppIsolationConfig.CleanupInterval
+    clock            Clock         // 可注入时钟（测试可控）
+    mu               sync.RWMutex
+}
+
+// GetOrCreate 首次看到某 APP 时自动创建其聚合空间
+func (m *AppAggregatorManager) GetOrCreate(tenantID, appID string, configMgr *OverrideManager) *AppAggregator {
+    key := AppKey{TenantID: tenantID, AppID: appID}
+    
+    m.mu.RLock()
+    if agg, ok := m.activeApps[key]; ok {
+        agg.LastActive = m.clock.Now()
+        m.mu.RUnlock()
+        return agg
+    }
+    m.mu.RUnlock()
+    
+    // 双重检查锁
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    if agg, ok := m.activeApps[key]; ok {
+        agg.LastActive = m.clock.Now()
+        return agg
+    }
+    
+    // 检查 Tenant 下的活跃 APP 数量限制（运行时内存保护）
+    if m.countAppsForTenant(tenantID) >= m.maxAppsPerTenant {
+        return m.overflowAggregator(tenantID)  // 超限时合并到 overflow APP
+    }
+    
+    config := configMgr.GetAppConfig(tenantID, appID)
+    agg := newAppAggregator(tenantID, appID, config, m.clock)
+    m.activeApps[key] = agg
+    return agg
+}
+
+// overflowAggregator 返回该 Tenant 的溢出聚合空间
+// 超限 APP 的指标合并到统一的 __overflow__ 标识下
+// 输出指标中 app_id 标记为 "__overflow__"，方便用户识别
+func (m *AppAggregatorManager) overflowAggregator(tenantID string) *AppAggregator {
+    overflowKey := AppKey{TenantID: tenantID, AppID: "__overflow__"}
+    if agg, ok := m.activeApps[overflowKey]; ok {
+        agg.LastActive = m.clock.Now()
+        return agg
+    }
+    agg := newAppAggregator(tenantID, "__overflow__", defaultOverflowConfig(), m.clock)
+    m.activeApps[overflowKey] = agg
+    return agg
+}
+
+// CleanupIdle 定期清理长时间无数据的 APP 聚合空间
+// 由后台 goroutine 按 CleanupInterval 周期调用
+func (m *AppAggregatorManager) CleanupIdle() {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    now := m.clock.Now()
+    for key, agg := range m.activeApps {
+        if now.Sub(agg.LastActive) > m.idleTimeout {
+            agg.Close()  // 最后一次 flush + 释放资源
+            delete(m.activeApps, key)
+        }
+    }
+}
+
+// Start 启动后台清理 goroutine
+func (m *AppAggregatorManager) Start(ctx context.Context) {
+    go func() {
+        ticker := time.NewTicker(m.cleanupInterval)
+        defer ticker.Stop()
+        for {
+            select {
+            case <-ticker.C:
+                m.CleanupIdle()
+            case <-ctx.Done():
+                return
+            }
+        }
+    }()
+}
+
+// Stop 停止管理器，关闭所有聚合空间
+func (m *AppAggregatorManager) Stop() {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    for _, agg := range m.activeApps {
+        agg.Close()
+    }
 }
 ```
 
@@ -1129,13 +1268,17 @@ type Config struct {
     Overrides OverridesConfig `mapstructure:"overrides"`
 }
 
-// AppIsolationConfig APP 级别隔离配置
+// AppIsolationConfig APP 聚合空间的运行时内存保护配置
+// 注意：此处的限制是 MetricGenerator 实例级的运行时保护，与控制面注册的 APP 总量无关。
+// - 控制面管理的是"平台注册了多少 APP（Token 发放）"，是全量数据
+// - 此处控制的是"一个 Worker 实例在内存中同时维护多少个 APP 的聚合状态"，是运行时资源上限
+// - 超限时新 APP 的指标合并到 __overflow__ 桶，而非拒绝接入
 type AppIsolationConfig struct {
-    Enabled              bool          `mapstructure:"enabled"`                 // 是否启用 APP 级隔离
-    MaxAppsPerTenant     int           `mapstructure:"max_apps_per_tenant"`     // 每 Tenant 最大 APP 数（默认 500）
-    DefaultCardinalityLimit int        `mapstructure:"default_cardinality_limit"` // 每 APP 默认基数限制
-    IdleTimeout          time.Duration `mapstructure:"idle_timeout"`            // APP 空闲回收时间（默认 1h）
-    CleanupInterval      time.Duration `mapstructure:"cleanup_interval"`        // 清理检查周期
+    Enabled                 bool          `mapstructure:"enabled"`                   // 是否启用 APP 级隔离
+    MaxAppsPerTenant        int           `mapstructure:"max_apps_per_tenant"`       // 单实例每 Tenant 最大活跃 APP 聚合空间数（默认 500，防内存泄露）
+    DefaultCardinalityLimit int           `mapstructure:"default_cardinality_limit"` // 每 APP 默认基数限制（series 数）
+    IdleTimeout             time.Duration `mapstructure:"idle_timeout"`              // APP 无数据后回收其内存聚合空间的等待时间（默认 1h）
+    CleanupInterval         time.Duration `mapstructure:"cleanup_interval"`          // 后台 goroutine 扫描 idle APP 的周期（默认 5m）
 }
 
 // ServiceGroupConfig 定义一组可互相建立 ServiceGraph Edge 的 APP
@@ -1374,6 +1517,8 @@ exporters:
 
 ## 6. 隔离设计：APP 级别隔离 + 跨 APP 服务串联
 
+本节阐述隔离策略的**设计决策**。具体实现结构详见 §4.5（`AppAggregator` + `AppAggregatorManager`）。
+
 ### 6.1 隔离粒度分析
 
 #### 为什么不做 Tenant 级别隔离
@@ -1386,7 +1531,7 @@ exporters:
 | **ServiceGraph** | 需要跨 APP 工作 | ✅ 可通过 ServiceGroup 机制配置跨 APP 关系 |
 | **运维** | 降级/限流只能到 Tenant | ✅ 可精确到单个 APP |
 
-**结论**：隔离粒度到 APP（即 `service.name` 级别），Tenant 只作为逻辑分组和鉴权单位。
+**结论**：隔离粒度到 APP 级别，Tenant 只作为逻辑分组和鉴权单位。
 
 #### APP 的定义
 
@@ -1400,49 +1545,30 @@ APP ≡ Context 中的 AppID（由 tokenauth processor 在上游注入）
 > - 一个 AppID 下可能有多个 service.name（如一个应用包含多个微服务模块）
 > - 指标的隔离（基数限制、配置覆盖）按 AppID 划分，服务拓扑按 service.name 展示
 
-一个 APP 对应一个独立的指标聚合空间。同一 Tenant 下的不同 APP 有各自独立的：
-- 基数限制（CardinalityLimit）
-- 维度配置（Dimensions）
-- 直方图桶配置（Histogram Buckets）
-- 启用/禁用状态
+#### 每个 APP 独立管理的内容
 
-### 6.2 APP 级隔离模型
+一个 APP 对应一个 `AppAggregator` 实例（§4.5.1），拥有独立的：
+- 基数限制（`cardinalityLimit`）— 超限走 overflow 桶
+- 维度配置（`AppMetricConfig.Dimensions`）
+- 直方图桶配置（`AppMetricConfig.Histogram`）
+- 启用/禁用状态（`AppMetricConfig.Enabled`）
 
-```go
-// AppMetricSpace 每个 APP 独立的聚合空间
-type AppMetricSpace struct {
-    TenantID         string           // 所属 Tenant（用于鉴权和分组）
-    AppID            string           // APP 标识 = service.name
-    Config           *AppMetricConfig // 该 APP 的指标配置
-    REDAggregator    *REDAggregator   // RED 指标聚合器
-    CardinalityUsed  int64            // 当前基数使用量
-    CardinalityLimit int64            // 基数上限
-    LastActive       time.Time        // 最后活跃时间（用于自动回收）
-}
+#### 生命周期管理
 
-type AppMetricConfig struct {
-    // RED 配置
-    Dimensions       []Dimension     // 该 APP 启用的维度
-    Histogram        HistogramConfig // 直方图桶配置
-    Namespace        string          // 指标命名空间前缀
-    
-    // 限制配置
-    CardinalityLimit int             // 基数限制
-    RateLimit        int             // Span 处理速率上限（spans/s）
-    
-    // 控制开关
-    Enabled          bool            // 是否启用指标生成
-    EnableRED        bool            // 是否启用 RED 指标
-    EnableServiceGraph bool          // 是否参与 ServiceGraph
-    
-    // ServiceGraph 关联配置
-    ServiceGroups    []string        // 该 APP 所属的 ServiceGroup（用于跨 APP 串联）
-}
-```
+`AppAggregatorManager`（§4.5.2）负责 APP 聚合空间的自动创建和回收：
 
-### 6.3 跨 APP 服务串联：ServiceGroup 机制
+| 机制 | 对应配置 | 说明 |
+|------|---------|------|
+| 按需创建 | — | 首次看到某 AppID 时自动创建 `AppAggregator` |
+| 容量保护 | `AppIsolationConfig.MaxAppsPerTenant` | 单实例单 Tenant 超限时合并到 `__overflow__`（**运行时内存保护**，非控制面注册数据） |
+| Idle 回收 | `AppIsolationConfig.IdleTimeout` | APP 无新数据超时后释放其内存聚合空间 |
+| 定期扫描 | `AppIsolationConfig.CleanupInterval` | 后台 goroutine 按周期检查 idle APP |
 
-#### 6.3.1 问题分析
+> **为什么需要 Idle 回收**：APP 下线/缩容/夜间无流量时，其 `AppAggregator`（LRU Cache + Counter + Histogram Bucket）仍占用内存。定时回收可防止内存膨胀。
+
+### 6.2 跨 APP 服务串联：ServiceGroup 机制
+
+#### 6.2.1 问题分析
 
 ServiceGraph 的本质是跨服务的 —— 它需要配对不同 APP 之间的 Client/Server Span。如果严格按 APP 隔离，ServiceGraph 就无法工作。
 
@@ -1452,7 +1578,7 @@ ServiceGraph 的本质是跨服务的 —— 它需要配对不同 APP 之间的
 3. 需要配置机制来声明哪些 APP 之间允许建立拓扑关系
 4. 默认行为应尽量简单（零配置即可看到 Tenant 内拓扑）
 
-#### 6.3.2 ServiceGroup 设计
+#### 6.2.2 ServiceGroup 设计
 
 **核心概念**：`ServiceGroup` 是同一 Tenant 内一组允许互相建立 ServiceGraph Edge 的 APP 集合。
 
@@ -1472,7 +1598,7 @@ type ServiceMember struct {
 }
 ```
 
-#### 6.3.3 ServiceGraph 的隔离策略
+#### 6.2.3 ServiceGraph 的隔离策略
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -1510,7 +1636,7 @@ type ServiceMember struct {
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 6.3.4 两种配置模式
+#### 6.2.4 两种配置模式
 
 **模式 1：显式 ServiceGroup 声明**（推荐用于精确控制）
 
@@ -1560,7 +1686,7 @@ metric_generator:
 
 > **说明**："自动发现"是指 ServiceGraph 层面的行为——当新 APP 的 Span 首次到达时，该 APP 自动被纳入其 Tenant 的默认 ServiceGroup 参与 Edge 配对。无需冷启动延迟或等待配置加载。
 
-#### 6.3.5 ServiceGroup 的实现逻辑
+#### 6.2.5 ServiceGroup 的实现逻辑（ServiceGraphRouter）
 
 ```go
 // ServiceGraphRouter 负责将 Span 路由到正确的 ServiceGroup 进行 Edge 配对
@@ -1580,7 +1706,7 @@ type ServiceGraphRouter struct {
 
 type AppKey struct {
     TenantID string
-    AppID    string  // = service.name
+    AppID    string  // 来自 tokenauth Context（注意：AppID ≠ service.name）
 }
 
 // RouteSpan 将 Span 路由到所有它参与的 ServiceGroup 的 EdgeStore
@@ -1635,7 +1761,7 @@ func (r *ServiceGraphRouter) CollectAll() []MetricSeries {
 }
 ```
 
-#### 6.3.6 跨 Tenant 服务串联（不支持）
+#### 6.2.6 跨 Tenant 服务串联（不支持）
 
 **决策：不支持跨 Tenant 的 ServiceGroup。**
 
@@ -1646,7 +1772,7 @@ func (r *ServiceGraphRouter) CollectAll() []MetricSeries {
 
 如果未来有强需求，可在 ServiceGroup 配置中增加 `cross_tenant: true` 和双向授权机制。当前版本所有 ServiceGroup 成员必须属于同一 Tenant。
 
-### 6.4 隔离模型总结
+### 6.3 隔离模型总结
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -1677,7 +1803,7 @@ func (r *ServiceGraphRouter) CollectAll() []MetricSeries {
 └────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.5 配置覆盖机制（借鉴 Tempo Overrides）
+### 6.4 配置覆盖机制（借鉴 Tempo Overrides）
 
 采用 Tempo 风格的分层覆盖机制，但粒度到 APP：
 
@@ -1767,78 +1893,18 @@ HSET otel:metricgen:servicegroups:tenant-a '[{"name":"order-flow","members":[{"a
 
 **优先级**：Redis 动态覆盖 > 静态 YAML app_overrides > 静态 YAML tenant_overrides > defaults
 
-### 6.6 自动 APP 发现与回收
+### 6.5 APP 生命周期管理
 
-```go
-// AppDiscovery 自动发现和管理 APP 的生命周期
-type AppDiscovery struct {
-    activeApps       map[AppKey]*AppMetricSpace
-    maxAppsPerTenant int           // 每 Tenant 最大 APP 数（防止泄露）
-    idleTimeout      time.Duration // APP 空闲多久后回收
-    clock            Clock         // 可注入时钟（测试可控）
-    mu               sync.RWMutex
-}
+APP 聚合空间的自动创建和回收逻辑详见 §4.5.2（`AppAggregatorManager`），此处仅说明设计决策：
 
-// GetOrCreate 首次看到某 APP 时自动创建其聚合空间
-func (d *AppDiscovery) GetOrCreate(tenantID, appID string, configMgr *OverrideManager) *AppMetricSpace {
-    key := AppKey{TenantID: tenantID, AppID: appID}
-    
-    d.mu.RLock()
-    if space, ok := d.activeApps[key]; ok {
-        space.LastActive = d.clock.Now()
-        d.mu.RUnlock()
-        return space
-    }
-    d.mu.RUnlock()
-    
-    // 双重检查锁
-    d.mu.Lock()
-    defer d.mu.Unlock()
-    
-    if space, ok := d.activeApps[key]; ok {
-        space.LastActive = d.clock.Now()
-        return space
-    }
-    
-    // 检查 Tenant 下的 APP 数量限制
-    if d.countAppsForTenant(tenantID) >= d.maxAppsPerTenant {
-        return d.overflowSpace(tenantID)  // 超限时合并到 overflow APP
-    }
-    
-    config := configMgr.GetAppConfig(tenantID, appID)
-    space := newAppMetricSpace(tenantID, appID, config)
-    d.activeApps[key] = space
-    return space
-}
+| 决策 | 说明 |
+|------|------|
+| **按需创建** | 首次看到某 AppID 时自动创建 `AppAggregator`，无需预注册 |
+| **Overflow 降级** | 单 Tenant 超过 `MaxAppsPerTenant` 时，新 APP 合并到 `__overflow__` 聚合器，不拒绝数据 |
+| **Idle 回收** | 超过 `IdleTimeout` 无新 Span 的 APP 聚合空间被回收，释放内存 |
+| **时钟可注入** | 所有时间操作使用 `clock.Now()`，支持测试中的时间控制 |
 
-// overflowSpace 返回该 Tenant 的溢出聚合空间
-// 超限 APP 的指标合并到统一的 overflow 标识下
-// 输出指标中 service.name 标记为 "__overflow__"，方便用户识别
-func (d *AppDiscovery) overflowSpace(tenantID string) *AppMetricSpace {
-    overflowKey := AppKey{TenantID: tenantID, AppID: "__overflow__"}
-    if space, ok := d.activeApps[overflowKey]; ok {
-        space.LastActive = d.clock.Now()
-        return space
-    }
-    space := newAppMetricSpace(tenantID, "__overflow__", defaultOverflowConfig())
-    d.activeApps[overflowKey] = space
-    return space
-}
-
-// CleanupIdle 定期清理长时间无数据的 APP 聚合空间
-func (d *AppDiscovery) CleanupIdle() {
-    d.mu.Lock()
-    defer d.mu.Unlock()
-    
-    now := d.clock.Now()
-    for key, space := range d.activeApps {
-        if now.Sub(space.LastActive) > d.idleTimeout {
-            space.Close()  // 最后一次 flush + 释放资源
-            delete(d.activeApps, key)
-        }
-    }
-}
-```
+> **注意**：`MaxAppsPerTenant` 是**运行时内存保护**，与控制面注册的 APP 数量无关。控制面管理的是"平台注册了多少 APP"（Token 发放），此处控制的是"单个 Worker 实例在内存中同时维护多少个 APP 的聚合状态"。
 
 ---
 
@@ -1965,8 +2031,8 @@ func TestREDGenerator_ProcessSpan(t *testing.T) {
     )
 
     // Act
-    appSpace := newTestAppSpace("tenant-1", "test-app")
-    gen.ProcessSpan(context.Background(), "tenant-1", "test-app", "test-service", appSpace, newTestResource(), span)
+    appAgg := newTestAppAggregator("tenant-1", "test-app")
+    gen.ProcessSpan(context.Background(), "tenant-1", "test-app", "test-service", appAgg, newTestResource(), span)
 
     // Assert
     series := gen.CollectAll()
@@ -2075,8 +2141,8 @@ connector/
     ├── tenant_cache_test.go
     ├── flusher.go                   // MetricFlusher
     ├── flusher_test.go
-    ├── discovery.go                 // AppDiscovery（APP 生命周期管理）
-    ├── discovery_test.go
+    ├── app_manager.go               // AppAggregatorManager（APP 聚合空间生命周期管理）
+    ├── app_manager_test.go
     ├── override.go                  // OverrideManager（分层配置覆盖）
     ├── override_test.go
     ├── selfmetrics.go               // Self-Monitoring 运营指标
@@ -2181,13 +2247,13 @@ connectors:
         - "otel-collector-agent"
         - "envoy-sidecar"
 
-    # APP 级别隔离配置
+    # APP 聚合空间运行时内存保护配置（非控制面注册数据）
     app_isolation:
       enabled: true
-      max_apps_per_tenant: 500       # 每 Tenant 最大 APP 数
-      default_cardinality_limit: 2000 # 每 APP 默认基数限制
-      idle_timeout: 1h               # APP 空闲 1h 后回收
-      cleanup_interval: 5m
+      max_apps_per_tenant: 500       # 单实例每 Tenant 最大活跃 APP 聚合空间数（内存保护）
+      default_cardinality_limit: 2000 # 每 APP 默认基数限制（series 数）
+      idle_timeout: 1h               # APP 无数据后回收聚合空间
+      cleanup_interval: 5m           # 后台扫描 idle APP 的周期
 
     # ServiceGroup 配置（显式声明同 Tenant 内的跨 APP 串联关系）
     # 注意：不支持跨 Tenant 的 ServiceGroup
@@ -2343,7 +2409,7 @@ func translateTraceQLMetric(fn string) string {
 
 | 任务 | 详情 | 验收标准 |
 |------|------|---------|
-| 2.1 AppDiscovery | 自动发现 APP（通过 service.name），管理 APP 聚合空间生命周期 | 新 APP 首次出现时自动创建聚合空间 |
+| 2.1 AppAggregatorManager | APP 聚合空间生命周期管理（自动创建、容量保护、idle 回收） | 新 APP 首次出现时自动创建聚合空间 |
 | 2.2 Per-APP 基数控制 | 每个 APP 独立的 CardinalityLimit + Overflow | APP-A 基数超限不影响同 Tenant 下的 APP-B |
 | 2.3 OverrideManager | 分层配置覆盖：defaults → tenant → app | 配置优先级正确；单元测试覆盖 |
 | 2.4 配置热加载 | 定时从 Redis 拉取动态覆盖配置，支持 API 修改 | 通过 API 修改配置后 10s 内生效 |
@@ -2433,4 +2499,4 @@ func translateTraceQLMetric(fn string) string {
 
 **关于"APP 自动发现"（原问题 8）的澄清**：
 
-"自动发现"指的是 ServiceGraph 的 `auto_discover` 模式：当同一 Tenant 下有新的 APP（service.name）首次上报 Span 时，系统自动将其纳入该 Tenant 的默认 ServiceGroup，无需手动配置即可看到服务拓扑。这不需要"冷启动延迟"——新 APP 首次出现时立即创建 AppMetricSpace 并开始参与 Edge 配对，无需等待任何配置加载。配置覆盖（如果有）通过 Redis 热加载在下次 reload 周期（默认 10s）内生效。
+"自动发现"指的是 ServiceGraph 的 `auto_discover` 模式：当同一 Tenant 下有新的 APP（service.name）首次上报 Span 时，系统自动将其纳入该 Tenant 的默认 ServiceGroup，无需手动配置即可看到服务拓扑。这不需要"冷启动延迟"——新 APP 首次出现时立即由 `AppAggregatorManager.GetOrCreate()` 创建聚合空间并开始参与 Edge 配对，无需等待任何配置加载。配置覆盖（如果有）通过 Redis 热加载在下次 reload 周期（默认 10s）内生效。
