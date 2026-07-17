@@ -40,7 +40,7 @@ func createDefaultConfig() component.Config {
 	return &Config{
 		Enabled: true,
 		DBPeerPriority: []string{
-			"db.name", "db.system", "server.address",
+			"db.name", "db.instance", "db.system", "db.type", "server.address",
 		},
 		MessagingPeerPriority: []string{
 			"messaging.destination.name", "messaging.destination", "messaging.system",

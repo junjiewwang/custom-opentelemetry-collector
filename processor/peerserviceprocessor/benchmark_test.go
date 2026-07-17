@@ -70,7 +70,7 @@ func newBenchmarkDBTraces(spansPerBatch int) ptrace.Traces {
 
 func BenchmarkPeerStore_TryMatch_Hit(b *testing.B) {
 	// Pre-store one Client so every Server immediately matches
-	store := NewPeerStore(100000, 10*time.Second, realClock{}, func([]ptrace.Span) {}, nil)
+	store := NewPeerStore(100000, 10*time.Second, realClock{}, func([]*SpanHalf) {}, nil)
 	tdClient := ptrace.NewTraces()
 	rs := tdClient.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("service.name", "client-svc")
@@ -82,14 +82,14 @@ func BenchmarkPeerStore_TryMatch_Hit(b *testing.B) {
 	clientSpan.SetKind(ptrace.SpanKindClient)
 	clientSpan.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 	clientSpan.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(time.Millisecond)))
-	store.TryMatch(clientSpan, benchKey, "client-svc", roleClient)
+	store.TryMatch(clientSpan, rs.Resource(), benchKey, "client-svc", roleClient)
 
 	b.ResetTimer()
 	var matched int64
 	for i := range b.N {
 		td := newBenchmarkTraces(1, ptrace.SpanKindServer)
 		span := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0)
-		result := store.TryMatch(span, benchKey, "server-svc", roleServer)
+		result := store.TryMatch(span, td.ResourceSpans().At(0).Resource(), benchKey, "server-svc", roleServer)
 		if result != nil {
 			matched++
 			// Re-preload a Client for next iteration
@@ -104,7 +104,7 @@ func BenchmarkPeerStore_TryMatch_Hit(b *testing.B) {
 			reloadSpan.SetKind(ptrace.SpanKindClient)
 			reloadSpan.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 			reloadSpan.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(time.Millisecond)))
-			store.TryMatch(reloadSpan, benchKey, "client-svc", roleClient)
+			store.TryMatch(reloadSpan, rr.Resource(), benchKey, "client-svc", roleClient)
 		}
 		_ = i
 	}
@@ -112,7 +112,7 @@ func BenchmarkPeerStore_TryMatch_Hit(b *testing.B) {
 }
 
 func BenchmarkPeerStore_TryMatch_Miss(b *testing.B) {
-	store := NewPeerStore(100000, 10*time.Second, realClock{}, func([]ptrace.Span) {}, nil)
+	store := NewPeerStore(100000, 10*time.Second, realClock{}, func([]*SpanHalf) {}, nil)
 	var counter uint64 = 10000000 // start far from any real spanID
 
 	b.ResetTimer()
@@ -120,18 +120,18 @@ func BenchmarkPeerStore_TryMatch_Miss(b *testing.B) {
 		counter++
 		td := newBenchmarkTraces(1, ptrace.SpanKindClient)
 		span := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0)
-		store.TryMatch(span, counter, "client-svc", roleClient)
+		store.TryMatch(span, td.ResourceSpans().At(0).Resource(), counter, "client-svc", roleClient)
 	}
 	store.Drain()
 }
 
 func BenchmarkPeerStore_Expire(b *testing.B) {
-	store := NewPeerStore(100000, 10*time.Second, realClock{}, func([]ptrace.Span) {}, nil)
+	store := NewPeerStore(100000, 10*time.Second, realClock{}, func([]*SpanHalf) {}, nil)
 	// Pre-populate with 10k unique keys
 	for i := range 10000 {
 		td := newBenchmarkTraces(1, ptrace.SpanKindClient)
 		span := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0)
-		store.TryMatch(span, uint64(i+100000), "svc", roleClient)
+		store.TryMatch(span, td.ResourceSpans().At(0).Resource(), uint64(i+100000), "svc", roleClient)
 	}
 
 	b.ResetTimer()

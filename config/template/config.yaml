@@ -744,9 +744,12 @@ processors:
   peer_service:
     enabled: true
     # Database fast path: extract peer.service from these span attributes
+    # Supports both new (db.system) and deprecated (db.type) conventions.
     db_peer_priority:
       - db.name
+      - db.instance
       - db.system
+      - db.type
       - server.address
     # Messaging fast path: extract peer.service for Producer spans
     messaging_peer_priority:
