@@ -98,3 +98,62 @@ case *StructuralExpr:
 
 1. `maxStructuralTraces=50` 的硬编码限制仍然存在，对于极端情况（大量不同 trace 满足公共条件但只有少数满足结构关系）仍可能截断。建议后续评估是否需要动态调整。
 2. `TagsOr` 在结构化查询中被清空（保守策略），如果有更精细的交集逻辑可以进一步优化。
+
+---
+
+# Scope 前缀字段映射修复（2026-07-17）
+
+## 问题描述
+
+### 现象
+
+带有 scope 前缀的查询（如 `span.peer.service="9.134.105.246:6380"`）返回空结果。
+
+### 根因
+
+`buildTraceSearchQuery` 中 `Tags`/`TagsOr`/`TagsNot`/`TagsExists`/`TagsRegex` 的处理逻辑使用硬编码的 `fmt.Sprintf(FieldAttributes+".%s", key)` 拼接 ES 字段路径。当 key 带有 scope 前缀时（如 `span.peer.service`），会生成错误的 ES 字段路径 `attributes.span.peer.service`（正确应为 `attributes.peer.service`）。
+
+而 `AttributeResolver` 早已存在并正确实现了 scope 前缀的解析映射，但 `buildTraceSearchQuery` 没有使用它。
+
+### 影响范围
+
+- `trace_reader.go` `buildTraceSearchQuery`: Tags AND/OR、TagsNot、TagsExists、TagsRegex
+- `trace_reader.go` `GetTagValues`: filterTags 过滤条件
+- `log_reader.go`: 日志属性过滤
+
+## 解决方案
+
+新增 3 个基于 `AttributeResolver` 的 helper 函数替换硬编码拼接：
+
+| 函数 | 用途 |
+|------|------|
+| `resolveTagTermClauses(key, value string) []map[string]any` | 将 key=value 解析为 ES term clauses |
+| `resolveTagFieldPaths(key string) []string` | 将 key 解析为 ES 字段路径（用于 exists/regex） |
+| `resolveTagESFields(key, value string) (fields []string, val string)` | 底层解析逻辑 |
+
+**解析规则**：
+- 有 scope 前缀（span.x, resource.x）→ 精确单字段映射
+- 无前缀且为 intrinsic → 精确单字段映射
+- 无前缀且为自定义属性 → 双字段回退 `[attributes.key, resource.key]`（保持向后兼容）
+
+同时移除了已不再使用的 `intrinsicTermClause` 和 `intrinsicField` 函数。
+
+## 修改文件
+
+| 文件 | 修改内容 |
+|------|---------|
+| `extension/observabilitystorageext/provider/elasticsearch/trace_reader.go` | 新增 3 个 helper，替换 6 处硬编码拼接，删除 2 个废弃函数 |
+| `extension/observabilitystorageext/provider/elasticsearch/log_reader.go` | Attributes 循环改用 `resolveTagTermClauses` |
+
+## 验证
+
+- 所有现有单元测试通过（无回归）
+- `go build ./...` 编译通过
+
+## 状态
+
+- [x] 根因分析
+- [x] 方案设计
+- [x] 代码实施
+- [x] 单元测试
+- [ ] 线上验证

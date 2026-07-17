@@ -352,7 +352,12 @@ func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
 		qb.Term(FieldSpanID, lq.SpanID)
 	}
 	for k, v := range lq.Attributes {
-		qb.Term(fmt.Sprintf(FieldAttributes+".%s", k), v)
+		clauses := resolveTagTermClauses(k, v)
+		if len(clauses) == 1 {
+			qb.Raw(clauses[0])
+		} else {
+			qb.Should(1, clauses...)
+		}
 	}
 
 	return qb.Build()

@@ -511,15 +511,13 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		)
 	}
 
-	// AND conditions: each tag must match in either attributes or resource.
+	// AND conditions: each tag must match.
 	for k, v := range tq.Tags {
-		if clause := intrinsicTermClause(k, v); clause != nil {
-			qb.Raw(clause)
+		clauses := resolveTagTermClauses(k, v)
+		if len(clauses) == 1 {
+			qb.Raw(clauses[0])
 		} else {
-			qb.Should(1,
-				esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
-				esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
-			)
+			qb.Should(1, clauses...)
 		}
 	}
 
@@ -552,13 +550,11 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		for _, branchMap := range orGroup {
 			builder := esq.NewBuilder()
 			for k, v := range branchMap {
-				if clause := intrinsicTermClause(k, v); clause != nil {
-					builder.Raw(clause)
+				clauses := resolveTagTermClauses(k, v)
+				if len(clauses) == 1 {
+					builder.Raw(clauses[0])
 				} else {
-					builder.Should(1,
-						esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
-						esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
-					)
+					builder.Should(1, clauses...)
 				}
 			}
 			orClauses = append(orClauses, builder.Build())
@@ -570,90 +566,44 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 
 	// ── TagsNot (Sprint 2): != value → must_not + term ──
 	for k, v := range tq.TagsNot {
-		if clause := intrinsicTermClause(k, v); clause != nil {
+		for _, clause := range resolveTagTermClauses(k, v) {
 			qb.Raw(esq.MustNotQ(clause))
-		} else {
-			qb.Raw(esq.MustNotQ(
-				esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
-			))
-			qb.Raw(esq.MustNotQ(
-				esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
-			))
 		}
 	}
 
 	// ── TagsExists (Sprint 2): != nil → exists ──
 	for _, k := range tq.TagsExists {
-		if field := intrinsicField(k); field != "" {
-			qb.Raw(esq.ExistsQ(field))
+		paths := resolveTagFieldPaths(k)
+		if len(paths) == 1 {
+			qb.Raw(esq.ExistsQ(paths[0]))
 		} else {
-			qb.Should(1,
-				esq.ExistsQ(FieldAttributes+"."+k),
-				esq.ExistsQ(FieldResource+"."+k),
-			)
+			var existsClauses []map[string]any
+			for _, p := range paths {
+				existsClauses = append(existsClauses, esq.ExistsQ(p))
+			}
+			qb.Should(1, existsClauses...)
 		}
 	}
 
 	// ── TagsRegex (Sprint 2): =~ regex → regexp ──
 	for k, pattern := range tq.TagsRegex {
-		if field := intrinsicField(k); field != "" {
+		paths := resolveTagFieldPaths(k)
+		if len(paths) == 1 {
 			qb.Raw(map[string]any{
-				"regexp": map[string]any{field: map[string]any{"value": pattern}},
+				"regexp": map[string]any{paths[0]: map[string]any{"value": pattern}},
 			})
 		} else {
-			qb.Should(1,
-				map[string]any{
-					"regexp": map[string]any{FieldAttributes + "." + k: map[string]any{"value": pattern}},
-				},
-				map[string]any{
-					"regexp": map[string]any{FieldResource + "." + k: map[string]any{"value": pattern}},
-				},
-			)
+			var regexClauses []map[string]any
+			for _, p := range paths {
+				regexClauses = append(regexClauses, map[string]any{
+					"regexp": map[string]any{p: map[string]any{"value": pattern}},
+				})
+			}
+			qb.Should(1, regexClauses...)
 		}
 	}
 
 	return qb.Build()
-}
-
-// intrinsicTermClause returns an ES term clause for intrinsic (non-attribute) fields
-// such as "name", "service.name", "kind", and "status". These fields are stored at the
-// top level in ES and must NOT be queried via attributes.* or resource.*.
-// Returns nil if the key is not an intrinsic field.
-func intrinsicTermClause(key, value string) map[string]any {
-	switch key {
-	case "name":
-		return esq.T(FieldName, value)
-	case "service.name":
-		return esq.T(FieldServiceName, value)
-	case "kind":
-		return esq.T(FieldKind, capitalizeFirst(value))
-	case "status":
-		return esq.T(FieldStatus+".code", capitalizeFirst(value))
-	case "status.message":
-		return esq.T(FieldStatus+".message", value)
-	default:
-		return nil
-	}
-}
-
-// intrinsicField returns the ES document field path for an intrinsic TraceQL key.
-// Returns empty string if the key is not an intrinsic field.
-// Used by exists and regexp queries which don't need a value for term matching.
-func intrinsicField(key string) string {
-	switch key {
-	case "name":
-		return FieldName
-	case "service.name":
-		return FieldServiceName
-	case "kind":
-		return FieldKind
-	case "status":
-		return FieldStatus + ".code"
-	case "status.message":
-		return FieldStatus + ".message"
-	default:
-		return ""
-	}
 }
 
 // capitalizeFirst returns the string with the first letter capitalized.
@@ -663,6 +613,76 @@ func capitalizeFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// ═══════════════════════════════════════════════════
+// Attribute-Resolved Tag Helpers
+// ═══════════════════════════════════════════════════
+
+// attrResolver is the package-level AttributeResolver for field mapping.
+var attrResolver = &AttributeResolver{}
+
+// resolveTagTermClauses resolves a scoped tag key=value pair to ES term clauses.
+//
+// Resolution rules:
+//   - Scoped keys (span.x, resource.x): single precise term on the correct ES field.
+//   - Unscoped intrinsics (kind, status, name): single precise term.
+//   - Unscoped custom keys: [attributes.key, resource.key] for backward compat
+//     (should be OR-ed by caller).
+//
+// The returned value is transformed (capitalizeFirst for kind/status fields).
+func resolveTagTermClauses(key, value string) []map[string]any {
+	fields, val := resolveTagESFields(key, value)
+	clauses := make([]map[string]any, 0, len(fields))
+	for _, f := range fields {
+		clauses = append(clauses, esq.T(f, val))
+	}
+	return clauses
+}
+
+// resolveTagFieldPaths resolves a scoped tag key to ES field paths (no value).
+// Used by exists and regex queries that only need field paths, not values.
+func resolveTagFieldPaths(key string) []string {
+	scope, plainKey := parseScopeAndKey(key)
+	resolved := attrResolver.Resolve(key)
+	esField := resolved.ESField
+
+	// Scoped or intrinsic: precise single-field mapping.
+	if scope != "" || (!strings.HasPrefix(esField, FieldAttributes+".") &&
+		!strings.HasPrefix(esField, FieldResource+".")) {
+		return []string{esField}
+	}
+
+	// Unscoped custom attribute: backward-compatible dual search.
+	return []string{FieldAttributes + "." + plainKey, FieldResource + "." + plainKey}
+}
+
+// resolveTagESFields resolves a scoped tag key to ES field paths and typed value.
+func resolveTagESFields(key, value string) (fields []string, val string) {
+	scope, plainKey := parseScopeAndKey(key)
+	resolved := attrResolver.Resolve(key)
+	esField := resolved.ESField
+
+	// Transform value for fields stored with capitalized first letter.
+	val = value
+	switch esField {
+	case FieldKind, FieldStatus + ".code":
+		val = capitalizeFirst(value)
+	}
+
+	// Scoped keys: use precise resolver mapping.
+	if scope != "" {
+		return []string{esField}, val
+	}
+
+	// Intrinsic fields (mapped to non-attributes/non-resource paths): precise.
+	if !strings.HasPrefix(esField, FieldAttributes+".") &&
+		!strings.HasPrefix(esField, FieldResource+".") {
+		return []string{esField}, val
+	}
+
+	// Unscoped custom attribute: backward-compatible dual search.
+	return []string{FieldAttributes + "." + plainKey, FieldResource + "." + plainKey}, val
 }
 
 // timeRangeQuery returns a simple time range query using nanosecond long values.
@@ -1100,10 +1120,8 @@ func (r *TraceReader) GetTagValues(ctx context.Context, tagKey string, timeRange
 		Raw(esq.TimeRangeFilter(FieldStartTimeUnixNano, timeRange))
 
 	for k, v := range filterTags {
-		qb.Should(1,
-			esq.T(fmt.Sprintf(FieldAttributes+".%s", k), v),
-			esq.T(fmt.Sprintf(FieldResource+".%s", k), v),
-		)
+		clauses := resolveTagTermClauses(k, v)
+		qb.Should(1, clauses...)
 	}
 
 	searchReq := &SearchRequest{
