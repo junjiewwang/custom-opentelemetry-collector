@@ -36,6 +36,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector"
 
 	// Custom components
+	"go.opentelemetry.io/collector/custom/processor/peerserviceprocessor"
 	"go.opentelemetry.io/collector/custom/extension/adminext"
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
@@ -106,6 +107,8 @@ func components() (otelcol.Factories, error) {
 		resourceprocessor.NewFactory(),
 		// Custom token auth processor
 		tokenauthprocessor.NewFactory(),
+		// Custom peer service processor – enriches spans with peer.service
+		peerserviceprocessor.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

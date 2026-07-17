@@ -713,6 +713,7 @@ connectors:
       - name: http.route
       - name: rpc.method
       - name: rpc.service
+      - name: peer.service
     # Metrics flush interval
     metrics_flush_interval: 15s
     # Namespace for generated metrics
@@ -735,6 +736,27 @@ processors:
     check_interval: 1s
     limit_mib: 800
     spike_limit_mib: 200
+
+  # Peer service processor - enriches spans with peer.service attribute
+  # by pairing Client↔Server spans within the same trace.
+  # Must be placed AFTER tokenauth and BEFORE spanmetrics connector in the pipeline.
+  # Database spans (db.system attribute) get peer.service directly via fast path.
+  peer_service:
+    enabled: true
+    # Database fast path: extract peer.service from these span attributes
+    db_peer_priority:
+      - db.name
+      - db.system
+      - server.address
+    # Messaging fast path: extract peer.service for Producer spans
+    messaging_peer_priority:
+      - messaging.destination.name
+      - messaging.destination
+      - messaging.system
+    # Pairing store configuration
+    store:
+      max_items: 10000   # max pending pair entries
+      ttl: 10s           # unpaired span release timeout
 
   # Token auth processor - validates token from resource attributes
   # Use this for protocols that don't support HTTP headers (e.g., SkyWalking, Jaeger)
@@ -795,9 +817,14 @@ service:
   pipelines:
     traces:
       receivers: [agent_gateway, jaeger]
-      # tokenauth processor validates token from resource attributes
-      # Place it before other processors for early rejection of invalid data
-      processors: [tokenauth, memory_limiter, batch]
+      # Processor ordering:
+      #   1. tokenauth   - validate tokens first, reject invalid data early
+      #   2. peer_service - pair Client↔Server spans, enrich with peer.service
+      #   3. memory_limiter - protect memory
+      #   4. batch        - batch spans for efficient export
+      # peer_service must be BEFORE spanmetrics connector (in exporters)
+      # so that peer.service is available as a RED metric dimension.
+      processors: [tokenauth, peer_service, memory_limiter, batch]
       exporters: [spanmetrics, observability_storage]
     
     # Metrics from spanmetrics connector

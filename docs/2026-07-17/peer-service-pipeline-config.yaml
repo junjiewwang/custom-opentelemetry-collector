@@ -1,0 +1,94 @@
+# peer_service processor 集成配置示例
+# 此文件展示如何在 Collector pipeline 中集成 peer_service processor
+
+# ====== 1. Processor 配置 ======
+processors:
+  # peer_service processor: 通过 Client↔Server Span 配对，补充 peer.service 属性
+  peer_service:
+    # 是否启用（默认 true）
+    enabled: true
+
+    # 数据库快速路径：从 Span 属性提取 peer.service 的优先级列表
+    # Client Span 带有 db.system 属性时走此快速路径，不进入 Store
+    db_peer_priority:
+      - db.name
+      - db.system
+      - server.address
+
+    # 消息系统：Producer Span 的 peer.service 提取优先级
+    messaging_peer_priority:
+      - messaging.destination.name
+      - messaging.destination
+      - messaging.system
+
+    # 配对存储配置
+    store:
+      max_items: 10000       # 最大等待配对条目数，超出驱逐最旧
+      ttl: 10s               # 未完成配对的超时释放时间
+
+  # tokenauth processor（原有，保持不变）
+  tokenauth:
+    attribute_key: "token"
+    action: drop
+
+  # batch processor（原有，保持不变）
+  batch:
+    send_batch_size: 1000
+    timeout: 10s
+
+# ====== 2. Connector 配置 ======
+connectors:
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
+    dimensions:
+      - name: http.method
+      - name: http.status_code
+      - name: http.route
+      - name: rpc.method
+      - name: rpc.service
+      - name: peer.service          # ⬅ 新增：让 RED 指标包含 peer.service 维度
+                                     # 配对失败的 Span 不会设置此属性，指标中自然不出现
+    metrics_flush_interval: 15s
+    namespace: traces.spanmetrics
+    resource_metrics_key_attributes:
+      - service.name
+      - service.namespace
+      - deployment.environment
+
+# ====== 3. Pipeline 配置（关键顺序） ======
+service:
+  pipelines:
+    traces:
+      receivers: [agent_gateway, jaeger]
+      # ⬇ 顺序很重要：
+      # 1. tokenauth     - 先做认证
+      # 2. peer_service  - 配对补 peer.service（在 spanmetrics 之前）
+      # 3. memory_limiter - 内存保护
+      # 4. batch         - 批处理
+      processors: [tokenauth, peer_service, memory_limiter, batch]
+      exporters: [spanmetrics, observability_storage]
+
+    metrics/spanmetrics:
+      receivers: [spanmetrics]
+      processors: [batch]
+      exporters: [observability_storage]
+
+# ====== 4. 拓扑图查询 ======
+# 启用 peer_service processor 后，从 RED 指标中推导服务拓扑：
+#
+# Prometheus/Grafana 查询示例：
+#   sum by (service_name, peer_service) (rate(traces_spanmetrics_calls_total[5m]))
+#
+# 该查询返回每个 {service_name, peer_service} 对的调用速率，
+# Grafana Service Map 可直接从此数据构建拓扑图。
+
+# ====== 5. 监控告警 ======
+# peer_service processor 暴露以下内部指标（通过 Collector telemetry）：
+#   - otelcol_processor_accepted_spans        # 处理的 Span 总数
+#   - peerservice_store_size                  # 当前 Store 条目数
+#   - peerservice_store_matched               # 配对成功累计数
+#   - peerservice_store_expired               # 过期释放累计数
+#   - peerservice_store_evicted               # 驱逐累计数
+#   - peerservice_match_rate                  # 配对成功率
