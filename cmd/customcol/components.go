@@ -33,7 +33,9 @@ import (
 
 	// Contrib connectors
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector"
+
+	// Custom connectors
+	"go.opentelemetry.io/collector/custom/connector/metricgenconnector"
 
 	// Custom components
 	"go.opentelemetry.io/collector/custom/processor/peerserviceprocessor"
@@ -117,10 +119,8 @@ func components() (otelcol.Factories, error) {
 	// Connectors
 	factories.Connectors, err = connector.MakeFactoryMap(
 		forwardconnector.NewFactory(),
-		// Routing connector - routes telemetry data based on resource attributes
 		routingconnector.NewFactory(),
-		// Span metrics connector - generates metrics from traces
-		spanmetricsconnector.NewFactory(),
+		metricgenconnector.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

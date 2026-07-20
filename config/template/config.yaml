@@ -698,31 +698,67 @@ extensions:
     endpoint: 0.0.0.0:55679
 
 connectors:
-  # Span metrics connector - generates RED metrics from traces
-  # RED: Rate (request count), Errors, Duration
-  spanmetrics:
-    # Histogram configuration for latency metrics
-    histogram:
-      explicit:
-        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
-    # Dimensions to add as metric labels (from span attributes)
-    dimensions:
-      - name: http.method
-        default: GET
-      - name: http.status_code
-      - name: http.route
-      - name: rpc.method
-      - name: rpc.service
-      - name: peer.service
-    # Metrics flush interval
+  # MetricGenerator connector - generates RED + ServiceGraph metrics from traces
+  # Aligned with Tempo MetricGenerator naming:
+  #   RED:  traces_spanmetrics_calls_total, traces_spanmetrics_latency
+  #   SG:   traces_service_graph_request_total, traces_service_graph_request_failed_total,
+  #         traces_service_graph_request_client_seconds, traces_service_graph_request_server_seconds,
+  #         traces_service_graph_request_messaging_system_seconds,
+  #         traces_service_graph_request_message_size_bytes
+  metricgen:
+    # Flush interval for aggregated metrics
     metrics_flush_interval: 15s
-    # Namespace for generated metrics
-    namespace: traces.spanmetrics
-    # Resource metrics key attributes
-    resource_metrics_key_attributes:
-      - service.name
-      - service.namespace
-      - deployment.environment
+    # Soft cap on unique metric series (overflow dropped with counter)
+    cardinality_limit: 2000
+    # RED (Rate/Error/Duration) generator config
+    red:
+      enabled: true
+      dimensions:
+        - http.method
+        - http.status_code
+        - http.route
+        - rpc.method
+        - rpc.service
+        - peer.service
+      histogram:
+        buckets:
+          - 2
+          - 4
+          - 6
+          - 8
+          - 10
+          - 15
+          - 20
+          - 30
+          - 40
+          - 50
+          - 75
+          - 100
+          - 150
+          - 200
+          - 300
+          - 400
+          - 500
+          - 750
+          - 1000
+          - 1500
+          - 2000
+          - 3000
+          - 4000
+          - 5000
+          - 7500
+          - 10000
+    # ServiceGraph generator config
+    service_graph:
+      enabled: true
+      dimensions:
+        - http.method
+      histogram:
+        # Latency buckets in seconds (aligned with Tempo ServiceGraph)
+        buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      # Message size buckets in bytes
+      message_size_histo:
+        buckets: [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
 
 processors:
   # Batch processor for efficient data export
@@ -739,7 +775,7 @@ processors:
 
   # Peer service processor - enriches spans with peer.service attribute
   # by pairing Client↔Server spans within the same trace.
-  # Must be placed AFTER tokenauth and BEFORE spanmetrics connector in the pipeline.
+  # Must be placed AFTER tokenauth and BEFORE metricgen connector in the pipeline.
   # Database spans (db.system attribute) get peer.service directly via fast path.
   peer_service:
     enabled: true
@@ -825,14 +861,13 @@ service:
       #   2. peer_service - pair Client↔Server spans, enrich with peer.service
       #   3. memory_limiter - protect memory
       #   4. batch        - batch spans for efficient export
-      # peer_service must be BEFORE spanmetrics connector (in exporters)
-      # so that peer.service is available as a RED metric dimension.
+      # peer_service enriches spans BEFORE metricgen connector generates metrics.
       processors: [tokenauth, peer_service, memory_limiter, batch]
-      exporters: [spanmetrics, observability_storage]
+      exporters: [metricgen, observability_storage]
     
-    # Metrics from spanmetrics connector
-    metrics/spanmetrics:
-      receivers: [spanmetrics]
+    # Metrics from MetricGenerator connector
+    metrics/metricgen:
+      receivers: [metricgen]
       processors: [batch]
       exporters: [observability_storage]
     
