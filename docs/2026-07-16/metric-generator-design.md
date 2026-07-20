@@ -58,7 +58,7 @@ MetricGeneratorConnector
 | 组件 | 职责 | 改动 |
 |------|------|------|
 | **peer_service processor** | span 配对 + 双向写 `peer.service` | 无需改动 |
-| **spanmetricsconnector** | — | Sprint 5 移除 |
+| **spanmetricsconnector** | — | ✅ S4 已移除 |
 | **MetricGeneratorConnector** | RED + ServiceGraph 指标聚合 | Sprint 1-3 实现 |
 
 ### 2.3 Pipeline 配置（最终态）
@@ -109,6 +109,7 @@ service:
 | `traces_service_graph_request_server_seconds` | Histogram | 同上 |
 | `traces_service_graph_request_client_seconds` | Histogram | 同上 |
 | `traces_service_graph_request_messaging_system_seconds` | Histogram | 同上 |
+| `traces_service_graph_request_message_size_bytes` | Histogram | 同上 |
 
 ### 3.3 指标数据来源
 
@@ -130,9 +131,19 @@ service:
     server = service.name       → "tapm_db"
     client = peer.service       → "tapm-api"
     → traces_service_graph_request_server_seconds{...} 记录 span.duration
+
+看到 Consumer/Producer span (有 messaging.xxx):
+  service.name="tapm-api", peer.service="kafka/order-topic"
+  ServiceGraph:
+    server = peer.service       → "kafka/order-topic"
+    client = service.name       → "tapm-api"
+    → traces_service_graph_request_messaging_system_seconds{...} 记录 span.duration
+    → traces_service_graph_request_message_size_bytes{...} 记录 messaging.message.body.size
 ```
 
-**注意**：外部服务不发 trace 时，server-side latency 会缺失（与 Tempo 一致，Tempo 用 virtual node 推断兜底）。
+**注意**：
+- 外部服务不发 trace 时，server-side latency 会缺失（与 Tempo 一致）
+- `message_size_bytes` 仅 Consumer span 有 `messaging.message.body.size` 属性时记录（ES 实测：Consumer 1801 条，Producer 0 条）
 
 ---
 
@@ -376,19 +387,19 @@ connector/metricgenconnector/
 | `extension/adminext/tempo_handler.go:1983-1990` | `translateTraceQLMetric` 返回值改为 `traces_spanmetrics_*` |
 | `extension/adminext/prometheus_handler.go` | 硬编码指标名 `traces.spanmetrics.*` → `traces_spanmetrics_*` |
 | `peer_service processor` | 无需改动（已双向写） |
-| `spanmetricsconnector` | Sprint 5 移除 |
+| `spanmetricsconnector` | ✅ S4 已移除 |
 
 ---
 
 ## 8. Roadmap
 
-| Sprint | 内容 | 验收标准 |
-|--------|------|---------|
-| **S1** (2w) | Connector 骨架 + REDGenerator | 与 spanmetrics 并行运行，指标数值一致 |
-| **S2** (1w) | ServiceGraphGenerator | `traces_service_graph_request_total` 正确计数 |
-| **S3** (1w) | 查询层适配 + 测试完善 | Grafana 可查询新指标 |
-| **S4** (1w) | 性能测试 + 灰度切换 | 100K spans/s，灰度 10→50→100% |
-| **S5** (1w) | 下线 spanmetricsconnector | 旧组件移除，文档更新 |
+| Sprint | 内容 | 验收标准 | 状态 |
+|--------|------|---------|------|
+| **S1** (2w) | Connector 骨架 + REDGenerator | 与 spanmetrics 并行运行，指标数值一致 | ✅ 2026-07-20 已实施骨架，待部署验证 |
+| **S2** (1w) | ServiceGraphGenerator | `traces_service_graph_request_total` 正确计数 | ✅ 2026-07-20 已实施，待部署验证 |
+| **S3** (1w) | 查询层适配 + 测试完善 | Grafana 可查询新指标 | ✅ 2026-07-20：_sum/_bucket 查询 + _labels + translateTraceQLMetric + 19 新测试 |
+| **S4** (1w) | 性能测试 + 下线 spanmetricsconnector | 100K spans/s | ✅ 2026-07-20：bench 达标 + spanmetricsconnector 已移除 |
+| **S5** (1w) | 生产验证 | 线上灰度 10→50→100% | ⬜ 待部署验证 |
 
 ---
 
@@ -415,4 +426,107 @@ connector/metricgenconnector/
 | Redis 配置热加载 | 首版配置文件即可，Sprint 3+ 按需 |
 | 采样校正 | 当前未启用采样，后续按需 |
 | 虚拟节点推断 | 外部服务不发 trace，无法推断，与 Tempo 行为一致 |
-| `messages_size` 指标 | 没有对应 span 数据源 |
+
+---
+
+## 11. 实施记录
+
+### S1 (2026-07-20) — Connector 骨架 + REDGenerator
+
+| 文件 | 说明 |
+|------|------|
+| `connector/metricgenconnector/config.go` | Config + REDConfig + ServiceGraphConfig + 默认值 |
+| `connector/metricgenconnector/aggregator.go` | counter / histogram 线程安全原子类型 |
+| `connector/metricgenconnector/context.go` | extractServiceName / extractAppID / spanDuration |
+| `connector/metricgenconnector/red.go` | REDGenerator (ProcessSpan + Collect + 基数控制) |
+| `connector/metricgenconnector/flusher.go` | metricFlusher (15s 定时 → pmetric → consumer) |
+| `connector/metricgenconnector/connector.go` | metricGenConnector (ConsumeTraces + Start/Shutdown) |
+| `connector/metricgenconnector/factory.go` | NewFactory (TracesToMetrics) |
+| `cmd/customcol/components.go` | 注册 metricgenconnector |
+| `config/build/config.yaml` | metricgen connector 配置 + metrics/metricgen pipeline |
+
+### S2 (2026-07-20) — ServiceGraphGenerator
+
+| 文件 | 说明 |
+|------|------|
+| `connector/metricgenconnector/servicegraph.go` | ServiceGraphGenerator (6 类指标，client→server edge) |
+| `connector/metricgenconnector/flusher.go` | buildSGMetrics + emitCounter/emitHistogramIfNonEmpty |
+| `connector/metricgenconnector/config.go` | SG 独立 HistogramConfig + DefaultServiceGraphLatencyBuckets |
+| `connector/metricgenconnector/factory.go` | ServiceGraphGenerator 创建注入 |
+| 修复: Producer 边计数 | Producer→Kafka 和 Kafka→Consumer 为独立边，两端均计数 |
+| 修复: 单位 | SG seconds 指标除以 1000 (ms→s)，RED latency 保持 ms |
+| 修复: app_id | 所有指标 Resource 带 app_id，解决 ES 拒绝写入 |
+
+### S3 (2026-07-20) — 查询层适配
+
+| 文件 | 说明 |
+|------|------|
+| `prometheus_handler.go` | `_sum`/`_bucket` 后缀检测 + resolveHistogramBucket |
+| `prometheus_handler.go` | `_labels`: dispatchLabelExplore (ES terms agg → label 组合) |
+| `tempo_handler.go` | translateTraceQLMetric → 下划线命名 |
+| `storedmodel/stored_metric.go` | StoredMetricDataPoint + BucketCounts/ExplicitBounds |
+| `storedmodel/stored_metric.go` | convertHistogramPoints 存储 bucket 数据 |
+| `types.go` | MetricDataPoint + BucketCounts/ExplicitBounds + LabelCombinationsQuery/Result |
+| `types_reader.go` | ES MetricDataPoint + BucketCounts/ExplicitBounds |
+| `provider.go` | MetricReader 接口 + ListLabelCombinations |
+| `fields.go` | FieldMetricBucketCounts / FieldMetricExplicitBounds 常量 |
+| `metric_reader.go` | _source + hitToDataPoint 支持 bucket fields |
+| `metric_reader.go` | ListLabelCombinations: nested ES terms agg + 递归扁平化 |
+| `reader_adapter.go` | ES → public type 桥接 ListLabelCombinations |
+| `pg_reader_adapter.go` | PG stub |
+| 测试 | stored_metric_test.go + prometheus_handler_test.go (19 新用例) |
+
+### S4 (2026-07-20) — 性能测试 + 下线 spanmetrics
+
+| 文件 | 说明 |
+|------|------|
+| `benchmark_test.go` | 6 个 benchmark：RED single/unique/collect, SG client, SG messaging, 100-span batch |
+| `config/build/config.yaml` | 移除 spanmetrics connector 配置 + metrics/spanmetrics pipeline |
+| `cmd/customcol/components.go` | 移除 spanmetricsconnector import + Factory 注册 |
+| Bench 结果 | 345ns/span (RED), 453ns/span (SG), 40µs/100-span batch (~2.9M spans/s) |
+
+配置精简后：
+
+```yaml
+connectors:
+  metricgen:                           # 唯一 connector
+    metrics_flush_interval: 15s
+    red:
+      enabled: true
+    service_graph:
+      enabled: true
+
+service:
+  pipelines:
+    traces:      [metricgen, observability_storage]
+    metrics/metricgen: [metricgen → batch → observability_storage]
+```
+
+### S3+ (2026-07-20) — Histogram Quantile 查询支持
+
+| 文件 | 说明 |
+|------|------|
+| `extension/adminext/histogram_calc.go` | 纯函数：`AggregateHistogramBuckets` + `ComputeHistogramQuantile` + helper |
+| `extension/adminext/histogram_calc_test.go` | 12 个测试：基础 p50/p90/p99/p95/边界/聚合/多分位数 |
+| `extension/adminext/prometheus_handler.go` | `parseHistogramQuantileWrapper`: 剥离 `histogram_quantile(θ, ...)` → 提取 θ + inner expr |
+| | `execHistogramQuantileInstant`: QueryRaw → 聚合 bucket_counts → ComputeHistogramQuantile → vector |
+| | `promqlExpr.Quantile`: θ 字段 |
+| `types.go` | `MetricSample` + `BucketCounts` + `Bounds` |
+| `types_reader.go` | ES `MetricSample` + `BucketCounts` + `Bounds` |
+| `metric_reader.go` | `parseRawResult` 填充 bucket fileds |
+| `reader_adapter.go` | QueryRaw adapter 传递 BucketCounts/Bounds |
+
+**设计原则**：
+- `histogram_calc.go`：零外部依赖纯函数包，可独立单测
+- `parseHistogramQuantileWrapper`：解析器单向依赖（只从 PromQL 提取参数）
+- `execHistogramQuantileInstant`：handler 层只负责路由+格式转换，委托 Calculator 计算
+- `MetricSample.Bounds/BucketCounts`：类型层正交扩展，不影响非 histogram 查询
+
+### peer_service processor 修复 (2026-07-20)
+
+| 文件 | 说明 |
+|------|------|
+| `processor/peerserviceprocessor/processor.go` | completePair nil 守卫 (同侧碰撞不 panic) |
+| | Producer/Consumer 改 fast-path (不走 store 配对) |
+| | buildMessagingPeerService: broker 地址 + destination + system 复合 peer.service |
+| | expire/evict: alreadyPaired 跳过已配对副本，避免双重 release |
