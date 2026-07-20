@@ -237,6 +237,35 @@ func TestPeerStore_MultipleTraces(t *testing.T) {
 	assert.Equal(t, int64(2), store.Matched())
 }
 
+// TestPeerStore_SameRoleCollision: two spans matching the same key with the
+// same role (e.g. two Consumer spans with the same ParentSpanID) should not
+// panic — the stored half should be released without pairing.
+func TestPeerStore_SameRoleCollision(t *testing.T) {
+	var released []*SpanHalf
+	store := NewPeerStore(100, 10*time.Second, newMockClock(), func(h []*SpanHalf) {
+		released = append(released, h...)
+	}, nil)
+
+	td := newTestTraces()
+	resource := td.ResourceSpans().At(0).Resource()
+	producerSID := spanID(300)
+
+	// Two Consumer spans share the same ParentSpanID (same producer).
+	consumer1 := addSpan(td, "consumer-1", traceID(1, 5), spanID(400), producerSID, ptrace.SpanKindConsumer)
+	consumer2 := addSpan(td, "consumer-2", traceID(1, 5), spanID(500), producerSID, ptrace.SpanKindConsumer)
+
+	key := spanIDToUint64(producerSID)
+	halves1 := store.TryMatch(consumer1, resource, key, "svc-1", roleServer)
+	assert.Nil(t, halves1, "first consumer should be stored")
+
+	halves2 := store.TryMatch(consumer2, resource, key, "svc-2", roleServer)
+	assert.NotNil(t, halves2, "second consumer should release the stored one")
+	assert.Len(t, halves2, 1, "only the stored half should be released (no pairing)")
+
+	v, _ := halves2[0].Span.Attributes().Get(attrPeerServiceSource)
+	assert.Equal(t, sourceExpired, v.Str())
+}
+
 // ---------------------------------------------------------------------------
 // Fast path tests
 // ---------------------------------------------------------------------------
@@ -410,7 +439,7 @@ func TestProcessor_UnspecifiedSpanKind_PassThrough(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Sprint 2 – Producer/Consumer
+// Sprint 2 – Producer/Consumer (fast-path, no store pairing)
 // ---------------------------------------------------------------------------
 
 func TestProcessor_ProducerImmediatePeerService(t *testing.T) {
@@ -425,75 +454,75 @@ func TestProcessor_ProducerImmediatePeerService(t *testing.T) {
 
 	err := p.ConsumeTraces(context.Background(), td)
 	require.NoError(t, err)
-	assert.Equal(t, 0, sink.SpanCount(), "producer stored, not forwarded")
-
-	// peer.service is set immediately (before storing)
-	assert.Equal(t, "orders-topic", v(t, span, attrPeerService))
+	assert.Equal(t, 1, sink.SpanCount(), "producer fast-path: released immediately")
+	assert.Equal(t, "kafka/orders-topic", v(t, span, attrPeerService))
 	assert.Equal(t, sourceMessagingAttribute, v(t, span, attrPeerServiceSource))
 }
 
-func TestProcessor_ProducerConsumerPairing(t *testing.T) {
+func TestProcessor_ProducerWithBrokerAddr(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	sink := &consumertest.TracesSink{}
 	p, _ := newProcessor(processortest.NewNopSettings(), cfg, sink)
 
+	td := newTestTraces()
+	span := addSpan(td, "msg", traceID(1, 43), spanID(100), zeroSpanID(), ptrace.SpanKindProducer)
+	span.Attributes().PutStr("messaging.system", "kafka")
+	span.Attributes().PutStr("messaging.destination.name", "orders-topic")
+	span.Attributes().PutStr("server.address", "kafka-broker")
+	span.Attributes().PutInt("server.port", 9092)
+
+	err := p.ConsumeTraces(context.Background(), td)
+	require.NoError(t, err)
+	assert.Equal(t, 1, sink.SpanCount())
+	// system/broker:port/destination
+	assert.Equal(t, "kafka/kafka-broker:9092/orders-topic", v(t, span, attrPeerService))
+}
+
+func TestProcessor_ProducerConsumerBothFastPath(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	sink := &consumertest.TracesSink{}
+	p, _ := newProcessor(processortest.NewNopSettings(), cfg, sink)
+
+	// Producer
 	td1 := newTestTraces()
 	prodSpan := addSpan(td1, "msg", traceID(1, 40), spanID(100), zeroSpanID(), ptrace.SpanKindProducer)
 	prodSpan.Attributes().PutStr("messaging.system", "kafka")
 	prodSpan.Attributes().PutStr("messaging.destination.name", "orders-topic")
 	err := p.ConsumeTraces(context.Background(), td1)
 	require.NoError(t, err)
-	assert.Equal(t, 0, sink.SpanCount())
+	assert.Equal(t, 1, sink.SpanCount(),
+		"producer fast-path: released immediately, not stored")
+	assert.Equal(t, "kafka/orders-topic", v(t, prodSpan, attrPeerService))
 
+	// Consumer — also fast-path, no store pairing needed.
 	td2 := newTestTraces()
-	addSpan(td2, "recv", traceID(1, 40), spanID(200), spanID(100), ptrace.SpanKindConsumer)
+	consSpan := addSpan(td2, "recv", traceID(1, 40), spanID(200), spanID(100), ptrace.SpanKindConsumer)
+	consSpan.Attributes().PutStr("messaging.system", "kafka")
+	consSpan.Attributes().PutStr("messaging.destination.name", "orders-topic")
 	err = p.ConsumeTraces(context.Background(), td2)
 	require.NoError(t, err)
-	assert.Equal(t, 2, sink.SpanCount())
+	assert.Equal(t, 2, sink.SpanCount(),
+		"consumer fast-path: both spans released immediately, no store interaction")
+	assert.Equal(t, "kafka/orders-topic", v(t, consSpan, attrPeerService))
 }
 
-func TestProcessor_ConsumerArrivesBeforeProducer(t *testing.T) {
+func TestProcessor_ConsumerFastPathNoProducerTrace(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	sink := &consumertest.TracesSink{}
 	p, _ := newProcessor(processortest.NewNopSettings(), cfg, sink)
 
-	td1 := newTestTraces()
-	addSpan(td1, "recv", traceID(1, 41), spanID(200), spanID(100), ptrace.SpanKindConsumer)
-	err := p.ConsumeTraces(context.Background(), td1)
-	require.NoError(t, err)
-	assert.Equal(t, 0, sink.SpanCount())
-
-	td2 := newTestTraces()
-	prodSpan := addSpan(td2, "msg", traceID(1, 41), spanID(100), zeroSpanID(), ptrace.SpanKindProducer)
-	prodSpan.Attributes().PutStr("messaging.system", "kafka")
-	prodSpan.Attributes().PutStr("messaging.destination.name", "orders-topic")
-	err = p.ConsumeTraces(context.Background(), td2)
-	require.NoError(t, err)
-	assert.Equal(t, 2, sink.SpanCount())
-}
-
-func TestProcessor_ProducerExpiresWithPeerService(t *testing.T) {
-	clock := newMockClock()
-	cfg := createDefaultConfig().(*Config)
-	sink := &consumertest.TracesSink{}
-	p, _ := newProcessor(processortest.NewNopSettings(), cfg, sink)
-	p.store.clock = clock
-
+	// Consumer arrives without Producer trace — fast-path handles it anyway.
 	td := newTestTraces()
-	span := addSpan(td, "msg", traceID(1, 42), spanID(100), zeroSpanID(), ptrace.SpanKindProducer)
+	span := addSpan(td, "recv", traceID(1, 41), spanID(200), spanID(100), ptrace.SpanKindConsumer)
 	span.Attributes().PutStr("messaging.system", "kafka")
 	span.Attributes().PutStr("messaging.destination.name", "orders-topic")
 
 	err := p.ConsumeTraces(context.Background(), td)
 	require.NoError(t, err)
-	assert.Equal(t, "orders-topic", v(t, span, attrPeerService))
-
-	clock.Advance(11 * time.Second)
-	p.store.expire()
-
-	assert.Equal(t, 1, sink.SpanCount())
-	assert.Equal(t, "orders-topic", v(t, span, attrPeerService))
-	assert.Equal(t, sourceExpired, v(t, span, attrPeerServiceSource))
+	assert.Equal(t, 1, sink.SpanCount(),
+		"consumer fast-path: released immediately even without matching producer")
+	assert.Equal(t, "kafka/orders-topic", v(t, span, attrPeerService))
+	assert.Equal(t, sourceMessagingAttribute, v(t, span, attrPeerServiceSource))
 }
 
 // ---------------------------------------------------------------------------

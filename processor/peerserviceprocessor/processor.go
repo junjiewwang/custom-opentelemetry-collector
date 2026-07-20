@@ -7,6 +7,8 @@ import (
 	"container/list"
 	"context"
 	"encoding/binary"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -162,12 +164,24 @@ func (s *PeerStore) TryMatch(span ptrace.Span, resource pcommon.Resource, key ui
 
 	existing, ok := s.items[key]
 	if ok {
+		s.matched.Add(1)
+
+		// Guard: same-role collision — release stored half, incoming takes its place.
+		if (half == roleClient && existing.Client != nil) || (half == roleServer && existing.Server != nil) {
+			s.queue.Remove(existing.element)
+			delete(s.items, key)
+			s.storeSize.Store(int64(len(s.items)))
+			s.mu.Unlock()
+			return s.handleSameRoleCollision(existing, span, resource, svcName, half, key)
+		}
+
+		// Cross-role match: complete the pair, release both halves.
+		// Aligned with Tempo: pair → count 1 edge → remove from store.
 		s.queue.Remove(existing.element)
 		delete(s.items, key)
 		s.storeSize.Store(int64(len(s.items)))
 		s.mu.Unlock()
 
-		s.matched.Add(1)
 		return s.completePair(existing, span, resource, svcName, half)
 	}
 
@@ -191,6 +205,35 @@ func (s *PeerStore) TryMatch(span ptrace.Span, resource pcommon.Resource, key ui
 	return nil
 }
 
+// handleSameRoleCollision releases the stored half and stores the incoming
+// span as a new entry (same role takes the key).
+func (s *PeerStore) handleSameRoleCollision(existing *HalfEdge, span ptrace.Span, resource pcommon.Resource, svcName string, half spanRole, key uint64) []*SpanHalf {
+	var released []*SpanHalf
+	if half == roleClient && existing.Client != nil {
+		existing.Client.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
+		released = append(released, existing.Client)
+	} else if half == roleServer && existing.Server != nil {
+		existing.Server.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
+		released = append(released, existing.Server)
+	}
+
+	// Store incoming as new entry.
+	s.mu.Lock()
+	edge := &HalfEdge{ExpireAt: s.clock.Now().Add(s.ttl)}
+	newHalf := &SpanHalf{ServiceName: svcName, Resource: resource, Span: span}
+	if half == roleClient {
+		edge.Client = newHalf
+	} else {
+		edge.Server = newHalf
+	}
+	edge.element = s.queue.PushBack(&entry{key: key, expireAt: edge.ExpireAt})
+	s.items[key] = edge
+	s.storeSize.Store(int64(len(s.items)))
+	s.mu.Unlock()
+
+	return released
+}
+
 func (s *PeerStore) completePair(existing *HalfEdge, span ptrace.Span, resource pcommon.Resource, svcName string, half spanRole) []*SpanHalf {
 	var client, server *SpanHalf
 
@@ -200,6 +243,21 @@ func (s *PeerStore) completePair(existing *HalfEdge, span ptrace.Span, resource 
 	} else {
 		client = existing.Client
 		server = &SpanHalf{ServiceName: svcName, Resource: resource, Span: span}
+	}
+
+	// Guard against same-role collision: if the incoming span and the stored
+	// span are on the same side (both client or both server), the opposite
+	// side will be nil — skip pairing and release only the stored half.
+	if client == nil || server == nil {
+		if client != nil {
+			client.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
+			return []*SpanHalf{client}
+		}
+		if server != nil {
+			server.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
+			return []*SpanHalf{server}
+		}
+		return nil
 	}
 
 	if !isMessagingSpan(client.Span) {
@@ -220,8 +278,12 @@ func (s *PeerStore) evictOldestLocked() {
 	ent := front.Value.(*entry)
 	if edge, ok := s.items[ent.key]; ok {
 		if edge.Client != nil {
-			edge.Client.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
-			s.onSpanReady([]*SpanHalf{edge.Client})
+			if alreadyPaired(edge.Client.Span) {
+				// Fan-out copy: silently discard.
+			} else {
+				edge.Client.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
+				s.onSpanReady([]*SpanHalf{edge.Client})
+			}
 		}
 		if edge.Server != nil {
 			edge.Server.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
@@ -268,9 +330,17 @@ func (s *PeerStore) expire() {
 			continue
 		}
 		if edge.Client != nil {
-			edge.Client.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
-			s.onSpanReady([]*SpanHalf{edge.Client})
-			s.expiredClient.Add(1)
+			// Fan-out retained copy check: only skip release if this was
+			// already paired (source=paired) and kept as copy for fan-out.
+			// Fast-path producers (source=db_attribute/messaging_attribute)
+			// are genuinely unpaired and should still be released.
+			if alreadyPaired(edge.Client.Span) {
+				s.expiredClient.Add(1)
+			} else {
+				edge.Client.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
+				s.onSpanReady([]*SpanHalf{edge.Client})
+				s.expiredClient.Add(1)
+			}
 		}
 		if edge.Server != nil {
 			edge.Server.Span.Attributes().PutStr(attrPeerServiceSource, sourceExpired)
@@ -279,6 +349,14 @@ func (s *PeerStore) expire() {
 		}
 	}
 	s.storeSize.Store(int64(len(s.items)))
+}
+
+// alreadyPaired returns true if the span was already paired (source=paired),
+// meaning it's a fan-out copy in the store that should be silently discarded
+// rather than released again.
+func alreadyPaired(span ptrace.Span) bool {
+	v, ok := span.Attributes().Get(attrPeerServiceSource)
+	return ok && v.Str() == sourcePaired
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +381,56 @@ func extractPeerFromPriority(span ptrace.Span, priority []string) string {
 		}
 	}
 	return "unknown"
+}
+
+// buildMessagingPeerService builds a composite peer.service for messaging
+// spans that includes the broker address when available, making the
+// intermediate component identifiable in traces and metrics.
+//
+// Examples:
+//
+//	system="kafka", addr="kafka:9092", dest="orders" → "kafka/kafka:9092/orders"
+//	system="kafka", dest="orders"                     → "kafka/orders"
+//	dest="orders" (no system/addr)                    → "orders"
+//	no messaging attributes at all                    → ""
+func buildMessagingPeerService(span ptrace.Span) string {
+	attrs := span.Attributes()
+
+	destination := ""
+	for _, key := range []string{"messaging.destination.name", "messaging.destination"} {
+		if v, ok := attrs.Get(key); ok && v.Str() != "" {
+			destination = v.Str()
+			break
+		}
+	}
+	if destination == "" {
+		return ""
+	}
+
+	// Collect system type (e.g. "kafka", "rabbitmq").
+	system := ""
+	if v, ok := attrs.Get("messaging.system"); ok && v.Str() != "" {
+		system = v.Str()
+	}
+
+	// Build composite: [system/][addr[:port]/]destination
+	// Example: "kafka/kafka-broker:9092/orders"
+	var parts []string
+	if system != "" {
+		parts = append(parts, system)
+	}
+	for _, key := range []string{"server.address", "net.peer.name", "network.peer.address"} {
+		if v, ok := attrs.Get(key); ok && v.Str() != "" {
+			addr := v.Str()
+			if port, ok := attrs.Get("server.port"); ok && port.Int() > 0 {
+				addr = fmt.Sprintf("%s:%d", addr, port.Int())
+			}
+			parts = append(parts, addr)
+			break
+		}
+	}
+	parts = append(parts, destination)
+	return strings.Join(parts, "/")
 }
 
 func extractServiceName(resource pcommon.Resource) string {
@@ -489,32 +617,23 @@ func (p *peerServiceProcessor) processSpan(span ptrace.Span, resource pcommon.Re
 		return false
 
 	case ptrace.SpanKindProducer:
-		peer := extractPeerFromPriority(span, p.config.MessagingPeerPriority)
-		span.Attributes().PutStr(attrPeerService, peer)
-		span.Attributes().PutStr(attrPeerServiceSource, sourceMessagingAttribute)
-		p.fastPathDB.Add(1)
-
-		key := spanIDToUint64(span.SpanID())
-		released := p.store.TryMatch(span, resource, key, svcName, roleClient)
-		if released != nil {
-			p.handleReadySpans(released)
-		} else {
-			p.storeInsert.Add(1)
+		if peer := buildMessagingPeerService(span); peer != "" {
+			span.Attributes().PutStr(attrPeerService, peer)
+			span.Attributes().PutStr(attrPeerServiceSource, sourceMessagingAttribute)
 		}
-		return false
+		p.fastPathDB.Add(1)
+		return true
 
 	case ptrace.SpanKindConsumer:
 		if isZeroSpanID(span.ParentSpanID()) {
 			return true
 		}
-		key := spanIDToUint64(span.ParentSpanID())
-		released := p.store.TryMatch(span, resource, key, svcName, roleServer)
-		if released != nil {
-			p.handleReadySpans(released)
-		} else {
-			p.storeInsert.Add(1)
+		if peer := buildMessagingPeerService(span); peer != "" {
+			span.Attributes().PutStr(attrPeerService, peer)
+			span.Attributes().PutStr(attrPeerServiceSource, sourceMessagingAttribute)
 		}
-		return false
+		p.fastPathDB.Add(1)
+		return true
 
 	default:
 		return true
