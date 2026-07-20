@@ -558,7 +558,7 @@ func (e *Extension) handleShowTagKeys(w http.ResponseWriter, r *http.Request, st
 		End:   now,
 	}
 
-	labels, err := e.storageMetricReader.ListLabelNames(r.Context(), timeRange)
+	labels, err := e.storageMetricReader.ListLabelNames(r.Context(), timeRange, "")
 	if err != nil {
 		e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 			Results: []influxdbResult{{StatementID: 0, Series: []influxdbSeries{}}},

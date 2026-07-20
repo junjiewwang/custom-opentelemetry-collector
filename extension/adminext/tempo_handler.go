@@ -1978,15 +1978,16 @@ func translateTraceQLLabels(filterTags map[string]string) map[string]string {
 	return out
 }
 
-// translateTraceQLMetric maps a TraceQL function to the spanmetrics metric name.
+// translateTraceQLMetric maps a TraceQL function to the MetricGenerator metric name.
+// Naming aligned with Tempo MetricGenerator convention (underscores).
 func translateTraceQLMetric(fn string) string {
 	switch fn {
 	case "quantile_over_time":
-		return "traces.spanmetrics.duration_milliseconds"
+		return "traces_spanmetrics_latency"
 	case "histogram_over_time":
-		return "traces.spanmetrics.duration_milliseconds" // histogram also reads duration
+		return "traces_spanmetrics_latency"
 	default:
-		return "traces.spanmetrics.calls"
+		return "traces_spanmetrics_calls_total"
 	}
 }
 

@@ -243,7 +243,7 @@ func (e *Extension) handleMetricLabelsV2(w http.ResponseWriter, r *http.Request)
 	}
 
 	timeRange := parseTimeRange(r)
-	names, err := e.storageMetricReader.ListLabelNames(r.Context(), timeRange)
+	names, err := e.storageMetricReader.ListLabelNames(r.Context(), timeRange, "")
 	if err != nil {
 		e.writeError(w, http.StatusInternalServerError, err.Error())
 		return

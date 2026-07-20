@@ -83,13 +83,16 @@ type promMatrixSample struct {
 
 // promqlExpr holds a parsed PromQL expression.
 type promqlExpr struct {
-	MetricName    string
-	Labels        map[string]string // exact match (=)
-	LabelMatch    map[string]string // regex match (=~)
-	Aggregation   string            // sum, avg, max, min, count, ""
-	GroupBy       []string          // by (label1, label2)
-	RangeDuration time.Duration     // [5m] for rate/increase/irate
-	Function      string            // rate, increase, irate, ""
+	MetricName     string
+	Labels         map[string]string // exact match (=)
+	LabelMatch     map[string]string // regex match (=~)
+	Aggregation    string            // sum, avg, max, min, count, ""
+	GroupBy        []string          // by (label1, label2)
+	RangeDuration  time.Duration     // [5m] for rate/increase/irate
+	Function       string            // rate, increase, irate, ""
+	HistogramSub string             // "sum" or "bucket" (for HS sub-series), ""
+	BaseMetric   string             // original metric name before _sum/_bucket strip
+	Quantile     float64            // θ for histogram_quantile, NaN if not set
 }
 
 // ── Handler: query ─────────────────────────────────
@@ -193,6 +196,54 @@ func (e *Extension) handlePromQueryRange(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// extractMetricNameFromMatch extracts the __name__ label from Prometheus match[]
+// selectors. Returns "" if no metric name is found (lists all labels).
+// Handles both exact (=) and regex (=~) selectors:
+//
+//	{__name__="traces_service_graph_request_total"}         → "traces_service_graph_request_total"
+//	{__name__=~".*traces_service_graph_request_total.*"}    → "traces_service_graph_request_total"
+func extractMetricNameFromMatch(matches []string) string {
+	for _, m := range matches {
+		i := strings.Index(m, "__name__")
+		if i < 0 {
+			continue
+		}
+		rest := m[i+len("__name__"):]
+
+		// Find the operator: either "=" or "=~".
+		eq := strings.Index(rest, "=")
+		if eq < 0 {
+			continue
+		}
+		opEnd := eq + 1
+		isRegex := opEnd < len(rest) && rest[opEnd] == '~'
+		if isRegex {
+			opEnd++
+		}
+
+		// Find the value between quotes after the operator.
+		valStart := strings.IndexAny(rest[opEnd:], `"'`+"`")
+		if valStart < 0 {
+			continue
+		}
+		valStart += opEnd
+		quote := rest[valStart]
+		valEnd := strings.IndexByte(rest[valStart+1:], quote)
+		if valEnd < 0 {
+			continue
+		}
+		raw := rest[valStart+1 : valStart+1+valEnd]
+
+		// For regex patterns, strip leading/trailing ".*" and ".*".
+		if isRegex {
+			raw = strings.TrimPrefix(raw, ".*")
+			raw = strings.TrimSuffix(raw, ".*")
+		}
+		return raw
+	}
+	return ""
+}
+
 // ── Handler: labels ────────────────────────────────
 
 // handlePromLabels handles GET/POST /api/v1/labels.
@@ -210,7 +261,11 @@ func (e *Extension) handlePromLabels(w http.ResponseWriter, r *http.Request) {
 		tr.End = end
 	}
 
-	names, err := e.storageMetricReader.ListLabelNames(r.Context(), tr)
+	// Extract optional metric name from match[] parameter.
+	// Grafana Explore Metrics sends: match[]={__name__="traces_service_graph_request_client_seconds"}
+	metricName := extractMetricNameFromMatch(r.Form["match[]"])
+
+	names, err := e.storageMetricReader.ListLabelNames(r.Context(), tr, metricName)
 	if err != nil {
 		e.writePromError(w, "execution", err.Error())
 		return
@@ -373,9 +428,47 @@ func (e *Extension) handlePromMetadata(w http.ResponseWriter, r *http.Request) {
 
 // ── Query dispatch ─────────────────────────────────
 
+// dispatchLabelExplore handles PromQL "group by" label exploration queries.
+// Uses ES terms aggregation to return unique label value combinations.
+func (e *Extension) dispatchLabelExplore(r *http.Request, expr *promqlExpr) *promQueryData {
+	query := observabilitystorageext.LabelCombinationsQuery{
+		MetricName: expr.MetricName,
+		LabelKeys:  expr.GroupBy,
+	}
+
+	result, err := e.storageMetricReader.ListLabelCombinations(r.Context(), query)
+	if err != nil {
+		e.logger.Error("label explore failed", zap.Error(err))
+		return nil
+	}
+
+	vectors := make([]promVectorSample, 0, len(result.Combinations))
+	for _, combo := range result.Combinations {
+		m := promMetric{"__name__": expr.MetricName}
+		for k, v := range combo {
+			m[k] = v
+		}
+		vectors = append(vectors, promVectorSample{
+			Metric: m,
+			Value:  []any{float64(time.Now().Unix()), "1"},
+		})
+	}
+
+	return &promQueryData{
+		ResultType: "vector",
+		Result:     vectors,
+	}
+}
+
 // dispatchInstantQuery routes to the appropriate backend call based on the parsed expression.
 func (e *Extension) dispatchInstantQuery(r *http.Request, expr *promqlExpr, evalTime time.Time, labels map[string]string) *promQueryData {
 	span := trace.SpanFromContext(r.Context())
+
+	// Label exploration: "group by" without aggregation or rate function.
+	// Example: group by (client, connection_type, server) (traces_service_graph_request_total)
+	if len(expr.GroupBy) > 0 && expr.Aggregation == "" && expr.Function == "" {
+		return e.dispatchLabelExplore(r, expr)
+	}
 
 	if expr.Function != "" && expr.RangeDuration > 0 {
 		defer span.SetAttributes(attribute.Int("promql.series_count", 0))
@@ -405,13 +498,33 @@ func (e *Extension) dispatchInstantQuery(r *http.Request, expr *promqlExpr, eval
 
 	vectors := make([]promVectorSample, 0, len(result.Data))
 	for _, dp := range result.Data {
-		m := promMetric{"__name__": expr.MetricName}
+		var val float64
+		if expr.HistogramSub == "bucket" {
+			val = resolveHistogramBucket(dp, expr)
+		} else {
+			val = dp.Value
+		}
+
+		name := expr.MetricName
+		if expr.HistogramSub != "" {
+			name = expr.BaseMetric + "_" + expr.HistogramSub
+		}
+		m := promMetric{"__name__": name}
 		for k, v := range dp.Labels {
+			if expr.HistogramSub == "bucket" && k == "le" {
+				continue
+			}
 			m[k] = v
+		}
+		// For _bucket: preserve the le label from the query.
+		if expr.HistogramSub == "bucket" {
+			if le, ok := expr.Labels["le"]; ok {
+				m["le"] = le
+			}
 		}
 		vectors = append(vectors, promVectorSample{
 			Metric: m,
-			Value:  []any{float64(parseTimeUnixMilli(dp.TimeUnixMilli)) / 1000.0, formatPromValue(dp.Value)},
+			Value:  []any{float64(parseTimeUnixMilli(dp.TimeUnixMilli)) / 1000.0, formatPromValue(val)},
 		})
 	}
 
@@ -555,6 +668,11 @@ func (e *Extension) execRateRange(r *http.Request, expr *promqlExpr, start, end 
 
 // execRateInstant handles rate/increase/irate instant queries.
 func (e *Extension) execRateInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels map[string]string) *promQueryData {
+	// histogram_quantile + _bucket → aggregate bucket_counts and compute quantile.
+	if expr.HistogramSub == "bucket" && !math.IsNaN(expr.Quantile) {
+		return e.execHistogramQuantileInstant(r, expr, evalTime, labels)
+	}
+
 	// For instant query, look back from evalTime by the range duration.
 	lookbackStart := evalTime.Add(-expr.RangeDuration)
 
@@ -588,6 +706,83 @@ func (e *Extension) execRateInstant(r *http.Request, expr *promqlExpr, evalTime 
 				Value:  []any{float64(evalTime.UnixMilli()) / 1000.0, formatPromValue(val)},
 			})
 		}
+	}
+
+	return &promQueryData{
+		ResultType: "vector",
+		Result:     vectors,
+	}
+}
+
+// execHistogramQuantileInstant handles histogram_quantile(θ, rate(_bucket[...]))
+// by querying ES histogram documents, aggregating bucket_counts across time,
+// and computing quantiles via linear interpolation.
+func (e *Extension) execHistogramQuantileInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels map[string]string) *promQueryData {
+	lookbackStart := evalTime.Add(-expr.RangeDuration)
+
+	rawQuery := observabilitystorageext.MetricRawQuery{
+		MetricName: expr.MetricName,
+		Labels:     filterInternalLabels(labels),
+		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
+	}
+
+	rawSeries, err := e.storageMetricReader.QueryRaw(r.Context(), rawQuery)
+	if err != nil {
+		e.logger.Error("histogram_quantile query_raw failed", zap.Error(err))
+		return nil
+	}
+
+	// Aggregate bucket_counts across all samples in each label group.
+	buckets := make([]HistogramBucket, 0, len(rawSeries))
+	for _, s := range rawSeries {
+		hb := HistogramBucket{Labels: copyMap(s.Labels)}
+
+		// First pass: find bounds from first sample that has them.
+		for _, sample := range s.Samples {
+			if len(sample.Bounds) > 0 {
+				hb.Bounds = sample.Bounds
+				break
+			}
+		}
+		if len(hb.Bounds) == 0 {
+			continue
+		}
+
+		// Second pass: accumulate bucket counts and sum across time points.
+		hb.BucketCounts = make([]int64, len(hb.Bounds))
+		for _, sample := range s.Samples {
+			hb.TotalSum += sample.Value
+			for i := 0; i < len(sample.BucketCounts) && i < len(hb.BucketCounts); i++ {
+				hb.BucketCounts[i] += sample.BucketCounts[i]
+				hb.TotalCount += sample.BucketCounts[i]
+			}
+		}
+
+		if hb.TotalCount > 0 {
+			buckets = append(buckets, hb)
+		}
+	}
+
+	if len(buckets) == 0 {
+		return nil
+	}
+
+	aggregated := AggregateHistogramBuckets(buckets)
+
+	vectors := make([]promVectorSample, 0, len(aggregated))
+	for _, hb := range aggregated {
+		q := ComputeHistogramQuantile(expr.Quantile, hb)
+		m := promMetric{"__name__": expr.MetricName}
+		for k, v := range hb.Labels {
+			if k == "le" {
+				continue
+			}
+			m[k] = v
+		}
+		vectors = append(vectors, promVectorSample{
+			Metric: m,
+			Value:  []any{float64(evalTime.UnixMilli()) / 1000.0, formatPromValue(q)},
+		})
 	}
 
 	return &promQueryData{
@@ -853,6 +1048,53 @@ func aggregateMatrix(fn string, groupBy []string, matrix []promMatrixSample) []p
 	return result
 }
 
+// parseHistogramQuantileWrapper extracts histogram_quantile(θ, inner_expr).
+// Returns (inner_expression, θ). Returns ("", 0) if not a match.
+func parseHistogramQuantileWrapper(s string) (inner string, theta float64) {
+	const prefix = "histogram_quantile("
+	lower := strings.ToLower(s)
+	if !strings.HasPrefix(lower, prefix) {
+		return "", 0
+	}
+
+	content := strings.TrimSpace(s[len(prefix):])
+
+	// Extract θ: the float before the first comma at depth 0.
+	depth := 0
+	commaIdx := -1
+	for i := 0; i < len(content); i++ {
+		switch content[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				commaIdx = i
+				goto found
+			}
+		}
+	}
+found:
+	if commaIdx < 0 {
+		return "", 0
+	}
+
+	thetaStr := strings.TrimSpace(content[:commaIdx])
+	t, err := strconv.ParseFloat(thetaStr, 64)
+	if err != nil {
+		return "", 0
+	}
+
+	// Extract inner expression (strip trailing closing paren).
+	innerExpr := strings.TrimSpace(content[commaIdx+1:])
+	if len(innerExpr) > 0 && innerExpr[len(innerExpr)-1] == ')' {
+		innerExpr = strings.TrimSpace(innerExpr[:len(innerExpr)-1])
+	}
+
+	return innerExpr, t
+}
+
 // ── PromQL Parser (simple subset) ──────────────────
 
 // parsePromQL parses a PromQL expression string.
@@ -871,9 +1113,21 @@ func parsePromQL(s string) (*promqlExpr, error) {
 
 	expr := &promqlExpr{}
 
+	// Check for histogram_quantile(θ, ...) wrapper before aggregation.
+	// This is a special two-arg function where the first arg is a float quantile
+	// and the second is the inner expression.
+	if inner, theta := parseHistogramQuantileWrapper(s); inner != "" {
+		expr.Aggregation = "histogram_quantile"
+		expr.Quantile = theta
+		s = inner
+	}
+
 	// Check for aggregation wrapper: sum(...) by (labels)
 	if result, rest, agg, groupBy := parseAggWrapper(s); result != "" {
-		expr.Aggregation = agg
+		// Preserve histogram_quantile as top-level aggregation.
+		if expr.Aggregation == "" {
+			expr.Aggregation = agg
+		}
 		expr.GroupBy = groupBy
 		s = result // continue parsing inner expression
 		if rest != "" {
@@ -893,7 +1147,19 @@ func parsePromQL(s string) (*promqlExpr, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Histogram sub-series detection: _sum and _bucket suffixes.
+	// Prometheus exposes histograms as separate time series:
+	//   traces_service_graph_request_server_seconds_sum
+	//   traces_service_graph_request_server_seconds_bucket{le="0.005"}
+	// ES stores the base metric name, so we strip the suffix and query the
+	// underlying histogram data.
 	expr.MetricName = name
+	if sub, ok := detectHistogramSub(name); ok {
+		expr.HistogramSub = sub
+		expr.BaseMetric = name
+		expr.MetricName = stripHistogramSuffix(name)
+	}
+
 	expr.Labels = labels
 	expr.LabelMatch = labelMatch
 
@@ -954,6 +1220,55 @@ func exploreMetricsGroupByLabels(expr *promqlExpr) {
 			delete(expr.Labels, k)
 		}
 	}
+}
+
+const (
+	hsSuffixSum    = "_sum"
+	hsSuffixBucket = "_bucket"
+)
+
+// detectHistogramSub detects Prometheus histogram sub-series suffixes.
+// Returns ("sum", true) for _sum, ("bucket", true) for _bucket, ("", false) otherwise.
+func detectHistogramSub(name string) (string, bool) {
+	if strings.HasSuffix(name, hsSuffixSum) && !strings.HasSuffix(name, "_total") {
+		return "sum", true
+	}
+	if strings.HasSuffix(name, hsSuffixBucket) {
+		return "bucket", true
+	}
+	return "", false
+}
+
+// stripHistogramSuffix removes the Prometheus histogram sub-series suffix.
+func stripHistogramSuffix(name string) string {
+	if strings.HasSuffix(name, hsSuffixSum) {
+		return name[:len(name)-len(hsSuffixSum)]
+	}
+	if strings.HasSuffix(name, hsSuffixBucket) {
+		return name[:len(name)-len(hsSuffixBucket)]
+	}
+	return name
+}
+
+// resolveHistogramBucket returns the bucket count for the le label from the
+// PromQL query. It matches the le value against the histogram's explicit_bounds
+// and returns the corresponding bucket_counts entry.
+func resolveHistogramBucket(dp observabilitystorageext.MetricDataPoint, expr *promqlExpr) float64 {
+	leStr, ok := expr.Labels["le"]
+	if !ok {
+		return dp.Value
+	}
+	leVal, err := strconv.ParseFloat(leStr, 64)
+	if err != nil {
+		return 0
+	}
+
+	for i, bound := range dp.ExplicitBounds {
+		if math.Abs(leVal-bound) < 1e-9 && i < len(dp.BucketCounts) {
+			return float64(dp.BucketCounts[i])
+		}
+	}
+	return 0
 }
 
 // parsePromQLSelector parses a simple selector (no aggregation, no functions).
