@@ -1,2502 +1,418 @@
 # MetricGenerator Connector 设计方案
 
-> **创建日期**: 2026-07-16
-> **状态**: 方案讨论中
-> **目标**: 设计自研 MetricGenerator Connector，替换/增强 contrib 的 spanmetricsconnector，支持 Tempo ServiceGraph 能力
+> **创建日期**: 2026-07-16 | **最后更新**: 2026-07-20
+> **状态**: ✅ 方案确认，待实施
 
----
+## 1. 背景与验证结论
 
-## 1. 背景与动机
+### 1.1 为什么需要自研
 
-### 1.1 当前现状
+当前 `spanmetricsconnector` 的不足（ES 实测验证）：
 
-项目当前使用 `opentelemetry-collector-contrib` 的 `spanmetricsconnector` 组件，配置如下：
-
-```yaml
-connectors:
-  spanmetrics:
-    histogram:
-      explicit:
-        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
-    dimensions:
-      - name: http.method
-      - name: http.status_code
-      - name: http.route
-      - name: rpc.method
-      - name: rpc.service
-    metrics_flush_interval: 15s
-    namespace: traces.spanmetrics
-    resource_metrics_key_attributes:
-      - service.name
-      - service.namespace
-      - deployment.environment
-```
-
-Pipeline 拓扑：
-```
-traces pipeline → [spanmetrics connector] → metrics/spanmetrics pipeline → storage
-```
-
-### 1.2 痛点分析
-
-| 痛点 | 说明 |
+| 问题 | 证据 |
 |------|------|
-| **分布式聚合不完整** | 多实例部署时，同一 Trace 的 Span 可能分散到不同 Collector 实例，导致跨 Span 指标（如 Service Graph、Trace-level 聚合）不准确 |
-| **扩展性受限** | contrib 的 spanmetrics 只生成 RED（Rate/Error/Duration）指标，无法灵活扩展自定义聚合逻辑（如业务维度、采样率校正、Trace-level 指标） |
-| **多租户隔离** | 当前 spanmetrics 无租户感知，无法按租户独立管理基数限制、维度配置和指标命名空间 |
-| **采样校正缺失** | 对接 Head/Tail Sampling 后，指标计数需要根据采样率做校正，contrib 的实现不支持自定义校正逻辑 |
-| **指标查询耦合** | `tempo_handler.go` 中的 `translateTraceQLMetric` 硬编码了 spanmetrics 的指标名映射，扩展新指标类型需要改查询层 |
+| **无法产出 ServiceGraph 指标** | ES 中只存在 `traces.spanmetrics.calls` + `traces.spanmetrics.duration`，没有 `traces_service_graph_*` |
+| **duration 不是真 Histogram** | `type=histogram` 但仅存单值，缺 `bucket_counts`，Grafana 的 `le` 分桶查询返回空 |
+| **缺少 `connection_type` 维度** | peer_service processor 已识别 DB/messaging，但 spanmetrics 不产出此标签 |
 
-### 1.3 目标
+### 1.2 组件职责重新划分
 
-1. **自研 MetricGenerator Connector**，基于 OTel Collector 的 `connector` 组件机制，实现 Traces → Metrics 的转换
-2. **分布式友好**：支持多实例部署下的正确聚合（通过 TraceID 路由 + 一致性哈希）
-3. **多租户感知**：继承项目的多租户架构，按租户隔离指标聚合
-4. **可扩展**：插件化指标生成器，支持 RED、Service Graph、自定义业务指标等多种聚合类型
-5. **高性能**：低延迟、高吞吐、可控的内存占用
-6. **可测试**：模块化设计，核心逻辑可独立单元测试
+经过 ES 实测验证后的最终定位：
+
+```
+traces pipeline:
+  [tokenauth] → [peer_service processor] → [MetricGeneratorConnector] → [storage]
+                    ↓ 双向写 peer.service         ↓ 纯读 + 聚合
+                    ↓                              ↓
+              保留，代码无需改动             新增，替换 spanmetricsconnector
+```
+
+- **peer_service processor** — 保留。负责 span 富化（双向写 `peer.service`），已在 `completePair` 中实现
+- **MetricGeneratorConnector** — 新增。纯读 span attribute，内存 map 聚合，定期 flush 指标
 
 ---
 
-## 2. 开源实现分析
+## 2. 架构设计
 
-### 2.1 参考的开源 Connector
-
-| Connector | 核心能力 | 分布式策略 | 借鉴点 |
-|-----------|----------|-----------|--------|
-| **spanmetricsconnector** | RED 指标（calls/duration/size） | 不支持，需前置 loadbalancer | LRU Cache + CardinalityLimit + Overflow 桶；Delta/Cumulative 双模式；SeriesExpiration 过期清理 |
-| **servicegraphconnector** | 服务拓扑图（Client/Server Span 配对） | 不支持，需按 TraceID 路由 | FIFO Store + TTL 过期；虚拟节点推断；metricSeries 15min 自动清理 |
-| **countconnector** | 简单计数 | 天然支持（Delta 无状态） | 最简 Connector 骨架；OTTL 条件匹配；MapHash 分组 |
-| **loadbalancingexporter** | 按 TraceID 一致性哈希路由 | CRC32 哈希环 + 200 虚拟节点 | DNS/K8s/Static resolver；动态环重建；O(log n) 查找 |
-
-### 2.2 Tempo Metrics-Generator 架构分析
-
-Tempo 的 metrics-generator 是一个独立模块，其架构设计对我们的方案有重要参考价值：
-
-#### 2.2.1 整体架构
+### 2.1 Connector 内部架构
 
 ```
-                PushSpans (gRPC/Kafka)
-                     │
-                     ▼
-          ┌─────────────────────┐
-          │     Generator       │  (多租户管理器)
-          │  instances map      │  map[tenantID]*instance
-          └──────────┬──────────┘
-                     │ getOrCreateInstance(tenantID)
-                     ▼
-          ┌─────────────────────┐
-          │     instance        │  (per-tenant 实例)
-          │  - registry         │  ManagedRegistry (指标注册中心)
-          │  - processors map   │  map[processorName]Processor
-          │  - wal (storage)    │  WAL + Remote Write
-          └──────────┬──────────┘
-                     │ pushSpans → preprocessSpans → for each processor
-                     ▼
-     ┌───────────────┼───────────────┐
-     │               │               │
-     ▼               ▼               ▼
-┌───────────┐  ┌────────────┐  ┌───────────┐
-│span-metrics│  │service-graphs│  │local-blocks│
-└───────────┘  └────────────┘  └───────────┘
-     │               │               │
-     └───────────────┼───────────────┘
-                     ▼
-          ┌─────────────────────┐
-          │  ManagedRegistry    │  (指标注册中心)
-          │  - Counter/Histogram│
-          │  - Native Histogram │
-          └──────────┬──────────┘
-                     │ CollectMetrics (定时)
-                     ▼
-          ┌─────────────────────┐
-          │  Storage (WAL)      │
-          │  → Remote Write     │
-          └─────────────────────┘
+MetricGeneratorConnector
+├── ConsumeTraces(ctx, ptrace.Traces)
+│     └── for each span:
+│           ├── REDGenerator.ProcessSpan()        → 纯 map 聚合
+│           └── ServiceGraphGenerator.ProcessSpan() → 纯 map 聚合
+│
+├── MetricFlusher (定时 15s)
+│     ├── REDGenerator.Collect()                  → pmetric.Metrics
+│     ├── ServiceGraphGenerator.Collect()          → pmetric.Metrics
+│     └── consumer.ConsumeMetrics(ctx, metrics)
+│
+└── Self-Metrics (运营指标)
 ```
 
-#### 2.2.2 ServiceGraph 核心实现
+**关键简化**：不需要 EdgeStore、不需要 ServiceGroupRouter。`peer.service` 属性已在 span 上，connector 只做 `read → aggregate`。
 
-Tempo 的 ServiceGraph 处理流程：
+### 2.2 与现有组件的关系
 
-```go
-// consume 处理入口 - 遍历所有 ResourceSpans
-func (p *Processor) consume(resourceSpans []*v1_trace.ResourceSpans) {
-    for _, rs := range resourceSpans {
-        // 从 Resource 提取 service.name
-        svcName, _ := extractServiceName(rs.Resource)
-        
-        for _, ils := range rs.ScopeSpans {
-            for _, span := range ils.Spans {
-                p.consumeSpan(svcName, rs.Resource, span)
-            }
-        }
-    }
-}
+| 组件 | 职责 | 改动 |
+|------|------|------|
+| **peer_service processor** | span 配对 + 双向写 `peer.service` | 无需改动 |
+| **spanmetricsconnector** | — | Sprint 5 移除 |
+| **MetricGeneratorConnector** | RED + ServiceGraph 指标聚合 | Sprint 1-3 实现 |
 
-// consumeSpan 对每个 span 做 Edge 配对
-func (p *Processor) consumeSpan(svcName string, resource *v1_resource.Resource, span *v1_trace.Span) {
-    switch span.Kind {
-    case v1_trace.Span_SPAN_KIND_CLIENT:
-        key := buildKey(span.TraceId, span.SpanId)     // 注意: Client 用 SpanID
-        p.store.UpsertEdge(key, func(e *store.Edge) {
-            e.TraceID = span.TraceId
-            e.ClientService = svcName
-            e.ClientLatencySec = spanDurationSec(span)
-            e.Failed = e.Failed || spanFailed(span)
-            // 提取额外维度
-            p.extractDimensionsClient(e, resource, span)
-        })
-        
-    case v1_trace.Span_SPAN_KIND_SERVER:
-        key := buildKey(span.TraceId, span.ParentSpanId)  // Server 用 ParentSpanID
-        p.store.UpsertEdge(key, func(e *store.Edge) {
-            e.TraceID = span.TraceId
-            e.ServerService = svcName
-            e.ServerLatencySec = spanDurationSec(span)
-            e.Failed = e.Failed || spanFailed(span)
-            p.extractDimensionsServer(e, resource, span)
-        })
-        
-    case v1_trace.Span_SPAN_KIND_PRODUCER:
-        key := buildKey(span.TraceId, span.SpanId)
-        p.store.UpsertEdge(key, func(e *store.Edge) {
-            e.ClientService = svcName
-            e.ConnectionType = store.MessagingSystem
-        })
-        
-    case v1_trace.Span_SPAN_KIND_CONSUMER:
-        key := buildKey(span.TraceId, span.ParentSpanId)
-        p.store.UpsertEdge(key, func(e *store.Edge) {
-            e.ServerService = svcName
-            e.ConnectionType = store.MessagingSystem
-        })
-    }
-}
-```
-
-**关键设计点**：
-
-1. **Edge 配对机制**：`key = hash(traceID + spanID/parentSpanID)`，Client Span 用自己的 SpanID，Server Span 用 ParentSpanID，两者匹配时 Edge 完成
-2. **虚拟节点推断**：当 Edge 超时（只收到一端）时，通过 peer attributes 推断缺失一端：
-   ```go
-   // 如果只有 Client 没有 Server，尝试从 peer attributes 推断
-   if e.ClientService != "" && e.ServerService == "" {
-       if peer := e.PeerNode; peer != "" {
-           e.ServerService = peer
-           e.VirtualNodeLabel = "server"
-       }
-   }
-   ```
-3. **Peer Attributes 优先级**：`server.address` > `peer.service` > `db.name` > `net.sock.peer.addr`
-
-#### 2.2.3 Edge Store 实现
-
-```go
-// Store 使用 map + FIFO 链表实现有界存储
-type Store struct {
-    edges   map[uint64]*Edge    // key → Edge
-    queue   *list.List          // FIFO 过期队列
-    maxSize int                 // 最大 Edge 数
-    ttl     time.Duration       // Edge 生存时间
-    
-    onComplete func(e *Edge)    // Edge 完成回调（生成指标）
-    onExpire   func(e *Edge)    // Edge 超时回调（虚拟节点推断）
-}
-
-// UpsertEdge 原子更新 Edge
-func (s *Store) UpsertEdge(key uint64, update func(*Edge)) (isNew bool, err error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    
-    if e, ok := s.edges[key]; ok {
-        update(e)
-        if e.isCompleted() {
-            s.onComplete(e)     // 两端都齐了 → 生成指标
-            s.remove(key)
-        }
-        return false, nil
-    }
-    
-    // 新 Edge - 检查容量
-    if len(s.edges) >= s.maxSize {
-        return false, ErrStoreFull
-    }
-    
-    e := &Edge{Key: key, ExpireAt: time.Now().Add(s.ttl)}
-    update(e)
-    s.edges[key] = e
-    s.queue.PushBack(e)     // FIFO 队列用于过期扫描
-    return true, nil
-}
-
-// Expire 定期调用，清理过期的 Edge
-// 注意：onExpire 回调在锁外调用，避免死锁和性能瓶颈
-func (s *Store) Expire() {
-    s.mu.Lock()
-    
-    now := time.Now()
-    var expired []*Edge  // 收集过期 Edge，锁外处理回调
-    
-    for s.queue.Len() > 0 {
-        front := s.queue.Front()
-        e := front.Value.(*Edge)
-        if now.Before(e.ExpireAt) {
-            break  // FIFO 保证后续的都没过期
-        }
-        expired = append(expired, e)
-        s.queue.Remove(front)
-        delete(s.edges, e.Key)
-    }
-    s.mu.Unlock()
-    
-    // 在锁外调用回调（避免 onExpire 中如果需要操作其他共享状态时死锁）
-    for _, e := range expired {
-        s.onExpire(e)  // 超时 → 虚拟节点推断
-    }
-}
-```
-
-#### 2.2.4 ServiceGraph 指标输出
-
-Tempo 生成的 ServiceGraph 指标：
-
-| 指标名 | 类型 | 说明 |
-|--------|------|------|
-| `traces_service_graph_request_total` | Counter | 边的请求总数 |
-| `traces_service_graph_request_failed_total` | Counter | 边的失败请求数 |
-| `traces_service_graph_request_server_seconds` | Histogram | Server 端耗时 |
-| `traces_service_graph_request_client_seconds` | Histogram | Client 端耗时 |
-| `traces_service_graph_request_messaging_system_seconds` | Histogram | 消息系统耗时 |
-| `traces_service_graph_unpaired_spans_total` | Counter | 未配对的 Span 数（运营指标） |
-| `traces_service_graph_dropped_spans_total` | Counter | 被丢弃的 Span 数（运营指标） |
-
-标签（Labels）：
-- `client`: 调用方服务名
-- `server`: 被调方服务名
-- `connection_type`: `""` 或 `"messaging_system"`
-- `virtual_node`: `""` / `"client"` / `"server"`（标识哪一端是推断的）
-- 自定义 dimensions（如 `http.method`）
-
-#### 2.2.5 Tempo Overrides 机制（Per-Tenant 配置覆盖）
-
-Tempo 的 overrides 是分层的配置覆盖机制：
-
-```yaml
-# 全局默认
-overrides:
-  defaults:
-    metrics_generator:
-      processors: [service-graphs, span-metrics]
-      max_active_series: 100000
-      collection_interval: 15s
-      processor:
-        service_graphs:
-          dimensions: [http.method]
-          enable_virtual_node_label: true
-          peer_attributes: [server.address, peer.service]
-        span_metrics:
-          dimensions: [http.method, http.status_code]
-
-# Per-tenant 覆盖
-per_tenant_override_config: /etc/tempo/overrides.yaml
-per_tenant_override_period: 10s  # 热加载周期
-```
-
-```yaml
-# overrides.yaml - per-tenant 覆盖
-overrides:
-  "tenant-large":
-    metrics_generator:
-      max_active_series: 500000
-      processor:
-        service_graphs:
-          dimensions: [http.method, http.route]
-  
-  "tenant-small":
-    metrics_generator:
-      max_active_series: 10000
-      disable_collection: true  # 紧急降级
-```
-
-查找优先级：`specific tenant` → `wildcard "*"` → `defaults`
-
-### 2.3 关键结论
-
-1. **官方 Connector 均不内置分布式聚合**——它们假设前置已有正确路由
-2. **分布式正确性依赖 loadbalancingexporter**——通过 TraceID 哈希确保同一 Trace 到同一实例
-3. **基数控制是核心挑战**——spanmetrics 用 LRU + overflow 桶，servicegraph 用 maxItems 硬上限
-4. **Delta Temporality 天然适配分布式**——无需跨实例协调，由下游聚合
-5. **Tempo 的 ServiceGraph 实现成熟**——Edge Store + FIFO 过期 + 虚拟节点推断，可直接借鉴
-6. **Tempo 的 Overrides 机制灵活**——分层覆盖 + 热加载 + 通配符，适合我们的 APP 级别配置需求
-
----
-
-## 3. 架构设计
-
-### 3.1 整体架构
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           Deployment Topology                                    │
-│                                                                                  │
-│  ┌─────────────────────────┐                                                     │
-│  │    Agent / SDK / Probe   │                                                    │
-│  └───────────┬─────────────┘                                                    │
-│              │ OTLP traces                                                       │
-│              ▼                                                                   │
-│  ┌─────────────────────────────────────────────────┐                            │
-│  │         Gateway Layer (L1)                       │                            │
-│  │  ┌───────────────────────────────────────────┐   │                           │
-│  │  │  loadbalancingexporter (TraceID 路由)       │   │                           │
-│  │  │  CRC32 一致性哈希环 + DNS/K8s resolver      │   │                           │
-│  │  └──────────────┬────────────────────────────┘   │                           │
-│  └─────────────────┼───────────────────────────────┘                            │
-│                    │ 按 TraceID 路由                                              │
-│        ┌───────────┼───────────┐                                                │
-│        ▼           ▼           ▼                                                │
-│  ┌──────────┐┌──────────┐┌──────────┐                                          │
-│  │ Worker-1 ││ Worker-2 ││ Worker-N │  ← MetricGenerator Instances              │
-│  │          ││          ││          │                                            │
-│  │ ┌──────┐ ││ ┌──────┐ ││ ┌──────┐ │                                          │
-│  │ │metric││ │ │metric││ │ │metric│ │                                           │
-│  │ │gen   ││ │ │gen   ││ │ │gen   │ │                                           │
-│  │ └──┬───┘ ││ └──┬───┘ ││ └──┬───┘ │                                          │
-│  └────┼─────┘└────┼─────┘└────┼─────┘                                          │
-│       │           │           │                                                  │
-│       └───────────┼───────────┘                                                  │
-│                   ▼                                                               │
-│       ┌──────────────────────┐                                                   │
-│       │    Metrics Storage    │                                                   │
-│       └──────────────────────┘                                                   │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.2 Connector 内部架构
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    MetricGenerator Connector                               │
-│                                                                            │
-│  ConsumeTraces(ctx, ptrace.Traces)                                        │
-│        │                                                                   │
-│        ▼                                                                   │
-│  ┌──────────────────────────────────────────────────┐                     │
-│  │      ContextResolver                              │                    │
-│  │  ctx → AppID (from tokenauth processor)           │                    │
-│  │  AppID → TenantID (via ControlPlane mapping)      │                    │
-│  │  resource → ServiceName (service.name)            │                    │
-│  │  → OverrideManager.GetAppConfig(tenant, app)      │                    │
-│  └────────────────────────┬─────────────────────────┘                     │
-│                            │                                               │
-│                            ▼                                               │
-│  ┌──────────────────────────────────────────────────┐                     │
-│  │      AppAggregatorManager (APP 聚合管理)             │                    │
-│  │  GetOrCreate(tenantID, appID) → AppAggregator     │                    │
-│  └────────────────────────┬─────────────────────────┘                     │
-│                            │                                               │
-│                            ▼                                               │
-│  ┌──────────────────────────────────────────────────┐                     │
-│  │      SpanRouter (按聚合类型分发)                    │                    │
-│  └──┬──────────────────────────────┬────────────────┘                     │
-│     │                              │                                       │
-│     ▼                              ▼                                       │
-│  ┌───────────────────┐   ┌──────────────────────────────┐                 │
-│  │ RED Generator      │   │ ServiceGraph Generator        │                │
-│  │ (per-APP 隔离)     │   │ (per-ServiceGroup)            │                │
-│  │                    │   │                               │                │
-│  │ APP-A: {calls,dur} │   │ ┌──────────────────────────┐ │                │
-│  │ APP-B: {calls,dur} │   │ │  ServiceGraphRouter      │ │                │
-│  │ APP-C: {calls,dur} │   │ │  → EdgeStore (group-1)   │ │                │
-│  │ ...                │   │ │  → EdgeStore (group-2)   │ │                │
-│  └────────┬───────────┘   │ │  → EdgeStore (auto_tenant)│ │               │
-│           │               │ └──────────────────────────┘ │                │
-│           │               └──────────────┬───────────────┘                │
-│           │                              │                                 │
-│           └──────────────────────────────┘                                 │
-│                            │                                               │
-│                            ▼                                               │
-│  ┌──────────────────────────────────────────────────┐                     │
-│  │      MetricFlusher (定时 flush)                    │                    │
-│  │  - Collect 各 Generator 指标                       │                    │
-│  │  - Sampling Rate Correction                       │                    │
-│  │  - Delta/Cumulative Temporality                   │                    │
-│  └────────────────────────┬─────────────────────────┘                     │
-│                            │                                               │
-│                            ▼                                               │
-│  ┌──────────────────────────────────────────────────┐                     │
-│  │      consumer.Metrics (下游 pipeline)              │                    │
-│  └──────────────────────────────────────────────────┘                     │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3.3 组件职责划分
-
-| 组件 | 职责 | 设计原则 |
-|------|------|----------|
-| **ContextResolver** | 从 Context 提取 AppID（由 tokenauth processor 注入），通过 ControlPlane 映射获取 TenantID，从 Resource 提取 ServiceName，加载配置 | 单一职责；与认证中间件解耦 |
-| **AppAggregatorManager** | 管理 APP 级聚合空间的生命周期：自动创建、限制、回收 | 高内聚；隔离管理集中 |
-| **SpanRouter** | 将 Span 分发到对应的 Generator | 开闭原则；新增 Generator 无需修改 Router |
-| **RED Generator** | Per-APP 隔离的 Rate/Error/Duration 指标 | 接口隔离；每个 APP 独立基数空间 |
-| **ServiceGraph Generator** | Per-ServiceGroup 的 Edge 配对和拓扑指标 | 关注点分离；支持跨 APP 串联 |
-| **ServiceGraphRouter** | 根据 ServiceGroup 配置将 Span 路由到正确的 EdgeStore | 策略模式；支持自动发现和显式声明 |
-| **OverrideManager** | 分层配置覆盖：defaults → tenant → app | 配置与逻辑分离；热加载 |
-| **MetricFlusher** | 定时构建 pmetric.Metrics 并发送给下游 | 关注点分离；解耦聚合与输出 |
-
----
-
-## 4. 详细设计
-
-### 4.1 Connector 接口实现
-
-遵循 OTel Collector 的 `connector` 组件机制，实现 `TracesToMetrics` 类型：
-
-```go
-package metricgenconnector
-
-import (
-    "context"
-    "go.opentelemetry.io/collector/component"
-    "go.opentelemetry.io/collector/consumer"
-    "go.opentelemetry.io/collector/pdata/pcommon"
-    "go.opentelemetry.io/collector/pdata/ptrace"
-    "go.uber.org/zap"
-)
-
-// metricGenConnector 实现 connector.Traces 接口
-type metricGenConnector struct {
-    config          *Config
-    metricsConsumer consumer.Metrics        // 下游 metrics consumer
-    controlPlane    ControlPlane            // 控制面接口（AppID → TenantID 映射）
-    tenantCache     *TenantCache            // AppID → TenantID 本地缓存
-    appMgr          *AppAggregatorManager   // APP 聚合空间生命周期管理
-    overrideMgr     *OverrideManager        // 分层配置覆盖
-    generators      []Generator             // 可插拔的指标生成器
-    sgRouter        *ServiceGraphRouter     // ServiceGraph 路由器
-    flusher         *MetricFlusher          // 定时 flush
-    clock           Clock                   // 可注入的时钟
-
-    logger          *zap.Logger
-    done            chan struct{}
-}
-
-// ControlPlane 控制面接口，提供 AppID → TenantID 的映射查询
-type ControlPlane interface {
-    // GetTenantForApp 返回指定 AppID 归属的 TenantID
-    GetTenantForApp(ctx context.Context, appID string) (string, error)
-}
-
-// TenantCache AppID → TenantID 的本地缓存，减少对控制面的查询频率
-type TenantCache struct {
-    cache *lru.Cache[string, string]  // appID → tenantID
-    ttl   time.Duration               // 缓存过期时间（默认 5min）
-}
-
-func (c *metricGenConnector) Capabilities() consumer.Capabilities {
-    return consumer.Capabilities{MutatesData: false}
-}
-
-func (c *metricGenConnector) Start(ctx context.Context, host component.Host) error {
-    // 启动 APP 聚合管理（含后台 idle 清理）
-    c.appMgr.Start(ctx)
-    
-    // 启动各 Generator
-    for _, gen := range c.generators {
-        if err := gen.Start(ctx); err != nil {
-            return err
-        }
-    }
-    
-    // 启动配置热加载
-    c.overrideMgr.StartWatching(ctx)
-    
-    // 启动定时 flush
-    c.flusher.Start(ctx)
-    return nil
-}
-
-func (c *metricGenConnector) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
-    // 从 Context 提取 AppID（由 tokenauth processor 在上游注入）
-    appID := AppIDFromContext(ctx)
-    
-    // 通过 ControlPlane 获取 AppID 归属的 TenantID
-    // AppID → TenantID 的映射由控制面维护，无需多租户架构先行落地
-    tenantID := c.resolveTenantID(ctx, appID)
-
-    rss := td.ResourceSpans()
-    for i := 0; i < rss.Len(); i++ {
-        rs := rss.At(i)
-        resource := rs.Resource()
-        
-        // 从 Resource 提取 ServiceName（service.name），用于 RED 指标和 ServiceGraph 的服务标识
-        serviceName := extractServiceName(resource)
-        
-        // 获取该 APP 的配置（分层覆盖后的最终配置）
-        appConfig := c.overrideMgr.GetAppConfig(tenantID, appID)
-        
-        // 检查该 APP 是否已禁用
-        if appConfig != nil && appConfig.Enabled != nil && !*appConfig.Enabled {
-            continue  // 跳过已禁用的 APP
-        }
-        
-        // 获取/创建该 APP 的聚合空间（超限时返回 overflow 聚合器）
-        appAgg := c.appMgr.GetOrCreate(tenantID, appID, c.overrideMgr)
-        
-        sss := rs.ScopeSpans()
-        for j := 0; j < sss.Len(); j++ {
-            ss := sss.At(j)
-            spans := ss.Spans()
-
-            for k := 0; k < spans.Len(); k++ {
-                span := spans.At(k)
-                
-                // 1. RED Generator: per-APP 隔离处理
-                for _, gen := range c.generators {
-                    gen.ProcessSpan(ctx, tenantID, appID, serviceName, appAgg, resource, span)
-                }
-                
-                // 2. ServiceGraph: 通过 ServiceGroupRouter 路由到正确的 EdgeStore
-                if c.sgRouter != nil {
-                    c.sgRouter.RouteSpan(tenantID, appID, serviceName, span, resource)
-                }
-            }
-        }
-    }
-    return nil
-}
-
-// resolveTenantID 通过控制面映射将 AppID 解析为其归属的 TenantID
-// AppID 天然归属于某个 Tenant，此映射由 ControlPlane 维护
-func (c *metricGenConnector) resolveTenantID(ctx context.Context, appID string) string {
-    if tenantID, ok := c.tenantCache.Get(appID); ok {
-        return tenantID
-    }
-    
-    // 从控制面查询 AppID 的归属 Tenant
-    tenantID, err := c.controlPlane.GetTenantForApp(ctx, appID)
-    if err != nil {
-        c.logger.Warn("failed to resolve tenant for app, using appID as tenant",
-            zap.String("appID", appID), zap.Error(err))
-        return appID  // 降级：AppID 作为 TenantID（单 App 单 Tenant 兼容模式）
-    }
-    
-    c.tenantCache.Set(appID, tenantID)
-    return tenantID
-}
-
-func (c *metricGenConnector) Shutdown(ctx context.Context) error {
-    close(c.done)
-    c.flusher.Stop(ctx)
-    c.appMgr.Stop()
-    c.overrideMgr.Stop()
-    
-    // Drain EdgeStore: 强制过期所有 pending Edge，触发虚拟节点推断
-    // 避免 shutdown 时丢失未完成配对的 Edge 数据
-    if c.sgRouter != nil {
-        c.sgRouter.DrainAll()
-    }
-    
-    // 最终 flush 一次，确保不丢数据
-    return c.flusher.FlushOnce(ctx)
-}
-
-// AppIDFromContext 从 Context 中提取 AppID
-// AppID 由 tokenauth processor 在上游注入（ContextKeyAppID）
-func AppIDFromContext(ctx context.Context) string {
-    if appID, ok := ctx.Value(ContextKeyAppID).(string); ok {
-        return appID
-    }
-    return ""
-}
-
-// extractServiceName 从 Resource 中提取 service.name（用于指标维度标识）
-// 注意：serviceName 用于 ServiceGraph Edge 中的服务名标识，与 AppID 可能不同
-// （一个 AppID 下可能有多个 service.name，如微服务多模块部署）
-func extractServiceName(resource pcommon.Resource) string {
-    if val, ok := resource.Attributes().Get("service.name"); ok {
-        return val.Str()
-    }
-    return "unknown_service"
-}
-```
-
-### 4.2 Generator 接口（策略模式）
-
-```go
-// Generator 定义指标生成策略接口
-// 遵循接口隔离原则：每种指标类型独立实现
-type Generator interface {
-    // Name 返回生成器名称（用于日志和指标标识）
-    Name() string
-
-    // Start 初始化生成器
-    Start(ctx context.Context) error
-
-    // ProcessSpan 处理单个 Span，提取并累积指标数据
-    // tenantID: APP 归属的租户 ID（从 AppID 经 ControlPlane 推导）
-    // appID: 应用标识（由 tokenauth processor 注入）
-    // serviceName: 服务名（从 resource.attributes["service.name"] 提取）
-    // appAgg: 该 APP 的聚合空间（由 AppAggregatorManager 管理生命周期）
-    ProcessSpan(ctx context.Context, tenantID, appID, serviceName string, appAgg *AppAggregator, resource pcommon.Resource, span ptrace.Span)
-
-    // CollectAll 收集所有聚合窗口内的指标
-    // 由 MetricFlusher 定时调用，遍历所有活跃 APP 收集指标
-    CollectAll() []MetricSeries
-
-    // Shutdown 优雅关闭
-    Shutdown(ctx context.Context) error
-}
-
-// MetricSeries 表示一条指标时间序列
-type MetricSeries struct {
-    Name       string
-    Type       MetricType  // Counter, Histogram, Gauge
-    Attributes pcommon.Map
-    Resource   pcommon.Resource
-    DataPoints []DataPoint
-}
-
-type MetricType int
-
-const (
-    MetricTypeCounter MetricType = iota
-    MetricTypeHistogram
-    MetricTypeGauge
-)
-```
-
-### 4.3 RED Generator（首个实现）
-
-```go
-// REDGenerator 生成 Rate/Error/Duration 指标
-// 等价于 spanmetricsconnector 的核心功能，但增加多租户和采样校正
-type REDGenerator struct {
-    config     *REDConfig
-    metrics    map[AppKey]*appMetrics    // AppKey{TenantID, AppID} → metrics（per-APP 隔离）
-    keyBuf     *bytes.Buffer             // 复用 buffer，减少 GC
-    mu         sync.RWMutex
-}
-
-type REDConfig struct {
-    Namespace                string
-    Dimensions               []Dimension
-    Histogram                HistogramConfig
-    CardinalityLimit         int
-    SeriesExpiration         time.Duration
-    SamplingCorrectionEnabled bool
-}
-
-func (g *REDGenerator) ProcessSpan(ctx context.Context, tenantID, appID, serviceName string, appAgg *AppAggregator, resource pcommon.Resource, span ptrace.Span) {
-    am := g.getOrCreateAppMetrics(AppKey{TenantID: tenantID, AppID: appID})
-
-    // 1. 基数检查（per-APP 隔离的基数限制）
-    if appAgg.IsCardinalityExceeded() {
-        return
-    }
-
-    // 2. 提取维度属性
-    attrs := g.extractDimensions(resource, span)
-
-    // 3. 计算 metric key（复用 buffer）
-    key := g.buildMetricKey(attrs)
-
-    // 4. 采样率校正系数（如果启用）
-    // 从 span attributes 中获取 sampling.rate 值
-    // - 值为采样率（如 0.01 表示 1% 采样），校正 weight = 1/rate = 100
-    // - 属性不存在时默认 weight = 1（不校正）
-    weight := g.getSamplingWeight(span)
-
-    // 5. 更新计数器（calls）
-    am.calls.Add(key, attrs, weight)
-
-    // 6. 更新直方图（duration）
-    duration := span.EndTimestamp().AsTime().Sub(span.StartTimestamp().AsTime())
-    am.duration.Record(key, attrs, duration, weight)
-
-    // 7. 更新错误计数（如果 status = ERROR）
-    if span.Status().Code() == ptrace.StatusCodeError {
-        am.errors.Add(key, attrs, weight)
-    }
-
-    // 8. 更新 size（如果配置启用）
-    if g.config.EnableSizeMetric {
-        am.size.Record(key, attrs, int64(estimateSpanSize(span)), weight)
-    }
-}
-
-// getSamplingWeight 从 Span attributes 提取采样校正权重
-// 采样率属性格式：float64，表示采样率（如 0.01 = 1% 采样）
-// 校正公式：weight = 1 / sampling_rate
-// 边界条件：
-//   - 属性不存在 → weight = 1（不校正）
-//   - 属性值 <= 0 或 > 1 → weight = 1（无效值不校正，记录日志）
-//   - Head Sampling: 属性由 SDK 设置（如 "sampling.rate" = 0.1）
-//   - Tail Sampling: 属性由 Tail Sampler processor 在通过后补充
-func (g *REDGenerator) getSamplingWeight(span ptrace.Span) float64 {
-    if !g.config.SamplingCorrectionEnabled {
-        return 1.0
-    }
-    
-    attr, ok := span.Attributes().Get(g.config.SamplingAttribute)
-    if !ok {
-        return 1.0
-    }
-    
-    rate := attr.Double()
-    if rate <= 0 || rate > 1 {
-        return 1.0  // 无效值不校正
-    }
-    
-    return 1.0 / rate
-}
-```
-
-### 4.4 ServiceGraph Generator（Trace-level 聚合，参考 Tempo 实现）
-
-```go
-// ServiceGraphGenerator 从 Span 中构建服务调用拓扑
-// 借鉴 Tempo 的实现：Edge Store + FIFO 过期 + 虚拟节点推断
-// 与 Tempo 的区别：通过 ServiceGroup 机制管理 Edge 归属
-//
-// 注意：ServiceGraphGenerator 不实现 Generator 接口，不纳入 generators 列表。
-// 它由 Connector 通过 ServiceGraphRouter 独立调用（因为 ServiceGraph 天然跨 APP，
-// 与 per-APP 隔离的 Generator 接口模型不匹配）。
-type ServiceGraphGenerator struct {
-    router   *ServiceGraphRouter   // 按 ServiceGroup 路由
-    config   *ServiceGraphConfig
-    clock    Clock
-    logger   *zap.Logger
-}
-
-type ServiceGraphConfig struct {
-    // 通用配置
-    Dimensions        []Dimension  // 额外维度（如 http.method）
-    EnableVirtualNode bool         // 是否启用虚拟节点推断
-    PeerAttributes    []string     // 推断对端服务名的属性优先级
-    
-    // Store 配置（per-ServiceGroup，未配置时使用此默认值）
-    Store StoreConfig
-    
-    // 指标前缀（参考 Tempo enable_client_server_prefix）
-    // 启用后指标名带方向前缀，例如：
-    //   client_traces_service_graph_request_total（Client 端发起的请求）
-    //   server_traces_service_graph_request_total（Server 端接收的请求）
-    EnableClientServerPrefix bool
-    
-    // 连接类型
-    EnableMessagingSystem bool     // 是否追踪 Producer/Consumer 类型的 Edge
-    
-    // 采样校正（ServiceGraph 的请求计数也需要校正）
-    SamplingCorrectionEnabled bool // 是否对 Edge 计数做采样率校正
-}
-
-type StoreConfig struct {
-    MaxItems int           // 最大等待配对的 Edge 数
-    TTL      time.Duration // Edge 过期时间（超时后触发虚拟节点推断）
-}
-
-// Edge 数据结构（参考 Tempo store.Edge）
-type Edge struct {
-    Key             uint64
-    TraceID         pcommon.TraceID
-    
-    // Client 端信息
-    ClientService   string
-    ClientLatency   time.Duration
-    ClientResource  pcommon.Resource
-    
-    // Server 端信息
-    ServerService   string
-    ServerLatency   time.Duration
-    ServerResource  pcommon.Resource
-    
-    // 状态
-    ConnectionType  ConnectionType  // Direct / MessagingSystem
-    Failed          bool
-    VirtualNodeLabel string          // "" / "client" / "server"
-    
-    // 额外维度
-    Dimensions      map[string]string
-    
-    // 过期管理
-    ExpireAt        time.Time
-}
-
-type ConnectionType string
-
-const (
-    ConnectionTypeDirect    ConnectionType = ""
-    ConnectionTypeMessaging ConnectionType = "messaging_system"
-)
-
-// isCompleted 当 Client 和 Server 两端都填充后，Edge 完成
-func (e *Edge) isCompleted() bool {
-    return e.ClientService != "" && e.ServerService != ""
-}
-
-// ProcessSpan 由 ServiceGraphRouter 调用（非 Generator 接口方法）
-// serviceName 即 resource.attributes["service.name"]，用于标识 Edge 两端的服务
-func (g *ServiceGraphGenerator) ProcessSpan(ctx context.Context, tenantID, appID, serviceName string, resource pcommon.Resource, span ptrace.Span) {
-    switch span.Kind() {
-    case ptrace.SpanKindClient:
-        // Client 用 SpanID 作为 key（与 Server 的 ParentSpanID 匹配）
-        key := buildEdgeKey(span.TraceID(), span.SpanID())
-        g.router.UpsertEdge(tenantID, appID, key, func(e *Edge) {
-            e.TraceID = span.TraceID()
-            e.ClientService = serviceName
-            e.ClientLatency = spanDuration(span)
-            e.ClientResource = resource
-            e.Failed = e.Failed || isSpanFailed(span)
-            g.extractClientDimensions(e, resource, span)
-        })
-
-    case ptrace.SpanKindServer:
-        // Server 用 ParentSpanID 作为 key（与 Client 的 SpanID 匹配）
-        key := buildEdgeKey(span.TraceID(), span.ParentSpanID())
-        g.router.UpsertEdge(tenantID, appID, key, func(e *Edge) {
-            e.TraceID = span.TraceID()
-            e.ServerService = serviceName
-            e.ServerLatency = spanDuration(span)
-            e.ServerResource = resource
-            e.Failed = e.Failed || isSpanFailed(span)
-            g.extractServerDimensions(e, resource, span)
-        })
-
-    case ptrace.SpanKindProducer:
-        if !g.config.EnableMessagingSystem {
-            return
-        }
-        key := buildEdgeKey(span.TraceID(), span.SpanID())
-        g.router.UpsertEdge(tenantID, appID, key, func(e *Edge) {
-            e.ClientService = serviceName
-            e.ConnectionType = ConnectionTypeMessaging
-            e.ClientLatency = spanDuration(span)
-        })
-
-    case ptrace.SpanKindConsumer:
-        if !g.config.EnableMessagingSystem {
-            return
-        }
-        key := buildEdgeKey(span.TraceID(), span.ParentSpanID())
-        g.router.UpsertEdge(tenantID, appID, key, func(e *Edge) {
-            e.ServerService = serviceName
-            e.ConnectionType = ConnectionTypeMessaging
-            e.ServerLatency = spanDuration(span)
-        })
-    }
-}
-
-// onEdgeComplete Edge 完成时生成指标
-func (g *ServiceGraphGenerator) onEdgeComplete(edge *Edge) {
-    // 生成指标：
-    // - traces_service_graph_request_total{client, server, connection_type, ...dimensions}
-    // - traces_service_graph_request_failed_total{...}
-    // - traces_service_graph_request_server_seconds{...}
-    // - traces_service_graph_request_client_seconds{...}
-}
-
-// onEdgeExpire Edge 超时时尝试虚拟节点推断
-func (g *ServiceGraphGenerator) onEdgeExpire(edge *Edge) {
-    if !g.config.EnableVirtualNode {
-        return  // 不启用虚拟节点则直接丢弃
-    }
-    
-    // 尝试从 peer attributes 推断缺失的一端
-    if edge.ClientService != "" && edge.ServerService == "" {
-        // 只有 Client，缺 Server → 推断 Server
-        if peer := g.inferPeerService(edge, "server"); peer != "" {
-            edge.ServerService = peer
-            edge.VirtualNodeLabel = "server"
-            g.onEdgeComplete(edge)
-            return
-        }
-    }
-    if edge.ServerService != "" && edge.ClientService == "" {
-        // 只有 Server，缺 Client → 推断 Client
-        if peer := g.inferPeerService(edge, "client"); peer != "" {
-            edge.ClientService = peer
-            edge.VirtualNodeLabel = "client"
-            g.onEdgeComplete(edge)
-            return
-        }
-    }
-    
-    // 无法推断 → 记录 unpaired_spans 指标
-    g.recordUnpairedSpan(edge)
-}
-
-// inferPeerService 从 peer attributes 推断对端服务名
-// 优先级参考 Tempo：server.address > peer.service > db.name
-func (g *ServiceGraphGenerator) inferPeerService(edge *Edge, missingRole string) string {
-    for _, attr := range g.config.PeerAttributes {
-        if val, ok := edge.Dimensions[attr]; ok && val != "" {
-            return val
-        }
-    }
-    return ""
-}
-
-// buildEdgeKey 使用 traceID + spanID 构建唯一 key
-// 使用 hash 而非直接拼接，节省内存
-func buildEdgeKey(traceID pcommon.TraceID, spanID pcommon.SpanID) uint64 {
-    h := fnv.New64a()
-    h.Write(traceID[:])
-    h.Write(spanID[:])
-    return h.Sum64()
-}
-```
-
-#### ServiceGraph 生成的指标
-
-| 指标名 | 类型 | Labels | 说明 |
-|--------|------|--------|------|
-| `traces_service_graph_request_total` | Counter | client, server, connection_type, virtual_node, ...dims | 边的请求总数 |
-| `traces_service_graph_request_failed_total` | Counter | 同上 | 边的失败请求数 |
-| `traces_service_graph_request_server_seconds` | Histogram | 同上 | Server 端耗时分布 |
-| `traces_service_graph_request_client_seconds` | Histogram | 同上 | Client 端耗时分布 |
-| `traces_service_graph_request_messaging_system_seconds` | Histogram | 同上 | 消息系统耗时（Producer→Consumer） |
-| `traces_service_graph_unpaired_spans_total` | Counter | service, side | 未配对的 Span 数（运营指标） |
-| `traces_service_graph_dropped_spans_total` | Counter | service | Store 满时被丢弃的 Span（运营指标） |
-
-**`enable_client_server_prefix` 启用时的指标名变化**：
-
-| 原始指标名 | Client 前缀 | Server 前缀 |
-|-----------|------------|------------|
-| `traces_service_graph_request_total` | `client_traces_service_graph_request_total` | `server_traces_service_graph_request_total` |
-| `traces_service_graph_request_server_seconds` | - | `server_traces_service_graph_request_server_seconds` |
-| `traces_service_graph_request_client_seconds` | `client_traces_service_graph_request_client_seconds` | - |
-
-启用前缀后，每条 Edge 会同时输出 Client 视角和 Server 视角的指标，方便按服务角色分别查询。
-
-### 4.5 APP 聚合管理（AppAggregator + AppAggregatorManager）
-
-本节统一定义 APP 级聚合空间的数据结构和生命周期管理。整个设计只有这一套 struct，§6 的隔离决策由此实现。
-
-#### 4.5.1 AppAggregator（Per-APP 聚合空间）
-
-```go
-// AppAggregator 每个 APP 独立的聚合空间
-// 职责：管理该 APP 的所有指标 series、基数控制、过期清理
-// 生命周期由 AppAggregatorManager 管理（idle 回收 + 容量保护）
-type AppAggregator struct {
-    TenantID           string                            // 所属 Tenant（用于鉴权和分组）
-    AppID              string                            // APP 标识（来自 tokenauth Context）
-    Config             *AppMetricConfig                  // 该 APP 的最终配置（经 OverrideManager 合并后）
-    seriesCache        *lru.Cache[uint64, *MetricSeries] // hash(labels) → Series
-    cardinalityLimit   int                               // 基数上限
-    currentCardinality atomic.Int64                      // 当前基数使用量
-    LastActive         time.Time                         // 最后活跃时间（用于 idle 回收）
-    clock              Clock                             // 可注入时钟
-    mu                 sync.RWMutex
-}
-
-// AppMetricConfig 单个 APP 的指标配置（由 OverrideManager 按优先级合并后提供）
-type AppMetricConfig struct {
-    // RED 配置
-    Dimensions       []Dimension     // 该 APP 启用的维度
-    Histogram        HistogramConfig // 直方图桶配置
-    Namespace        string          // 指标命名空间前缀
-    
-    // 限制配置
-    CardinalityLimit int             // 基数限制
-    RateLimit        int             // Span 处理速率上限（spans/s）
-    
-    // 控制开关
-    Enabled          bool            // 是否启用指标生成
-    EnableRED        bool            // 是否启用 RED 指标
-    EnableServiceGraph bool          // 是否参与 ServiceGraph
-    
-    // ServiceGraph 关联配置
-    ServiceGroups    []string        // 该 APP 所属的 ServiceGroup（用于跨 APP 串联）
-}
-
-// IsCardinalityExceeded 检查该 APP 是否已达基数上限
-func (aa *AppAggregator) IsCardinalityExceeded() bool {
-    return aa.currentCardinality.Load() >= int64(aa.cardinalityLimit)
-}
-
-// CheckCardinality 基数控制：达到上限时走 overflow 桶（OTel 标准溢出机制）
-func (aa *AppAggregator) CheckCardinality(key uint64) (uint64, bool) {
-    current := aa.currentCardinality.Load()
-    if current >= int64(aa.cardinalityLimit) {
-        return overflowKey, true // 溢出到 "otel.metric.overflow" 标签
-    }
-    aa.currentCardinality.Add(1)
-    return key, false
-}
-
-// RecordSpan 记录一个 Span 的指标数据
-func (aa *AppAggregator) RecordSpan(key uint64, attrs pcommon.Map, duration time.Duration, weight float64, failed bool) {
-    aa.mu.RLock()
-    series, ok := aa.seriesCache.Get(key)
-    aa.mu.RUnlock()
-    
-    if !ok {
-        finalKey, overflow := aa.CheckCardinality(key)
-        if overflow {
-            key = finalKey  // 溢出到统一桶
-        }
-        
-        aa.mu.Lock()
-        series = newMetricSeries(key, attrs)
-        aa.seriesCache.Add(key, series)
-        aa.mu.Unlock()
-    }
-    
-    // 更新 series 数据（原子操作）
-    series.Calls.Add(weight)
-    series.Duration.Record(duration, weight)
-    if failed {
-        series.Errors.Add(weight)
-    }
-    
-    aa.LastActive = aa.clock.Now()
-}
-
-// Collect 收集并重置该 APP 的所有 series（用于 flush）
-func (aa *AppAggregator) Collect() []*MetricSeries {
-    aa.mu.Lock()
-    defer aa.mu.Unlock()
-    
-    result := make([]*MetricSeries, 0, aa.seriesCache.Len())
-    for _, key := range aa.seriesCache.Keys() {
-        if series, ok := aa.seriesCache.Get(key); ok {
-            result = append(result, series.Snapshot())
-        }
-    }
-    return result
-}
-
-// Close 最后一次 flush + 释放资源
-func (aa *AppAggregator) Close() {
-    // 最后一次 Collect（丢弃或上报由 Manager 决定）
-    aa.seriesCache.Purge()
-}
-```
-
-#### 4.5.2 AppAggregatorManager（生命周期管理）
-
-```go
-// AppAggregatorManager 管理所有 APP 聚合空间的生命周期
-// 职责：
-//   1. 按需创建 AppAggregator（首次看到某 APP 时自动创建）
-//   2. 容量保护：单 Tenant 超过 MaxAppsPerTenant 时合并到 __overflow__
-//   3. Idle 回收：定期清理长时间无数据的 APP 聚合空间，释放内存
-// 对应配置：AppIsolationConfig
-type AppAggregatorManager struct {
-    activeApps       map[AppKey]*AppAggregator
-    maxAppsPerTenant int           // 对应 AppIsolationConfig.MaxAppsPerTenant
-    idleTimeout      time.Duration // 对应 AppIsolationConfig.IdleTimeout
-    cleanupInterval  time.Duration // 对应 AppIsolationConfig.CleanupInterval
-    clock            Clock         // 可注入时钟（测试可控）
-    mu               sync.RWMutex
-}
-
-// GetOrCreate 首次看到某 APP 时自动创建其聚合空间
-func (m *AppAggregatorManager) GetOrCreate(tenantID, appID string, configMgr *OverrideManager) *AppAggregator {
-    key := AppKey{TenantID: tenantID, AppID: appID}
-    
-    m.mu.RLock()
-    if agg, ok := m.activeApps[key]; ok {
-        agg.LastActive = m.clock.Now()
-        m.mu.RUnlock()
-        return agg
-    }
-    m.mu.RUnlock()
-    
-    // 双重检查锁
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    if agg, ok := m.activeApps[key]; ok {
-        agg.LastActive = m.clock.Now()
-        return agg
-    }
-    
-    // 检查 Tenant 下的活跃 APP 数量限制（运行时内存保护）
-    if m.countAppsForTenant(tenantID) >= m.maxAppsPerTenant {
-        return m.overflowAggregator(tenantID)  // 超限时合并到 overflow APP
-    }
-    
-    config := configMgr.GetAppConfig(tenantID, appID)
-    agg := newAppAggregator(tenantID, appID, config, m.clock)
-    m.activeApps[key] = agg
-    return agg
-}
-
-// overflowAggregator 返回该 Tenant 的溢出聚合空间
-// 超限 APP 的指标合并到统一的 __overflow__ 标识下
-// 输出指标中 app_id 标记为 "__overflow__"，方便用户识别
-func (m *AppAggregatorManager) overflowAggregator(tenantID string) *AppAggregator {
-    overflowKey := AppKey{TenantID: tenantID, AppID: "__overflow__"}
-    if agg, ok := m.activeApps[overflowKey]; ok {
-        agg.LastActive = m.clock.Now()
-        return agg
-    }
-    agg := newAppAggregator(tenantID, "__overflow__", defaultOverflowConfig(), m.clock)
-    m.activeApps[overflowKey] = agg
-    return agg
-}
-
-// CleanupIdle 定期清理长时间无数据的 APP 聚合空间
-// 由后台 goroutine 按 CleanupInterval 周期调用
-func (m *AppAggregatorManager) CleanupIdle() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    now := m.clock.Now()
-    for key, agg := range m.activeApps {
-        if now.Sub(agg.LastActive) > m.idleTimeout {
-            agg.Close()  // 最后一次 flush + 释放资源
-            delete(m.activeApps, key)
-        }
-    }
-}
-
-// Start 启动后台清理 goroutine
-func (m *AppAggregatorManager) Start(ctx context.Context) {
-    go func() {
-        ticker := time.NewTicker(m.cleanupInterval)
-        defer ticker.Stop()
-        for {
-            select {
-            case <-ticker.C:
-                m.CleanupIdle()
-            case <-ctx.Done():
-                return
-            }
-        }
-    }()
-}
-
-// Stop 停止管理器，关闭所有聚合空间
-func (m *AppAggregatorManager) Stop() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    for _, agg := range m.activeApps {
-        agg.Close()
-    }
-}
-```
-
-### 4.6 MetricFlusher（定时 flush）
-
-```go
-// MetricFlusher 负责定时收集各 Generator 的指标并发送给下游
-type MetricFlusher struct {
-    interval        time.Duration
-    consumer        consumer.Metrics
-    generators      []Generator
-    sgRouter        *ServiceGraphRouter           // 用于收集 ServiceGraph 指标和 Drain
-    temporality     pmetric.AggregationTemporality
-    drainOnShutdown bool                          // Shutdown 时是否 drain EdgeStore
-
-    done            chan struct{}
-    logger          *zap.Logger
-}
-
-func (f *MetricFlusher) Start(ctx context.Context) {
-    go f.flushLoop(ctx)
-}
-
-func (f *MetricFlusher) flushLoop(ctx context.Context) {
-    ticker := time.NewTicker(f.interval)
-    defer ticker.Stop()
-
-    for {
-        select {
-        case <-ticker.C:
-            if err := f.FlushOnce(ctx); err != nil {
-                f.logger.Error("flush metrics failed", zap.Error(err))
-            }
-        case <-f.done:
-            return
-        case <-ctx.Done():
-            return
-        }
-    }
-}
-
-func (f *MetricFlusher) FlushOnce(ctx context.Context) error {
-    md := pmetric.NewMetrics()
-
-    // 从各 Generator 收集所有活跃 APP 的指标
-    for _, gen := range f.generators {
-        series := gen.CollectAll()
-        f.buildMetrics(md, series)
-    }
-    
-    // 强制过期 ServiceGraph EdgeStore 中所有 pending Edge（graceful shutdown 时调用）
-    if f.drainOnShutdown {
-        f.sgRouter.DrainAll()
-    }
-
-    if md.DataPointCount() == 0 {
-        return nil
-    }
-
-    // 发送给下游
-    return f.consumer.ConsumeMetrics(ctx, md)
-}
-```
-
-### 4.7 配置结构
-
-```go
-// Config MetricGenerator Connector 的完整配置
-type Config struct {
-    // 全局配置
-    MetricsFlushInterval   time.Duration `mapstructure:"metrics_flush_interval"`    // 默认 15s
-    AggregationTemporality string        `mapstructure:"aggregation_temporality"`   // "delta" | "cumulative"
-    Namespace              string        `mapstructure:"namespace"`                 // 指标命名空间
-
-    // 生成器配置
-    RED          *REDConfig          `mapstructure:"red"`           // RED 指标生成器
-    ServiceGraph *ServiceGraphConfig `mapstructure:"service_graph"` // 服务拓扑生成器
-    Custom       []CustomGenConfig   `mapstructure:"custom"`        // 自定义生成器
-
-    // APP 隔离配置
-    AppIsolation AppIsolationConfig `mapstructure:"app_isolation"`
-
-    // ServiceGroup 配置
-    ServiceGroups []ServiceGroupConfig `mapstructure:"service_groups"`
-
-    // 采样校正
-    SamplingCorrection SamplingCorrectionConfig `mapstructure:"sampling_correction"`
-    
-    // 配置覆盖
-    Overrides OverridesConfig `mapstructure:"overrides"`
-}
-
-// AppIsolationConfig APP 聚合空间的运行时内存保护配置
-// 注意：此处的限制是 MetricGenerator 实例级的运行时保护，与控制面注册的 APP 总量无关。
-// - 控制面管理的是"平台注册了多少 APP（Token 发放）"，是全量数据
-// - 此处控制的是"一个 Worker 实例在内存中同时维护多少个 APP 的聚合状态"，是运行时资源上限
-// - 超限时新 APP 的指标合并到 __overflow__ 桶，而非拒绝接入
-type AppIsolationConfig struct {
-    Enabled                 bool          `mapstructure:"enabled"`                   // 是否启用 APP 级隔离
-    MaxAppsPerTenant        int           `mapstructure:"max_apps_per_tenant"`       // 单实例每 Tenant 最大活跃 APP 聚合空间数（默认 500，防内存泄露）
-    DefaultCardinalityLimit int           `mapstructure:"default_cardinality_limit"` // 每 APP 默认基数限制（series 数）
-    IdleTimeout             time.Duration `mapstructure:"idle_timeout"`              // APP 无数据后回收其内存聚合空间的等待时间（默认 1h）
-    CleanupInterval         time.Duration `mapstructure:"cleanup_interval"`          // 后台 goroutine 扫描 idle APP 的周期（默认 5m）
-}
-
-// ServiceGroupConfig 定义一组可互相建立 ServiceGraph Edge 的 APP
-// 注意：不支持跨 Tenant 的 ServiceGroup，所有成员必须属于同一 Tenant
-type ServiceGroupConfig struct {
-    Name      string              `mapstructure:"name"`       // 服务组名称
-    TenantID  string              `mapstructure:"tenant_id"`  // 所属 Tenant（必填）
-    Members   []ServiceMemberConfig `mapstructure:"members"`  // 组内成员（同 Tenant 下的 APP）
-    Config    *StoreConfig        `mapstructure:"config"`     // 该组的 EdgeStore 配置（为空时继承全局 ServiceGraphConfig.Store）
-}
-
-type ServiceMemberConfig struct {
-    AppID string `mapstructure:"app_id"` // APP 标识（与 context 中的 appID 对应）
-}
-
-// ServiceGraphConfig ServiceGraph 生成器配置
-type ServiceGraphConfig struct {
-    Enabled              bool        `mapstructure:"enabled"`
-    Store                StoreConfig `mapstructure:"store"`                    // 默认 EdgeStore 配置
-    Dimensions           []Dimension `mapstructure:"dimensions"`
-    EnableVirtualNode    bool        `mapstructure:"enable_virtual_node"`      // 默认 true
-    PeerAttributes       []string    `mapstructure:"peer_attributes"`          // 推断对端的属性优先级
-    EnableMessagingSystem bool       `mapstructure:"enable_messaging_system"`  // 追踪 Producer/Consumer
-    EnableClientServerPrefix bool    `mapstructure:"enable_client_server_prefix"` // 在指标名中区分 client_/server_ 前缀
-    AutoDiscover         bool        `mapstructure:"auto_discover"`            // Tenant 内自动发现
-    AutoDiscoverScope    string      `mapstructure:"auto_discover_scope"`      // "tenant" | "explicit_only"
-    ExcludeApps          []string    `mapstructure:"exclude_apps"`             // 自动发现时排除的 APP
-}
-
-// OverridesConfig 配置覆盖机制（借鉴 Tempo）
-type OverridesConfig struct {
-    // Per-Tenant 覆盖（静态配置，适合初始化时的默认覆盖）
-    TenantOverrides map[string]*MetricGenOverride `mapstructure:"tenant_overrides"`
-    
-    // Per-APP 覆盖（最高优先级，静态配置）
-    AppOverrides []AppOverrideConfig `mapstructure:"app_overrides"`
-    
-    // 动态加载（热更新）—— 存储在 Redis 中，支持通过 API 动态修改
-    // Redis Key 格式：
-    //   otel:metricgen:overrides:tenant:{tenantID} → TenantOverride JSON
-    //   otel:metricgen:overrides:app:{tenantID}:{appID} → AppOverride JSON
-    DynamicStore        string        `mapstructure:"dynamic_store"`         // "redis"（复用现有 Redis）
-    DynamicReloadPeriod time.Duration `mapstructure:"dynamic_reload_period"` // 从 Redis 热加载周期（默认 10s）
-}
-
-type AppOverrideConfig struct {
-    TenantID string              `mapstructure:"tenant_id"`
-    AppID    string              `mapstructure:"app_id"`
-    Config   *MetricGenOverride  `mapstructure:"config"`
-}
-
-type MetricGenOverride struct {
-    CardinalityLimit int           `mapstructure:"cardinality_limit"`
-    RateLimit        int           `mapstructure:"rate_limit"`          // spans/s
-    Dimensions       []Dimension   `mapstructure:"dimensions"`
-    Histogram        *HistogramConfig `mapstructure:"histogram"`
-    Enabled          *bool         `mapstructure:"enabled"`             // nil 表示不覆盖
-    EnableRED        *bool         `mapstructure:"enable_red"`
-    EnableServiceGraph *bool       `mapstructure:"enable_service_graph"`
-}
-
-type SamplingCorrectionConfig struct {
-    Enabled   bool   `mapstructure:"enabled"`
-    Attribute string `mapstructure:"attribute"` // 采样率属性名（默认 "sampling.rate"）
-    // 属性值说明：
-    // - 类型：float64
-    // - 含义：采样率（0.01 表示 1% 采样）
-    // - 校正公式：weight = 1 / rate（即 0.01 采样率下 weight = 100）
-    // - 无效值（<= 0 或 > 1）：不校正（weight = 1），记录 warn 日志
-    // - 属性不存在：不校正（weight = 1）
-}
-```
-
-### 4.8 Factory 注册
-
-```go
-package metricgenconnector
-
-import (
-    "go.opentelemetry.io/collector/connector"
-    "go.opentelemetry.io/collector/connector/xconnector"
-)
-
-const typeStr = "metricgen"
-
-func NewFactory() connector.Factory {
-    return xconnector.NewFactory(
-        component.MustNewType(typeStr),
-        createDefaultConfig,
-        xconnector.WithTracesToMetrics(createTracesToMetricsConnector, component.StabilityLevelAlpha),
-    )
-}
-
-func createDefaultConfig() component.Config {
-    return &Config{
-        MetricsFlushInterval:   15 * time.Second,
-        AggregationTemporality: "cumulative",
-        Namespace:              "traces.spanmetrics",
-        RED: &REDConfig{
-            Enabled: true,
-            Histogram: HistogramConfig{
-                Unit:    UnitMilliseconds,
-                Buckets: defaultBuckets,
-            },
-            CardinalityLimit:         2000,
-            SeriesExpiration:         15 * time.Minute,
-            SamplingCorrectionEnabled: false,
-            SamplingAttribute:        "sampling.rate",
-        },
-        ServiceGraph: &ServiceGraphConfig{
-            Enabled:                  true,
-            Store:                    StoreConfig{MaxItems: 10000, TTL: 10 * time.Second},
-            EnableVirtualNode:        true,
-            EnableClientServerPrefix: true,
-            EnableMessagingSystem:    true,
-            PeerAttributes:           []string{"server.address", "peer.service", "db.name"},
-            AutoDiscover:             true,
-            AutoDiscoverScope:        "tenant",
-        },
-        AppIsolation: AppIsolationConfig{
-            Enabled:                 true,
-            MaxAppsPerTenant:        500,
-            DefaultCardinalityLimit: 2000,
-            IdleTimeout:            1 * time.Hour,
-            CleanupInterval:        5 * time.Minute,
-        },
-        Overrides: OverridesConfig{
-            DynamicStore:        "redis",
-            DynamicReloadPeriod: 10 * time.Second,
-        },
-    }
-}
-```
-
----
-
-## 5. 分布式设计
-
-### 5.1 分布式部署拓扑
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     分布式部署架构                                 │
-│                                                                   │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │
-│  │  Agent-1    │    │  Agent-2    │    │  Agent-N    │          │
-│  │ (app-host)  │    │ (app-host)  │    │ (app-host)  │          │
-│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘          │
-│         │                   │                   │                 │
-│         └───────────────────┼───────────────────┘                 │
-│                             │ OTLP                                │
-│                             ▼                                     │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │            Gateway Cluster (loadbalancingexporter)           │ │
-│  │                                                              │ │
-│  │   routing_key: traceID                                       │ │
-│  │   resolver: k8s (EndpointSlice watch)                        │ │
-│  │   hash_ring: CRC32 + 200 虚拟节点/endpoint                   │ │
-│  │                                                              │ │
-│  │   ┌──────────────────────────────────────────────────────┐   │ │
-│  │   │  一致性哈希环: hash(traceID) → Worker Instance        │   │ │
-│  │   └──────────────────────────────────────────────────────┘   │ │
-│  └────────────────────────┬────────────────────────────────────┘ │
-│                           │                                       │
-│      ┌────────────────────┼───────────────────────┐              │
-│      │                    │                       │               │
-│      ▼                    ▼                       ▼               │
-│  ┌──────────┐      ┌──────────┐           ┌──────────┐          │
-│  │Worker-1  │      │Worker-2  │           │Worker-N  │          │
-│  │          │      │          │           │          │          │
-│  │┌────────┐│      │┌────────┐│           │┌────────┐│          │
-│  ││MetricGen││     ││MetricGen││          ││MetricGen││         │
-│  ││Connector││     ││Connector││          ││Connector││         │
-│  │└────────┘│      │└────────┘│           │└────────┘│          │
-│  │          │      │          │           │          │          │
-│  │┌────────┐│      │┌────────┐│           │┌────────┐│          │
-│  ││ Trace   ││     ││ Trace   ││          ││ Trace   ││         │
-│  ││ Storage ││     ││ Storage ││          ││ Storage ││         │
-│  │└────────┘│      │└────────┘│           │└────────┘│          │
-│  └──────────┘      └──────────┘           └──────────┘          │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 5.2 TraceID 路由保证
-
-**核心前提**：MetricGenerator 中需要 Trace-level 聚合的 Generator（如 ServiceGraph）要求同一 Trace 的所有 Span 在同一实例上处理。
-
-**实现方案**：复用项目已有的 `loadbalancingexporter`（contrib 提供），配置如下：
-
-```yaml
-exporters:
-  loadbalancing:
-    routing_key: "traceID"
-    protocol:
-      otlp:
-        tls:
-          insecure: true
-    resolver:
-      k8s:
-        service: "collector-worker.observability.svc.cluster.local"
-        ports: [4317]
-```
-
-### 5.3 分布式场景下的聚合策略
-
-| 聚合类型 | 是否需要 Trace 完整性 | 分布式策略 |
-|----------|---------------------|-----------|
-| **RED（calls/duration/errors）** | ❌ 不需要 | 各实例独立聚合，使用 Delta Temporality，下游存储自动合并 |
-| **ServiceGraph** | ✅ 需要 | 依赖前置 loadbalancingexporter 按 TraceID 路由 |
-| **Trace-level 指标（如 Trace Duration）** | ✅ 需要 | 同上 |
-| **Custom（按 Span 级别）** | ❌ 不需要 | 各实例独立聚合 |
-
-### 5.4 扩缩容时的一致性保证
-
-**问题**：当 Worker 实例数变化时（扩/缩容），一致性哈希环会重新分配 TraceID 的归属，导致：
-1. 正在聚合的 Trace 可能被路由到新实例
-2. 旧实例上的 Edge 配对可能永远等不到另一半
-
-**解决方案**：
-
-1. **短时间窗口容忍**：ServiceGraph 的 Edge TTL 设置为较短值（如 10s），超时后触发虚拟节点推断，避免永久挂起
-2. **Delta Temporality 自愈**：RED 指标使用 Delta 模式，重分配后新实例重新开始累计，下游自动合并
-3. **K8s 滚动更新**：Resolver 监听 EndpointSlice 变化，哈希环平滑过渡
-4. **Metrics Expiration**：旧实例上的"孤儿" series 会在过期后自动清理
-
-### 5.5 故障恢复
-
-| 故障场景 | 影响 | 恢复策略 |
-|----------|------|---------|
-| Worker 实例宕机 | 该实例上的聚合状态丢失 | K8s 自动重启；哈希环自动摘除；Delta 模式下丢失一个 flush 周期的数据 |
-| Gateway 实例宕机 | 部分 Agent 连接中断 | Agent 重连到其他 Gateway；Gateway 无状态，影响可控 |
-| Redis 不可用 | 配置覆盖/ServiceGroup/TenantID 映射不可读取 | 使用本地缓存的上一次配置继续运行；TenantID 降级为 AppID；记录 error 指标 |
-
----
-
-## 6. 隔离设计：APP 级别隔离 + 跨 APP 服务串联
-
-本节阐述隔离策略的**设计决策**。具体实现结构详见 §4.5（`AppAggregator` + `AppAggregatorManager`）。
-
-### 6.1 隔离粒度分析
-
-#### 为什么不做 Tenant 级别隔离
-
-| 维度 | Tenant 级隔离 | APP 级隔离 |
-|------|-------------|-----------|
-| **隔离粒度** | 太粗 —— 一个 Tenant 下所有 APP 共享基数配额 | ✅ 合适 —— 每个 APP 独立管理 |
-| **基数控制** | 大 APP 吃掉整个 Tenant 配额 | ✅ 每个 APP 独立限制 |
-| **配置灵活性** | 一个 Tenant 内所有 APP 同一配置 | ✅ 不同 APP 可配置不同维度/桶 |
-| **ServiceGraph** | 需要跨 APP 工作 | ✅ 可通过 ServiceGroup 机制配置跨 APP 关系 |
-| **运维** | 降级/限流只能到 Tenant | ✅ 可精确到单个 APP |
-
-**结论**：隔离粒度到 APP 级别，Tenant 只作为逻辑分组和鉴权单位。
-
-#### APP 的定义
-
-```
-APP ≡ Context 中的 AppID（由 tokenauth processor 在上游注入）
-```
-
-> **AppID vs service.name 的区别**：
-> - **AppID**：身份标识，来自 tokenauth（Token → AppID 映射），是隔离和鉴权的单位
-> - **service.name**：服务名称，来自 Resource Attributes，用于 ServiceGraph Edge 中的服务标识
-> - 一个 AppID 下可能有多个 service.name（如一个应用包含多个微服务模块）
-> - 指标的隔离（基数限制、配置覆盖）按 AppID 划分，服务拓扑按 service.name 展示
-
-#### 每个 APP 独立管理的内容
-
-一个 APP 对应一个 `AppAggregator` 实例（§4.5.1），拥有独立的：
-- 基数限制（`cardinalityLimit`）— 超限走 overflow 桶
-- 维度配置（`AppMetricConfig.Dimensions`）
-- 直方图桶配置（`AppMetricConfig.Histogram`）
-- 启用/禁用状态（`AppMetricConfig.Enabled`）
-
-#### 生命周期管理
-
-`AppAggregatorManager`（§4.5.2）负责 APP 聚合空间的自动创建和回收：
-
-| 机制 | 对应配置 | 说明 |
-|------|---------|------|
-| 按需创建 | — | 首次看到某 AppID 时自动创建 `AppAggregator` |
-| 容量保护 | `AppIsolationConfig.MaxAppsPerTenant` | 单实例单 Tenant 超限时合并到 `__overflow__`（**运行时内存保护**，非控制面注册数据） |
-| Idle 回收 | `AppIsolationConfig.IdleTimeout` | APP 无新数据超时后释放其内存聚合空间 |
-| 定期扫描 | `AppIsolationConfig.CleanupInterval` | 后台 goroutine 按周期检查 idle APP |
-
-> **为什么需要 Idle 回收**：APP 下线/缩容/夜间无流量时，其 `AppAggregator`（LRU Cache + Counter + Histogram Bucket）仍占用内存。定时回收可防止内存膨胀。
-
-### 6.2 跨 APP 服务串联：ServiceGroup 机制
-
-#### 6.2.1 问题分析
-
-ServiceGraph 的本质是跨服务的 —— 它需要配对不同 APP 之间的 Client/Server Span。如果严格按 APP 隔离，ServiceGraph 就无法工作。
-
-**需要解决的问题**：
-1. APP-A 调用 APP-B，Edge 配对需要同时访问两个 APP 的 Span 数据
-2. 同一 Tenant 下的 APP 之间服务串联是常见场景
-3. 需要配置机制来声明哪些 APP 之间允许建立拓扑关系
-4. 默认行为应尽量简单（零配置即可看到 Tenant 内拓扑）
-
-#### 6.2.2 ServiceGroup 设计
-
-**核心概念**：`ServiceGroup` 是同一 Tenant 内一组允许互相建立 ServiceGraph Edge 的 APP 集合。
-
-```go
-// ServiceGroup 定义一组可互相建立拓扑关系的 APP
-// 所有成员必须属于同一 Tenant（不支持跨 Tenant）
-type ServiceGroup struct {
-    Name        string            // 服务组名称（如 "order-flow", "payment-chain"）
-    TenantID    string            // 所属 Tenant（必填）
-    Members     []ServiceMember   // 组内成员（同 Tenant）
-    Config      *ServiceGraphConfig // 该组的 ServiceGraph 配置（为空时继承全局默认）
-}
-
-type ServiceMember struct {
-    AppID     string   // APP 标识
-    Role      string   // 可选：标记角色（如 "gateway", "backend", "database"）
-}
-```
-
-#### 6.2.3 ServiceGraph 的隔离策略
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        隔离 vs 串联的关系                                  │
-│                                                                          │
-│  ┌─── Tenant-A ──────────────────────────────────────────────────────┐  │
-│  │                                                                    │  │
-│  │  ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐    │  │
-│  │  │ APP-1   │     │ APP-2   │     │ APP-3   │     │ APP-4   │    │  │
-│  │  │(gateway)│     │(order)  │     │(payment)│     │(notify) │    │  │
-│  │  └────┬────┘     └────┬────┘     └────┬────┘     └────┬────┘    │  │
-│  │       │               │               │               │          │  │
-│  │       │  RED: 独立隔离  │  RED: 独立隔离  │  RED: 独立隔离 │          │  │
-│  │       │               │               │               │          │  │
-│  │       └───────┬───────┘               └───────┬───────┘          │  │
-│  │               │                               │                   │  │
-│  │      ServiceGroup: "order-flow"     ServiceGroup: "pay-flow"     │  │
-│  │      (APP-1 ↔ APP-2 的 Edge)        (APP-2 ↔ APP-3 的 Edge)     │  │
-│  │                                                                    │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌─── Tenant-B ─────────────────────┐                                    │
-│  │  ┌─────────┐     ┌─────────┐    │                                    │
-│  │  │ APP-X   │     │ APP-Y   │    │  ← 自动发现模式：同 Tenant 下       │
-│  │  └────┬────┘     └────┬────┘    │    APP-X 和 APP-Y 自动组成          │
-│  │       └───────┬───────┘         │    ServiceGroup "auto_tenant-b"     │
-│  │    ServiceGroup: "auto_tenant-b" │                                    │
-│  └──────────────────────────────────┘                                    │
-│                                                                          │
-│  注意：                                                                    │
-│  - APP-4（Tenant-A）没有配置到任何显式 ServiceGroup，                       │
-│    但如果启用 auto_discover，它仍会参与 Tenant-A 的自动 ServiceGroup        │
-│  - 所有 APP 的 RED 指标正常生成（RED 完全 per-APP 隔离，与 ServiceGroup 无关）│
-│  - 不同 Tenant 的 ServiceGroup 完全隔离，互不可见                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-#### 6.2.4 两种配置模式
-
-**模式 1：显式 ServiceGroup 声明**（推荐用于精确控制）
-
-```yaml
-metric_generator:
-  service_groups:
-    - name: "order-flow"
-      tenant_id: "tenant-a"       # 必填：所属 Tenant
-      members:
-        - app_id: "gateway-service"
-        - app_id: "order-service"
-        - app_id: "inventory-service"
-      config:                      # 可选：为空时继承全局 ServiceGraphConfig.Store
-        max_items: 10000
-        ttl: 10s
-        dimensions: [http.method, http.route]
-    
-    - name: "payment-chain"
-      tenant_id: "tenant-a"
-      members:
-        - app_id: "order-service"
-        - app_id: "payment-service"
-        - app_id: "bank-gateway"
-      config:
-        max_items: 5000
-        ttl: 15s
-```
-
-> **注意**：所有 ServiceGroup 成员必须属于同一 Tenant（由 `tenant_id` 指定），不支持跨 Tenant 的 ServiceGroup。
-
-**模式 2：Tenant 内自动发现**（简单场景的默认行为，零配置）
-
-同一 Tenant 下的所有 APP 自动组成一个 ServiceGroup，无需手动声明成员。新 APP 首次上报 Span 时立即参与 Edge 配对。
-
-```yaml
-metric_generator:
-  service_graph:
-    # 默认模式：同 Tenant 下的所有 APP 自动组成一个 ServiceGroup
-    auto_discover: true
-    auto_discover_scope: "tenant"  # "tenant" | "explicit_only"
-    
-    # 也可以排除某些 APP（如只做边缘代理的 sidecar）
-    exclude_apps:
-      - "envoy-sidecar"
-      - "otel-collector-agent"
-```
-
-> **说明**："自动发现"是指 ServiceGraph 层面的行为——当新 APP 的 Span 首次到达时，该 APP 自动被纳入其 Tenant 的默认 ServiceGroup 参与 Edge 配对。无需冷启动延迟或等待配置加载。
-
-#### 6.2.5 ServiceGroup 的实现逻辑（ServiceGraphRouter）
-
-```go
-// ServiceGraphRouter 负责将 Span 路由到正确的 ServiceGroup 进行 Edge 配对
-type ServiceGraphRouter struct {
-    // appToGroups: 每个 APP 可能属于多个 ServiceGroup
-    appToGroups map[AppKey][]string   // AppKey{TenantID, AppID} → []groupName
-    
-    // groupStores: 每个 ServiceGroup 独立的 EdgeStore
-    groupStores map[string]*EdgeStore // groupName → EdgeStore
-    
-    // autoDiscover: 是否启用 Tenant 内自动发现
-    autoDiscover    bool
-    autoDiscoverScope string
-    
-    mu sync.RWMutex
-}
-
-type AppKey struct {
-    TenantID string
-    AppID    string  // 来自 tokenauth Context（注意：AppID ≠ service.name）
-}
-
-// RouteSpan 将 Span 路由到所有它参与的 ServiceGroup 的 EdgeStore
-func (r *ServiceGraphRouter) RouteSpan(tenantID, appID, serviceName string, span ptrace.Span, resource pcommon.Resource) {
-    key := AppKey{TenantID: tenantID, AppID: appID}
-    
-    r.mu.RLock()
-    groups := r.appToGroups[key]
-    r.mu.RUnlock()
-    
-    // 如果没有显式配置，且启用了自动发现，使用 Tenant 级的默认 Group
-    if len(groups) == 0 && r.autoDiscover {
-        groups = []string{r.defaultGroupName(tenantID)}
-    }
-    
-    for _, groupName := range groups {
-        store := r.groupStores[groupName]
-        if store == nil {
-            continue
-        }
-        store.ProcessSpan(tenantID, appID, serviceName, span, resource)
-    }
-}
-
-// defaultGroupName 自动发现模式下使用 Tenant 作为默认 Group
-func (r *ServiceGraphRouter) defaultGroupName(tenantID string) string {
-    return fmt.Sprintf("auto_%s", tenantID)
-}
-
-// DrainAll 强制过期所有 EdgeStore 中的 pending Edge
-// 在 Connector Shutdown 时调用，确保未完成配对的 Edge 触发 onExpire 回调
-// （虚拟节点推断或 unpaired_spans 记录），避免数据丢失
-func (r *ServiceGraphRouter) DrainAll() {
-    r.mu.RLock()
-    defer r.mu.RUnlock()
-    
-    for _, store := range r.groupStores {
-        store.DrainAll()  // 强制过期所有 pending Edge
-    }
-}
-
-// CollectAll 收集所有 ServiceGroup 的指标
-func (r *ServiceGraphRouter) CollectAll() []MetricSeries {
-    r.mu.RLock()
-    defer r.mu.RUnlock()
-    
-    var allSeries []MetricSeries
-    for _, store := range r.groupStores {
-        allSeries = append(allSeries, store.Collect()...)
-    }
-    return allSeries
-}
-```
-
-#### 6.2.6 跨 Tenant 服务串联（不支持）
-
-**决策：不支持跨 Tenant 的 ServiceGroup。**
-
-理由：
-1. **安全边界**：Tenant 是安全隔离的最小单位，跨 Tenant 的拓扑泄露存在安全风险
-2. **复杂度**：跨 Tenant 需要双向授权机制，增加系统复杂度
-3. **实际场景有限**：平台级中间件（如统一网关）通常作为独立 Tenant 管理，其 ServiceGroup 在自身 Tenant 内即可完成拓扑展示
-
-如果未来有强需求，可在 ServiceGroup 配置中增加 `cross_tenant: true` 和双向授权机制。当前版本所有 ServiceGroup 成员必须属于同一 Tenant。
-
-### 6.3 隔离模型总结
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                    隔离模型分层                                   │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Layer 1: Tenant（鉴权 + 逻辑分组）                       │    │
-│  │  - 认证鉴权：确定数据归属                                   │    │
-│  │  - 不做指标隔离，只做安全边界                                │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Layer 2: APP（指标隔离单位）                              │    │
-│  │  - 独立基数限制：APP-A 爆表不影响 APP-B                     │    │
-│  │  - 独立配置：每个 APP 有自己的维度、桶、命名空间             │    │
-│  │  - 独立开关：可精确降级/禁用某个 APP                         │    │
-│  │  - RED 指标：完全独立                                       │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Layer 3: ServiceGroup（同 Tenant 内跨 APP 串联配置）       │    │
-│  │  - 声明哪些 APP 之间可以建立 ServiceGraph Edge              │    │
-│  │  - 每个 ServiceGroup 有独立的 EdgeStore                     │    │
-│  │  - 支持同 Tenant 自动发现 or 显式声明                       │    │
-│  │  - 不支持跨 Tenant（Tenant 是安全隔离边界）                  │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### 6.4 配置覆盖机制（借鉴 Tempo Overrides）
-
-采用 Tempo 风格的分层覆盖机制，但粒度到 APP：
-
-```go
-// OverrideManager 管理配置覆盖
-// 配置来源：静态 YAML 配置 + Redis 动态覆盖
-// Redis Key 格式：
-//   otel:metricgen:overrides:tenant:{tenantID} → MetricGenOverride JSON
-//   otel:metricgen:overrides:app:{tenantID}:{appID} → MetricGenOverride JSON
-//   otel:metricgen:servicegroups:{tenantID} → []ServiceGroupConfig JSON
-type OverrideManager struct {
-    defaults        *MetricGenConfig             // 全局默认（来自 YAML 静态配置）
-    tenantOverrides map[string]*MetricGenConfig  // per-tenant 覆盖（YAML + Redis 合并）
-    appOverrides    map[AppKey]*AppMetricConfig  // per-app 覆盖（最高优先级，YAML + Redis 合并）
-    
-    redisClient     redis.UniversalClient        // 复用现有 Redis 实例
-    reloadInterval  time.Duration                // 从 Redis 热加载周期（默认 10s）
-    mu              sync.RWMutex
-}
-
-// GetAppConfig 获取指定 APP 的最终配置（按优先级合并）
-func (m *OverrideManager) GetAppConfig(tenantID, appID string) *AppMetricConfig {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-    
-    // 优先级：app override > tenant override > defaults
-    key := AppKey{TenantID: tenantID, AppID: appID}
-    
-    if cfg, ok := m.appOverrides[key]; ok {
-        return cfg
-    }
-    if cfg, ok := m.tenantOverrides[tenantID]; ok {
-        return cfg.ToAppConfig(appID)
-    }
-    return m.defaults.ToAppConfig(appID)
-}
-```
-
-配置文件示例（静态 YAML + Redis 动态）：
-
-```yaml
-metric_generator:
-  # 全局默认（静态 YAML）
-  defaults:
-    cardinality_limit: 2000
-    dimensions: [http.method, http.status_code]
-    histogram:
-      buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
-    service_graph:
-      auto_discover: true
-      max_items: 10000
-      ttl: 10s
-
-  # Per-Tenant 覆盖（静态 YAML，适合初始化默认值）
-  tenant_overrides:
-    "large-customer":
-      cardinality_limit: 10000
-      dimensions: [http.method, http.status_code, http.route]
-  
-  # Per-APP 覆盖（静态 YAML，最高优先级）
-  app_overrides:
-    - tenant_id: "large-customer"
-      app_id: "high-traffic-gateway"
-      config:
-        cardinality_limit: 50000
-        rate_limit: 200000  # 该 APP 流量大，需要更高限制
-        dimensions: [http.method]  # 只保留少数维度，控制基数
-    
-    - tenant_id: "large-customer"
-      app_id: "low-priority-batch"
-      config:
-        enabled: false  # 批处理服务不需要指标
-```
-
-**Redis 动态覆盖**（通过 Admin API 写入，优先级高于静态 YAML）：
-
-```
-# Tenant 级覆盖
-HSET otel:metricgen:overrides:tenant:large-customer '{"cardinality_limit":20000}'
-
-# APP 级覆盖
-HSET otel:metricgen:overrides:app:large-customer:high-traffic-gateway '{"cardinality_limit":100000,"rate_limit":500000}'
-
-# ServiceGroup 动态管理
-HSET otel:metricgen:servicegroups:tenant-a '[{"name":"order-flow","members":[{"app_id":"gateway"},{"app_id":"order-svc"}],"config":{"max_items":10000}}]'
-```
-
-**优先级**：Redis 动态覆盖 > 静态 YAML app_overrides > 静态 YAML tenant_overrides > defaults
-
-### 6.5 APP 生命周期管理
-
-APP 聚合空间的自动创建和回收逻辑详见 §4.5.2（`AppAggregatorManager`），此处仅说明设计决策：
-
-| 决策 | 说明 |
-|------|------|
-| **按需创建** | 首次看到某 AppID 时自动创建 `AppAggregator`，无需预注册 |
-| **Overflow 降级** | 单 Tenant 超过 `MaxAppsPerTenant` 时，新 APP 合并到 `__overflow__` 聚合器，不拒绝数据 |
-| **Idle 回收** | 超过 `IdleTimeout` 无新 Span 的 APP 聚合空间被回收，释放内存 |
-| **时钟可注入** | 所有时间操作使用 `clock.Now()`，支持测试中的时间控制 |
-
-> **注意**：`MaxAppsPerTenant` 是**运行时内存保护**，与控制面注册的 APP 数量无关。控制面管理的是"平台注册了多少 APP"（Token 发放），此处控制的是"单个 Worker 实例在内存中同时维护多少个 APP 的聚合状态"。
-
----
-
-## 7. 性能设计
-
-### 7.1 内存优化
-
-| 优化手段 | 说明 |
-|----------|------|
-| **Buffer 复用** | 使用 `sync.Pool` + `bytes.Buffer` 构建 metric key，减少 GC 压力 |
-| **LRU 缓存** | Resource 和 Series 使用有界 LRU，自动淘汰低频访问项 |
-| **Overflow 桶** | 基数超限后不再创建新 series，合并到统一溢出桶 |
-| **按需分配** | Generator 只在被启用时才分配内存 |
-
-### 7.2 CPU 优化
-
-| 优化手段 | 说明 |
-|----------|------|
-| **批量处理** | `ConsumeTraces` 接收批量 Span，一次锁操作处理整批 |
-| **锁粒度** | Generator 内部使用分片锁（per-tenant）避免全局争抢 |
-| **Zero-copy 维度提取** | 使用 pdata 原生 API，不做额外序列化 |
-| **MapHash** | 维度组合使用 128-bit hash 作为 map key，避免字符串拼接 |
-
-### 7.3 吞吐量基准目标
-
-| 指标 | 目标值 |
-|------|--------|
-| 单实例 Span 处理吞吐 | ≥ 100K spans/s |
-| ConsumeTraces P99 延迟 | < 5ms（per batch） |
-| 内存占用（10K series） | < 200MB |
-| Flush 耗时 | < 50ms（10K series） |
-
-### 7.4 自身运营指标（Self-Monitoring）
-
-MetricGenerator 自身暴露以下运营指标，用于监控组件健康状态：
-
-| 指标名 | 类型 | Labels | 说明 |
-|--------|------|--------|------|
-| `metricgen_apps_active` | Gauge | tenant_id | 当前活跃 APP 数 |
-| `metricgen_cardinality_usage_ratio` | Gauge | tenant_id, app_id | 各 APP 基数使用率（0~1） |
-| `metricgen_cardinality_overflow_total` | Counter | tenant_id, app_id | 基数溢出次数 |
-| `metricgen_flush_duration_seconds` | Histogram | - | flush 耗时分布 |
-| `metricgen_span_processed_total` | Counter | tenant_id, app_id, generator | Span 处理计数 |
-| `metricgen_span_dropped_total` | Counter | tenant_id, app_id, reason | Span 丢弃计数（reason: rate_limit/disabled/overflow） |
-| `metricgen_edge_store_size` | Gauge | group_name | 各 ServiceGroup EdgeStore 当前 Edge 数 |
-| `metricgen_edge_complete_total` | Counter | group_name | Edge 成功配对计数 |
-| `metricgen_edge_expire_total` | Counter | group_name, virtual_node | Edge 超时过期计数（含虚拟节点推断） |
-| `metricgen_tenant_cache_hit_ratio` | Gauge | - | AppID→TenantID 缓存命中率 |
-| `metricgen_config_reload_total` | Counter | status | 配置热加载次数（status: success/error） |
-
-### 7.5 背压处理
-
-```go
-// ConsumeTraces 不应阻塞太久，如果聚合器压力大则快速返回
-func (c *metricGenConnector) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
-    // 非阻塞：如果 aggregator 正在 flush，不等待锁
-    // 而是将 span 放入 ring buffer，由后台 goroutine 异步处理
-    if c.config.AsyncMode {
-        return c.asyncProcess(ctx, td)
-    }
-    // 同步模式（默认）：直接处理
-    return c.syncProcess(ctx, td)
-}
-```
-
-**AsyncMode 设计说明**：
-- **Ring Buffer 溢出策略**：丢弃最旧的未处理批次（Drop Oldest），记录 `metricgen_span_dropped_total{reason="buffer_full"}` 指标
-- **不阻塞 ConsumeTraces**：确保 Trace Pipeline 不被 MetricGenerator 拖慢
-- **数据一致性**：AsyncMode 下可能丢失少量指标数据（Ring Buffer 满时），但不影响 Trace 存储
-- **默认关闭**：大多数场景下同步模式足够（ConsumeTraces 内的操作是纯内存聚合，延迟极低）
-- **兼容 OTel backpressure**：同步模式下如果处理超时，返回 error 触发上游 retry
-
----
-
-## 8. 可测试性设计
-
-### 8.1 接口抽象（便于 Mock）
-
-```go
-// 所有外部依赖通过接口注入
-type Dependencies struct {
-    MetricsConsumer consumer.Metrics       // 下游 consumer（可 mock）
-    ControlPlane    ControlPlane           // 控制面（AppID → TenantID，可 mock）
-    ConfigStore     ConfigStore            // 动态配置存储（Redis，可 mock）
-    Clock           Clock                  // 时钟接口（测试可控制时间）
-    Logger          *zap.Logger
-}
-
-// Clock 接口用于测试时控制时间
-type Clock interface {
-    Now() time.Time
-    NewTicker(d time.Duration) *time.Ticker
-}
-
-// ConfigStore 动态配置存储接口（实现为 Redis）
-type ConfigStore interface {
-    // GetTenantOverride 获取指定 Tenant 的配置覆盖
-    GetTenantOverride(ctx context.Context, tenantID string) (*MetricGenOverride, error)
-    // GetAppOverride 获取指定 APP 的配置覆盖
-    GetAppOverride(ctx context.Context, tenantID, appID string) (*MetricGenOverride, error)
-    // GetServiceGroups 获取指定 Tenant 的 ServiceGroup 配置
-    GetServiceGroups(ctx context.Context, tenantID string) ([]ServiceGroupConfig, error)
-    // SaveServiceGroup 保存 ServiceGroup 配置（API 动态创建/修改）
-    SaveServiceGroup(ctx context.Context, tenantID string, group *ServiceGroupConfig) error
-    // DeleteServiceGroup 删除 ServiceGroup 配置
-    DeleteServiceGroup(ctx context.Context, tenantID, groupName string) error
-}
-```
-
-### 8.2 单元测试示例
-
-```go
-func TestREDGenerator_ProcessSpan(t *testing.T) {
-    // Arrange
-    gen := NewREDGenerator(&REDConfig{
-        Dimensions: []Dimension{{Name: "http.method"}},
-        Histogram:  HistogramConfig{Buckets: []float64{10, 50, 100}},
-    })
-
-    span := newTestSpan(
-        withDuration(50 * time.Millisecond),
-        withAttribute("http.method", "GET"),
-        withStatus(ptrace.StatusCodeOk),
-    )
-
-    // Act
-    appAgg := newTestAppAggregator("tenant-1", "test-app")
-    gen.ProcessSpan(context.Background(), "tenant-1", "test-app", "test-service", appAgg, newTestResource(), span)
-
-    // Assert
-    series := gen.CollectAll()
-    assert.Len(t, series, 2) // calls + duration
-
-    callsSeries := findSeries(series, "calls")
-    assert.Equal(t, int64(1), callsSeries.Sum())
-    assert.Equal(t, "GET", callsSeries.Attributes().Get("http.method"))
-
-    durationSeries := findSeries(series, "duration")
-    assert.Equal(t, 50.0, durationSeries.HistogramValue()) // 落入 50ms 桶
-}
-
-func TestMetricAggregator_CardinalityLimit(t *testing.T) {
-    agg := NewMetricAggregator(&AggregatorConfig{
-        DefaultCardinalityLimit: 3,
-    })
-
-    // 前 3 个不同的 key 正常通过
-    for i := 0; i < 3; i++ {
-        key, overflow := agg.CheckCardinality("tenant-1", fmt.Sprintf("key-%d", i))
-        assert.False(t, overflow)
-        assert.Equal(t, fmt.Sprintf("key-%d", i), key)
-    }
-
-    // 第 4 个触发 overflow
-    key, overflow := agg.CheckCardinality("tenant-1", "key-3")
-    assert.True(t, overflow)
-    assert.Equal(t, overflowKey, key)
-}
-
-func TestServiceGraphGenerator_EdgePairing(t *testing.T) {
-    gen := NewServiceGraphGenerator(&ServiceGraphConfig{
-        Store: StoreConfig{MaxItems: 100, TTL: 5 * time.Second},
-    })
-
-    traceID := pcommon.NewTraceIDEmpty()
-    clientSpanID := pcommon.NewSpanIDEmpty()
-
-    // Client span
-    clientSpan := newTestSpan(
-        withTraceID(traceID),
-        withSpanID(clientSpanID),
-        withKind(ptrace.SpanKindClient),
-    )
-    gen.ProcessSpan(ctx, "t1", "app-1", "service-a", newResource("service-a"), clientSpan)
-
-    // Server span (ParentSpanID = Client SpanID)
-    serverSpan := newTestSpan(
-        withTraceID(traceID),
-        withParentSpanID(clientSpanID),
-        withKind(ptrace.SpanKindServer),
-    )
-    gen.ProcessSpan(ctx, "t1", "app-1", "service-b", newResource("service-b"), serverSpan)
-
-    // Edge 应该已完成配对
-    series := gen.router.CollectAll()
-    assert.NotEmpty(t, series)
-    // 验证 client=service-a, server=service-b
-}
-```
-
-### 8.3 集成测试
-
-```go
-func TestMetricGenConnector_EndToEnd(t *testing.T) {
-    // 使用 mock consumer 验证完整流程
-    mockConsumer := &mockMetricsConsumer{}
-    
-    connector := newTestConnector(t, &Config{
-        MetricsFlushInterval: 100 * time.Millisecond,
-        RED: &REDConfig{Enabled: true},
-    }, mockConsumer)
-
-    // 发送测试 traces
-    td := generateTestTraces(100)
-    err := connector.ConsumeTraces(context.Background(), td)
-    require.NoError(t, err)
-
-    // 等待 flush
-    time.Sleep(200 * time.Millisecond)
-
-    // 验证输出
-    metrics := mockConsumer.AllMetrics()
-    assert.NotEmpty(t, metrics)
-    // 验证指标名、维度、值的正确性
-}
-```
-
----
-
-## 9. 目录结构设计
-
-```
-connector/
-└── metricgenconnector/
-    ├── config.go                    // 配置定义
-    ├── config_test.go
-    ├── factory.go                   // Factory 注册
-    ├── factory_test.go
-    ├── connector.go                 // 核心 Connector 实现
-    ├── connector_test.go
-    ├── context.go                   // AppIDFromContext + resolveTenantID
-    ├── context_test.go
-    ├── tenant_cache.go              // AppID → TenantID 本地缓存
-    ├── tenant_cache_test.go
-    ├── flusher.go                   // MetricFlusher
-    ├── flusher_test.go
-    ├── app_manager.go               // AppAggregatorManager（APP 聚合空间生命周期管理）
-    ├── app_manager_test.go
-    ├── override.go                  // OverrideManager（分层配置覆盖）
-    ├── override_test.go
-    ├── selfmetrics.go               // Self-Monitoring 运营指标
-    ├── generator/                   // Generator 接口 + 实现
-    │   ├── generator.go             // Generator 接口定义
-    │   ├── red/                     // RED Generator
-    │   │   ├── generator.go
-    │   │   ├── generator_test.go
-    │   │   ├── sampling.go          // 采样校正逻辑
-    │   │   └── config.go
-    │   └── custom/                  // Custom Generator (预留)
-    │       ├── generator.go
-    │       └── config.go
-    ├── servicegraph/                // ServiceGraph（独立于 Generator 接口）
-    │   ├── generator.go             // ServiceGraphGenerator
-    │   ├── generator_test.go
-    │   ├── router.go                // ServiceGraphRouter
-    │   ├── router_test.go
-    │   ├── store.go                 // Edge Store (FIFO + TTL)
-    │   ├── store_test.go
-    │   ├── edge.go                  // Edge 数据结构
-    │   └── config.go
-    ├── aggregator/                  // 聚合管理
-    │   ├── aggregator.go            // AppAggregator
-    │   ├── aggregator_test.go
-    │   ├── cardinality.go           // 基数控制 + Overflow
-    │   └── cache.go                 // LRU Cache
-    └── internal/
-        ├── metrics/                 // 内部指标类型
-        │   ├── histogram.go
-        │   ├── counter.go
-        │   └── unit.go
-        └── testutil/                // 测试工具
-            ├── helpers.go
-            └── clock.go             // Mock Clock
-```
-
----
-
-## 10. 与现有系统集成
-
-### 10.1 在 components.go 中注册
-
-```go
-// cmd/customcol/components.go
-import (
-    "go.opentelemetry.io/collector/custom/connector/metricgenconnector"
-)
-
-factories.Connectors, err = connector.MakeFactoryMap(
-    forwardconnector.NewFactory(),
-    routingconnector.NewFactory(),
-    spanmetricsconnector.NewFactory(),  // 保留，渐进替换
-    metricgenconnector.NewFactory(),    // 新增
-)
-```
-
-### 10.2 配置示例
+### 2.3 Pipeline 配置（最终态）
 
 ```yaml
 connectors:
   metricgen:
     metrics_flush_interval: 15s
     aggregation_temporality: "cumulative"
-    namespace: "traces.spanmetrics"
-
-    # RED 指标生成器
     red:
-      enabled: true
-      dimensions:
-        - name: http.method
-          default: GET
-        - name: http.status_code
-        - name: http.route
-        - name: rpc.method
-        - name: rpc.service
+      dimensions: [http.method, http.status_code, http.route, rpc.method, rpc.service, peer.service]
       histogram:
-        unit: ms
-        explicit:
-          buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
-      cardinality_limit: 5000
-      series_expiration: 15m
-
-    # ServiceGraph 生成器
+        buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
     service_graph:
-      enabled: true
-      store:
-        max_items: 10000
-        ttl: 10s
-      dimensions:
-        - name: http.method
-      enable_virtual_node: true
-      enable_client_server_prefix: true  # 指标名区分 client_/server_ 前缀
-      peer_attributes:
-        - server.address
-        - peer.service
-        - db.name
-      enable_messaging_system: true
-      auto_discover: true            # Tenant 内自动发现（同 Tenant 下的 APP 自动组成 ServiceGroup）
-      auto_discover_scope: "tenant"
-      exclude_apps:                  # 自动发现时排除的 APP
-        - "otel-collector-agent"
-        - "envoy-sidecar"
-
-    # APP 聚合空间运行时内存保护配置（非控制面注册数据）
-    app_isolation:
-      enabled: true
-      max_apps_per_tenant: 500       # 单实例每 Tenant 最大活跃 APP 聚合空间数（内存保护）
-      default_cardinality_limit: 2000 # 每 APP 默认基数限制（series 数）
-      idle_timeout: 1h               # APP 无数据后回收聚合空间
-      cleanup_interval: 5m           # 后台扫描 idle APP 的周期
-
-    # ServiceGroup 配置（显式声明同 Tenant 内的跨 APP 串联关系）
-    # 注意：不支持跨 Tenant 的 ServiceGroup
-    service_groups:
-      - name: "order-flow"
-        tenant_id: "tenant-a"
-        members:
-          - app_id: "api-gateway"
-          - app_id: "order-service"
-          - app_id: "inventory-service"
-        config:
-          max_items: 10000
-          ttl: 10s
-      
-      - name: "payment-chain"
-        tenant_id: "tenant-a"
-        members:
-          - app_id: "order-service"
-          - app_id: "payment-service"
-          - app_id: "bank-gateway"
-        config:
-          max_items: 5000
-          ttl: 15s
-
-    # 采样校正
-    sampling_correction:
-      enabled: true
-      attribute: "sampling.rate"
-
-    # 配置覆盖（分层：defaults → tenant → app）
-    # 动态覆盖存储在 Redis 中，支持通过 API 动态修改
-    overrides:
-      dynamic_store: "redis"         # 复用现有 Redis 实例
-      dynamic_reload_period: 10s     # 从 Redis 热加载周期
-      
-      # Per-Tenant 覆盖
-      tenant_overrides:
-        "large-customer":
-          cardinality_limit: 10000
-          dimensions:
-            - name: http.method
-            - name: http.status_code
-            - name: http.route
-      
-      # Per-APP 覆盖（最高优先级）
-      app_overrides:
-        - tenant_id: "large-customer"
-          app_id: "high-traffic-gateway"
-          config:
-            cardinality_limit: 50000
-            rate_limit: 200000
-            dimensions:
-              - name: http.method
-        
-        - tenant_id: "large-customer"
-          app_id: "batch-processor"
-          config:
-            enabled: false  # 批处理服务不需要指标
+      dimensions: [http.method]
 
 service:
   pipelines:
     traces:
       receivers: [agent_gateway]
-      processors: [tokenauth, memory_limiter, batch]
+      processors: [tokenauth, peer_service, memory_limiter, batch]
       exporters: [metricgen, observability_storage]
 
-    # RED 指标和 ServiceGraph 指标可共用一个 pipeline
     metrics/generated:
       receivers: [metricgen]
       processors: [batch]
       exporters: [observability_storage]
-    
-    # 也可将 ServiceGraph 指标单独输出到独立 pipeline（可选）
-    # metrics/service_graph:
-    #   receivers: [metricgen/service_graph]  # 使用 named connector 实例
-    #   processors: [batch]
-    #   exporters: [prometheus_remote_write]   # 输出到不同存储
 ```
 
-### 10.3 与查询层对接
+---
 
-更新 `extension/adminext/tempo_handler.go` 的 `translateTraceQLMetric` 映射：
+## 3. 指标定义（对齐 Tempo MetricGenerator）
+
+### 3.1 RED 指标
+
+| 指标名 | 类型 | Labels |
+|--------|------|--------|
+| `traces_spanmetrics_calls_total` | Counter | service.name, span.name, span.kind, status.code, peer.service, ...dims |
+| `traces_spanmetrics_latency` | Histogram | 同上 |
+| `traces_spanmetrics_size_total` | Counter（可选） | 同上 |
+
+### 3.2 ServiceGraph 指标
+
+| 指标名 | 类型 | Labels |
+|--------|------|--------|
+| `traces_service_graph_request_total` | Counter | client, server, connection_type, ...dims |
+| `traces_service_graph_request_failed_total` | Counter | 同上 |
+| `traces_service_graph_request_server_seconds` | Histogram | 同上 |
+| `traces_service_graph_request_client_seconds` | Histogram | 同上 |
+| `traces_service_graph_request_messaging_system_seconds` | Histogram | 同上 |
+
+### 3.3 指标数据来源
+
+```
+看到 CLIENT span:
+  service.name="tapm-api", peer.service="tapm_db"
+  RED:
+    → traces_spanmetrics_calls_total{service.name="tapm-api", peer.service="tapm_db"} += 1
+    → traces_spanmetrics_latency{...} 记录 span.duration
+  ServiceGraph:
+    server = peer.service       → "tapm_db"
+    client = service.name       → "tapm-api"
+    → traces_service_graph_request_total{client="tapm-api", server="tapm_db"} += 1
+    → traces_service_graph_request_client_seconds{...} 记录 span.duration
+
+看到 SERVER span (如果有 peer.service):
+  service.name="tapm_db", peer.service="tapm-api"
+  ServiceGraph:
+    server = service.name       → "tapm_db"
+    client = peer.service       → "tapm-api"
+    → traces_service_graph_request_server_seconds{...} 记录 span.duration
+```
+
+**注意**：外部服务不发 trace 时，server-side latency 会缺失（与 Tempo 一致，Tempo 用 virtual node 推断兜底）。
+
+---
+
+## 4. 核心组件设计
+
+### 4.1 Connector 骨架
 
 ```go
-// 保持向后兼容：指标名和现有 spanmetrics 一致
-func translateTraceQLMetric(fn string) string {
-    switch fn {
-    case "quantile_over_time":
-        return "traces.spanmetrics.duration_milliseconds"
-    case "histogram_over_time":
-        return "traces.spanmetrics.duration_milliseconds"
+package metricgenconnector
+
+type metricGenConnector struct {
+    config          *Config
+    metricsConsumer consumer.Metrics
+    redGen          *REDGenerator
+    sgGen           *ServiceGraphGenerator
+    flusher         *MetricFlusher
+    logger          *zap.Logger
+    done            chan struct{}
+}
+
+func (c *metricGenConnector) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
+    appID := AppIDFromContext(ctx)
+    rss := td.ResourceSpans()
+    for i := 0; i < rss.Len(); i++ {
+        rs := rss.At(i)
+        resource := rs.Resource()
+        svcName := extractServiceName(resource)
+        for j := 0; j < rs.ScopeSpans().Len(); j++ {
+            for k := 0; k < rs.ScopeSpans().At(j).Spans().Len(); k++ {
+                span := rs.ScopeSpans().At(j).Spans().At(k)
+                c.redGen.ProcessSpan(appID, svcName, resource, span)
+                c.sgGen.ProcessSpan(appID, svcName, resource, span)
+            }
+        }
+    }
+    return nil
+}
+```
+
+### 4.2 REDGenerator
+
+纯 map 聚合，直接读 span attribute：
+
+```go
+type REDGenerator struct {
+    config  *REDConfig
+    mu      sync.RWMutex
+    series  map[uint64]*redMetricSeries  // hash(dims) → series
+    overflow atomic.Int64
+}
+
+func (g *REDGenerator) ProcessSpan(appID, svcName string, resource pcommon.Resource, span ptrace.Span) {
+    dims := g.extractDimensions(resource, span)
+    key := hashDimensions(dims)
+    // 基数控制
+    finalKey, overflow := g.checkCardinality(key)
+    s := g.getOrCreateSeries(finalKey, dims, overflow)
+    // 聚合
+    s.calls.Add(1)
+    s.latency.Record(spanDuration(span))
+    if span.Status().Code() == ptrace.StatusCodeError {
+        s.errors.Add(1)
+    }
+}
+```
+
+### 4.3 ServiceGraphGenerator
+
+同样纯 map 聚合，按 `{client, server, connection_type}` 分组：
+
+```go
+type ServiceGraphGenerator struct {
+    config *ServiceGraphConfig
+    mu     sync.RWMutex
+    edges  map[uint64]*sgEdgeSeries  // hash(client,server,connType) → series
+}
+
+func (g *ServiceGraphGenerator) ProcessSpan(appID, svcName string, resource pcommon.Resource, span ptrace.Span) {
+    peerSvc := extractPeerService(span)
+    if peerSvc == "" { return }
+
+    connType := extractConnectionType(span)  // "" | "messaging_system"
+
+    var client, server string
+    switch span.Kind() {
+    case ptrace.SpanKindClient, ptrace.SpanKindProducer:
+        client, server = svcName, peerSvc
+    case ptrace.SpanKindServer, ptrace.SpanKindConsumer:
+        if peerSvc == "" { return }
+        client, server = peerSvc, svcName
     default:
-        return "traces.spanmetrics.calls"
+        return
+    }
+
+    edgeKey := hashEdge(client, server, connType)
+    e := g.getOrCreateEdge(edgeKey, client, server, connType)
+    e.requestTotal.Add(1)
+    if isSpanFailed(span) { e.failedTotal.Add(1) }
+
+    duration := spanDuration(span)
+    switch span.Kind() {
+    case ptrace.SpanKindClient, ptrace.SpanKindProducer:
+        e.clientSeconds.Record(duration)
+    case ptrace.SpanKindServer, ptrace.SpanKindConsumer:
+        e.serverSeconds.Record(duration)
+    }
+}
+```
+
+### 4.4 内部聚合数据结构
+
+```go
+// Per-edge 时间序列
+type sgEdgeSeries struct {
+    client         string
+    server         string
+    connectionType string
+    dimensions     map[string]string
+    requestTotal   *counter
+    failedTotal    *counter
+    clientSeconds  *histogram
+    serverSeconds  *histogram
+}
+
+// counter / histogram 实现
+type counter struct {
+    value atomic.Int64
+}
+
+type histogram struct {
+    buckets []atomic.Int64
+    bounds  []float64
+    sum     atomic.Int64
+    count   atomic.Int64
+}
+```
+
+### 4.5 Flush 机制
+
+```go
+type MetricFlusher struct {
+    interval time.Duration
+    consumer consumer.Metrics
+    redGen   *REDGenerator
+    sgGen    *ServiceGraphGenerator
+    done     chan struct{}
+}
+
+func (f *MetricFlusher) flush() error {
+    md := pmetric.NewMetrics()
+
+    // RED 指标 → pmetric
+    f.buildREDMetrics(md, f.redGen.Collect())
+
+    // ServiceGraph 指标 → pmetric
+    f.buildSGMetrics(md, f.sgGen.Collect())
+
+    if md.DataPointCount() == 0 { return nil }
+    return f.consumer.ConsumeMetrics(context.Background(), md)
+}
+```
+
+---
+
+## 5. 配置设计
+
+```go
+type Config struct {
+    MetricsFlushInterval   time.Duration        `mapstructure:"metrics_flush_interval"`
+    AggregationTemporality string               `mapstructure:"aggregation_temporality"`
+    RED                    *REDConfig           `mapstructure:"red"`
+    ServiceGraph           *ServiceGraphConfig  `mapstructure:"service_graph"`
+    CardinalityLimit       int                  `mapstructure:"cardinality_limit"`
+}
+
+type REDConfig struct {
+    Enabled      bool            `mapstructure:"enabled"`
+    Dimensions   []string        `mapstructure:"dimensions"`
+    Histogram    HistogramConfig `mapstructure:"histogram"`
+}
+
+type ServiceGraphConfig struct {
+    Enabled    bool     `mapstructure:"enabled"`
+    Dimensions []string `mapstructure:"dimensions"`
+}
+
+type HistogramConfig struct {
+    Buckets []float64 `mapstructure:"buckets"`
+}
+```
+
+默认配置：
+
+```go
+func createDefaultConfig() component.Config {
+    return &Config{
+        MetricsFlushInterval: 15 * time.Second,
+        AggregationTemporality: "cumulative",
+        CardinalityLimit:       2000,
+        RED: &REDConfig{
+            Enabled: true,
+            Dimensions: []string{"http.method", "http.status_code", "http.route",
+                "rpc.method", "rpc.service", "peer.service"},
+            Histogram: HistogramConfig{
+                Buckets: []float64{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
+            },
+        },
+        ServiceGraph: &ServiceGraphConfig{
+            Enabled:    true,
+            Dimensions: []string{"http.method"},
+        },
     }
 }
 ```
 
 ---
 
-## 11. 关键决策
+## 6. 目录结构
+
+```
+connector/metricgenconnector/
+├── config.go          # Config + Factory
+├── connector.go       # metricGenConnector 核心
+├── red.go             # REDGenerator
+├── servicegraph.go    # ServiceGraphGenerator
+├── flusher.go         # MetricFlusher
+├── aggregator.go      # counter / histogram 内部聚合类型
+├── context.go         # AppIDFromContext + extractServiceName
+└── internal/
+    └── testutil/      # 测试工具
+```
+
+---
+
+## 7. 需同步改动的现有代码
+
+| 文件 | 改动 |
+|------|------|
+| `cmd/customcol/components.go` | 注册 `metricgenconnector.NewFactory()` |
+| `config/build/config.yaml` | 添加 `metricgen` connector + pipeline 配置 |
+| `extension/adminext/tempo_handler.go:1983-1990` | `translateTraceQLMetric` 返回值改为 `traces_spanmetrics_*` |
+| `extension/adminext/prometheus_handler.go` | 硬编码指标名 `traces.spanmetrics.*` → `traces_spanmetrics_*` |
+| `peer_service processor` | 无需改动（已双向写） |
+| `spanmetricsconnector` | Sprint 5 移除 |
+
+---
+
+## 8. Roadmap
+
+| Sprint | 内容 | 验收标准 |
+|--------|------|---------|
+| **S1** (2w) | Connector 骨架 + REDGenerator | 与 spanmetrics 并行运行，指标数值一致 |
+| **S2** (1w) | ServiceGraphGenerator | `traces_service_graph_request_total` 正确计数 |
+| **S3** (1w) | 查询层适配 + 测试完善 | Grafana 可查询新指标 |
+| **S4** (1w) | 性能测试 + 灰度切换 | 100K spans/s，灰度 10→50→100% |
+| **S5** (1w) | 下线 spanmetricsconnector | 旧组件移除，文档更新 |
+
+---
+
+## 9. 关键决策
 
 | # | 决策 | 理由 |
 |---|------|------|
-| 1 | **使用 Connector 组件机制** | 复用 OTel Collector 的 Pipeline 编排；热插拔；标准生命周期管理 |
-| 2 | **前置 loadbalancingexporter 做 TraceID 路由** | 与开源方案一致；Connector 本身保持简单；不引入额外分布式协调 |
-| 3 | **策略模式实现 Generator** | 开闭原则；新增指标类型不改核心代码；独立测试 |
-| 4 | **APP 级隔离（非 Tenant 级）** | 粒度更合理：APP-A 爆表不影响 APP-B；Tenant 只做鉴权分组；TenantID 从 AppID 推导 |
-| 5 | **ServiceGroup 机制实现跨 APP 串联（同 Tenant 内）** | ServiceGraph 天然跨服务；通过配置声明哪些 APP 可建立拓扑关系；支持同 Tenant 自动发现 + 显式声明 |
-| 6 | **默认 Cumulative + 支持 Delta** | Cumulative 适合 Prometheus 生态；Delta 适合分布式场景下的自动合并 |
-| 7 | **基数控制：LRU + Overflow 桶（Per-APP）** | OTel 标准溢出机制；不会因高基数 OOM；每个 APP 独立限制 |
-| 8 | **分层配置覆盖（defaults → tenant → app）** | 借鉴 Tempo overrides；全局默认 + Tenant 覆盖 + APP 精确覆盖；支持热加载 |
-| 9 | **ServiceGraph 借鉴 Tempo 实现** | Edge Store + FIFO 过期 + 虚拟节点推断，经过生产验证的成熟方案 |
-| 10 | **渐进式替换而非一步到位** | 保留 spanmetricsconnector，新旧并行验证后再切换 |
-| 11 | **Clock 接口 + 依赖注入** | 可测试性；测试中控制时间前进 |
-| 12 | **Gateway + Worker 两层架构** | Gateway 无状态做路由；Worker 有状态做聚合；各层独立扩缩容 |
+| 1 | peer_service processor 保留 | 已双向写 `peer.service`，代码正确无需改 |
+| 2 | Connector 不做 EdgeStore | peer.service 已在 span 属性中，直接读即可 |
+| 3 | 不需要 ServiceGroupRouter | 跨服务关联由 peer_service processor 完成 |
+| 4 | 指标名对齐 Tempo | `traces_spanmetrics_calls_total` / `traces_service_graph_request_total` 等 |
+| 5 | 无 namespace 前缀 | Tempo 命名自包含，无需额外 namespace |
+| 6 | 纯 map 聚合 | 无 FIFO 队列、无 TTL、无配对等待，实现极简 |
+| 7 | 渐进替换 | 新旧并行，Sprint 4 灰度切换 |
 
 ---
 
-## 12. 风险与缓解
+## 10. 不做的
 
-| 风险 | 严重度 | 缓解措施 |
-|------|--------|---------|
-| 一致性哈希重分配导致短暂指标不准 | 中 | 短 TTL + Delta 模式自愈；扩缩容走滚动更新而非突变 |
-| 高基数 APP 内存爆炸 | 高 | Per-APP CardinalityLimit + Overflow 桶 + 降级开关；高基数场景记录日志告警 |
-| APP 数量膨胀导致内存增长 | 中 | maxAppsPerTenant 硬上限 + 空闲回收 + Overflow APP（`__overflow__`）兜底 |
-| Flush 期间 ConsumeTraces 阻塞 | 中 | Flush 时快速 swap 状态，不持长锁；或使用 Double Buffer |
-| ServiceGraph Edge 永远配对不上 | 低 | TTL 超时后推断虚拟节点并释放；配合 TraceID 路由降低概率；Shutdown 时 DrainAll |
-| ServiceGroup 配置错误导致拓扑不完整 | 低 | 默认启用 auto_discover（Tenant 内自动组 Group）；显式配置为增强项 |
-| Redis 配置存储不可用 | 中 | 使用本地缓存的上一次配置继续运行；降级为默认配置；记录 config_reload error 指标 |
-| AppID → TenantID 映射查询失败 | 中 | 降级处理：将 AppID 作为 TenantID 使用（单 App 单 Tenant 兼容模式）；配合本地 LRU 缓存减少查询频率 |
-| 与现有 spanmetrics 指标名不兼容 | 中 | 默认使用相同 namespace 和指标命名；提供兼容模式 |
-
----
-
-## 13. Roadmap
-
-### Sprint 1：基础骨架 + RED Generator（2 周）
-
-**目标**：实现最小可用版本，功能等价于当前 spanmetricsconnector
-
-| 任务 | 详情 | 验收标准 |
-|------|------|---------|
-| 1.1 Connector 骨架 | Factory + Config + Connector 接口实现 | 能注册到 Collector 并启动 |
-| 1.2 Generator 接口 | 定义接口 + REDGenerator 实现 | 单元测试通过 |
-| 1.3 MetricAggregator | LRU Cache + CardinalityLimit + Overflow | 基数控制单元测试通过 |
-| 1.4 MetricFlusher | 定时 flush + Cumulative/Delta 双模式 | 集成测试验证输出正确 |
-| 1.5 配置兼容 | 配置项兼容现有 spanmetrics 配置格式 | 无缝替换不改上层配置 |
-| 1.6 E2E 验证 | 与现有 spanmetrics 并行运行，对比指标输出 | 数值一致性 > 99% |
-
-### Sprint 2：APP 级隔离 + 采样校正（2 周）
-
-**目标**：实现 APP 级别的指标隔离和配置覆盖机制
-
-| 任务 | 详情 | 验收标准 |
-|------|------|---------|
-| 2.1 AppAggregatorManager | APP 聚合空间生命周期管理（自动创建、容量保护、idle 回收） | 新 APP 首次出现时自动创建聚合空间 |
-| 2.2 Per-APP 基数控制 | 每个 APP 独立的 CardinalityLimit + Overflow | APP-A 基数超限不影响同 Tenant 下的 APP-B |
-| 2.3 OverrideManager | 分层配置覆盖：defaults → tenant → app | 配置优先级正确；单元测试覆盖 |
-| 2.4 配置热加载 | 定时从 Redis 拉取动态覆盖配置，支持 API 修改 | 通过 API 修改配置后 10s 内生效 |
-| 2.5 APP 级降级 | 支持禁用某个 APP 的指标生成 | 通过配置覆盖立即停止该 APP 的聚合 |
-| 2.6 采样率校正 | 根据 Span 上的采样率属性校正计数 | 1% 采样率下 count 自动乘以 100 |
-| 2.7 APP 空闲回收 | 长时间无数据的 APP 自动释放资源 | 空闲 1h 后自动回收，内存稳定 |
-
-### Sprint 3：ServiceGraph Generator + ServiceGroup（2.5 周）
-
-**目标**：实现 Tempo 风格的 ServiceGraph，支持跨 APP 服务串联配置
-
-| 任务 | 详情 | 验收标准 |
-|------|------|---------|
-| 3.1 EdgeStore（借鉴 Tempo） | FIFO 链表 + TTL 过期 + maxItems + onComplete/onExpire 回调 | 内存稳定、过期清理正确；单元测试覆盖 |
-| 3.2 Span 配对逻辑 | Client(SpanID)↔Server(ParentSpanID) + Producer↔Consumer | Edge 完成率 > 95%（有 TraceID 路由时） |
-| 3.3 虚拟节点推断 | 超时未配对时通过 peer attributes 推断对端 | 未 instrument 的服务正确出现在拓扑中 |
-| 3.4 ServiceGraphRouter | 按 ServiceGroup 配置路由 Span 到正确的 EdgeStore | 同一 ServiceGroup 内的 APP 可建立 Edge |
-| 3.5 自动发现模式 | 同 Tenant 下的 APP 默认组成一个 ServiceGroup | 无需手动配置即可看到 Tenant 内的拓扑 |
-| 3.6 显式 ServiceGroup | 通过 API/配置声明同 Tenant 内的跨 APP 串联关系 | 精确控制哪些 APP 之间可建立 Edge |
-| 3.7 ServiceGraph 指标 | 生成 Tempo 兼容的 edge 级指标 | 可在 Grafana 中展示服务拓扑（Node Graph Panel） |
-| 3.8 分布式验证 | 配合 loadbalancingexporter 验证多实例正确性 | 3 实例部署，Edge 配对率不低于单实例 |
-
-### Sprint 4：分布式部署 + 性能调优（1.5 周）
-
-**目标**：生产可用的分布式部署方案
-
-| 任务 | 详情 | 验收标准 |
-|------|------|---------|
-| 4.1 Gateway + Worker 拓扑 | 配置模板：Gateway 用 loadbalancingexporter，Worker 用 metricgen | 部署文档完整 |
-| 4.2 K8s 部署配置 | Deployment + Service + HPA | 自动扩缩容验证通过 |
-| 4.3 性能基准测试 | Benchmark 测试 ConsumeTraces 吞吐和延迟 | ≥ 100K spans/s，P99 < 5ms |
-| 4.4 内存压力测试 | 模拟高基数场景验证 OOM 保护 | 10K series 内存 < 200MB |
-| 4.5 扩缩容平滑验证 | 滚动更新期间指标正确性 | 无指标断崖/跳变 |
-| 4.6 可观测性完善 | 暴露 metricgen 自身的运行指标 | 聚合延迟、基数使用率、flush 耗时等 |
-
-### Sprint 5：高级特性 + 正式切换（2 周）
-
-**目标**：替换旧组件，上线生产
-
-| 任务 | 详情 | 验收标准 |
-|------|------|---------|
-| 5.1 Custom Generator 框架 | 支持通过配置注册自定义聚合逻辑 | 用户可配置新的维度/指标组合 |
-| 5.2 Exemplar 支持 | 在指标中关联 TraceID 作为 Exemplar | Grafana Tempo 中可点击跳转 Trace |
-| 5.3 查询层适配 | 更新 tempo_handler 的指标映射逻辑 | TraceQL Metrics 查询无感切换 |
-| 5.4 灰度切换 | Feature Flag 控制新旧 connector 切换 | 灰度 10% → 50% → 100% |
-| 5.5 下线旧组件 | 移除 spanmetricsconnector 依赖 | 代码清理完成 |
-| 5.6 文档完善 | 使用指南、运维手册、性能调优指南 | 文档齐全 |
-
----
-
-## 14. 决策记录
-
-| # | 决策项 | 选择 | 备选方案 | 理由 |
-|---|--------|------|---------|------|
-| 1 | 组件类型 | ✅ Connector | Processor / Exporter | Connector 是 OTel 标准的 Traces→Metrics 桥接组件类型 |
-| 2 | 分布式策略 | ✅ 前置 loadbalancingexporter | 内建一致性哈希 / Redis Stream | 复用成熟开源方案；Connector 保持简单无外部依赖 |
-| 3 | Generator 扩展机制 | ✅ 接口 + 注册模式 | OTTL 表达式 / 脚本引擎 | Go 接口编译时安全；性能最优；测试最方便 |
-| 4 | 隔离粒度 | ✅ APP 级（AppID） | Tenant 级 / 无隔离 | Tenant 太粗（大 APP 影响小 APP）；APP 级精确控制基数和配置 |
-| 5 | 跨 APP 服务串联 | ✅ ServiceGroup（同 Tenant 内） | 全局无限制 / 严格 APP 隔离 / 跨 Tenant | ServiceGraph 天然跨服务；同 Tenant 内自动发现 + 显式声明；不支持跨 Tenant（安全边界） |
-| 6 | ServiceGraph 实现 | ✅ 借鉴 Tempo（Edge Store + FIFO + Virtual Node） | 自研全新方案 / 直接用 contrib servicegraphconnector | Tempo 方案经过大规模生产验证；Virtual Node 推断解决了未 instrument 服务问题 |
-| 7 | 聚合 Temporality | ✅ 默认 Cumulative，可选 Delta | 仅 Delta / 仅 Cumulative | Cumulative 适配 Prometheus；Delta 适配分布式 |
-| 8 | 基数控制 | ✅ LRU + Overflow + Per-APP | 全局限制 / Per-tenant 限制 | Per-APP 最公平；Overflow 保证数学正确 |
-| 9 | 配置覆盖存储 | ✅ Redis（复用现有实例） | 独立 YAML 文件 / 控制面 API | 复用已有基础设施；支持 API 动态修改；多实例间自动一致 |
-| 10 | 配置覆盖层级 | ✅ 分层覆盖（defaults → tenant → app） | 单层配置 / 只有全局配置 | 借鉴 Tempo overrides；灵活度最高；支持热加载 |
-| 11 | 替换策略 | ✅ 渐进式灰度 | 一步切换 | 降低风险；可随时回滚 |
-| 12 | TenantID 获取方式 | ✅ 从 AppID 推导（ControlPlane 映射） | 从 Context 直接获取 / 依赖多租户架构 | 不依赖多租户架构先行落地；AppID 天然归属 Tenant；降级兼容 |
-| 13 | ServiceGroup 动态管理 | ✅ 通过 API 动态 CRUD | 仅支持配置文件 | 运维友好；支持热生效；存储在 Redis 中 |
-| 14 | ServiceGraph 指标前缀 | ✅ 支持 enable_client_server_prefix | 不支持 | 参考 Tempo；方便按服务角色分别查询 |
-| 15 | 高基数处理策略 | ✅ 记录日志告警 + 手动调配置 | 自适应采样/自动降维 | 简单可控；避免自动逻辑引入不可预期行为 |
-
----
-
-## 15. 遗留问题（已决策）
-
-| # | 问题 | 决策 | 说明 |
-|---|------|------|------|
-| 1 | 是否需要支持 LogsToMetrics（从日志生成指标）？ | ❌ 暂不需要 | 当前聚焦 TracesToMetrics，未来可通过新 Generator 扩展 |
-| 2 | ServiceGraph 生成的指标是否需要单独的 Pipeline 输出？ | ✅ 支持单独输出 | ServiceGraph 指标可配置到独立的 metrics pipeline，与 RED 指标分开存储/查询 |
-| 3 | 配置覆盖的存储 | ✅ 复用 Redis | 复用项目现有 Redis 实例，动态覆盖存储在 Redis Hash 中，支持 API 动态修改 |
-| 4 | 高基数场景下是否需要自适应采样（动态调整维度）？ | ❌ 先不做采样 | 高基数场景记录日志告警即可，不自动降维；用户通过调整 CardinalityLimit 和 Dimensions 手动控制 |
-| 5 | 是否需要对接外部指标存储（如 Prometheus TSDB）做远端聚合？ | ❌ 先不对接 | 使用自有指标存储（Elasticsearch / PostgreSQL），通过 OTel Pipeline 的 exporter 输出 |
-| 6 | ServiceGroup 的动态管理方式 | ✅ 通过 API 动态创建/修改 | ServiceGroup 配置存储在 Redis 中，通过 Admin API 动态 CRUD，支持热加载 |
-| 7 | 跨 Tenant ServiceGroup 的鉴权策略 | ❌ 不支持跨 Tenant | 所有 ServiceGroup 成员必须属于同一 Tenant，Tenant 是安全隔离边界 |
-| 8 | Tempo 的 `enable_client_server_prefix` 是否需要支持？ | ✅ 需要支持 | 在指标名中区分 `client_`/`server_` 前缀，方便按服务角色查询 |
-
-### 15.1 补充说明
-
-**关于"APP 自动发现"（原问题 8）的澄清**：
-
-"自动发现"指的是 ServiceGraph 的 `auto_discover` 模式：当同一 Tenant 下有新的 APP（service.name）首次上报 Span 时，系统自动将其纳入该 Tenant 的默认 ServiceGroup，无需手动配置即可看到服务拓扑。这不需要"冷启动延迟"——新 APP 首次出现时立即由 `AppAggregatorManager.GetOrCreate()` 创建聚合空间并开始参与 Edge 配对，无需等待任何配置加载。配置覆盖（如果有）通过 Redis 热加载在下次 reload 周期（默认 10s）内生效。
+| 项目 | 原因 |
+|------|------|
+| EdgeStore / SpanID 配对 | peer_service processor 已处理 |
+| ServiceGroup / 跨 APP 串联 | 当前无多租户需求，后续按需添加 |
+| Redis 配置热加载 | 首版配置文件即可，Sprint 3+ 按需 |
+| 采样校正 | 当前未启用采样，后续按需 |
+| 虚拟节点推断 | 外部服务不发 trace，无法推断，与 Tempo 行为一致 |
+| `messages_size` 指标 | 没有对应 span 数据源 |
