@@ -67,7 +67,7 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 						"top_hits": map[string]any{
 							"size":    1,
 							"sort":    []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}}},
-							"_source": []string{FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels},
+							"_source": []string{FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels, FieldMetricBucketCounts, FieldMetricExplicitBounds},
 						},
 					},
 				},
@@ -232,10 +232,9 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 	return names, nil
 }
 
-// ListLabelNames returns all label names across metrics within the time range.
-func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange) ([]string, error) {
-	// ES doesn't natively support listing dynamic field names in objects.
-	// We sample recent documents and extract keys from the "labels" field.
+// ListLabelNames returns label names for the specified metric within the time range.
+// If metricName is empty, all label names across all metrics are returned.
+func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error) {
 	searchReq := &SearchRequest{
 		Query:  r.timeRangeQuery(timeRange),
 		Size:   100,
@@ -243,6 +242,18 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange) 
 		Sort: []map[string]any{
 			{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}},
 		},
+	}
+
+	// Filter by metric name if specified.
+	if metricName != "" {
+		searchReq.Query = map[string]any{
+			"bool": map[string]any{
+				"must": []map[string]any{
+					searchReq.Query,
+					{"term": map[string]any{FieldName: metricName}},
+				},
+			},
+		}
 	}
 
 	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
@@ -564,9 +575,11 @@ func (r *MetricReader) calculateInterval(tr TimeRange, step time.Duration) strin
 // hitToDataPoint converts an ES search hit to a MetricDataPoint.
 func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 	var doc struct {
-		TimeUnixMilli int64             `json:"timeUnixMilli"`
-		Value         float64           `json:"value"`
-		Labels        map[string]string `json:"labels"`
+		TimeUnixMilli  int64             `json:"timeUnixMilli"`
+		Value          float64           `json:"value"`
+		Labels         map[string]string `json:"labels"`
+		BucketCounts   []int64           `json:"bucket_counts"`
+		ExplicitBounds []float64         `json:"explicit_bounds"`
 	}
 	if err := json.Unmarshal(hit.Source, &doc); err != nil {
 		r.logger.Warn("Failed to unmarshal metric hit", zap.String("id", hit.ID), zap.Error(err))
@@ -574,9 +587,11 @@ func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 	}
 
 	return MetricDataPoint{
-		Labels: doc.Labels,
-		Value:  doc.Value,
-		Time:   time.UnixMilli(doc.TimeUnixMilli),
+		Labels:         doc.Labels,
+		Value:          doc.Value,
+		Time:           time.UnixMilli(doc.TimeUnixMilli),
+		BucketCounts:   doc.BucketCounts,
+		ExplicitBounds: doc.ExplicitBounds,
 	}
 }
 
@@ -602,14 +617,20 @@ func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]Me
 
 	// 3. Use composite aggregation by label set + top_hits within each group.
 	// Each group returns raw (timestamp, value) pairs sorted by time ASC.
+	// ES 7.x compatible: use composite aggregation with script-based
+	// deterministic concatenation of label doc values. This avoids the
+	// object-field key-ordering issue (multi_terms requires ES 7.12+).
 	aggs := map[string]any{
 		"by_series": map[string]any{
 			"composite": map[string]any{
-				"size":    100, // max 100 distinct series
+				"size": 100,
 				"sources": []map[string]any{
 					{"labels_hash": map[string]any{
 						"terms": map[string]any{
-							"field": FieldMetricLabels,
+							"script": map[string]any{
+								"source": `doc['labels.client'].value + '|' + doc['labels.server'].value + '|' + doc['labels.connection_type'].value`,
+								"lang":   "painless",
+							},
 						},
 					}},
 				},
@@ -685,7 +706,7 @@ func (r *MetricReader) parseRawResult(resp *SearchResponse) ([]MetricRawSeries, 
 
 	var composite struct {
 		Buckets []struct {
-			Key     map[string]any `json:"key"`
+			Key     any `json:"key"` // composite: map[string]any, multi_terms: []any
 			Samples struct {
 				Hits struct {
 					Hits []SearchHit `json:"hits"`
@@ -708,9 +729,11 @@ func (r *MetricReader) parseRawResult(resp *SearchResponse) ([]MetricRawSeries, 
 		var labels map[string]string
 		for _, hit := range hits {
 			var doc struct {
-				TimeUnixMilli int64             `json:"timeUnixMilli"`
-				Value         float64           `json:"value"`
-				Labels        map[string]string `json:"labels"`
+				TimeUnixMilli  int64             `json:"timeUnixMilli"`
+				Value          float64           `json:"value"`
+				Labels         map[string]string `json:"labels"`
+				BucketCounts   []int64           `json:"bucket_counts"`
+				ExplicitBounds []float64         `json:"explicit_bounds"`
 			}
 			if err := json.Unmarshal(hit.Source, &doc); err != nil {
 				continue
@@ -719,8 +742,10 @@ func (r *MetricReader) parseRawResult(resp *SearchResponse) ([]MetricRawSeries, 
 				labels = doc.Labels
 			}
 			samples = append(samples, MetricSample{
-				TimestampMs: doc.TimeUnixMilli,
-				Value:       doc.Value,
+				TimestampMs:  doc.TimeUnixMilli,
+				Value:        doc.Value,
+				BucketCounts: doc.BucketCounts,
+				Bounds:       doc.ExplicitBounds,
 			})
 		}
 		if labels == nil {
@@ -733,4 +758,120 @@ func (r *MetricReader) parseRawResult(resp *SearchResponse) ([]MetricRawSeries, 
 	}
 
 	return result, nil
+}
+
+// LabelCombinationsQuery is the ES-specific options for label exploration.
+type MetricLabelQuery struct {
+	MetricName string
+	Labels     map[string]string
+	LabelKeys  []string
+	ServiceName string
+}
+
+// MetricCombinationsResult holds flattened label combinations.
+type MetricCombinationsResult struct {
+	Combinations []map[string]string
+}
+
+// ListLabelCombinations returns unique label value combinations for the
+// specified metric. Uses ES terms aggregation on label fields.
+func (r *MetricReader) ListLabelCombinations(ctx context.Context, query MetricLabelQuery) (*MetricCombinationsResult, error) {
+	esQuery := r.buildMetricQuery(query.MetricName, query.Labels, query.ServiceName)
+
+	searchReq := &SearchRequest{
+		Size: 0,
+		Query: map[string]any{
+			"bool": map[string]any{
+				"must": []map[string]any{esQuery},
+			},
+		},
+		Aggregations: map[string]any{"combo_root": r.buildLabelComboAgg(query.LabelKeys)},
+	}
+
+	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("label combinations search failed: %w", err)
+	}
+
+	var aggMap map[string]any
+	if raw, ok := resp.Aggregations["combo_root"]; ok {
+		json.Unmarshal(raw, &aggMap)
+	}
+	combos := r.flattenLabelCombos(map[string]any{"combo_root": aggMap}, query.LabelKeys)
+	return &MetricCombinationsResult{Combinations: combos}, nil
+}
+
+func (r *MetricReader) buildLabelComboAgg(keys []string) map[string]any {
+	if len(keys) == 0 {
+		return nil
+	}
+	outer := map[string]any{
+		"terms": map[string]any{
+			"field": "labels." + keys[0],
+			"size":  100,
+		},
+	}
+	if len(keys) > 1 {
+		outer["aggs"] = map[string]any{
+			"next": r.buildLabelComboAgg(keys[1:]),
+		}
+	}
+	return outer
+}
+
+func (r *MetricReader) flattenLabelCombos(result map[string]any, keys []string) []map[string]string {
+	root, _ := result["combo_root"].(map[string]any)
+	if root == nil {
+		return nil
+	}
+	buckets, _ := root["buckets"].([]any)
+	if buckets == nil {
+		return nil
+	}
+
+	var combos []map[string]string
+	for _, b := range buckets {
+		bucket, _ := b.(map[string]any)
+		val := fmt.Sprint(bucket["key"])
+		base := map[string]string{keys[0]: val}
+
+		if sub, ok := bucket["next"].(map[string]any); ok && len(keys) > 1 {
+			subCombos := r.flattenSubCombos(sub, keys[1:])
+			for _, sc := range subCombos {
+				for k, v := range base {
+					sc[k] = v
+				}
+				combos = append(combos, sc)
+			}
+		} else {
+			combos = append(combos, base)
+		}
+	}
+	return combos
+}
+
+func (r *MetricReader) flattenSubCombos(result map[string]any, keys []string) []map[string]string {
+	buckets, _ := result["buckets"].([]any)
+	if buckets == nil {
+		return nil
+	}
+	var combos []map[string]string
+	for _, b := range buckets {
+		bucket, _ := b.(map[string]any)
+		val := fmt.Sprint(bucket["key"])
+		base := map[string]string{keys[0]: val}
+
+		if sub, ok := bucket["next"].(map[string]any); ok && len(keys) > 1 {
+			subCombos := r.flattenSubCombos(sub, keys[1:])
+			for _, sc := range subCombos {
+				for k, v := range base {
+					sc[k] = v
+				}
+				combos = append(combos, sc)
+			}
+		} else {
+			combos = append(combos, base)
+		}
+	}
+	return combos
 }

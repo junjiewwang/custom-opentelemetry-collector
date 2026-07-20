@@ -175,14 +175,18 @@ func (a *pgMetricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQue
 	return nil, fmt.Errorf("QueryRaw not yet implemented for PostgreSQL provider")
 }
 
-func (a *pgMetricReaderAdapter) ListLabelNames(ctx context.Context, timeRange TimeRange) ([]string, error) {
+func (a *pgMetricReaderAdapter) ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error) {
 	pgTimeRange := postgresql.TimeRange{Start: timeRange.Start, End: timeRange.End}
-	return a.inner.ListLabelNames(ctx, pgTimeRange)
+	return a.inner.ListLabelNames(ctx, pgTimeRange, metricName)
 }
 
 func (a *pgMetricReaderAdapter) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
 	pgTimeRange := postgresql.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListLabelValues(ctx, label, pgTimeRange)
+}
+
+func (a *pgMetricReaderAdapter) ListLabelCombinations(ctx context.Context, query LabelCombinationsQuery) (*LabelCombinationsResult, error) {
+	return &LabelCombinationsResult{}, nil
 }
 
 // --- LogReader Adapter ---

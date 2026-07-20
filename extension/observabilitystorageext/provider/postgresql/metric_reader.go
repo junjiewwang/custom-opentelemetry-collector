@@ -254,7 +254,7 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 }
 
 // ListLabelNames returns all label keys across all metrics.
-func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange) ([]string, error) {
+func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error) {
 	sql := fmt.Sprintf(`
 		SELECT DISTINCT jsonb_object_keys(labels) AS label_name
 		FROM %s

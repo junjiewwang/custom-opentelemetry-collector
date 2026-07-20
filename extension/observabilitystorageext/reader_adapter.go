@@ -387,8 +387,10 @@ func (a *metricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQuery
 		samples := make([]MetricSample, len(s.Samples))
 		for j, sm := range s.Samples {
 			samples[j] = MetricSample{
-				TimestampMs: sm.TimestampMs,
-				Value:       sm.Value,
+				TimestampMs:  sm.TimestampMs,
+				Value:        sm.Value,
+				BucketCounts: sm.BucketCounts,
+				Bounds:       sm.Bounds,
 			}
 		}
 		result[i] = MetricRawSeries{
@@ -404,14 +406,35 @@ func (a *metricReaderAdapter) ListMetricNames(ctx context.Context, timeRange Tim
 	return a.inner.ListMetricNames(ctx, esTimeRange)
 }
 
-func (a *metricReaderAdapter) ListLabelNames(ctx context.Context, timeRange TimeRange) ([]string, error) {
+func (a *metricReaderAdapter) ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error) {
 	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
-	return a.inner.ListLabelNames(ctx, esTimeRange)
+	return a.inner.ListLabelNames(ctx, esTimeRange, metricName)
 }
 
 func (a *metricReaderAdapter) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
 	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListLabelValues(ctx, label, esTimeRange)
+}
+
+func (a *metricReaderAdapter) ListLabelCombinations(ctx context.Context, query LabelCombinationsQuery) (*LabelCombinationsResult, error) {
+	esQuery := elasticsearch.MetricLabelQuery{
+		MetricName:  query.MetricName,
+		Labels:      nil,
+		LabelKeys:   query.LabelKeys,
+		ServiceName: "",
+	}
+	result, err := a.inner.ListLabelCombinations(ctx, esQuery)
+	if err != nil {
+		return nil, err
+	}
+	combos := make([]map[string]string, len(result.Combinations))
+	for i, c := range result.Combinations {
+		combos[i] = make(map[string]string, len(c))
+		for k, v := range c {
+			combos[i][k] = v
+		}
+	}
+	return &LabelCombinationsResult{Combinations: combos}, nil
 }
 
 // ═══════════════════════════════════════════════════

@@ -269,6 +269,18 @@ type MetricResult struct {
 	Data []MetricDataPoint `json:"data"`
 }
 
+// LabelCombinationsQuery holds parameters for a label combination exploration query.
+type LabelCombinationsQuery struct {
+	AppID      string   `json:"appId,omitempty"`
+	MetricName string   `json:"metric"`
+	LabelKeys  []string `json:"labelKeys"`
+}
+
+// LabelCombinationsResult holds the result of a label exploration query.
+type LabelCombinationsResult struct {
+	Combinations []map[string]string `json:"combinations"`
+}
+
 // MetricRangeResult holds the result of a range metric query.
 type MetricRangeResult struct {
 	Data []MetricSeries `json:"data"`
@@ -276,10 +288,12 @@ type MetricRangeResult struct {
 
 // MetricDataPoint is a single metric value at a point in time.
 type MetricDataPoint struct {
-	Metric        string            `json:"metric,omitempty"`
-	Labels        map[string]string `json:"labels"`
-	Value         float64           `json:"value"`
-	TimeUnixMilli string            `json:"timeUnixMilli"`
+	Metric         string            `json:"metric,omitempty"`
+	Labels         map[string]string `json:"labels"`
+	Value          float64           `json:"value"`
+	TimeUnixMilli  string            `json:"timeUnixMilli"`
+	BucketCounts   []int64           `json:"bucket_counts,omitempty"`
+	ExplicitBounds []float64         `json:"explicit_bounds,omitempty"`
 }
 
 // MetricSeries is a series of metric values over time.
@@ -316,8 +330,10 @@ type MetricRawSeries struct {
 
 // MetricSample is a single raw sample point (timestamp in milliseconds + value).
 type MetricSample struct {
-	TimestampMs int64   `json:"t"`
-	Value       float64 `json:"v"`
+	TimestampMs  int64     `json:"t"`
+	Value        float64   `json:"v"`
+	BucketCounts []int64   `json:"bc,omitempty"` // histogram bucket counts per sample
+	Bounds       []float64 `json:"bd,omitempty"` // histogram explicit bounds per sample
 }
 
 // ═══════════════════════════════════════════════════

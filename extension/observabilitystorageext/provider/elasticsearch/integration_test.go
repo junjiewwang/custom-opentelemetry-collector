@@ -875,7 +875,7 @@ func TestIntegration_MetricReader_WriteAndQuery(t *testing.T) {
 		names, err := reader.ListLabelNames(ctx, TimeRange{
 			Start: now.Add(-10 * time.Minute),
 			End:   now.Add(10 * time.Minute),
-		})
+		}, "")
 		require.NoError(t, err)
 		t.Logf("🔍 ListLabelNames: %v", names)
 		// The test data has labels like "cpu", "method"

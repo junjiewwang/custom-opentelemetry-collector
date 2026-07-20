@@ -183,8 +183,13 @@ type MetricReader interface {
 	// ListMetricNames returns all available metric names.
 	ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error)
 
-	// ListLabelNames returns all label names.
-	ListLabelNames(ctx context.Context, timeRange TimeRange) ([]string, error)
+	// ListLabelCombinations returns unique label value combinations for the
+	// specified metric and label keys. Used by Grafana "group by" explore queries.
+	ListLabelCombinations(ctx context.Context, query LabelCombinationsQuery) (*LabelCombinationsResult, error)
+
+	// ListLabelNames returns label names. If metricName is non-empty, only
+	// labels from that specific metric are returned.
+	ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error)
 
 	// ListLabelValues returns values for a specific label.
 	ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error)

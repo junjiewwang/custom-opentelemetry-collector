@@ -360,7 +360,7 @@ func TestIntegration_MetricReader_WriteAndQuery(t *testing.T) {
 	labelNames, err := provider.MetricReader().ListLabelNames(ctx, TimeRange{
 		Start: now.Add(-1 * time.Hour),
 		End:   now.Add(1 * time.Hour),
-	})
+	}, "")
 	require.NoError(t, err, "ListLabelNames should succeed")
 	t.Logf("✅ ListLabelNames: %v", labelNames)
 

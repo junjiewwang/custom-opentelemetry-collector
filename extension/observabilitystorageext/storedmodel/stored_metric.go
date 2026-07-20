@@ -11,8 +11,6 @@ import (
 // StoredMetricDataPoint is the unified storage type for metric data points.
 // Each data point becomes a separate document. Field names align with OTLP JSON.
 type StoredMetricDataPoint struct {
-	// TimeUnixMilli is the epoch millisecond timestamp (converted from OTLP nanosecond).
-	// Stored as ES date type with epoch_millis format for native date_histogram support.
 	TimeUnixMilli int64          `json:"timeUnixMilli"`
 	Name          string         `json:"name"`
 	Type          string         `json:"type"`
@@ -21,6 +19,10 @@ type StoredMetricDataPoint struct {
 	Resource      map[string]any `json:"resource,omitempty"`
 	ServiceName   string         `json:"serviceName"`
 	AppID         string         `json:"appId,omitempty"`
+
+	// Histogram-specific fields (present only when Type="histogram").
+	BucketCounts  []uint64  `json:"bucket_counts,omitempty"`
+	ExplicitBounds []float64 `json:"explicit_bounds,omitempty"`
 }
 
 // ConvertOTLPMetric converts an OTLP metric to one or more StoredMetricDataPoint.
@@ -88,6 +90,8 @@ func convertHistogramPoints(dps pmetric.HistogramDataPointSlice, base StoredMetr
 		if dp.HasSum() {
 			pt.Value = dp.Sum()
 		}
+		pt.BucketCounts = dp.BucketCounts().AsRaw()
+		pt.ExplicitBounds = dp.ExplicitBounds().AsRaw()
 		result[i] = pt
 	}
 	return result

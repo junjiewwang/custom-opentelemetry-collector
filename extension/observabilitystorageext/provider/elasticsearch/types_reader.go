@@ -223,9 +223,11 @@ type MetricRangeResult struct {
 
 // MetricDataPoint is a single metric value at a point in time.
 type MetricDataPoint struct {
-	Labels map[string]string
-	Value  float64
-	Time   time.Time
+	Labels         map[string]string
+	Value          float64
+	Time           time.Time
+	BucketCounts   []int64
+	ExplicitBounds []float64
 }
 
 // MetricSeries is a series of metric values over time.
@@ -255,8 +257,10 @@ type MetricRawSeries struct {
 
 // MetricSample is a single raw sample point.
 type MetricSample struct {
-	TimestampMs int64
-	Value       float64
+	TimestampMs  int64
+	Value        float64
+	BucketCounts []int64   // histogram: per-sample bucket counts
+	Bounds       []float64 // histogram: per-sample explicit bounds
 }
 
 // ── Trace Metrics Types ────────────────────────────
