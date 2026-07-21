@@ -239,28 +239,25 @@ type traceqlMetricsQuery struct {
 // ── Static Data ────────────────────────────────────
 
 // intrinsic tags that Grafana Tempo expects.
-var tempoIntrinsicTags = []string{
-	"duration",
-	"kind",
-	"name",
-	"status",
-	"statusMessage",
-	"rootName",
-	"rootServiceName",
-}
+// tempoIntrinsicTags lists intrinsic span properties that are reported in the
+// /api/v2/search/tags response for Tempo API compatibility.
+//
+// Value retrieval support (per resolveIntrinsicTagValuesWithFilter):
+//
+//	✅ duration  — not queried via values endpoint (range filter)
+//	✅ kind      — static values (unspecified/internal/server/client/producer/consumer)
+//	✅ name      — queried from ES top-level "name" field via GetOperations
+//	✅ status    — static values (unset/ok/error)
+//	❌ statusMessage   — nested ES field "status.message", not yet queryable (TODO)
+//	❌ rootName        — not stored in ES; would require trace root span derivation (TODO)
+//	❌ rootServiceName — not stored in ES; would require trace root span derivation (TODO)
+var tempoIntrinsicTags = TempoIntrinsicTags
 
 // span kind values reported by Tempo.
-var tempoSpanKindValues = []string{
-	"unspecified",
-	"internal",
-	"server",
-	"client",
-	"producer",
-	"consumer",
-}
+var tempoSpanKindValues = TempoSpanKindValues
 
 // status code values.
-var tempoStatusCodeValues = []string{"unset", "ok", "error"}
+var tempoStatusCodeValues = TempoStatusCodeValues
 
 // emptyMetrics is reused for responses where no inspection metrics are tracked.
 var emptyMetrics = tempoSearchMetrics{InspectedBytes: "0"}
@@ -1090,7 +1087,7 @@ func computeNestedSet(spans []observabilitystorageext.Span) map[string]nestedSet
 func needsNestedSet(selectFields []string) bool {
 	for _, f := range selectFields {
 		switch f {
-		case "nestedSetParent", "nestedSetLeft", "nestedSetRight":
+		case TempoIntrinsicNestedSetParent, TempoIntrinsicNestedSetLeft, TempoIntrinsicNestedSetRight:
 			return true
 		}
 	}
@@ -1115,15 +1112,7 @@ func (e *Extension) handleTempoSearchTags(w http.ResponseWriter, r *http.Request
 	tagNames = append(tagNames, tempoIntrinsicTags...)
 
 	// Common span attribute keys.
-	tagNames = append(tagNames,
-		"http.method", "http.url", "http.status_code",
-		"http.route", "http.target",
-		"db.system", "db.name", "db.operation",
-		"rpc.system", "rpc.service", "rpc.method",
-		"messaging.system", "messaging.destination",
-		"net.host.name", "net.peer.name",
-		"error", "span.kind",
-	)
+	tagNames = append(tagNames, TempoV1CommonSpanAttributeKeys...)
 
 	// Try to fetch services from backend for additional tag discovery.
 	timeRange := parseTimeRange(r)
@@ -1186,13 +1175,13 @@ func (e *Extension) resolveTagValues(r *http.Request, tagName string) ([]string,
 		}
 		return values, nil
 
-	case "span.kind", "kind":
+	case OTelAttrSpanKind, TempoIntrinsicKind:
 		return tempoSpanKindValues, nil
 
-	case "status", "status.code":
+	case TempoIntrinsicStatus, "status.code":
 		return tempoStatusCodeValues, nil
 
-	case "name":
+	case TempoIntrinsicName:
 		// For "name" tag, try fetching operations from all services.
 		return e.fetchAllOperations(r.Context(), timeRange)
 
@@ -1248,35 +1237,27 @@ func (e *Extension) handleTempoV2SearchTags(w http.ResponseWriter, r *http.Reque
 
 	// Intrinsic scope is always static.
 	resp.Scopes = append(resp.Scopes, tempoV2Scope{
-		Name: "intrinsic",
+		Name: TempoScopeIntrinsic,
 		Tags: tempoIntrinsicTags,
 	})
 
 	// Resource scope: try backend tag discovery first, fall back to common keys.
-	resourceKeys := e.fetchTempoTagKeys(r.Context(), timeRange, "resource")
+	resourceKeys := e.fetchTempoTagKeys(r.Context(), timeRange, TempoScopeResource)
 	if len(resourceKeys) == 0 {
-		resourceKeys = []string{
-			"service.name", "service.namespace", "service.version",
-			"host.name", "deployment.environment",
-		}
+		resourceKeys = TempoCommonResourceAttributeKeys
 	}
 	resp.Scopes = append(resp.Scopes, tempoV2Scope{
-		Name: "resource",
+		Name: TempoScopeResource,
 		Tags: resourceKeys,
 	})
 
 	// Span scope: try backend tag discovery first, fall back to common keys.
-	spanKeys := e.fetchTempoTagKeys(r.Context(), timeRange, "span")
+	spanKeys := e.fetchTempoTagKeys(r.Context(), timeRange, TempoScopeSpan)
 	if len(spanKeys) == 0 {
-		spanKeys = []string{
-			"http.method", "http.url", "http.status_code", "http.route",
-			"db.system", "db.name", "db.operation",
-			"rpc.system", "rpc.service", "rpc.method",
-			"error", "span.kind",
-		}
+		spanKeys = TempoCommonSpanAttributeKeys
 	}
 	resp.Scopes = append(resp.Scopes, tempoV2Scope{
-		Name: "span",
+		Name: TempoScopeSpan,
 		Tags: spanKeys,
 	})
 
@@ -1385,7 +1366,7 @@ func (e *Extension) handleTempoV2SearchTagValues(w http.ResponseWriter, r *http.
 // Returns nil if the tagKey is not an intrinsic field (caller should proceed with generic path).
 func (e *Extension) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey string, filterTags map[string]string) []tempoV2TagValue {
 	switch tagKey {
-	case "name":
+	case TempoIntrinsicName:
 		// "name" is the span name / operation name, stored in ES top-level field "name".
 		// If filter specifies service.name, fetch operations only for that service.
 		// Otherwise fetch operations across all services.
@@ -1423,19 +1404,48 @@ func (e *Extension) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey 
 		}
 		return tv
 
-	case "kind", "span.kind":
+	case TempoIntrinsicKind, OTelAttrSpanKind:
 		tv := make([]tempoV2TagValue, len(tempoSpanKindValues))
 		for i, v := range tempoSpanKindValues {
 			tv[i] = tempoV2TagValue{Type: "string", Value: v}
 		}
 		return tv
 
-	case "status", "status.code":
+	case TempoIntrinsicStatus, "status.code":
 		tv := make([]tempoV2TagValue, len(tempoStatusCodeValues))
 		for i, v := range tempoStatusCodeValues {
 			tv[i] = tempoV2TagValue{Type: "string", Value: v}
 		}
 		return tv
+
+	// ── Intrinsic tags with no value implementation (yet) ──
+	//
+	// These are listed in the /api/v2/search/tags response for Tempo API
+	// compatibility, but the values endpoint returns nil because:
+	//
+	//   "rootName" / "rootServiceName":
+	//     In real Tempo these are derived from the trace root span.
+	//     Our ES schemas (otel-traces-*) do not store these as top-level
+	//     fields. The generic GetTagValues fallback queries
+	//     "attributes.rootName" / "resource.rootName" which do not exist.
+	//     TODO: derive from the trace root span during search or store as
+	//     top-level fields during ingest.
+	//
+	//   "statusMessage":
+	//     ES stores this as the nested field "status.message", but
+	//     GetTagValues always prefixes the field with "attributes." or
+	//     "resource.", resulting in "attributes.statusMessage" which
+	//     does not exist. Requires a dedicated top-level field query in
+	//     the trace reader (e.g. GetIntrinsicTagValues) or direct ES
+	//     aggregation on "status.message".
+	//     TODO: add intrinsic tag value query support in TraceReader.
+	//
+	// Returning nil here is intentional — it prevents the generic
+	// fallback from querying a non-existent "attributes.*" field and
+	// produces a cleaner response.
+
+		case TempoIntrinsicRootName, TempoIntrinsicRootServiceName, TempoIntrinsicStatusMessage:
+		return nil
 
 	default:
 		// Not an intrinsic tag — let the caller handle via generic path.
@@ -2285,13 +2295,13 @@ func resolveSelectField(span observabilitystorageext.Span, field string, nsInfo 
 
 	// ── System / intrinsic fields ──
 	switch key {
-	case "name":
+	case TempoIntrinsicName:
 		if span.Name != "" {
 			return strVal(span.Name)
 		}
-	case "kind":
+	case TempoIntrinsicKind:
 		return strVal(string(span.Kind))
-	case "status":
+	case TempoIntrinsicStatus:
 		return strVal(string(span.Status.Code))
 	case "status.code":
 		return strVal(string(span.Status.Code))
@@ -2299,15 +2309,15 @@ func resolveSelectField(span observabilitystorageext.Span, field string, nsInfo 
 		if span.Status.Message != "" {
 			return strVal(span.Status.Message)
 		}
-	case "duration":
+	case TempoIntrinsicDuration:
 		return strVal(span.DurationNano)
-	case "service.name":
-		if scope == "resource" || scope == "" {
+	case OTelAttrServiceName:
+		if scope == TempoScopeResource || scope == "" {
 			return strVal(span.ServiceName)
 		}
 
 	// ── Nested set model intrinsic fields ──
-	case "nestedSetParent":
+	case TempoIntrinsicNestedSetParent:
 		if nsInfo != nil {
 			if info, ok := nsInfo[span.SpanID]; ok {
 				return intVal(info.Parent)
@@ -2318,7 +2328,7 @@ func resolveSelectField(span observabilitystorageext.Span, field string, nsInfo 
 		}
 		return intVal(1)
 
-	case "nestedSetLeft":
+	case TempoIntrinsicNestedSetLeft:
 		if nsInfo != nil {
 			if info, ok := nsInfo[span.SpanID]; ok {
 				return intVal(info.Left)
@@ -2326,7 +2336,7 @@ func resolveSelectField(span observabilitystorageext.Span, field string, nsInfo 
 		}
 		return intVal(1)
 
-	case "nestedSetRight":
+	case TempoIntrinsicNestedSetRight:
 		if nsInfo != nil {
 			if info, ok := nsInfo[span.SpanID]; ok {
 				return intVal(info.Right)
@@ -2336,7 +2346,7 @@ func resolveSelectField(span observabilitystorageext.Span, field string, nsInfo 
 	}
 
 	// ── Resource attributes ──
-	if scope == "resource" || scope == "" {
+	if scope == TempoScopeResource || scope == "" {
 		for _, attr := range span.Resource {
 			if attr.Key == key {
 				tv := publicAnyValueToTempo(attr.Value)
@@ -2346,7 +2356,7 @@ func resolveSelectField(span observabilitystorageext.Span, field string, nsInfo 
 	}
 
 	// ── Span attributes ──
-	if scope == "span" || scope == "" {
+	if scope == TempoScopeSpan || scope == "" {
 		for _, attr := range span.Attributes {
 			if attr.Key == key {
 				tv := publicAnyValueToTempo(attr.Value)

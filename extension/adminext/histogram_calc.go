@@ -17,6 +17,17 @@ import "sort"
 // Isolated as a pure function with no external dependencies for
 // testability and clarity.
 
+// HistogramSample is a calculator-owned type for a single histogram data point.
+// Handler layer converts observabilitystorageext.MetricSample → HistogramSample
+// before calling into the calculator, keeping this package dependency-free.
+type HistogramSample struct {
+	TimestampMs  int64
+	Value        float64
+	BucketCounts []int64
+	Bounds       []float64
+	Labels       map[string]string // original labels for Go-side grouping
+}
+
 // HistogramBucket holds the aggregated bucket data for one label group.
 type HistogramBucket struct {
 	Labels       map[string]string
@@ -140,6 +151,33 @@ func sortedLabelKey(labels map[string]string) string {
 		buf = append(buf, '\x00')
 	}
 	return string(buf)
+}
+
+// AggregateHistogramSamples aggregates bucket_counts from HistogramSample
+// values within the time window [windowStartMs, windowEndMs].
+// Used for range-query sliding windows.
+//
+// Handler layer converts observabilitystorageext.MetricSample → HistogramSample
+// before calling, keeping this package dependency-free.
+func AggregateHistogramSamples(samples []HistogramSample, windowStartMs, windowEndMs int64) HistogramBucket {
+	hb := HistogramBucket{}
+
+	for _, s := range samples {
+		if s.TimestampMs < windowStartMs || s.TimestampMs > windowEndMs {
+			continue
+		}
+		if len(s.Bounds) > 0 && len(hb.Bounds) == 0 {
+			hb.Bounds = s.Bounds
+			hb.BucketCounts = make([]int64, len(s.Bounds))
+		}
+		hb.TotalSum += s.Value
+		for i := 0; i < len(s.BucketCounts) && i < len(hb.BucketCounts); i++ {
+			hb.BucketCounts[i] += s.BucketCounts[i]
+			hb.TotalCount += s.BucketCounts[i]
+		}
+	}
+
+	return hb
 }
 
 func copyMap(m map[string]string) map[string]string {

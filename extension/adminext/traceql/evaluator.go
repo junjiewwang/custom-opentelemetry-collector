@@ -167,24 +167,24 @@ func matchCondition(cond Condition, span *SpanData) bool {
 
 	switch {
 	// ── Intrinsic: name ──
-	case key == "name" && cond.IsIntrinsic():
+	case key == IntrinsicName && cond.IsIntrinsic():
 		return matchStringValue(cond.Operator, span.Name, cond.Value)
 
 	// ── Intrinsic: kind ──
-	case key == "kind" && cond.IsIntrinsic():
+	case key == IntrinsicKind && cond.IsIntrinsic():
 		return matchStringValue(cond.Operator, span.Kind, cond.Value)
 
 	// ── Intrinsic: status ──
-	case key == "status" && cond.IsIntrinsic():
+	case key == IntrinsicStatus && cond.IsIntrinsic():
 		return matchStringValue(cond.Operator, span.StatusCode, cond.Value)
 
 	// ── Intrinsic: duration ──
-	case key == "duration" && cond.IsIntrinsic():
+	case key == IntrinsicDuration && cond.IsIntrinsic():
 		return matchNumericValue(cond.Operator, span.DurationNano, cond.Value)
 
 	// ── Intrinsic: nestedSetParent (Tempo internal, maps to root span) ──
 	// nestedSetParent < 0  →  span has no parent (root span).
-	case key == "nestedSetParent" && cond.Scope == "":
+	case key == IntrinsicNestedSetParent && cond.Scope == "":
 		if cond.Operator == "<" {
 			if n, ok := cond.Value.(int64); ok && n <= 0 {
 				return span.ParentSpanID == ""

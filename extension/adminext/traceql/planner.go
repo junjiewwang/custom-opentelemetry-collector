@@ -276,19 +276,19 @@ func extractFilterConditions(sf *SpanFilter) safeConditions {
 		key := cond.Key
 
 		switch {
-		case key == "status" && cond.IsIntrinsic():
+		case key == IntrinsicStatus && cond.IsIntrinsic():
 			sc.HasStatus = true
 			sc.Status = valStr
-		case key == "kind" && cond.IsIntrinsic():
+		case key == IntrinsicKind && cond.IsIntrinsic():
 			sc.HasSpanKind = true
 			sc.SpanKind = valStr
 		case key == "service.name" && (cond.Scope == "resource" || cond.Scope == ""):
 			sc.HasServiceName = true
 			sc.ServiceName = valStr
-		case key == "name" && cond.IsIntrinsic():
+		case key == IntrinsicName && cond.IsIntrinsic():
 			sc.HasOperationName = true
 			sc.OperationName = valStr
-		case key == "nestedSetParent":
+		case key == IntrinsicNestedSetParent:
 			// Skip — handled above for < operator.
 		default:
 			if valStr != "" {
@@ -453,7 +453,7 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 		}
 
 	// ── Intrinsic: name (operation name) ──
-	case key == "name" && cond.Scope == "" && cond.IsIntrinsic():
+	case key == IntrinsicName && cond.Scope == "" && cond.IsIntrinsic():
 		switch cond.Operator {
 		case "=":
 			if valStr != "" {
@@ -461,18 +461,18 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 		case "!=":
 			if isNil {
-				p.addTagExists("name")
+				p.addTagExists(IntrinsicName)
 			} else if valStr != "" {
-				p.addTagNot("name", valStr)
+				p.addTagNot(IntrinsicName, valStr)
 			}
 		case "=~":
 			if valStr != "" {
-				p.addTagRegex("name", valStr)
+				p.addTagRegex(IntrinsicName, valStr)
 			}
 		}
 
 	// ── Intrinsic: kind ──
-	case key == "kind" && cond.Scope == "" && cond.IsIntrinsic():
+	case key == IntrinsicKind && cond.Scope == "" && cond.IsIntrinsic():
 		switch cond.Operator {
 		case "=":
 			if valStr != "" {
@@ -480,18 +480,18 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 		case "!=":
 			if isNil {
-				p.addTagExists("kind")
+				p.addTagExists(IntrinsicKind)
 			} else if valStr != "" {
-				p.addTagNot("kind", valStr)
+				p.addTagNot(IntrinsicKind, valStr)
 			}
 		case "=~":
 			if valStr != "" {
-				p.addTagRegex("kind", valStr)
+				p.addTagRegex(IntrinsicKind, valStr)
 			}
 		}
 
 	// ── Intrinsic: status ──
-	case key == "status" && cond.Scope == "" && cond.IsIntrinsic():
+	case key == IntrinsicStatus && cond.Scope == "" && cond.IsIntrinsic():
 		switch cond.Operator {
 		case "=":
 			if valStr != "" {
@@ -499,18 +499,18 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 		case "!=":
 			if isNil {
-				p.addTagExists("status")
+				p.addTagExists(IntrinsicStatus)
 			} else if valStr != "" {
-				p.addTagNot("status", valStr)
+				p.addTagNot(IntrinsicStatus, valStr)
 			}
 		case "=~":
 			if valStr != "" {
-				p.addTagRegex("status", valStr)
+				p.addTagRegex(IntrinsicStatus, valStr)
 			}
 		}
 
 	// ── Intrinsic: nestedSetParent < 0 (root span) ──
-	case key == "nestedSetParent" && cond.Scope == "":
+	case key == IntrinsicNestedSetParent && cond.Scope == "":
 		if cond.Operator == "<" {
 			if n, ok := cond.Value.(int64); ok && n <= 0 {
 				p.IsRoot = true
@@ -518,7 +518,7 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 		}
 
 	// ── Intrinsic: duration (span or trace scope) ──
-	case key == "duration" && (cond.Scope == "" || cond.Scope == "trace"):
+	case key == IntrinsicDuration && (cond.Scope == "" || cond.Scope == "trace"):
 		if d, ok := cond.Value.(time.Duration); ok {
 			switch cond.Operator {
 			case ">", ">=":
@@ -529,12 +529,12 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 		}
 
 	// ── Intrinsic: trace:rootName / trace:rootService ──
-	case key == "rootName" && cond.Scope == "trace":
+	case key == IntrinsicRootName && cond.Scope == "trace":
 		if cond.Operator == "=" && valStr != "" {
 			if p.Tags == nil {
 				p.Tags = make(map[string]string)
 			}
-			p.Tags["rootName"] = valStr
+			p.Tags[IntrinsicRootName] = valStr
 		}
 	case key == "rootService" && cond.Scope == "trace":
 		if cond.Operator == "=" && valStr != "" {

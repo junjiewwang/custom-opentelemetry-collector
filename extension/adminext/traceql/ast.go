@@ -99,9 +99,9 @@ func (c Condition) String() string {
 // (not a user-defined attribute).
 func (c Condition) IsIntrinsic() bool {
 	switch c.Key {
-	case "name", "status", "kind", "duration",
-		"nestedSetParent", "nestedSetLeft", "nestedSetRight",
-		"rootName", "rootServiceName", "traceDuration":
+	case IntrinsicName, IntrinsicStatus, IntrinsicKind, IntrinsicDuration,
+		IntrinsicNestedSetParent, IntrinsicNestedSetLeft, IntrinsicNestedSetRight,
+		IntrinsicRootName, IntrinsicRootServiceName, IntrinsicTraceDuration:
 		return c.Scope == "" // intrinsics have no scope prefix
 	}
 	return false
@@ -230,6 +230,20 @@ func (t *TrueExpr) String() string { return "true" }
 // ═══════════════════════════════════════════════════
 // Intrinsic Constants
 // ═══════════════════════════════════════════════════
+
+// Intrinsic field keys shared across the traceql package.
+const (
+	IntrinsicName              = "name"
+	IntrinsicStatus            = "status"
+	IntrinsicKind              = "kind"
+	IntrinsicDuration          = "duration"
+	IntrinsicNestedSetParent   = "nestedSetParent"
+	IntrinsicNestedSetLeft     = "nestedSetLeft"
+	IntrinsicNestedSetRight    = "nestedSetRight"
+	IntrinsicRootName          = "rootName"
+	IntrinsicRootServiceName   = "rootServiceName"
+	IntrinsicTraceDuration     = "traceDuration"
+)
 
 // SpanKind values used in TraceQL.
 const (

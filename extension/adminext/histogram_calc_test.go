@@ -203,6 +203,40 @@ func TestComputeHistogramQuantile_NegativeBucketCount(t *testing.T) {
 		BucketCounts: []int64{-1, 5},
 		Bounds:       []float64{0.01, 0.1},
 	}
-	// totalCount is negative or zero → returns 0
 	assert.False(t, math.IsNaN(ComputeHistogramQuantile(0.9, hb)))
+}
+
+func TestAggregateHistogramSamples(t *testing.T) {
+	samples := []HistogramSample{
+		{TimestampMs: 1000, Value: 0.01, BucketCounts: []int64{10, 5}, Bounds: []float64{0.01, 0.1}},
+		{TimestampMs: 2000, Value: 0.02, BucketCounts: []int64{8, 7}, Bounds: []float64{0.01, 0.1}},
+		{TimestampMs: 3000, Value: 0.03, BucketCounts: []int64{6, 9}, Bounds: []float64{0.01, 0.1}},
+	}
+
+	t.Run("full window", func(t *testing.T) {
+		hb := AggregateHistogramSamples(samples, 500, 3500)
+		assert.Equal(t, int64(45), hb.TotalCount)
+		assert.InDelta(t, 0.06, hb.TotalSum, 1e-9)
+		assert.Equal(t, []int64{24, 21}, hb.BucketCounts)
+	})
+
+	t.Run("partial window", func(t *testing.T) {
+		hb := AggregateHistogramSamples(samples, 1500, 2500)
+		assert.Equal(t, int64(15), hb.TotalCount) // 8+7 from sample at 2000
+		assert.Equal(t, []int64{8, 7}, hb.BucketCounts)
+	})
+
+	t.Run("no matching samples", func(t *testing.T) {
+		hb := AggregateHistogramSamples(samples, 100, 200)
+		assert.Equal(t, int64(0), hb.TotalCount)
+	})
+
+	t.Run("no bucket data", func(t *testing.T) {
+		plain := []HistogramSample{
+			{TimestampMs: 1000, Value: 5.0},
+		}
+		hb := AggregateHistogramSamples(plain, 500, 1500)
+		assert.Equal(t, int64(0), hb.TotalCount)
+		assert.InDelta(t, 5.0, hb.TotalSum, 1e-9)
+	})
 }

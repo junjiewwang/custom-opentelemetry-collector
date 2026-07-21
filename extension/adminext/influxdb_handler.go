@@ -708,7 +708,7 @@ func convertToInfluxDBSeries(result *observabilitystorageext.MetricRangeResult, 
 		// Build tags (excluding internal keys)
 		tags := make(map[string]string)
 		for k, v := range s.Labels {
-			if k == "__name__" || k == "metric" {
+			if k == PromLabelName || k == "metric" {
 				continue
 			}
 			tags[k] = v
