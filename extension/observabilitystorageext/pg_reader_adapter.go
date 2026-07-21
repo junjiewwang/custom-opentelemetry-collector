@@ -175,6 +175,10 @@ func (a *pgMetricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQue
 	return nil, fmt.Errorf("QueryRaw not yet implemented for PostgreSQL provider")
 }
 
+func (a *pgMetricReaderAdapter) QueryFlat(ctx context.Context, query MetricFlatQuery) (*MetricFlatResult, error) {
+	return nil, fmt.Errorf("QueryFlat not yet implemented for PostgreSQL provider")
+}
+
 func (a *pgMetricReaderAdapter) ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error) {
 	pgTimeRange := postgresql.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListLabelNames(ctx, pgTimeRange, metricName)

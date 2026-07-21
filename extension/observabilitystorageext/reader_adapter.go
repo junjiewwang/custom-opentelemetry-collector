@@ -391,6 +391,7 @@ func (a *metricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQuery
 				Value:        sm.Value,
 				BucketCounts: sm.BucketCounts,
 				Bounds:       sm.Bounds,
+				Labels:       sm.Labels,
 			}
 		}
 		result[i] = MetricRawSeries{
@@ -399,6 +400,36 @@ func (a *metricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQuery
 		}
 	}
 	return result, nil
+}
+
+func (a *metricReaderAdapter) QueryFlat(ctx context.Context, query MetricFlatQuery) (*MetricFlatResult, error) {
+	esQuery := elasticsearch.MetricFlatQuery{
+		AppID:       query.AppID,
+		MetricName:  query.MetricName,
+		Labels:      query.Labels,
+		LabelMatch:  query.LabelMatch,
+		ServiceName: query.ServiceName,
+		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		MaxDocs:     query.MaxDocs,
+	}
+	flatResult, err := a.inner.QueryFlat(ctx, esQuery)
+	if err != nil {
+		return nil, err
+	}
+	samples := make([]MetricSample, len(flatResult.Samples))
+	for i, sm := range flatResult.Samples {
+		samples[i] = MetricSample{
+			TimestampMs:  sm.TimestampMs,
+			Value:        sm.Value,
+			BucketCounts: sm.BucketCounts,
+			Bounds:       sm.Bounds,
+			Labels:       sm.Labels,
+		}
+	}
+	return &MetricFlatResult{
+		Samples: samples,
+		Total:   flatResult.Total,
+	}, nil
 }
 
 func (a *metricReaderAdapter) ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error) {

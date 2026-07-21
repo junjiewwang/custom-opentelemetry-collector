@@ -180,6 +180,13 @@ type MetricReader interface {
 	// Used by PromQL functions like rate()/increase() that need the original sample sequence.
 	QueryRaw(ctx context.Context, query MetricRawQuery) ([]MetricRawSeries, error)
 
+	// QueryFlat returns all matching metric documents without ES-side grouping.
+	// Unlike QueryRaw which groups by label set via composite aggregation,
+	// QueryFlat returns a flat list for client-side grouping in Go.
+	// Designed for histogram_quantile which needs complete bucket data
+	// across all matching documents.
+	QueryFlat(ctx context.Context, query MetricFlatQuery) (*MetricFlatResult, error)
+
 	// ListMetricNames returns all available metric names.
 	ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error)
 

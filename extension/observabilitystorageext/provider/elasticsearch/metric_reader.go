@@ -595,6 +595,30 @@ func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 	}
 }
 
+// hitToSample converts an ES search hit to a MetricSample with labels.
+// Used by QueryFlat to return samples with their original labels for Go-side grouping.
+func (r *MetricReader) hitToSample(hit SearchHit) MetricSample {
+	var doc struct {
+		TimeUnixMilli  int64             `json:"timeUnixMilli"`
+		Value          float64           `json:"value"`
+		Labels         map[string]string `json:"labels"`
+		BucketCounts   []int64           `json:"bucket_counts"`
+		ExplicitBounds []float64         `json:"explicit_bounds"`
+	}
+	if err := json.Unmarshal(hit.Source, &doc); err != nil {
+		r.logger.Warn("Failed to unmarshal metric hit", zap.String("id", hit.ID), zap.Error(err))
+		return MetricSample{}
+	}
+
+	return MetricSample{
+		TimestampMs:  doc.TimeUnixMilli,
+		Value:        doc.Value,
+		BucketCounts: doc.BucketCounts,
+		Bounds:       doc.ExplicitBounds,
+		Labels:       doc.Labels,
+	}
+}
+
 // QueryRaw returns raw sample points for series matching the criteria.
 // Unlike QueryRange which returns aggregated buckets, QueryRaw returns
 // original data points (sorted by time ASC) for PromQL functions like
@@ -609,9 +633,9 @@ func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]Me
 		esQuery = map[string]any{"match_all": map[string]any{}}
 	}
 
-	// 2. Set reasonable limit, capped to ES top_hits max_inner_result_window (default 100).
+	// Set limit, default 100.
 	limit := query.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 100
 	}
 
@@ -640,7 +664,7 @@ func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]Me
 					"top_hits": map[string]any{
 						"size":    limit,
 						"sort":    []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "asc"}}},
-						"_source": []string{FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels},
+						"_source": []string{FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels, FieldMetricBucketCounts, FieldMetricExplicitBounds},
 					},
 				},
 			},
@@ -661,40 +685,91 @@ func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]Me
 	return r.parseRawResult(resp)
 }
 
-// buildRawQueryFilter builds an ES bool query from a MetricRawQuery.
-func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) map[string]any {
+// buildMetricFilter constructs an ES bool query from metric filter criteria + time range.
+// Shared by QueryRaw and QueryFlat to avoid duplicated filter-building logic.
+func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels, labelMatch map[string]string, timeRange TimeRange) map[string]any {
+	// Translate PromQL-style labels (underscores, full enum values) to ES storage format
+	// (dots, short enum values). Known OTel standard attributes get translated;
+	// custom labels pass through unchanged.
+	labels, labelMatch = normalizeMetricQueryLabels(labels, labelMatch)
+
 	qb := esq.NewBuilder()
 
-	if query.MetricName != "" {
-		qb.Term(FieldName, query.MetricName)
+	if metricName != "" {
+		qb.Term(FieldName, metricName)
 	}
-	if query.ServiceName != "" {
-		qb.Term(FieldServiceName, query.ServiceName)
+	if serviceName != "" {
+		qb.Term(FieldServiceName, serviceName)
 	}
-	for k, v := range query.Labels {
+	for k, v := range labels {
 		qb.Term(fmt.Sprintf(FieldMetricLabels+".%s", k), v)
 	}
-
-	// labelMatch: regex filtering
-	for k, pattern := range query.LabelMatch {
-		fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", k)
+	for k, pattern := range labelMatch {
 		qb.Raw(map[string]any{
 			"regexp": map[string]any{
-				fieldPath: map[string]any{"value": pattern},
+				fmt.Sprintf(FieldMetricLabels+".%s", k): map[string]any{"value": pattern},
 			},
 		})
 	}
 
 	baseQuery := qb.Build()
-
-	// Add time range filter.
 	must := []map[string]any{baseQuery}
-	timeFilter := r.timeRangeQuery(query.TimeRange)
+	timeFilter := r.timeRangeQuery(timeRange)
 	if _, isMatchAll := timeFilter["match_all"]; !isMatchAll {
 		must = append(must, timeFilter)
 	}
 
 	return map[string]any{"bool": map[string]any{"must": must}}
+}
+
+// buildRawQueryFilter builds an ES bool query from a MetricRawQuery.
+func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) map[string]any {
+	return r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
+}
+
+// QueryFlat returns all matching metric documents without ES-side grouping.
+// Uses a simple ES search (no aggregation) with a configurable MaxDocs cap.
+// Grouping by label set happens in Go via the Labels field on each MetricSample.
+//
+// Designed for histogram_quantile which needs complete bucket_counts data
+// across all matching documents in a time range.
+func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*MetricFlatResult, error) {
+	esQuery := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
+
+	maxDocs := query.MaxDocs
+	if maxDocs <= 0 {
+		maxDocs = 10000
+	}
+
+	searchReq := &SearchRequest{
+		Query: esQuery,
+		Size:  maxDocs,
+		Sort:  []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "asc"}}},
+		Source: []string{
+			FieldMetricTimeUnixMilli, FieldMetricValue,
+			FieldMetricLabels, FieldMetricBucketCounts, FieldMetricExplicitBounds,
+		},
+	}
+
+	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("metric flat query failed: %w", err)
+	}
+
+	samples := make([]MetricSample, 0, len(resp.Hits.Hits))
+	for _, hit := range resp.Hits.Hits {
+		samples = append(samples, r.hitToSample(hit))
+	}
+
+	total := int64(len(resp.Hits.Hits))
+	if resp.Hits.Total.Value > 0 {
+		total = resp.Hits.Total.Value
+	}
+
+	return &MetricFlatResult{
+		Samples: samples,
+		Total:   total,
+	}, nil
 }
 
 // parseRawResult parses the ES composite+top_hits response into MetricRawSeries.
@@ -746,6 +821,7 @@ func (r *MetricReader) parseRawResult(resp *SearchResponse) ([]MetricRawSeries, 
 				Value:        doc.Value,
 				BucketCounts: doc.BucketCounts,
 				Bounds:       doc.ExplicitBounds,
+				Labels:       doc.Labels,
 			})
 		}
 		if labels == nil {

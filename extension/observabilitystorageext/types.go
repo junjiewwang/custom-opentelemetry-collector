@@ -330,10 +330,36 @@ type MetricRawSeries struct {
 
 // MetricSample is a single raw sample point (timestamp in milliseconds + value).
 type MetricSample struct {
-	TimestampMs  int64     `json:"t"`
-	Value        float64   `json:"v"`
-	BucketCounts []int64   `json:"bc,omitempty"` // histogram bucket counts per sample
-	Bounds       []float64 `json:"bd,omitempty"` // histogram explicit bounds per sample
+	TimestampMs  int64             `json:"t"`
+	Value        float64           `json:"v"`
+	BucketCounts []int64           `json:"bc,omitempty"` // histogram bucket counts per sample
+	Bounds       []float64         `json:"bd,omitempty"` // histogram explicit bounds per sample
+	Labels       map[string]string `json:"labels,omitempty"` // optional labels for flat queries
+}
+
+// MetricFlatQuery defines parameters for a flat document query.
+// Returns all matching metric documents without ES-side grouping.
+//
+// Unlike QueryRaw which groups by label set via composite aggregation,
+// QueryFlat returns a flat list of MetricSample for client-side grouping.
+// Designed for histogram_quantile which needs complete bucket_counts data
+// across all matching documents, performing grouping + aggregation in Go.
+type MetricFlatQuery struct {
+	AppID       string            `json:"appId,omitempty"`
+	MetricName  string            `json:"metric"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	LabelMatch  map[string]string `json:"labelMatch,omitempty"`
+	ServiceName string            `json:"service,omitempty"`
+	TimeRange   TimeRange         `json:"timeRange"`
+	// MaxDocs is the hard cap on documents returned (default 10000).
+	// Prevents unbounded memory usage on large time ranges.
+	MaxDocs int `json:"maxDocs,omitempty"`
+}
+
+// MetricFlatResult holds flat query results without ES-side grouping.
+type MetricFlatResult struct {
+	Samples []MetricSample `json:"samples"`
+	Total   int64          `json:"total"` // total matching docs in ES (for truncation detection)
 }
 
 // ═══════════════════════════════════════════════════

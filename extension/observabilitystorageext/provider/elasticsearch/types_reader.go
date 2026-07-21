@@ -259,8 +259,27 @@ type MetricRawSeries struct {
 type MetricSample struct {
 	TimestampMs  int64
 	Value        float64
-	BucketCounts []int64   // histogram: per-sample bucket counts
-	Bounds       []float64 // histogram: per-sample explicit bounds
+	BucketCounts []int64             // histogram: per-sample bucket counts
+	Bounds       []float64           // histogram: per-sample explicit bounds
+	Labels       map[string]string   // labels from the source document (for flat queries)
+}
+
+// MetricFlatQuery holds parameters for a flat document query.
+// Returns all matching documents without ES-side grouping.
+type MetricFlatQuery struct {
+	AppID       string            // required: identifies which app's data to query
+	MetricName  string
+	Labels      map[string]string // exact match
+	LabelMatch  map[string]string // regex match
+	ServiceName string
+	TimeRange   TimeRange
+	MaxDocs     int // max documents to return, default 10000
+}
+
+// MetricFlatResult holds flat query results.
+type MetricFlatResult struct {
+	Samples []MetricSample
+	Total   int64 // total matching docs (for truncation detection)
 }
 
 // ── Trace Metrics Types ────────────────────────────
