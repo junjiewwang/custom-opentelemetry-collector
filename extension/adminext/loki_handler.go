@@ -158,10 +158,14 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 
 	// Grafana health check sends "vector(1)+vector(1)" or "1+1" — not real LogQL.
 	// Return a synthetic success response so Grafana marks the datasource healthy.
+	// NOTE: Loki/Prometheus API convention for timestamps in "value" arrays is
+	// Unix seconds as a floating-point number (e.g. "1784720984.899"), NOT nanoseconds.
+	// Grafana's JSON parser rejects integers > 2^53 (JS number precision limit).
 	if isLokiHealthCheckQuery(q) {
 		w.Header().Set("Content-Type", "application/json")
 		now := time.Now()
-		ts := fmt.Sprintf("%d", now.UnixNano())
+		// Format as seconds.nanoseconds (e.g. "1784720984.899813539")
+		ts := fmt.Sprintf("%d.%09d", now.Unix(), now.Nanosecond())
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "success",
 			"data": map[string]interface{}{
@@ -169,7 +173,7 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 				"result": []map[string]interface{}{
 					{
 						"metric": map[string]string{},
-						"value":  []string{ts, "2"},
+						"value":  []interface{}{json.Number(ts), "2"},
 					},
 				},
 			},
