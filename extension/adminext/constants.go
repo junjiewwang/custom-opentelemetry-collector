@@ -322,3 +322,106 @@ const (
 	// OTelAttrSpanKind is the OTel span.kind attribute.
 	OTelAttrSpanKind = "span.kind"
 )
+
+// ── PromQL → OTel Label Key Translation ────────────
+//
+// OpenTelemetry standard attributes use dot-separated keys (e.g. "span.kind",
+// "service.name"). The Prometheus exporter replaces dots with underscores
+// (e.g. "span_kind", "service_name"). ES stores the original OTel dot-format
+// keys under the "labels" field.
+//
+// When ES returns data, label keys are in dot format. GroupBy labels from
+// PromQL are in underscore format. We must translate between the two:
+//   - Query:   PromQL underscore → ES dot (label_translator.go in elasticsearch)
+//   - Response: ES dot → PromQL underscore (translateLabelToPromQL, below)
+//
+// Custom/user-defined labels (e.g. "client", "server") do NOT need translation
+// because they never had dots in OTel.
+//
+// NOTE: This mapping MUST stay in sync with the prometheusToOtelLabelKeys map
+// in provider/elasticsearch/label_translator.go.
+
+// prometheusToOtelLabelKeys maps PromQL underscore-format labels to ES dot-format.
+// Used to translate GroupBy labels before aggregation so they match ES response keys.
+var prometheusToOtelLabelKeys = map[string]string{
+	"span_kind":           OTelAttrSpanKind,
+	"span_name":           "span.name",
+	"service_name":        OTelAttrServiceName,
+	"service_instance_id": "service.instance.id",
+	"service_version":     "service.version",
+	"service_namespace":   "service.namespace",
+	"status_code":         "status.code",
+	"status_message":      "status.message",
+	"peer_service":        "peer.service",
+	"net_peer_name":       "net.peer.name",
+	"net_peer_port":       "net.peer.port",
+	"net_transport":       "net.transport",
+	"net_host_name":       "net.host.name",
+	"net_host_port":       "net.host.port",
+	"http_method":         "http.method",
+	"http_status_code":    "http.status_code",
+	"http_route":          "http.route",
+	"http_scheme":         "http.scheme",
+	"http_host":           "http.host",
+	"http_url":            "http.url",
+	"http_target":         "http.target",
+	"http_client_ip":      "http.client_ip",
+	"http_request_size":   "http.request_size",
+	"rpc_method":          "rpc.method",
+	"rpc_service":         "rpc.service",
+	"rpc_system":          "rpc.system",
+	"rpc_grpc_status_code": "rpc.grpc.status_code",
+	"db_system":           "db.system",
+	"db_name":             "db.name",
+	"db_operation":        "db.operation",
+	"db_statement":        "db.statement",
+	"db_user":             "db.user",
+	"messaging_system":    "messaging.system",
+	"messaging_destination": "messaging.destination",
+	"messaging_message_id":  "messaging.message_id",
+	"exception_type":      "exception.type",
+	"exception_message":   "exception.message",
+	"thread_name":         "thread.name",
+	"thread_id":           "thread.id",
+	"code_function":       "code.function",
+	"code_namespace":      "code.namespace",
+	"code_filepath":       "code.filepath",
+	"url_scheme":          "url.scheme",
+	"url_full":            "url.full",
+	"url_path":            "url.path",
+	"url_query":           "url.query",
+}
+
+// otelToPrometheusLabelKeys is the reverse of prometheusToOtelLabelKeys.
+// Built at init() to avoid duplication errors.
+var otelToPrometheusLabelKeys map[string]string
+
+func init() {
+	otelToPrometheusLabelKeys = make(map[string]string, len(prometheusToOtelLabelKeys))
+	for promKey, otelKey := range prometheusToOtelLabelKeys {
+		otelToPrometheusLabelKeys[otelKey] = promKey
+	}
+}
+
+// translateLabelToPromQL converts ES dot-format label keys back to PromQL
+// underscore format for Prometheus API responses (e.g. "span.name" → "span_name").
+func translateLabelToPromQL(otelKey string) string {
+	if promKey, ok := otelToPrometheusLabelKeys[otelKey]; ok {
+		return promKey
+	}
+	return otelKey
+}
+
+// translateGroupByToOtel converts GroupBy labels from PromQL underscore format
+// to ES dot format so they match the keys in ES response data.
+func translateGroupByToOtel(groupBy []string) []string {
+	result := make([]string, len(groupBy))
+	for i, k := range groupBy {
+		if otelKey, ok := prometheusToOtelLabelKeys[k]; ok {
+			result[i] = otelKey
+		} else {
+			result[i] = k
+		}
+	}
+	return result
+}
