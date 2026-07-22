@@ -69,6 +69,12 @@ type ExecutionPlan struct {
 	// TagsRegex: =~ regex conditions → ES regexp query.
 	TagsRegex map[string]string
 
+	// ── Root span intrinsic filters (Sprint 3) ──
+	// RootName filters by root span's name.
+	RootName string
+	// RootService filters by root span's serviceName.
+	RootService string
+
 	// SelectFields from | select() pipeline stage.
 	SelectFields []string
 
@@ -147,6 +153,12 @@ func (p *ExecutionPlan) relaxStructuralConditions() {
 	if !safe.HasOperationName {
 		p.OperationName = ""
 	}
+	if !safe.HasRootName {
+		p.RootName = ""
+	}
+	if !safe.HasRootService {
+		p.RootService = ""
+	}
 	// Tags from non-root filters could be incorrect — clear tags that aren't in safe set.
 	if len(safe.SafeTags) == 0 {
 		p.Tags = make(map[string]string)
@@ -175,6 +187,10 @@ type safeConditions struct {
 	ServiceName      string
 	HasOperationName bool
 	OperationName    string
+	HasRootName      bool
+	RootName         string
+	HasRootService   bool
+	RootService      string
 	SafeTags         map[string]string
 }
 
@@ -288,6 +304,12 @@ func extractFilterConditions(sf *SpanFilter) safeConditions {
 		case key == IntrinsicName && cond.IsIntrinsic():
 			sc.HasOperationName = true
 			sc.OperationName = valStr
+		case key == IntrinsicRootName && cond.Scope == "trace":
+			sc.HasRootName = true
+			sc.RootName = valStr
+		case key == IntrinsicRootServiceName && cond.Scope == "trace":
+			sc.HasRootService = true
+			sc.RootService = valStr
 		case key == IntrinsicNestedSetParent:
 			// Skip — handled above for < operator.
 		default:
@@ -332,6 +354,18 @@ func intersectConditions(a, b safeConditions) safeConditions {
 	if a.HasOperationName && b.HasOperationName && a.OperationName == b.OperationName {
 		result.HasOperationName = true
 		result.OperationName = a.OperationName
+	}
+
+	// RootName: keep only if both have same value.
+	if a.HasRootName && b.HasRootName && a.RootName == b.RootName {
+		result.HasRootName = true
+		result.RootName = a.RootName
+	}
+
+	// RootService: keep only if both have same value.
+	if a.HasRootService && b.HasRootService && a.RootService == b.RootService {
+		result.HasRootService = true
+		result.RootService = a.RootService
 	}
 
 	// Tags: keep only tags present in both with same value.
@@ -528,20 +562,33 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 		}
 
-	// ── Intrinsic: trace:rootName / trace:rootService ──
-	case key == IntrinsicRootName && cond.Scope == "trace":
+	// ── Intrinsic: rootName / rootServiceName ──
+	// These are extracted to dedicated fields in the plan (not mixed into Tags)
+	// because they require a composite ES query (name=X + parentSpanId not exists),
+	// not a simple attribute lookup. Both trace-scope and unscoped are handled
+	// since the Tempo search API passes these as raw tag keys.
+	//
+	// Operator mapping:
+	//   = "value" → set RootName / RootService to the value (filter by root span name/service)
+	//   != nil     → rootName / rootService exists → same as IsRoot (every root span has a name)
+	//                Fall through to default to push as TagsExists if there are additional
+	//                non-rootName intrinsic semantics needed.
+	case key == IntrinsicRootName && (cond.Scope == "trace" || cond.Scope == ""):
 		if cond.Operator == "=" && valStr != "" {
-			if p.Tags == nil {
-				p.Tags = make(map[string]string)
-			}
-			p.Tags[IntrinsicRootName] = valStr
+			p.RootName = valStr
+		} else if cond.Operator == "!=" && cond.Value == nil {
+			// rootName != nil: the root span's name is non-nil.
+			// Since every otel span has a name, this is equivalent to
+			// filtering for root spans. Do NOT push to TagsExists
+			// (would generate exists:attributes.rootName which doesn't exist).
+			p.IsRoot = true
 		}
-	case key == "rootService" && cond.Scope == "trace":
+	case key == IntrinsicRootServiceName && (cond.Scope == "trace" || cond.Scope == ""):
 		if cond.Operator == "=" && valStr != "" {
-			if p.Tags == nil {
-				p.Tags = make(map[string]string)
-			}
-			p.Tags["rootService"] = valStr
+			p.RootService = valStr
+		} else if cond.Operator == "!=" && cond.Value == nil {
+			// rootServiceName != nil: same semantics as rootName != nil.
+			p.IsRoot = true
 		}
 
 	// ── Generic attribute conditions (pushable as Tags/TagsNot/TagsExists/TagsRegex) ──

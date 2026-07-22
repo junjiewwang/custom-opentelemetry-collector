@@ -1418,33 +1418,23 @@ func (e *Extension) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey 
 		}
 		return tv
 
-	// ── Intrinsic tags with no value implementation (yet) ──
-	//
-	// These are listed in the /api/v2/search/tags response for Tempo API
-	// compatibility, but the values endpoint returns nil because:
-	//
-	//   "rootName" / "rootServiceName":
-	//     In real Tempo these are derived from the trace root span.
-	//     Our ES schemas (otel-traces-*) do not store these as top-level
-	//     fields. The generic GetTagValues fallback queries
-	//     "attributes.rootName" / "resource.rootName" which do not exist.
-	//     TODO: derive from the trace root span during search or store as
-	//     top-level fields during ingest.
-	//
-	//   "statusMessage":
-	//     ES stores this as the nested field "status.message", but
-	//     GetTagValues always prefixes the field with "attributes." or
-	//     "resource.", resulting in "attributes.statusMessage" which
-	//     does not exist. Requires a dedicated top-level field query in
-	//     the trace reader (e.g. GetIntrinsicTagValues) or direct ES
-	//     aggregation on "status.message".
-	//     TODO: add intrinsic tag value query support in TraceReader.
-	//
-	// Returning nil here is intentional — it prevents the generic
-	// fallback from querying a non-existent "attributes.*" field and
-	// produces a cleaner response.
+	// ── Intrinsic tag: rootName / rootServiceName ──
+	// Derived from root spans: queries the root spans (parentSpanId absent)
+	// for distinct name / serviceName values via terms aggregation.
+	case TempoIntrinsicRootName:
+		return e.fetchRootSpanTagValues(r, func(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
+			return e.storageTraceReader.ListRootSpanNames(ctx, timeRange, "")
+		})
+	case TempoIntrinsicRootServiceName:
+		return e.fetchRootSpanTagValues(r, func(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
+			return e.storageTraceReader.ListRootSpanServices(ctx, timeRange, "")
+		})
 
-		case TempoIntrinsicRootName, TempoIntrinsicRootServiceName, TempoIntrinsicStatusMessage:
+	// ── Intrinsic tag: statusMessage ──
+	// status.message is a "text" field (no .keyword sub-field), so terms
+	// aggregation is not possible. Return nil — Grafana will show the tag
+	// as available but without value suggestions.
+	case TempoIntrinsicStatusMessage:
 		return nil
 
 	default:
@@ -1501,6 +1491,29 @@ func parseTagValuesFilter(r *http.Request) map[string]string {
 	return andTags
 }
 
+// fetchRootSpanTagValues is a helper that calls the given fetcher with the request's
+// time range and converts the results to tempoV2TagValue slice. Used by
+// resolveIntrinsicTagValuesWithFilter for rootName and rootServiceName.
+func (e *Extension) fetchRootSpanTagValues(
+	r *http.Request,
+	fetchFn func(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error),
+) []tempoV2TagValue {
+	timeRange := parseTempoTagValuesTimeRange(r)
+	values, err := fetchFn(r.Context(), timeRange)
+	if err != nil {
+		e.logger.Debug("tempo v2 tag values: root span tag values query failed", zap.Error(err))
+		return nil
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	tv := make([]tempoV2TagValue, len(values))
+	for i, v := range values {
+		tv[i] = tempoV2TagValue{Type: "string", Value: v}
+	}
+	return tv
+}
+
 // ── TraceQL Metrics Search Path ─────────────────────
 
 // executeTempoMetricsQuery runs a TraceQL metrics query (rate/quantile_over_time/etc.)
@@ -1527,6 +1540,8 @@ func (e *Extension) executeTempoMetricsQuery(w http.ResponseWriter, r *http.Requ
 		SpanKind:      plan.SpanKind,
 		Status:        plan.Status,
 		IsRoot:        plan.IsRoot,
+		RootName:      plan.RootName,
+		RootService:   plan.RootService,
 		MinDuration:   plan.MinDuration,
 		MaxDuration:   plan.MaxDuration,
 		TimeRange:     timeRange,
@@ -1590,9 +1605,33 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 		ast, err := traceql.Parse(rawQ)
 		if err == nil && ast != nil {
 			plan := traceql.Plan(ast)
-			if plan != nil && plan.HasMetrics && plan.MetricsStage != nil {
+			// Use the primary (AST+plan) path whenever:
+			//   1. The query has a metrics pipeline stage, OR
+			//   2. The query uses conditions not handled by the legacy parser:
+			//      - Intrinsics: rootName/rootServiceName
+			//      - != nil: TagsExists
+			//      - != value: TagsNot
+			//      - =~ regex: TagsRegex
+			if plan != nil && plan.MetricsStage != nil {
 				e.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
 				return
+			}
+			needsPrimary := plan != nil && (plan.RootName != "" ||
+				plan.RootService != "" ||
+				len(plan.TagsExists) > 0 ||
+				len(plan.TagsNot) > 0 ||
+				len(plan.TagsRegex) > 0)
+			if needsPrimary {
+				parsed, perr := parseTraceQLMetricsQuery(rawQ)
+				if perr == nil && parsed.Function != "" {
+					plan.MetricsStage = &traceql.MetricsStage{
+						Function: traceql.MetricsFunc(parsed.Function),
+						ByLabels: parsed.GroupBy,
+					}
+					plan.HasMetrics = true
+					e.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
+					return
+				}
 			}
 		}
 	}
@@ -1670,9 +1709,14 @@ func (e *Extension) executeTempoMetricsQueryRange(w http.ResponseWriter, r *http
 		OperationName: plan.OperationName,
 		Tags:          plan.Tags,
 		TagsOr:        plan.TagsOr,
+		TagsNot:       plan.TagsNot,
+		TagsExists:    plan.TagsExists,
+		TagsRegex:     plan.TagsRegex,
 		SpanKind:      plan.SpanKind,
 		Status:        plan.Status,
 		IsRoot:        plan.IsRoot,
+		RootName:      plan.RootName,
+		RootService:   plan.RootService,
 		MinDuration:   plan.MinDuration,
 		MaxDuration:   plan.MaxDuration,
 		TimeRange:     timeRange,
@@ -2518,6 +2562,12 @@ func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabil
 			}
 			if plan.IsRoot {
 				query.IsRoot = true
+			}
+			if plan.RootName != "" {
+				query.RootName = plan.RootName
+			}
+			if plan.RootService != "" {
+				query.RootService = plan.RootService
 			}
 			if plan.MinDuration > 0 {
 				query.MinDuration = plan.MinDuration

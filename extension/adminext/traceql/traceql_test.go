@@ -359,6 +359,99 @@ func TestPlanOrGroups(t *testing.T) {
 	assert.Equal(t, map[string]string{"kind": "server"}, plan.TagsOr[0][1])
 }
 
+func TestPlanRootName_FromTags(t *testing.T) {
+	// The Tempo search API passes rootName as a raw tag key=value,
+	// which goes through Parse()->Plan() with scope=trace and key=rootName.
+	// Verify Plan extracts it to the dedicated RootName field.
+	ast, err := Parse(`{ rootName = "GET /api" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	// When the lexer produces cond.Scope="trace" and key="rootName",
+	// the planner should populate plan.RootName.
+	assert.Equal(t, "GET /api", plan.RootName, "rootName should populate plan.RootName")
+	assert.Empty(t, plan.Tags["rootName"], "rootName should NOT leak into Tags map")
+}
+
+func TestPlanRootService_FromTags(t *testing.T) {
+	ast, err := Parse(`{ rootServiceName = "gateway" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.Equal(t, "gateway", plan.RootService, "rootServiceName should populate plan.RootService")
+	assert.Empty(t, plan.Tags["rootServiceName"], "rootServiceName should NOT leak into Tags map")
+}
+
+func TestPlanRootName_NotMixedIntoTags(t *testing.T) {
+	// Verify rootName is NOT mixed into generic Tags alongside regular filters.
+	ast, err := Parse(`{ rootName = "GET /api" && http.method = "GET" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.Equal(t, "GET /api", plan.RootName, "rootName should be in dedicated field")
+	assert.Equal(t, "GET", plan.Tags["http.method"], "http.method should be in Tags")
+	assert.Empty(t, plan.Tags["rootName"], "rootName must NOT be in Tags")
+}
+
+func TestPlanRootService_NotMixedIntoTags(t *testing.T) {
+	ast, err := Parse(`{ rootServiceName = "gateway" && resource.service.name = "my-svc" }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.Equal(t, "gateway", plan.RootService, "rootServiceName should be in dedicated field")
+	assert.Equal(t, "my-svc", plan.ServiceName, "service.name should be extracted as ServiceName")
+	assert.Empty(t, plan.Tags["rootServiceName"], "rootServiceName must NOT be in Tags")
+}
+
+func TestPlanRootName_StructuralRelaxPreserved(t *testing.T) {
+	// When building safe conditions for structural queries, rootName that is
+	// common across all OR branches should be preserved (same as Status, SpanKind).
+	// Test directly on the safeConditions intersection logic.
+	common := safeConditions{HasRootName: true, RootName: "GET /api"}
+	same := safeConditions{HasRootName: true, RootName: "GET /api"}
+	result := intersectConditions(common, same)
+	assert.True(t, result.HasRootName, "common rootName should be preserved")
+	assert.Equal(t, "GET /api", result.RootName)
+}
+
+func TestPlanRootService_StructuralRelaxCleared(t *testing.T) {
+	// When safe conditions differ on rootService, it should be cleared.
+	common := safeConditions{HasRootService: true, RootService: "gateway"}
+	without := safeConditions{} // no rootService
+	result := intersectConditions(common, without)
+	assert.False(t, result.HasRootService, "non-common rootService should be cleared")
+	assert.Empty(t, result.RootService)
+}
+
+func TestPlanRootName_StructuralRelaxDifferentValue(t *testing.T) {
+	// When both branches have rootName but with different values, should be cleared.
+	common := safeConditions{HasRootName: true, RootName: "GET /api"}
+	other := safeConditions{HasRootName: true, RootName: "POST /api"}
+	result := intersectConditions(common, other)
+	assert.False(t, result.HasRootName, "different rootName values should be cleared")
+}
+
+func TestPlanRootName_NotNil(t *testing.T) {
+	// rootName != nil should set IsRoot (not push to TagsExists).
+	ast, err := Parse(`{ rootName != nil }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.True(t, plan.IsRoot, "rootName != nil should set IsRoot=true (every root span has a name)")
+	assert.Empty(t, plan.TagsExists, "rootName != nil should NOT be in TagsExists")
+	assert.Empty(t, plan.Tags["rootName"], "rootName != nil should NOT be in Tags")
+}
+
+func TestPlanRootService_NotNil(t *testing.T) {
+	// rootServiceName != nil should set IsRoot (not push to TagsExists).
+	ast, err := Parse(`{ rootServiceName != nil }`)
+	require.NoError(t, err)
+
+	plan := Plan(ast)
+	assert.True(t, plan.IsRoot, "rootServiceName != nil should set IsRoot=true")
+	assert.Empty(t, plan.TagsExists, "rootServiceName != nil should NOT be in TagsExists")
+}
+
 func TestPlanGrafanaQuery(t *testing.T) {
 	input := `({nestedSetParent<0 && true} &>> {kind = server}) || ({nestedSetParent<0 && true}) | select(status, resource.service.name, name)`
 	ast, err := Parse(input)
