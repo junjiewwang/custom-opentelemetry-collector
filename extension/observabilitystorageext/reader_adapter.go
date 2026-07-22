@@ -283,6 +283,44 @@ type logReaderAdapter struct {
 
 var _ LogReader = (*logReaderAdapter)(nil)
 
+func (a *logReaderAdapter) SearchLogMetric(ctx context.Context, query LogMetricQuery) (*LogMetricResult, error) {
+	esQuery := elasticsearch.LogMetricQuery{
+		LogQuery: elasticsearch.LogQuery{
+			AppID:        query.AppID,
+			Query:        query.Query,
+			ServiceName:  query.ServiceName,
+			Severity:     query.Severity,
+			TraceID:      query.TraceID,
+			SpanID:       query.SpanID,
+			Attributes:   query.Attributes,
+			TimeRange:    elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+			Limit:        query.Limit,
+			Offset:       query.Offset,
+			Labels:       query.Labels,
+			LabelMatch:   query.LabelMatch,
+			LabelNot:     query.LabelNot,
+			LabelNotMatch: query.LabelNotMatch,
+			Direction:    query.Direction,
+		},
+		GroupByLabels: query.GroupByLabels,
+		IntervalNanos: query.IntervalNanos,
+		TopN:          query.TopN,
+	}
+	result, err := a.inner.SearchLogMetric(ctx, esQuery)
+	if err != nil {
+		return nil, err
+	}
+	series := make([]LogMetricSeries, len(result.Series))
+	for i, s := range result.Series {
+		vals := make([]LogMetricValue, len(s.Values))
+		for j, v := range s.Values {
+			vals[j] = LogMetricValue{TimestampNano: v.TimestampNano, Value: v.Value}
+		}
+		series[i] = LogMetricSeries{Labels: s.Labels, Values: vals}
+	}
+	return &LogMetricResult{Series: series}, nil
+}
+
 func (a *logReaderAdapter) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error) {
 	esQuery := elasticsearch.LogQuery{
 		AppID:        query.AppID,

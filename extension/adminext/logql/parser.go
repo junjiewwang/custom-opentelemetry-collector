@@ -6,10 +6,11 @@ package logql
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 )
 
-// Parse parses a LogQL query string into a LogQLQuery.
+// Parse parses a LogQL log query string into a LogQLQuery.
 //
 // Supported syntax (MVP):
 //
@@ -21,6 +22,208 @@ import (
 func Parse(input string) (*LogQLQuery, error) {
 	p := &parser{input: input}
 	return p.parse()
+}
+
+// knownAggregations lists aggregation function keywords.
+var knownAggregations = map[string]bool{
+	"sum":      true,
+	"avg":      true,
+	"max":      true,
+	"min":      true,
+	"topk":     true,
+	"bottomk":  true,
+	"count":    true,
+}
+
+// knownRangeFunctions lists range vector function keywords.
+var knownRangeFunctions = map[string]bool{
+	"count_over_time": true,
+	"rate":            true,
+	"increase":        true,
+	"bytes_rate":      true,
+	"bytes_over_time": true,
+}
+
+// IsMetricQuery returns true if the raw input looks like a LogQL metric query
+// rather than a log query. Metric queries start with an aggregation keyword or
+// range function, while log queries start with '{'.
+func IsMetricQuery(input string) bool {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return false
+	}
+	// Log queries always start with '{'.
+	if s[0] == '{' {
+		return false
+	}
+	// Quick check: identify the first word.
+	first := ""
+	for i := 0; i < len(s) && isIdentChar(s[i]); i++ {
+		first += string(s[i])
+	}
+	return knownAggregations[first] || knownRangeFunctions[first]
+}
+
+// ParseMetric parses a LogQL metric query into a MetricExpr.
+//
+// Supported syntax:
+//
+//	count_over_time({label="value"}[duration])
+//	sum by (label1, label2) (count_over_time({label="value"}[duration]))
+//	avg (rate({}[duration]))
+func ParseMetric(input string) (*MetricExpr, error) {
+	p := &parser{input: input}
+	return p.parseMetric()
+}
+
+// parseMetric parses a metric query expression.
+// Grammar:
+//
+//	metric  = [aggregation [by "(" labellist ")"]] "(" function "(" logquery "[" duration "]" ")" ")"
+func (p *parser) parseMetric() (*MetricExpr, error) {
+	expr := &MetricExpr{}
+
+	p.skipWhitespace()
+	first := p.parseIdentifier()
+	if first == "" {
+		return nil, p.errorf("expected metric expression")
+	}
+
+	// Check if the first identifier is an aggregation keyword.
+	if knownAggregations[first] {
+		expr.Aggregation = first
+		p.skipWhitespace()
+
+		// Parse optional by (label1, label2)
+		if p.matchPrefix("by") {
+			p.advanceN(2)
+			p.skipWhitespace()
+			if !p.match('(') {
+				return nil, p.errorf("expected '(' after 'by'")
+			}
+			p.advance()
+			p.skipWhitespace()
+			labels, err := p.parseIdentList()
+			if err != nil {
+				return nil, err
+			}
+			expr.By = labels
+			p.skipWhitespace()
+			if !p.match(')') {
+				return nil, p.errorf("expected ')' after 'by' labels")
+			}
+			p.advance()
+		}
+
+		// Expect '(' before function
+		p.skipWhitespace()
+		if !p.match('(') {
+			return nil, p.errorf("expected '(' after aggregation")
+		}
+		p.advance()
+		p.skipWhitespace()
+
+		// Parse function name
+		funcName := p.parseIdentifier()
+		if !knownRangeFunctions[funcName] {
+			return nil, p.errorf("unknown range function %q", funcName)
+		}
+		expr.Function = funcName
+	} else if knownRangeFunctions[first] {
+		// Plain function without outer aggregation: rate({}[1m])
+		expr.Function = first
+	} else {
+		return nil, p.errorf("expected aggregation or range function, got %q", first)
+	}
+
+	// Parse function arguments: ( INNER_LOGQL [DURATION] )
+	p.skipWhitespace()
+	if !p.match('(') {
+		return nil, p.errorf("expected '(' before function arguments")
+	}
+	p.advance()
+	p.skipWhitespace()
+
+	// Parse inner log query (stream selector + optional filters)
+	inner, err := p.parse()
+	if err != nil {
+		return nil, err
+	}
+	expr.Inner = inner
+
+	// Parse range vector: [5m], [1h30s]
+	p.skipWhitespace()
+	dur, err := p.parseRangeVector()
+	if err != nil {
+		return nil, err
+	}
+	expr.RangeDuration = dur
+
+	// Close function parentheses
+	p.skipWhitespace()
+	if !p.match(')') {
+		return nil, p.errorf("expected ')' to close function call")
+	}
+	p.advance()
+
+	// Close aggregation parentheses (if we opened one)
+	if expr.Aggregation != "" {
+		p.skipWhitespace()
+		if !p.match(')') {
+			return nil, p.errorf("expected ')' to close aggregation")
+		}
+		p.advance()
+	}
+
+	p.skipWhitespace()
+	if p.pos < len(p.input) {
+		return nil, p.errorf("unexpected trailing input")
+	}
+
+	return expr, nil
+}
+
+// parseIdentList parses a comma-separated list of identifiers: label1, label2
+func (p *parser) parseIdentList() ([]string, error) {
+	var list []string
+	for {
+		id := p.parseIdentifier()
+		if id == "" {
+			return nil, p.errorf("expected identifier")
+		}
+		list = append(list, id)
+		p.skipWhitespace()
+		if !p.match(',') {
+			break
+		}
+		p.advance()
+		p.skipWhitespace()
+	}
+	return list, nil
+}
+
+// parseRangeVector parses a duration range vector: [5m], [1h30s]
+func (p *parser) parseRangeVector() (time.Duration, error) {
+	if !p.match('[') {
+		return 0, p.errorf("expected '[' for range vector")
+	}
+	p.advance()
+
+	start := p.pos
+	for p.pos < len(p.input) && p.input[p.pos] != ']' {
+		p.pos++
+	}
+	if p.pos >= len(p.input) {
+		return 0, p.errorf("unterminated range vector, expected ']'")
+	}
+	durStr := strings.TrimSpace(p.input[start:p.pos])
+	p.advance() // skip ']'
+
+	dur, err := time.ParseDuration(durStr)
+	if err != nil {
+		return 0, p.errorf("invalid duration %q: %v", durStr, err)
+	}
+	return dur, nil
 }
 
 type parser struct {

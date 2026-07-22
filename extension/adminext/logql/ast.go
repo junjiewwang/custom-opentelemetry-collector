@@ -67,7 +67,7 @@ const (
 	PipelineLabelFormat                      // | label_format key=value
 )
 
-// LogQLQuery is a fully parsed LogQL query.
+// LogQLQuery is a fully parsed LogQL log query.
 type LogQLQuery struct {
 	StreamSelector StreamSelector
 	LineFilters    []LineFilter
@@ -79,4 +79,22 @@ type LogQLQuery struct {
 	Step     time.Duration
 	Limit    int
 	Direction string // "forward" or "backward"
+}
+
+// MetricExpr is a parsed LogQL metric query:
+//
+//	sum by (label1, label2) (count_over_time({app="foo"} |= "error"[5m]))
+//
+// The Inner field contains the log query portion (stream selector + line filters).
+type MetricExpr struct {
+	// Aggregation is the outer aggregation function: "sum", "avg", "max", "min", "".
+	Aggregation string
+	// By holds the group-by label names; nil/empty means no grouping.
+	By []string
+	// Function is the range aggregation function: "count_over_time", "rate", etc.
+	Function string
+	// RangeDuration is the range vector duration (e.g. 5m, 1h).
+	RangeDuration time.Duration
+	// Inner is the wrapped log query (stream selector + filters).
+	Inner *LogQLQuery
 }

@@ -215,6 +215,10 @@ type LogReader interface {
 	// SearchLogs searches for logs matching the query parameters.
 	SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error)
 
+	// SearchLogMetric executes a log metric/aggregation query (e.g., count_over_time).
+	// Used for Grafana Logs Volume and similar features.
+	SearchLogMetric(ctx context.Context, query LogMetricQuery) (*LogMetricResult, error)
+
 	// GetLogContext retrieves surrounding log lines for context.
 	GetLogContext(ctx context.Context, logID string, lines int) (*LogContext, error)
 

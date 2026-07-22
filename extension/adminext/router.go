@@ -370,9 +370,12 @@ func (e *Extension) newRouter() http.Handler {
 
 	// Main routes: Grafana calls (datasource path + hardcoded Grafana suffix)
 	// Full: /api/v2 + /loki/loki/api/v1/* = /api/v2/loki/loki/api/v1/*
+	// Supports both GET and POST — Grafana may use either for query_range.
 	r.Route("/loki/loki/api/v1", func(r chi.Router) {
 		r.Get("/query", e.handleLokiInstantQuery)
+		r.Post("/query", e.handleLokiInstantQuery)
 		r.Get("/query_range", e.handleLokiQueryRange)
+		r.Post("/query_range", e.handleLokiQueryRange)
 		r.Get("/labels", e.handleLokiLabels)
 		r.Get("/label/{name}/values", e.handleLokiLabelValues)
 	})
@@ -380,7 +383,9 @@ func (e *Extension) newRouter() http.Handler {
 	// Full: /api/v2 + /loki/* = /api/v2/loki/*
 	r.Route("/loki", func(r chi.Router) {
 		r.Get("/query", e.handleLokiInstantQuery)
+		r.Post("/query", e.handleLokiInstantQuery)
 		r.Get("/query_range", e.handleLokiQueryRange)
+		r.Post("/query_range", e.handleLokiQueryRange)
 		r.Get("/labels", e.handleLokiLabels)
 		r.Get("/label/{name}/values", e.handleLokiLabelValues)
 	})

@@ -41,6 +41,13 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
 		return
 	}
+
+	// Route metric queries (sum by, count_over_time, etc.) to metric handler.
+	if logql.IsMetricQuery(q) {
+		e.handleLokiMetricQuery(w, r, q)
+		return
+	}
+
 	start, startOk := parseLokiTime(r.URL.Query().Get("start"))
 	end, endOk := parseLokiTime(r.URL.Query().Get("end"))
 	if !startOk || !endOk {
@@ -153,6 +160,12 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 	q := r.URL.Query().Get("query")
 	if q == "" {
 		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Route metric queries (sum by, count_over_time, etc.) to metric handler.
+	if logql.IsMetricQuery(q) {
+		e.handleLokiMetricQuery(w, r, q)
 		return
 	}
 

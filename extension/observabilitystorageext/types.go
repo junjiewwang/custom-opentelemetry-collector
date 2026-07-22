@@ -404,6 +404,47 @@ type LogSearchResult struct {
 	Total int64       `json:"total"`
 }
 
+// ── Log Metric (Aggregation) Types ─────────────────
+
+// LogMetricQuery holds parameters for a log metric/aggregation query.
+// Used by Grafana Logs Volume (count_over_time with group-by) and similar features.
+type LogMetricQuery struct {
+	// Base log query filters (reuses LogQuery for filter fields).
+	LogQuery
+
+	// GroupByLabels lists the LogQL label names to group by (e.g. ["level", "service_name"]).
+	// These are LogQL-level names; the provider maps them to backend fields.
+	GroupByLabels []string `json:"groupBy,omitempty"`
+
+	// IntervalNanos is the histogram bucket interval in nanoseconds.
+	// Derived from the MetricExpr range duration or HTTP step parameter.
+	IntervalNanos int64 `json:"intervalNanos,omitempty"`
+
+	// TopN limits the max number of series returned per group-by dimension.
+	TopN int `json:"topN,omitempty"`
+}
+
+// LogMetricResult holds the result of a log metric/aggregation query.
+type LogMetricResult struct {
+	// Series holds the metric series, one per group-by label combination.
+	Series []LogMetricSeries `json:"series"`
+}
+
+// LogMetricSeries is a single metric series with labels and time-value pairs.
+type LogMetricSeries struct {
+	// Labels contains the group-by label key-value pairs.
+	Labels map[string]string `json:"labels"`
+	// Values holds the time-value pairs for this series.
+	Values []LogMetricValue `json:"values"`
+}
+
+// LogMetricValue is a single timestamp-value pair in a metric series.
+// TimestampNano is the start of the aggregation bucket.
+type LogMetricValue struct {
+	TimestampNano int64   `json:"timestampNano"`
+	Value         float64 `json:"value"`
+}
+
 // LogRecord represents a single log entry.
 // Aligned with opentelemetry.proto.logs.v1.LogRecord.
 type LogRecord struct {

@@ -211,6 +211,10 @@ type pgLogReaderAdapter struct {
 
 var _ LogReader = (*pgLogReaderAdapter)(nil)
 
+func (a *pgLogReaderAdapter) SearchLogMetric(ctx context.Context, query LogMetricQuery) (*LogMetricResult, error) {
+	return nil, fmt.Errorf("SearchLogMetric is not implemented for PostgreSQL backend")
+}
+
 func (a *pgLogReaderAdapter) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error) {
 	pgQuery := postgresql.LogQuery{
 		Query:       query.Query,

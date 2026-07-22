@@ -2,6 +2,7 @@ package logql
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -206,4 +207,102 @@ func TestEvaluate_LineFilters(t *testing.T) {
 
 	assert.Contains(t, lq.Query, `"error"`)
 	assert.Contains(t, lq.Query, `-"debug"`)
+}
+
+// ═══════════════════════════════════════════════════
+// Metric Query Parser Tests
+// ═══════════════════════════════════════════════════
+
+func TestIsMetricQuery(t *testing.T) {
+	assert.True(t, IsMetricQuery(`sum by (level) (count_over_time({}[5m]))`))
+	assert.True(t, IsMetricQuery(`count_over_time({app="foo"}[5m])`))
+	assert.True(t, IsMetricQuery(`rate({}[1m])`))
+	assert.False(t, IsMetricQuery(`{app="foo"} |= "error"`))
+	assert.False(t, IsMetricQuery(`{app="foo"}`))
+	assert.False(t, IsMetricQuery(``))
+}
+
+func TestParseMetric_CountOverTime(t *testing.T) {
+	expr, err := ParseMetric(`count_over_time({}[5m])`)
+	require.NoError(t, err)
+	assert.Equal(t, "count_over_time", expr.Function)
+	assert.Equal(t, "", expr.Aggregation)
+	assert.Empty(t, expr.By)
+	assert.Equal(t, 5*time.Minute, expr.RangeDuration)
+	assert.Empty(t, expr.Inner.LineFilters)
+}
+
+func TestParseMetric_SumByCountOverTime(t *testing.T) {
+	expr, err := ParseMetric(`sum by (level, service_name) (count_over_time({}[10m]))`)
+	require.NoError(t, err)
+	assert.Equal(t, "sum", expr.Aggregation)
+	assert.Equal(t, "count_over_time", expr.Function)
+	assert.Equal(t, []string{"level", "service_name"}, expr.By)
+	assert.Equal(t, 10*time.Minute, expr.RangeDuration)
+}
+
+func TestParseMetric_WithLineFilter(t *testing.T) {
+	expr, err := ParseMetric(`sum (count_over_time({} |= "error"[5m]))`)
+	require.NoError(t, err)
+	assert.Equal(t, "sum", expr.Aggregation)
+	assert.Equal(t, "count_over_time", expr.Function)
+	assert.Len(t, expr.Inner.LineFilters, 1)
+	assert.Equal(t, FilterContains, expr.Inner.LineFilters[0].Type)
+	assert.Equal(t, "error", expr.Inner.LineFilters[0].Pattern)
+	assert.Equal(t, 5*time.Minute, expr.RangeDuration)
+}
+
+func TestParseMetric_Rate(t *testing.T) {
+	expr, err := ParseMetric(`avg by (service_name) (rate({app="foo"}[1m]))`)
+	require.NoError(t, err)
+	assert.Equal(t, "avg", expr.Aggregation)
+	assert.Equal(t, "rate", expr.Function)
+	assert.Equal(t, []string{"service_name"}, expr.By)
+	assert.Equal(t, 1*time.Minute, expr.RangeDuration)
+	assert.Equal(t, "foo", expr.Inner.StreamSelector.Matchers[0].Value)
+}
+
+func TestParseMetric_Errors(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "unclosed aggregation", input: `sum by (level) (count_over_time({}[5m])`},
+		{name: "missing function", input: `sum by (level) ({})`},
+		{name: "bad duration", input: `count_over_time({}[abc])`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseMetric(tt.input)
+			assert.Error(t, err)
+		})
+	}
+}
+
+// ═══════════════════════════════════════════════════
+// Evaluator: Empty Pattern Handling
+// ═══════════════════════════════════════════════════
+
+func TestEvaluate_EmptyPatternFilter(t *testing.T) {
+	// |= "" means "match everything" — should produce no content filter.
+	q, err := Parse(`{} |= ""`)
+	require.NoError(t, err)
+
+	e := &Evaluator{}
+	lq := e.Evaluate(q)
+
+	// Query should be empty (no content filter added for empty pattern).
+	assert.Equal(t, "", lq.Query, "empty pattern should skip content filter")
+}
+
+func TestEvaluate_MixedEmptyAndNonEmptyFilters(t *testing.T) {
+	// |= "" combined with |= "error" — empty filter skipped, non-empty kept.
+	q, err := Parse(`{} |= "" |= "error"`)
+	require.NoError(t, err)
+
+	e := &Evaluator{}
+	lq := e.Evaluate(q)
+
+	assert.Contains(t, lq.Query, `"error"`)
+	// The empty filter should not contribute to the query string.
 }

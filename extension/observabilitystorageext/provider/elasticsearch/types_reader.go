@@ -133,6 +133,36 @@ type LogSearchResult struct {
 	Total int64
 }
 
+// ── Log Metric (Aggregation) Types ─────────────────
+
+// LogMetricQuery holds parameters for a log metric aggregation query.
+type LogMetricQuery struct {
+	LogQuery
+	// GroupByLabels lists the LogQL label names to group by (e.g. ["level", "service_name"]).
+	GroupByLabels []string
+	// IntervalNanos is the histogram bucket interval in nanoseconds.
+	IntervalNanos int64
+	// TopN limits the max number of series per group-by dimension.
+	TopN int
+}
+
+// LogMetricResult holds the result of a log metric aggregation query.
+type LogMetricResult struct {
+	Series []LogMetricSeries
+}
+
+// LogMetricSeries is a single metric series with labels and time-value pairs.
+type LogMetricSeries struct {
+	Labels map[string]string
+	Values []LogMetricValue
+}
+
+// LogMetricValue is a single timestamp-value pair in a metric series.
+type LogMetricValue struct {
+	TimestampNano int64
+	Value         float64
+}
+
 // LogRecord represents a single log entry.
 type LogRecord struct {
 	ID             string

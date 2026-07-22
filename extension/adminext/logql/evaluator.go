@@ -53,6 +53,12 @@ func (e *Evaluator) Evaluate(lq *LogQLQuery) *observabilitystorageext.LogQuery {
 	// Line filters → query body search
 	var lineQueries []string
 	for _, f := range lq.LineFilters {
+		// Empty pattern means "match everything" in Loki semantics
+		// (empty string is a substring of every string).
+		// Converted to ES, this means: skip the content filter entirely.
+		if f.Pattern == "" {
+			continue
+		}
 		pattern := escapeLokiPattern(f.Pattern)
 		switch f.Type {
 		case FilterContains:

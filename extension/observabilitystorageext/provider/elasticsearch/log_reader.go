@@ -68,6 +68,184 @@ func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchR
 	}, nil
 }
 
+// SearchLogMetric executes a log metric aggregation query.
+// Builds a nested terms + histogram aggregation, grouped by the specified labels.
+func (r *LogReader) SearchLogMetric(ctx context.Context, query LogMetricQuery) (*LogMetricResult, error) {
+	// Build the base log query (filters, time range, etc.)
+	esQuery := r.buildLogSearchQuery(query.LogQuery)
+
+	// Default values
+	topN := query.TopN
+	if topN <= 0 {
+		topN = 10
+	}
+	intervalNanos := query.IntervalNanos
+	if intervalNanos <= 0 {
+		intervalNanos = 300_000_000_000 // 5min default
+	}
+
+	// Build nested aggregations: bottom-to-top
+	// Innermost: histogram
+	innerAgg := map[string]any{
+		"over_time": map[string]any{
+			"histogram": map[string]any{
+				"field":         FieldLogTimeUnixNano,
+				"interval":      float64(intervalNanos),
+				"min_doc_count": 0,
+			},
+		},
+	}
+
+	// Nested terms aggregations for each group-by label, from innermost to outermost
+	outerAgg := innerAgg
+	for i := len(query.GroupByLabels) - 1; i >= 0; i-- {
+		esField := r.resolveLogLabelESField(query.GroupByLabels[i])
+		outerAgg = map[string]any{
+			"by_" + query.GroupByLabels[i]: map[string]any{
+				"terms": map[string]any{
+					"field": esField,
+					"size":  topN,
+				},
+				"aggs": outerAgg,
+			},
+		}
+	}
+
+	searchReq := &SearchRequest{
+		Query: esQuery,
+		Size:  0,
+		Sort:  nil, // not needed for aggregations
+	}
+	if len(query.GroupByLabels) > 0 {
+		searchReq.Aggregations = outerAgg
+	} else {
+		searchReq.Aggregations = innerAgg
+	}
+
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("log metric search failed: %w", err)
+	}
+
+	// Parse aggregation results into series
+	series := r.parseMetricAggResult(resp.Aggregations, query.GroupByLabels)
+	return &LogMetricResult{Series: series}, nil
+}
+
+// parseMetricAggResult recursively parses nested ES aggregation results into flat series.
+func (r *LogReader) parseMetricAggResult(raw map[string]json.RawMessage, groupBy []string) []LogMetricSeries {
+	return r.parseNestedAgg(raw, groupBy, nil)
+}
+
+func (r *LogReader) parseNestedAgg(raw map[string]json.RawMessage, remainingLabels []string, labelAcc map[string]string) []LogMetricSeries {
+	if labelAcc == nil {
+		labelAcc = make(map[string]string)
+	}
+
+	if len(remainingLabels) == 0 {
+		// Reached the histogram layer
+		return r.parseHistogramLayer(raw, labelAcc)
+	}
+
+	labelName := remainingLabels[0]
+	aggKey := "by_" + labelName
+	aggRaw, ok := raw[aggKey]
+	if !ok {
+		return nil
+	}
+
+	var termsAgg struct {
+		Buckets []struct {
+			Key string `json:"key"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(aggRaw, &termsAgg); err != nil {
+		return nil
+	}
+
+	// Parse nested aggregations within each term bucket.
+	// We need to decode the raw JSON to get the child aggs.
+	var fullBucket struct {
+		Buckets []json.RawMessage `json:"buckets"`
+	}
+	if err := json.Unmarshal(aggRaw, &fullBucket); err != nil {
+		return nil
+	}
+
+	var allSeries []LogMetricSeries
+	for i, b := range termsAgg.Buckets {
+		childAcc := copyMap(labelAcc)
+		childAcc[labelName] = b.Key
+
+		// Parse the child aggregations from the raw bucket
+		var bucketWithAggs struct {
+			Aggregations map[string]json.RawMessage `json:"over_time,omitempty"`
+			// Nested key format
+			Children map[string]json.RawMessage
+		}
+		if err := json.Unmarshal(fullBucket.Buckets[i], &bucketWithAggs); err != nil {
+			continue
+		}
+
+		childAggs := bucketWithAggs.Aggregations
+		if childAggs == nil {
+			childAggs = bucketWithAggs.Children
+		}
+		if childAggs == nil {
+			// The child aggs might be at the top level (flattened)
+			json.Unmarshal(fullBucket.Buckets[i], &childAggs)
+		}
+
+		subSeries := r.parseNestedAgg(childAggs, remainingLabels[1:], childAcc)
+		allSeries = append(allSeries, subSeries...)
+	}
+
+	return allSeries
+}
+
+func (r *LogReader) parseHistogramLayer(raw map[string]json.RawMessage, labels map[string]string) []LogMetricSeries {
+	aggRaw, ok := raw["over_time"]
+	if !ok {
+		return nil
+	}
+
+	var histAgg struct {
+		Buckets []struct {
+			Key      int64 `json:"key"`
+			DocCount int64 `json:"doc_count"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(aggRaw, &histAgg); err != nil {
+		return nil
+	}
+
+	values := make([]LogMetricValue, 0, len(histAgg.Buckets))
+	for _, b := range histAgg.Buckets {
+		if b.DocCount == 0 && len(values) == 0 {
+			continue // skip leading empty buckets
+		}
+		values = append(values, LogMetricValue{
+			TimestampNano: b.Key,
+			Value:         float64(b.DocCount),
+		})
+	}
+
+	if len(values) == 0 {
+		return nil
+	}
+
+	seriesLabels := copyMap(labels)
+	return []LogMetricSeries{{Labels: seriesLabels, Values: values}}
+}
+
+func copyMap(src map[string]string) map[string]string {
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 // GetLogContext retrieves surrounding log lines for context viewing.
 func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) (*LogContext, error) {
 	if lines <= 0 {
@@ -245,13 +423,13 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 					"size":  500,
 				},
 			},
-			"time_histogram": map[string]any{
-				"date_histogram": map[string]any{
-					"field":          FieldLogTimeUnixNano,
-					"fixed_interval": r.calculateInterval(query.TimeRange),
-					"min_doc_count":  0,
-				},
+		"time_histogram": map[string]any{
+			"histogram": map[string]any{
+				"field":         FieldLogTimeUnixNano,
+				"interval":      float64(r.calculateNanoInterval(query.TimeRange)),
+				"min_doc_count": 0,
 			},
+		},
 		},
 	}
 
@@ -390,8 +568,8 @@ func (r *LogReader) timeRangeFilter(tr TimeRange) map[string]any {
 }
 
 // calculateInterval determines the date_histogram interval based on the time range.
-// Delegates to esq.SafeInterval for unified bucket-count safety, ensuring that
-// the interval always produces buckets ≤ DefaultMaxBuckets (10000).
+// NOTE: This returns a duration string (e.g. "15s") designed for ES date type fields.
+// For long type fields (like timeUnixNano), use calculateNanoInterval instead.
 func (r *LogReader) calculateInterval(tr TimeRange) string {
 	duration := time.Duration(0)
 	if !tr.Start.IsZero() && !tr.End.IsZero() {
@@ -413,6 +591,18 @@ func (r *LogReader) calculateInterval(tr TimeRange) string {
 	}
 
 	return interval
+}
+
+// calculateNanoInterval computes the histogram interval in nanoseconds.
+// Used for histogram aggregation on long type fields (e.g. timeUnixNano).
+// Delegates to SafeInterval for bucket-count safety, then converts to nanoseconds.
+func (r *LogReader) calculateNanoInterval(tr TimeRange) int64 {
+	intervalStr := r.calculateInterval(tr)
+	d, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		return 300_000_000_000 // fallback: 5 minutes in nanoseconds
+	}
+	return int64(d)
 }
 
 // hitsToLogRecords converts ES search hits into LogRecord objects.
