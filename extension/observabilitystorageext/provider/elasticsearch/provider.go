@@ -80,7 +80,7 @@ func (p *Provider) Start(ctx context.Context) error {
 	p.metricWriter = NewMetricWriter(p.client, p.config, p.logger)
 	p.logWriter = NewLogWriter(p.client, p.config, p.logger)
 
-	// Initialize readers
+	// Initialize readers.
 	p.traceReader = NewTraceReader(p.client, p.config, p.logger)
 	p.metricReader = NewMetricReader(p.client, p.config, p.logger)
 	p.logReader = NewLogReader(p.client, p.config, p.logger)

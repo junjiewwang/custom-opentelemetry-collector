@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -29,15 +31,35 @@ type Client struct {
 	password   string
 	logger     *zap.Logger
 
-	// Round-robin index for load balancing across ES nodes.
-	nextAddr int
+	// Round-robin index for load balancing across ES nodes (atomic for concurrent access).
+	nextAddr atomic.Int32
 }
 
-// NewClient creates a new ES HTTP client.
+// defaultHTTPTransport returns a tuned HTTP transport for ES communication.
+// Configures connection pooling to handle concurrent Grafana query bursts
+// (6+ concurrent queries should not queue on TCP connections).
+func defaultHTTPTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		MaxConnsPerHost:       20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
+// NewClient creates a new ES HTTP client with tuned connection pooling.
 func NewClient(config *Config, logger *zap.Logger) (*Client, error) {
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: defaultHTTPTransport(),
 		},
 		addresses: config.Addresses,
 		username:  config.Username,
@@ -104,8 +126,8 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 }
 
 // getNextAddress returns the next ES node address in round-robin fashion.
+// Uses atomic increment for safe concurrent access from multiple goroutines.
 func (c *Client) getNextAddress() string {
-	addr := c.addresses[c.nextAddr%len(c.addresses)]
-	c.nextAddr++
-	return addr
+	idx := int(c.nextAddr.Add(1)) % len(c.addresses)
+	return c.addresses[idx]
 }

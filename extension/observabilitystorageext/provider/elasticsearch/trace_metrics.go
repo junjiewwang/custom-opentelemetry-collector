@@ -64,7 +64,7 @@ func (r *TraceReader) QueryTraceMetrics(ctx context.Context, query TraceMetricsQ
 	}
 
 	indexPat := r.indexPattern(query.AppID)
-	resp, err := r.client.Search(ctx, indexPat, searchReq)
+	resp, err := r.searcher.Search(ctx, indexPat, searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("trace metrics query failed: %w", err)
 	}

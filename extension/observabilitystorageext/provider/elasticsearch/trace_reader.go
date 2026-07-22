@@ -32,15 +32,15 @@ const MaxResultWindow = 10000
 //   - Step 1: terms aggregation on trace_id to discover matching traces with pagination.
 //   - Step 2: bulk fetch all spans for those trace IDs.
 type TraceReader struct {
-	client *Client
+	searcher Searcher
 	config *Config
 	logger *zap.Logger
 }
 
 // NewTraceReader creates a new TraceReader instance.
-func NewTraceReader(client *Client, config *Config, logger *zap.Logger) *TraceReader {
+func NewTraceReader(searcher Searcher, config *Config, logger *zap.Logger) *TraceReader {
 	return &TraceReader{
-		client: client,
+		searcher: searcher,
 		config: config,
 		logger: logger.Named("trace-reader"),
 	}
@@ -88,7 +88,7 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("trace search failed: %w", err)
 	}
@@ -177,7 +177,7 @@ func (r *TraceReader) SearchTraceSummaries(ctx context.Context, query TraceQuery
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("trace summary search failed: %w", err)
 	}
@@ -291,7 +291,7 @@ func (r *TraceReader) GetTrace(ctx context.Context, traceID string) (*Trace, err
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("get trace failed: %w", err)
 	}
@@ -318,7 +318,7 @@ func (r *TraceReader) GetTraceSpans(ctx context.Context, traceID string) ([]Stor
 			{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
 		},
 	}
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("get trace spans failed: %w", err)
 	}
@@ -357,7 +357,7 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 			},
 		},
 	}
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, nil, fmt.Errorf("search spans failed: %w", err)
 	}
@@ -375,7 +375,7 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 		Query: esq.TermsQ(FieldTraceID, traceIDs),
 		Size:  fetchSize,
 	}
-	fetchResp, err := r.client.Search(ctx, r.indexPattern(query.AppID), fetchReq)
+	fetchResp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), fetchReq)
 	if err != nil {
 		return nil, traceIDs, fmt.Errorf("fetch spans by IDs failed: %w", err)
 	}
@@ -413,7 +413,7 @@ func (r *TraceReader) GetServices(ctx context.Context, timeRange TimeRange) ([]S
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("get services failed: %w", err)
 	}
@@ -449,7 +449,7 @@ func (r *TraceReader) GetOperations(ctx context.Context, service string, timeRan
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("get operations failed: %w", err)
 	}
@@ -748,7 +748,7 @@ func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, a
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(appID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(appID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("fetch traces by IDs failed: %w", err)
 	}
@@ -953,7 +953,7 @@ func (r *TraceReader) calculateDependencies(ctx context.Context, timeRange TimeR
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("dependency search failed: %w", err)
 	}
@@ -1042,7 +1042,7 @@ func (r *TraceReader) GetTagKeys(ctx context.Context, timeRange TimeRange, scope
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("get tag keys failed (scope=%s): %w", scope, err)
 	}
@@ -1137,7 +1137,7 @@ func (r *TraceReader) GetTagValues(ctx context.Context, tagKey string, timeRange
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("get tag values failed (key=%s, scope=%s): %w", tagKey, scope, err)
 	}

@@ -19,15 +19,15 @@ type StoredLogRecord = storedmodel.StoredLogRecord
 
 // LogReader implements log query operations against Elasticsearch.
 type LogReader struct {
-	client *Client
+	searcher Searcher
 	config *Config
 	logger *zap.Logger
 }
 
 // NewLogReader creates a new LogReader instance.
-func NewLogReader(client *Client, config *Config, logger *zap.Logger) *LogReader {
+func NewLogReader(searcher Searcher, config *Config, logger *zap.Logger) *LogReader {
 	return &LogReader{
-		client: client,
+		searcher: searcher,
 		config: config,
 		logger: logger.Named("log-reader"),
 	}
@@ -52,7 +52,7 @@ func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchR
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("log search failed: %w", err)
 	}
@@ -82,7 +82,7 @@ func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) 
 		Size: 1,
 	}
 
-	targetResp, err := r.client.Search(ctx, r.indexPattern(), targetReq)
+	targetResp, err := r.searcher.Search(ctx, r.indexPattern(), targetReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch target log: %w", err)
 	}
@@ -114,7 +114,7 @@ func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) 
 		},
 	}
 
-	beforeResp, err := r.client.Search(ctx, r.indexPattern(), beforeReq)
+	beforeResp, err := r.searcher.Search(ctx, r.indexPattern(), beforeReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch before context: %w", err)
 	}
@@ -142,7 +142,7 @@ func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) 
 		},
 	}
 
-	afterResp, err := r.client.Search(ctx, r.indexPattern(), afterReq)
+	afterResp, err := r.searcher.Search(ctx, r.indexPattern(), afterReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch after context: %w", err)
 	}
@@ -178,7 +178,7 @@ func (r *LogReader) ListLogFields(ctx context.Context, timeRange TimeRange) ([]L
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list log fields failed: %w", err)
 	}
@@ -255,7 +255,7 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("log stats query failed: %w", err)
 	}

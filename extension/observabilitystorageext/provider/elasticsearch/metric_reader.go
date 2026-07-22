@@ -19,16 +19,16 @@ import (
 //
 //	timeUnixMilli, name, type, serviceName, value, labels, resource
 type MetricReader struct {
-	client *Client
-	config *Config
-	logger *zap.Logger
+	searcher Searcher
+	config   *Config
+	logger   *zap.Logger
 }
 
 // NewMetricReader creates a new MetricReader instance.
-func NewMetricReader(client *Client, config *Config, logger *zap.Logger) *MetricReader {
+func NewMetricReader(searcher Searcher, config *Config, logger *zap.Logger) *MetricReader {
 	return &MetricReader{
-		client: client,
-		config: config,
+		searcher: searcher,
+		config:   config,
 		logger: logger.Named("metric-reader"),
 	}
 }
@@ -67,7 +67,7 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric query failed: %w", err)
 	}
@@ -115,7 +115,7 @@ func (r *MetricReader) queryDirect(ctx context.Context, appID string, query map[
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(appID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(appID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric direct query failed: %w", err)
 	}
@@ -164,7 +164,7 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 		Aggregations: aggs,
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		if strings.Contains(err.Error(), "too_many_buckets") {
 			return nil, fmt.Errorf("metric range query: time range too large for the given step, try a larger step or shorter time range")
@@ -212,7 +212,7 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list metric names failed: %w", err)
 	}
@@ -252,7 +252,7 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 		}
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list label names failed: %w", err)
 	}
@@ -293,7 +293,7 @@ func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRa
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list label values failed: %w", err)
 	}
@@ -643,7 +643,7 @@ func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]Me
 		Aggregations: aggs,
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric raw query failed: %w", err)
 	}
@@ -755,7 +755,7 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 		},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric flat query failed: %w", err)
 	}
@@ -948,7 +948,7 @@ func (r *MetricReader) ListLabelCombinations(ctx context.Context, query MetricLa
 		Aggregations: map[string]any{"combo_root": r.buildLabelComboAgg(query.LabelKeys)},
 	}
 
-	resp, err := r.client.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("label combinations search failed: %w", err)
 	}
