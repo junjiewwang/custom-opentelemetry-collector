@@ -354,26 +354,31 @@ func (e *Extension) newRouter() http.Handler {
 	}
 
 	// Loki API — log endpoints (requires storageLogReader)
-	// Grafana hardcodes path suffixes (/loki/api/v1/query_range etc.) after the
-	// datasource URL. So with URL = /api/v2/loki, the full paths become:
+	// Grafana Loki datasource URL = /api/v2/loki
+	// Grafana hardcodes /loki/api/v1/* suffix after the datasource URL.
+	// Full request paths from Grafana:
 	//   /api/v2/loki/loki/api/v1/query
 	//   /api/v2/loki/loki/api/v1/query_range
 	//   /api/v2/loki/loki/api/v1/labels
 	//   /api/v2/loki/loki/api/v1/label/{name}/values
-	// For direct HTTP access (no Grafana), shorter aliases are also provided:
-	//   /api/v2/loki/query, /api/v2/loki/labels, etc.
+	//
+	// Since we are INSIDE r.Route("/api/v2", ...), the sub-paths are relative
+	// to /api/v2. So we register /loki/loki/api/v1/* here.
 	//
 	// Routes are registered unconditionally — each handler returns a clear
 	// error when storageLogReader is nil, rather than a cryptic 404.
-	// Main routes: what Grafana actually calls (URL + hardcoded Grafana prefix)
-	r.Route("/api/v2/loki/loki/api/v1", func(r chi.Router) {
+
+	// Main routes: Grafana calls (datasource path + hardcoded Grafana suffix)
+	// Full: /api/v2 + /loki/loki/api/v1/* = /api/v2/loki/loki/api/v1/*
+	r.Route("/loki/loki/api/v1", func(r chi.Router) {
 		r.Get("/query", e.handleLokiInstantQuery)
 		r.Get("/query_range", e.handleLokiQueryRange)
 		r.Get("/labels", e.handleLokiLabels)
 		r.Get("/label/{name}/values", e.handleLokiLabelValues)
 	})
 	// Shorter aliases for direct curl/API access
-	r.Route("/api/v2/loki", func(r chi.Router) {
+	// Full: /api/v2 + /loki/* = /api/v2/loki/*
+	r.Route("/loki", func(r chi.Router) {
 		r.Get("/query", e.handleLokiInstantQuery)
 		r.Get("/query_range", e.handleLokiQueryRange)
 		r.Get("/labels", e.handleLokiLabels)
