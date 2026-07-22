@@ -362,22 +362,23 @@ func (e *Extension) newRouter() http.Handler {
 	//   /api/v2/loki/loki/api/v1/label/{name}/values
 	// For direct HTTP access (no Grafana), shorter aliases are also provided:
 	//   /api/v2/loki/query, /api/v2/loki/labels, etc.
-	if e.storageLogReader != nil {
-		// Main routes: what Grafana actually calls (URL + hardcoded Grafana prefix)
-		r.Route("/api/v2/loki/loki/api/v1", func(r chi.Router) {
-			r.Get("/query", e.handleLokiInstantQuery)
-			r.Get("/query_range", e.handleLokiQueryRange)
-			r.Get("/labels", e.handleLokiLabels)
-			r.Get("/label/{name}/values", e.handleLokiLabelValues)
-		})
-		// Shorter aliases for direct curl/API access
-		r.Route("/api/v2/loki", func(r chi.Router) {
-			r.Get("/query", e.handleLokiInstantQuery)
-			r.Get("/query_range", e.handleLokiQueryRange)
-			r.Get("/labels", e.handleLokiLabels)
-			r.Get("/label/{name}/values", e.handleLokiLabelValues)
-		})
-	}
+	//
+	// Routes are registered unconditionally — each handler returns a clear
+	// error when storageLogReader is nil, rather than a cryptic 404.
+	// Main routes: what Grafana actually calls (URL + hardcoded Grafana prefix)
+	r.Route("/api/v2/loki/loki/api/v1", func(r chi.Router) {
+		r.Get("/query", e.handleLokiInstantQuery)
+		r.Get("/query_range", e.handleLokiQueryRange)
+		r.Get("/labels", e.handleLokiLabels)
+		r.Get("/label/{name}/values", e.handleLokiLabelValues)
+	})
+	// Shorter aliases for direct curl/API access
+	r.Route("/api/v2/loki", func(r chi.Router) {
+		r.Get("/query", e.handleLokiInstantQuery)
+		r.Get("/query_range", e.handleLokiQueryRange)
+		r.Get("/labels", e.handleLokiLabels)
+		r.Get("/label/{name}/values", e.handleLokiLabelValues)
+	})
 
 	// ============================================================================
 	// Arthas Tunnel (if enabled)

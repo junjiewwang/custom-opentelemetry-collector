@@ -18,9 +18,22 @@ import (
 // Loki HTTP API Handlers (MVP: query_range + labels + label/values)
 // ═══════════════════════════════════════════════════
 
+// requireLokiReader checks that the LogReader is available and writes an
+// HTTP error if not. Returns false when unavailable.
+func (e *Extension) requireLokiReader(w http.ResponseWriter) bool {
+	if e.storageLogReader == nil {
+		writeLokiError(w, "log storage not available — check collector configuration", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
 // ==================== query_range ====================
 
 func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request) {
+	if !e.requireLokiReader(w) {
+		return
+	}
 	q := r.URL.Query().Get("query")
 	if q == "" {
 		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
@@ -69,6 +82,9 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 // ==================== labels ====================
 
 func (e *Extension) handleLokiLabels(w http.ResponseWriter, r *http.Request) {
+	if !e.requireLokiReader(w) {
+		return
+	}
 	start, _ := parseLokiTime(r.URL.Query().Get("start"))
 	end, _ := parseLokiTime(r.URL.Query().Get("end"))
 	tr := observabilitystorageext.TimeRange{Start: start, End: end}
@@ -95,6 +111,9 @@ func (e *Extension) handleLokiLabels(w http.ResponseWriter, r *http.Request) {
 // ==================== label values ====================
 
 func (e *Extension) handleLokiLabelValues(w http.ResponseWriter, r *http.Request) {
+	if !e.requireLokiReader(w) {
+		return
+	}
 	label := r.PathValue("name")
 	if label == "" {
 		writeLokiError(w, "missing label name", http.StatusBadRequest)
@@ -126,6 +145,9 @@ func (e *Extension) handleLokiLabelValues(w http.ResponseWriter, r *http.Request
 // ==================== instant query ====================
 
 func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Request) {
+	if !e.requireLokiReader(w) {
+		return
+	}
 	q := r.URL.Query().Get("query")
 	if q == "" {
 		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
