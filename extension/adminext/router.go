@@ -354,9 +354,11 @@ func (e *Extension) newRouter() http.Handler {
 	}
 
 	// Loki API — log endpoints (requires storageLogReader)
-	// Matches Tempo's /api/v2 pattern: /api/v2/{service}/{api_path}
+	// Grafana Loki datasource hardcodes path suffixes (/loki/api/v1/query_range etc.),
+	// so we register at the standard Loki paths. Set Grafana datasource URL to:
+	//   http://custom-otlp-collector.default.svc.cluster.local:8088
 	if e.storageLogReader != nil {
-		r.Route("/api/v2/loki", func(r chi.Router) {
+		r.Route("/loki/api/v1", func(r chi.Router) {
 			r.Get("/query", e.handleLokiInstantQuery)
 			r.Get("/query_range", e.handleLokiQueryRange)
 			r.Get("/labels", e.handleLokiLabels)
