@@ -354,8 +354,9 @@ func (e *Extension) newRouter() http.Handler {
 	}
 
 	// Loki API — log endpoints (requires storageLogReader)
+	// Matches Tempo's /api/v2 pattern: /api/v2/{service}/{api_path}
 	if e.storageLogReader != nil {
-		r.Route("/loki/api/v1", func(r chi.Router) {
+		r.Route("/api/v2/loki", func(r chi.Router) {
 			r.Get("/query", e.handleLokiInstantQuery)
 			r.Get("/query_range", e.handleLokiQueryRange)
 			r.Get("/labels", e.handleLokiLabels)
