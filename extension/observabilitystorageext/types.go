@@ -132,6 +132,10 @@ type TraceQuery struct {
 	TagsNot    map[string]string `json:"tagsNot,omitempty"`    // != value conditions → ES must_not + term
 	TagsExists []string          `json:"tagsExists,omitempty"` // != nil conditions → ES exists query
 	TagsRegex  map[string]string `json:"tagsRegex,omitempty"`  // =~ regex conditions → ES regexp query
+
+	// ── Root span intrinsic filters (Sprint 3) ──
+	RootName    string `json:"rootName,omitempty"`    // trace:rootName = "GET /api"
+	RootService string `json:"rootService,omitempty"` // trace:rootService = "gateway"
 }
 
 // TraceSearchResult holds the result of a trace search.

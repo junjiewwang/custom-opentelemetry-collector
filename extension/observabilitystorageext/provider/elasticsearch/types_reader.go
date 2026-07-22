@@ -309,6 +309,10 @@ type TraceMetricsQuery struct {
 	TagsNot    map[string]string // != value → must_not term
 	TagsExists []string          // != nil → exists
 	TagsRegex  map[string]string // =~ → regexp
+
+	// ── Root span intrinsic filters ──
+	RootName    string // trace:rootName = "GET /api"
+	RootService string // trace:rootService = "gateway"
 }
 
 // TraceMetricsResult holds the result of a TraceQL metrics query.

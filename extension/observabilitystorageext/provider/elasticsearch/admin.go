@@ -226,6 +226,20 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 				"index.lifecycle.rollover_alias": cfg.IndexPrefix,
 			},
 			"mappings": map[string]any{
+				"dynamic_templates": []map[string]any{{
+					"strings_as_keyword": map[string]any{
+						"match_mapping_type": "string",
+						"mapping": map[string]any{
+							"type": "text",
+							"fields": map[string]any{
+								"keyword": map[string]any{
+									"type":         "keyword",
+									"ignore_above": 256,
+								},
+							},
+						},
+					},
+				}},
 				"properties": map[string]any{
 					// Core OTLP fields (new format)
 					FieldTraceID:           map[string]any{"type": "keyword"},
@@ -239,8 +253,16 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 					FieldTraceState:        map[string]any{"type": "keyword"},
 					FieldStatus: map[string]any{
 						"properties": map[string]any{
-							"code":    map[string]any{"type": "keyword"},
-							"message": map[string]any{"type": "text"},
+							"code": map[string]any{"type": "keyword"},
+							"message": map[string]any{
+								"type": "text",
+								"fields": map[string]any{
+									"keyword": map[string]any{
+										"type":         "keyword",
+										"ignore_above": 256,
+									},
+								},
+							},
 						},
 					},
 					// Scope info
@@ -305,6 +327,20 @@ func (a *Admin) createMetricTemplate(ctx context.Context) error {
 				"index.lifecycle.rollover_alias": cfg.IndexPrefix,
 			},
 			"mappings": map[string]any{
+				"dynamic_templates": []map[string]any{{
+					"strings_as_keyword": map[string]any{
+						"match_mapping_type": "string",
+						"mapping": map[string]any{
+							"type": "text",
+							"fields": map[string]any{
+								"keyword": map[string]any{
+									"type":         "keyword",
+									"ignore_above": 256,
+								},
+							},
+						},
+					},
+				}},
 				"properties": map[string]any{
 					FieldMetricTimeUnixMilli: map[string]any{
 				"type":   "date",
@@ -338,6 +374,20 @@ func (a *Admin) createLogTemplate(ctx context.Context) error {
 				"index.lifecycle.rollover_alias": cfg.IndexPrefix,
 			},
 			"mappings": map[string]any{
+				"dynamic_templates": []map[string]any{{
+					"strings_as_keyword": map[string]any{
+						"match_mapping_type": "string",
+						"mapping": map[string]any{
+							"type": "text",
+							"fields": map[string]any{
+								"keyword": map[string]any{
+									"type":         "keyword",
+									"ignore_above": 256,
+								},
+							},
+						},
+					},
+				}},
 				"properties": map[string]any{
 					FieldLogTimeUnixNano:         map[string]any{"type": "long"},
 					FieldLogObservedTimeUnixNano: map[string]any{"type": "long"},

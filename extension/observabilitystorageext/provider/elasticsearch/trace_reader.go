@@ -511,6 +511,27 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		)
 	}
 
+	// ── Root span intrinsic filters ──
+	// rootName: the root span's name must match, AND that span
+	// must have no parentSpanId (it IS the root).
+	if tq.RootName != "" {
+		qb.Raw(map[string]any{
+			"bool": map[string]any{"must": []map[string]any{
+				esq.T(FieldName, tq.RootName),
+				esq.MustNotQ(esq.ExistsQ(FieldParentSpanID)),
+			}},
+		})
+	}
+	// rootService: the root span's serviceName must match.
+	if tq.RootService != "" {
+		qb.Raw(map[string]any{
+			"bool": map[string]any{"must": []map[string]any{
+				esq.T(FieldServiceName, tq.RootService),
+				esq.MustNotQ(esq.ExistsQ(FieldParentSpanID)),
+			}},
+		})
+	}
+
 	// AND conditions: each tag must match.
 	for k, v := range tq.Tags {
 		clauses := resolveTagTermClauses(k, v)
@@ -631,11 +652,23 @@ var attrResolver = &AttributeResolver{}
 //     (should be OR-ed by caller).
 //
 // The returned value is transformed (capitalizeFirst for kind/status fields).
+//
+// Special case: status.message is a "text" field (no .keyword sub-field),
+// so a "match" query is used instead of a "term" query to support
+// full-text search on the analyzed field. A "term" query on a text
+// field would always return 0 results.
 func resolveTagTermClauses(key, value string) []map[string]any {
 	fields, val := resolveTagESFields(key, value)
 	clauses := make([]map[string]any, 0, len(fields))
 	for _, f := range fields {
-		clauses = append(clauses, esq.T(f, val))
+		if f == FieldStatus+".message" {
+			// text field → use match query (term returns 0 on text fields)
+			clauses = append(clauses, map[string]any{
+				"match": map[string]any{f: val},
+			})
+		} else {
+			clauses = append(clauses, esq.T(f, val))
+		}
 	}
 	return clauses
 }
@@ -1150,6 +1183,56 @@ func (r *TraceReader) GetTagValues(ctx context.Context, tagKey string, timeRange
 	values, err := esq.ParseTermsAgg(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parse tag values: %w", err)
+	}
+
+	return values, nil
+}
+
+// ListRootSpanNames returns distinct root span names for the given time range.
+func (r *TraceReader) ListRootSpanNames(ctx context.Context, timeRange TimeRange, appID string) ([]string, error) {
+	return r.listIntrinsicTagValues(ctx, FieldName, timeRange, appID)
+}
+
+// ListRootSpanServices returns distinct root span service names for the given time range.
+func (r *TraceReader) ListRootSpanServices(ctx context.Context, timeRange TimeRange, appID string) ([]string, error) {
+	return r.listIntrinsicTagValues(ctx, FieldServiceName, timeRange, appID)
+}
+
+// listIntrinsicTagValues returns distinct values for a top-level ES keyword field
+// restricted to root spans (parentSpanId absent). Internal helper shared by
+// ListRootSpanNames and ListRootSpanServices.
+func (r *TraceReader) listIntrinsicTagValues(ctx context.Context, esField string, timeRange TimeRange, appID string) ([]string, error) {
+	searchReq := &SearchRequest{
+		Query: map[string]any{
+			"bool": map[string]any{
+				"must":     []map[string]any{r.timeRangeQuery(timeRange)},
+				"must_not": []map[string]any{esq.MustNotQ(esq.ExistsQ(FieldParentSpanID))},
+			},
+		},
+		Size: 0,
+		Aggregations: map[string]any{
+			"tag_values": map[string]any{
+				"terms": map[string]any{
+					"field": esField,
+					"size":  1000,
+				},
+			},
+		},
+	}
+
+	resp, err := r.searcher.Search(ctx, r.indexPattern(appID), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("list intrinsic tag values failed (field=%s): %w", esField, err)
+	}
+
+	raw, ok := resp.Aggregations["tag_values"]
+	if !ok {
+		return nil, nil
+	}
+
+	values, err := esq.ParseTermsAgg(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse intrinsic tag values: %w", err)
 	}
 
 	return values, nil

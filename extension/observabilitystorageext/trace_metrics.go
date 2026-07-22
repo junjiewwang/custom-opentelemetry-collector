@@ -38,6 +38,10 @@ type TraceMetricsQuery struct {
 	TagsNot    map[string]string // != value conditions → ES must_not + term
 	TagsExists []string          // != nil conditions → ES exists query
 	TagsRegex  map[string]string // =~ regex conditions → ES regexp query
+
+	// ── Root span intrinsic filters ──
+	RootName    string // trace:rootName = "GET /api"
+	RootService string // trace:rootService = "gateway"
 }
 
 // TraceMetricsSeries is a single time series result from a metrics query.

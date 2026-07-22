@@ -55,6 +55,8 @@ func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery)
 		SpanKind:      query.SpanKind,
 		Status:        query.Status,
 		IsRoot:        query.IsRoot,
+		RootName:      query.RootName,
+		RootService:   query.RootService,
 	}
 	spans, _, err := a.inner.SearchSpans(ctx, q)
 	if err != nil {
@@ -186,6 +188,8 @@ func (a *traceReaderAdapter) SearchTraceSummaries(ctx context.Context, query Tra
 		SpanKind:      query.SpanKind,
 		Status:        query.Status,
 		IsRoot:        query.IsRoot,
+		RootName:      query.RootName,
+		RootService:   query.RootService,
 	}
 	esResult, err := a.inner.SearchTraceSummaries(ctx, q, spss)
 	if err != nil {
@@ -223,6 +227,14 @@ func (a *traceReaderAdapter) GetTagValues(ctx context.Context, tagKey string, ti
 	return a.inner.GetTagValues(ctx, tagKey, elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}, scope, filterTags)
 }
 
+func (a *traceReaderAdapter) ListRootSpanNames(ctx context.Context, timeRange TimeRange, appID string) ([]string, error) {
+	return a.inner.ListRootSpanNames(ctx, elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}, appID)
+}
+
+func (a *traceReaderAdapter) ListRootSpanServices(ctx context.Context, timeRange TimeRange, appID string) ([]string, error) {
+	return a.inner.ListRootSpanServices(ctx, elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}, appID)
+}
+
 func (a *traceReaderAdapter) QueryTraceMetrics(ctx context.Context, query TraceMetricsQuery) (*TraceMetricsResult, error) {
 	esQuery := elasticsearch.TraceMetricsQuery{
 		AppID:         query.AppID,
@@ -236,6 +248,8 @@ func (a *traceReaderAdapter) QueryTraceMetrics(ctx context.Context, query TraceM
 		SpanKind:      query.SpanKind,
 		Status:        query.Status,
 		IsRoot:        query.IsRoot,
+		RootName:      query.RootName,
+		RootService:   query.RootService,
 		MinDuration:   query.MinDuration,
 		MaxDuration:   query.MaxDuration,
 		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},

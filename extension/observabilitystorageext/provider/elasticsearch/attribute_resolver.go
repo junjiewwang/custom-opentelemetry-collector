@@ -64,9 +64,31 @@ func (r *AttributeResolver) resolveWithScope(scope, key string) ResolvedField {
 		if scope == "" || scope == "span" {
 			return ResolvedField{ESField: FieldStatus + ".message"}
 		}
+	// Grafana Tempo data sources send intrinsic tags in Tempo canonical form
+	// (e.g., "statusMessage", "statusCode"), which differ from the dotted ES field
+	// names ("status.message", "status.code"). Map both forms to the correct ES field.
+	case "statusMessage":
+		if scope == "" || scope == "span" {
+			return ResolvedField{ESField: FieldStatus + ".message"}
+		}
+	case "statusCode":
+		if scope == "" || scope == "span" {
+			return ResolvedField{ESField: FieldStatus + ".code"}
+		}
 	case "duration":
 		if scope == "" || scope == "span" || scope == "trace" {
 			return ResolvedField{ESField: FieldDurationNano}
+		}
+	// rootName / rootServiceName are derived intrinsic fields:
+	// rootName = root span's name, rootServiceName = root span's serviceName.
+	// Map to the top-level ES fields for filter/aggregation compatibility.
+	case "rootName":
+		if scope == "" || scope == "trace" {
+			return ResolvedField{ESField: FieldName}
+		}
+	case "rootServiceName":
+		if scope == "" || scope == "trace" {
+			return ResolvedField{ESField: FieldServiceName}
 		}
 	}
 

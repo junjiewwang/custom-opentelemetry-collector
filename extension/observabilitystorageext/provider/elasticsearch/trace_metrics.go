@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/unitconv"
@@ -104,6 +105,25 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 			},
 		})
 	}
+
+	// ── Root span intrinsic filters ──
+	if query.RootName != "" {
+		must = append(must, map[string]any{
+			"bool": map[string]any{"must": []map[string]any{
+				{"term": map[string]any{FieldName: query.RootName}},
+				{"bool": map[string]any{"must_not": []map[string]any{{"exists": map[string]any{"field": FieldParentSpanID}}}}},
+			}},
+		})
+	}
+	if query.RootService != "" {
+		must = append(must, map[string]any{
+			"bool": map[string]any{"must": []map[string]any{
+				{"term": map[string]any{FieldServiceName: query.RootService}},
+				{"bool": map[string]any{"must_not": []map[string]any{{"exists": map[string]any{"field": FieldParentSpanID}}}}},
+			}},
+		})
+	}
+
 	if query.MinDuration > 0 {
 		must = append(must, map[string]any{
 			"range": map[string]any{FieldDurationNano: map[string]any{"gte": query.MinDuration.Nanoseconds()}},
@@ -118,7 +138,7 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 	resolver := &AttributeResolver{}
 	for k, v := range query.Tags {
 		field := resolver.Resolve(k).ESField
-		must = append(must, map[string]any{"term": map[string]any{field: v}})
+		must = append(must, metricsTermClause(field, v))
 	}
 
 	// Handle TagsOr: each group becomes a should, groups are AND-ed together.
@@ -128,7 +148,7 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 			branchMust := []map[string]any{}
 			for k, v := range branch {
 				field := resolver.Resolve(k).ESField
-				branchMust = append(branchMust, map[string]any{"term": map[string]any{field: v}})
+				branchMust = append(branchMust, metricsTermClause(field, v))
 			}
 			if len(branchMust) == 1 {
 				should = append(should, branchMust[0])
@@ -207,10 +227,11 @@ func (r *TraceReader) buildMetricsAggTree(query TraceMetricsQuery, histogramAgg 
 	resolver := &AttributeResolver{}
 	for i := len(query.ByLabels) - 1; i >= 0; i-- {
 		label := query.ByLabels[i]
+		aggField := metricsAggField(resolver, label)
 		outerAggs = map[string]any{
 			"by_" + label: map[string]any{
 				"terms": map[string]any{
-					"field": resolver.Resolve(label).ESField,
+					"field": aggField,
 					"size":  1000,
 				},
 				"aggs": outerAggs,
@@ -264,6 +285,39 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 			"value_count": map[string]any{"field": "_id"},
 		}
 	}
+}
+
+// metricsAggField resolves the correct ES field for a by() group-by label.
+// Most resource.* sub-fields are text → need .keyword. Exceptions (keyword/long)
+// in resourceFieldsNoKeyword are aggregated as-is.
+func metricsAggField(resolver *AttributeResolver, label string) string {
+	field := resolver.Resolve(label).ESField
+	if field == FieldStatus+".message" {
+		return field + ".keyword"
+	}
+	if strings.HasPrefix(field, FieldResource+".") && !resourceFieldsNoKeyword[field] {
+		return field + ".keyword"
+	}
+	return field
+}
+
+// metricsTermClause generates the correct ES match/term clause based on field type.
+// Text fields (status.message) must use match query instead of term.
+func metricsTermClause(field, value string) map[string]any {
+	if field == FieldStatus+".message" {
+		return map[string]any{"match": map[string]any{field: value}}
+	}
+	return map[string]any{"term": map[string]any{field: value}}
+}
+
+// resourceFieldsNoKeyword lists resource.* fields explicitly mapped as keyword/long
+// (not text) and therefore do NOT need a .keyword suffix for aggregation.
+var resourceFieldsNoKeyword = map[string]bool{
+	FieldResource + ".app_id":             true,
+	FieldResource + ".host.name":          true,
+	FieldResource + ".service.namespace":  true,
+	FieldResource + ".service.version":    true,
+	FieldResource + ".process.pid":        true,
 }
 
 // fieldForIntrinsic maps a TraceQL intrinsic field name to the ES field name.
@@ -393,25 +447,29 @@ func (r *TraceReader) parseGroupedSeries(raw map[string]json.RawMessage, byLabel
 			continue
 		}
 
+		// Parse the bucket key. ES terms aggregation returns keys as their
+		// native JSON type: string for keyword/text fields, number for long/
+		// integer fields. Use interface{} to handle both.
 		var bucketMeta struct {
-			Key string `json:"key"`
+			RawKey interface{} `json:"key"`
 		}
 		if err := json.Unmarshal(bucketRaw, &bucketMeta); err != nil {
 			continue
 		}
+		keyStr := fmt.Sprintf("%v", bucketMeta.RawKey)
 
 		// Merge parent labels with current bucket label.
 		labels := make(map[string]string, len(parentLabels)+1)
 		for k, v := range parentLabels {
 			labels[k] = v
 		}
-		labels[labelKey] = bucketMeta.Key
+		labels[labelKey] = keyStr
 
 		// Recurse with the bucket's nested aggregations.
 		series, err := r.parseGroupedSeries(bucket, byLabels, depth+1, labels, bucketAggName, query, stepSeconds)
 		if err != nil {
 			r.logger.Warn("trace metrics: error parsing grouped series",
-				zap.Error(err), zap.String("label", labelKey), zap.String("value", bucketMeta.Key))
+				zap.Error(err), zap.String("label", labelKey), zap.String("value", keyStr))
 			continue
 		}
 		allSeries = append(allSeries, series...)

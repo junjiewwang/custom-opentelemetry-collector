@@ -35,6 +35,12 @@ type TraceQuery struct {
 	TagsExists []string
 	// TagsRegex: =~ regex conditions → ES regexp query.
 	TagsRegex map[string]string
+
+	// ── Root span intrinsic filters (Sprint 3) ──
+	// RootName filters by root span's name (e.g., trace:rootName = "GET /api").
+	RootName string
+	// RootService filters by root span's serviceName (e.g., trace:rootService = "gateway").
+	RootService string
 }
 
 // TimeRange defines a time window for queries.

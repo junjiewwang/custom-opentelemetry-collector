@@ -236,6 +236,33 @@ func TestBuildTraceSearchQuery_StatusMessage(t *testing.T) {
 	// Should use intrinsic field path, not attributes.*
 	assert.Contains(t, queryStr, `"status.message"`)
 	assert.NotContains(t, queryStr, `"attributes.status.message"`)
+	// status.message is a text field: must use "match" query, not "term".
+	assert.Contains(t, queryStr, `"match"`)
+}
+
+func TestBuildTraceSearchQuery_StatusMessageNot(t *testing.T) {
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		TagsNot: map[string]string{
+			"status.message": "timeout",
+		},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// TagsNot with status.message should also use "match" (not "term").
+	assert.Contains(t, queryStr, `"status.message"`)
+	assert.Contains(t, queryStr, `"match"`)
 }
 
 func TestBuildTraceSearchQuery_StatusMessageExists(t *testing.T) {
@@ -258,4 +285,92 @@ func TestBuildTraceSearchQuery_StatusMessageExists(t *testing.T) {
 
 	// Should generate exists on status.message, not attributes.status.message
 	assert.Contains(t, queryStr, `"field":"status.message"`)
+}
+
+func TestBuildTraceSearchQuery_RootName(t *testing.T) {
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		RootName: "GET /api",
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// Should contain:
+	//   - term query on "name" field for root span name match
+	//   - must_not + exists on "parentSpanId" to identify root span
+	assert.Contains(t, queryStr, `"name"`)
+	assert.Contains(t, queryStr, `"GET /api"`)
+	assert.Contains(t, queryStr, `"parentSpanId"`)
+	assert.Contains(t, queryStr, `"must_not"`)
+	// Should NOT use attributes.* path（不是通用 tag 路径）
+	assert.NotContains(t, queryStr, `"attributes.rootName"`)
+	assert.NotContains(t, queryStr, `"resource.rootName"`)
+}
+
+func TestBuildTraceSearchQuery_RootService(t *testing.T) {
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		RootService: "gateway-service",
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// Should contain:
+	//   - term query on "serviceName" field for root span service match
+	//   - must_not + exists on "parentSpanId" to identify root span
+	assert.Contains(t, queryStr, `"serviceName"`)
+	assert.Contains(t, queryStr, `"gateway-service"`)
+	assert.Contains(t, queryStr, `"parentSpanId"`)
+	assert.Contains(t, queryStr, `"must_not"`)
+	// Should NOT use attributes.* path
+	assert.NotContains(t, queryStr, `"attributes.rootService"`)
+}
+
+func TestBuildTraceSearchQuery_RootName_NotMixedIntoTags(t *testing.T) {
+	// Verify that RootName is NOT mixed into the generic Tags path.
+	r := &TraceReader{}
+	now := time.Now()
+
+	query := TraceQuery{
+		RootName: "GET /api",
+		Tags: map[string]string{
+			"http.method": "GET",
+		},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	esQuery := r.buildTraceSearchQuery(query)
+	raw, err := json.Marshal(esQuery)
+	require.NoError(t, err)
+
+	queryStr := string(raw)
+
+	// RootName should generate its own composite bool query.
+	assert.Contains(t, queryStr, `"parentSpanId"`)
+	// Tags should still work independently (http.method resolved to attributes.http.method).
+	assert.Contains(t, queryStr, `"attributes.http.method"`)
+	assert.Contains(t, queryStr, `"GET"`)
 }

@@ -152,6 +152,14 @@ type TraceReader interface {
 	// and returns time-series data. The query contains span filters and a metrics
 	// function stage extracted from the TraceQL pipeline.
 	QueryTraceMetrics(ctx context.Context, query TraceMetricsQuery) (*TraceMetricsResult, error)
+
+	// ListRootSpanNames returns distinct root span names for the given time range.
+	// Used for the Tempo tag values endpoint for trace:rootName.
+	ListRootSpanNames(ctx context.Context, timeRange TimeRange, appID string) ([]string, error)
+
+	// ListRootSpanServices returns distinct root span service names for the given time range.
+	// Used for the Tempo tag values endpoint for trace:rootService.
+	ListRootSpanServices(ctx context.Context, timeRange TimeRange, appID string) ([]string, error)
 }
 
 // SpanReader queries trace spans from storage in the canonical StoredSpan format.
