@@ -238,6 +238,7 @@ type MetricQuery struct {
 	AppID       string            `json:"appId,omitempty"`
 	MetricName  string            `json:"metric"`
 	Labels      map[string]string `json:"labels,omitempty"`
+	LabelMatch  map[string]string `json:"labelMatch,omitempty"`
 	ServiceName string            `json:"service,omitempty"`
 	Time        time.Time         `json:"time"`
 }

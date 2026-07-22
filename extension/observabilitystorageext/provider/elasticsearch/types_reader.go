@@ -185,6 +185,7 @@ type MetricQuery struct {
 	AppID       string // required: identifies which app's data to query
 	MetricName  string
 	Labels      map[string]string
+	LabelMatch  map[string]string // regex match patterns (PromQL =~)
 	ServiceName string
 	Time        time.Time
 }

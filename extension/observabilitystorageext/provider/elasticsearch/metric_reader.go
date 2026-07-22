@@ -36,21 +36,13 @@ func NewMetricReader(client *Client, config *Config, logger *zap.Logger) *Metric
 // Query executes an instant metric query, returning the latest value(s) before the given time.
 // AppID is optional: when empty, queries all app indices (admin mode).
 func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricResult, error) {
-	esQuery := r.buildMetricQuery(query.MetricName, query.Labels, query.ServiceName)
-
-	// For instant query, we look for the latest data point at or before query.Time.
+	// Use buildMetricFilter for consistent label/labelMatch handling across all query paths.
+	var timeRange TimeRange
 	if !query.Time.IsZero() {
-		esQuery = map[string]any{
-			"bool": map[string]any{
-				"must": []map[string]any{
-					esQuery,
-				{"range": map[string]any{
-					FieldMetricTimeUnixMilli: map[string]any{"lte": query.Time.UnixMilli()},
-				}},
-				},
-			},
-		}
+		timeRange = TimeRange{End: query.Time}
 	}
+	filterResult := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, timeRange)
+	esQuery := filterResult.Query
 
 	// Use top_hits aggregation grouped by label set to get latest value per series.
 	searchReq := &SearchRequest{
@@ -107,6 +99,9 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 		}
 	}
 
+	// Post-filter for complex regex patterns unsupported by ES flattened fields.
+	result.Data = postFilterDataPoints(result.Data, filterResult.PostFilters)
+
 	return result, nil
 }
 
@@ -148,10 +143,8 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 	}
 
 	// 2. Build ES query filter (metric name + labels + labelMatch + service + time range).
-	esQuery := r.buildQueryFilter(query)
-	if _, isMatchAll := esQuery["match_all"]; esQuery != nil && isMatchAll {
-		esQuery = map[string]any{"match_all": map[string]any{}}
-	}
+	filterResult := r.buildQueryFilter(query)
+	esQuery := filterResult.Query
 
 	// 3. Calculate interval for date_histogram.
 	interval := r.calculateInterval(query.TimeRange, query.Step)
@@ -185,13 +178,16 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 		return nil, err
 	}
 
-	// 7. Apply fill strategy (post-processing).
+	// 7. Post-filter series for unsupported regex patterns.
+	result.Data = postFilterSeries(result.Data, filterResult.PostFilters)
+
+	// 8. Apply fill strategy (post-processing).
 	fillFn := GetFillStrategy(query.Fill)
 	for i := range result.Data {
 		result.Data[i].Values = fillFn(result.Data[i].Values)
 	}
 
-	// 8. Normalize labels (ensure non-nil).
+	// 9. Normalize labels (ensure non-nil).
 	for i := range result.Data {
 		if result.Data[i].Labels == nil {
 			result.Data[i].Labels = make(map[string]string)
@@ -344,41 +340,9 @@ func (r *MetricReader) buildMetricQuery(metricName string, labels map[string]str
 
 // buildQueryFilter builds the complete ES bool query for a MetricRangeQuery,
 // including metric name, service, labels, labelMatch (regex), and time range.
-func (r *MetricReader) buildQueryFilter(query MetricRangeQuery) map[string]any {
-	qb := esq.NewBuilder()
-
-	if query.MetricName != "" {
-		qb.Term(FieldName, query.MetricName)
-	}
-	if query.ServiceName != "" {
-		qb.Term(FieldServiceName, query.ServiceName)
-	}
-	for k, v := range query.Labels {
-		qb.Term(fmt.Sprintf(FieldMetricLabels+".%s", k), v)
-	}
-
-	// labelMatch: regex filtering (WHERE tag =~ /regex/)
-	for k, pattern := range query.LabelMatch {
-		fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", k)
-		qb.Raw(map[string]any{
-			"regexp": map[string]any{
-				fieldPath: map[string]any{
-					"value": pattern,
-				},
-			},
-		})
-	}
-
-	baseQuery := qb.Build()
-
-	// Add time range filter.
-	must := []map[string]any{baseQuery}
-	timeFilter := r.timeRangeQuery(query.TimeRange)
-	if _, isMatchAll := timeFilter["match_all"]; !isMatchAll {
-		must = append(must, timeFilter)
-	}
-
-	return map[string]any{"bool": map[string]any{"must": must}}
+// Uses buildMetricFilter for consistent regex→ES query translation.
+func (r *MetricReader) buildQueryFilter(query MetricRangeQuery) metricFilterResult {
+	return r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
 }
 
 // buildAggregation constructs the ES aggregation for metric range queries.
@@ -408,10 +372,14 @@ func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFu
 
 	sources := make([]map[string]any, 0, len(groupBy))
 	for _, label := range groupBy {
+		// Translate PromQL underscore-format label keys to ES dot-format keys
+		// (e.g. "http_method" → "http.method") so the composite aggregation
+		// field path matches the actual ES document structure.
+		esKey := translateLabelKey(label)
 		sources = append(sources, map[string]any{
 			label: map[string]any{
 				"terms": map[string]any{
-					"field":          fmt.Sprintf("%s.%s", FieldMetricLabels, label),
+					"field":          fmt.Sprintf("%s.%s", FieldMetricLabels, esKey),
 					"missing_bucket": true,
 				},
 			},
@@ -628,10 +596,8 @@ func (r *MetricReader) hitToSample(hit SearchHit) MetricSample {
 // within each group to retrieve individual sample points.
 func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]MetricRawSeries, error) {
 	// 1. Build ES filter (metric name + labels + labelMatch + service + time range).
-	esQuery := r.buildRawQueryFilter(query)
-	if _, isMatchAll := esQuery["match_all"]; esQuery != nil && isMatchAll {
-		esQuery = map[string]any{"match_all": map[string]any{}}
-	}
+	filterResult := r.buildRawQueryFilter(query)
+	esQuery := filterResult.Query
 
 	// Set limit, default 100.
 	limit := query.Limit
@@ -682,12 +648,37 @@ func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]Me
 		return nil, fmt.Errorf("metric raw query failed: %w", err)
 	}
 
-	return r.parseRawResult(resp)
+	series, err := r.parseRawResult(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	// Post-filter series for unsupported regex patterns.
+	series = postFilterRawSeries(series, filterResult.PostFilters)
+
+	return series, nil
+}
+
+// metricFilterResult holds the ES query and any regex patterns that require post-filtering.
+type metricFilterResult struct {
+	// Query is the ES bool query to execute.
+	Query map[string]any
+	// PostFilters contains label regex patterns that ES cannot handle natively
+	// (flattened field limitation) and must be applied in the application layer.
+	// Key: normalized ES label key, Value: PromQL regex pattern.
+	PostFilters map[string]string
 }
 
 // buildMetricFilter constructs an ES bool query from metric filter criteria + time range.
 // Shared by QueryRaw and QueryFlat to avoid duplicated filter-building logic.
-func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels, labelMatch map[string]string, timeRange TimeRange) map[string]any {
+//
+// For labelMatch (regex patterns), ES flattened fields do NOT support "regexp" queries.
+// Instead, we translate PromQL regex patterns into ES-compatible queries:
+//   - "value1|value2|..." → terms query (multi-value exact match)
+//   - "literal_with_escaped_dots" → term query (single exact match)
+//   - "prefix.*" → prefix query
+//   - Complex regex → no ES filter (returned in PostFilters for application-layer filtering)
+func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels, labelMatch map[string]string, timeRange TimeRange) metricFilterResult {
 	// Translate PromQL-style labels (underscores, full enum values) to ES storage format
 	// (dots, short enum values). Known OTel standard attributes get translated;
 	// custom labels pass through unchanged.
@@ -704,12 +695,22 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 	for k, v := range labels {
 		qb.Term(fmt.Sprintf(FieldMetricLabels+".%s", k), v)
 	}
+
+	// Translate regex patterns to ES-compatible queries for flattened fields.
+	var postFilters map[string]string
 	for k, pattern := range labelMatch {
-		qb.Raw(map[string]any{
-			"regexp": map[string]any{
-				fmt.Sprintf(FieldMetricLabels+".%s", k): map[string]any{"value": pattern},
-			},
-		})
+		field := fmt.Sprintf(FieldMetricLabels+".%s", k)
+		translation := TranslatePromQLRegex(pattern)
+		clause := BuildESClauseFromRegex(field, translation)
+		if clause != nil {
+			qb.Raw(clause)
+		} else {
+			// StrategyUnsupported: collect for post-filtering in application layer.
+			if postFilters == nil {
+				postFilters = make(map[string]string)
+			}
+			postFilters[k] = pattern
+		}
 	}
 
 	baseQuery := qb.Build()
@@ -719,11 +720,14 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 		must = append(must, timeFilter)
 	}
 
-	return map[string]any{"bool": map[string]any{"must": must}}
+	return metricFilterResult{
+		Query:       map[string]any{"bool": map[string]any{"must": must}},
+		PostFilters: postFilters,
+	}
 }
 
 // buildRawQueryFilter builds an ES bool query from a MetricRawQuery.
-func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) map[string]any {
+func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) metricFilterResult {
 	return r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
 }
 
@@ -734,7 +738,7 @@ func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) map[string]any 
 // Designed for histogram_quantile which needs complete bucket_counts data
 // across all matching documents in a time range.
 func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*MetricFlatResult, error) {
-	esQuery := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
+	filterResult := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
 
 	maxDocs := query.MaxDocs
 	if maxDocs <= 0 {
@@ -742,7 +746,7 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 	}
 
 	searchReq := &SearchRequest{
-		Query: esQuery,
+		Query: filterResult.Query,
 		Size:  maxDocs,
 		Sort:  []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "asc"}}},
 		Source: []string{
@@ -761,8 +765,11 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 		samples = append(samples, r.hitToSample(hit))
 	}
 
-	total := int64(len(resp.Hits.Hits))
-	if resp.Hits.Total.Value > 0 {
+	// Post-filter for unsupported regex patterns that ES flattened fields cannot handle.
+	samples = postFilterSamples(samples, filterResult.PostFilters)
+
+	total := int64(len(samples))
+	if resp.Hits.Total.Value > 0 && total == int64(len(resp.Hits.Hits)) {
 		total = resp.Hits.Total.Value
 	}
 
@@ -770,6 +777,83 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 		Samples: samples,
 		Total:   total,
 	}, nil
+}
+
+// postFilterSamples applies application-layer regex filtering for patterns
+// that cannot be translated to ES queries (StrategyUnsupported on flattened fields).
+// postFilters map: key = normalized ES label key, value = PromQL regex pattern.
+func postFilterSamples(samples []MetricSample, postFilters map[string]string) []MetricSample {
+	if len(postFilters) == 0 {
+		return samples
+	}
+
+	// Filter samples: keep only those matching ALL regex patterns.
+	filtered := samples[:0]
+	for _, sample := range samples {
+		if matchesPostFilters(sample.Labels, postFilters) {
+			filtered = append(filtered, sample)
+		}
+	}
+	return filtered
+}
+
+// postFilterDataPoints applies application-layer regex filtering on MetricDataPoint slices.
+// Used by Query() for instant queries with unsupported regex patterns.
+func postFilterDataPoints(data []MetricDataPoint, postFilters map[string]string) []MetricDataPoint {
+	if len(postFilters) == 0 {
+		return data
+	}
+
+	filtered := data[:0]
+	for _, dp := range data {
+		if matchesPostFilters(dp.Labels, postFilters) {
+			filtered = append(filtered, dp)
+		}
+	}
+	return filtered
+}
+
+// postFilterSeries applies application-layer regex filtering on MetricSeries slices.
+// Used by QueryRange() for grouped aggregation results with unsupported regex patterns.
+func postFilterSeries(data []MetricSeries, postFilters map[string]string) []MetricSeries {
+	if len(postFilters) == 0 {
+		return data
+	}
+
+	filtered := data[:0]
+	for _, series := range data {
+		if matchesPostFilters(series.Labels, postFilters) {
+			filtered = append(filtered, series)
+		}
+	}
+	return filtered
+}
+
+// postFilterRawSeries applies application-layer regex filtering on MetricRawSeries slices.
+// Used by QueryRaw() for raw aggregation results with unsupported regex patterns.
+func postFilterRawSeries(data []MetricRawSeries, postFilters map[string]string) []MetricRawSeries {
+	if len(postFilters) == 0 {
+		return data
+	}
+
+	filtered := data[:0]
+	for _, series := range data {
+		if matchesPostFilters(series.Labels, postFilters) {
+			filtered = append(filtered, series)
+		}
+	}
+	return filtered
+}
+
+// matchesPostFilters checks if a label set matches ALL given regex post-filters.
+func matchesPostFilters(labels map[string]string, postFilters map[string]string) bool {
+	for key, pattern := range postFilters {
+		val, ok := labels[key]
+		if !ok || !PostFilterByRegex(val, pattern) {
+			return false
+		}
+	}
+	return true
 }
 
 // parseRawResult parses the ES composite+top_hits response into MetricRawSeries.
