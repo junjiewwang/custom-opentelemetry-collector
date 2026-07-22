@@ -5,8 +5,10 @@ package adminext
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/adminext/logql"
@@ -153,6 +155,28 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
 		return
 	}
+
+	// Grafana health check sends "vector(1)+vector(1)" or "1+1" — not real LogQL.
+	// Return a synthetic success response so Grafana marks the datasource healthy.
+	if isLokiHealthCheckQuery(q) {
+		w.Header().Set("Content-Type", "application/json")
+		now := time.Now()
+		ts := fmt.Sprintf("%d", now.UnixNano())
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data": map[string]interface{}{
+				"resultType": "vector",
+				"result": []map[string]interface{}{
+					{
+						"metric": map[string]string{},
+						"value":  []string{ts, "2"},
+					},
+				},
+			},
+		})
+		return
+	}
+
 	limit := lokiParseIntParam(r.URL.Query().Get("limit"), 100)
 	now := time.Now()
 
@@ -294,4 +318,10 @@ func lokiParseIntParam(s string, defaultVal int) int {
 	return v
 }
 
-
+// isLokiHealthCheckQuery returns true for synthetic queries that Grafana
+// sends during datasource health checks. These are not valid LogQL but
+// Grafana expects a successful response to mark the datasource as healthy.
+func isLokiHealthCheckQuery(q string) bool {
+	// Grafana sends "vector(1)+vector(1)" or "1+1" depending on version
+	return strings.Contains(q, "vector(") || q == "1+1"
+}
