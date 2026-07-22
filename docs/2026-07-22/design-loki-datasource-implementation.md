@@ -401,7 +401,30 @@ func (e *Evaluator) Evaluate(query *LogQLQuery) *observabilitystorageext.LogQuer
 
 - [x] 需求分析（Loki datasource + Drilldown 参考）
 - [x] 架构设计
-- [ ] Sprint 1 实施
+- [x] **Sprint 1 实施完成**: LogQL parser (18 tests) + query_range/labels/label values + ES verified
 - [ ] Sprint 2 实施
 - [ ] Sprint 3 实施
 - [ ] ES 集成测试
+
+### Sprint 1 完成摘要
+
+| 文件 | 说明 |
+|------|------|
+| `logql/ast.go` | AST types (StreamSelector, LabelMatcher, LineFilter) |
+| `logql/parser.go` | Recursive descent parser, stream selector + 4 line filters |
+| `logql/parser_test.go` | 18 tests: selectors, matchers, line filters, evaluator |
+| `logql/evaluator.go` | AST → public LogQuery (Labels, LabelMatch, LabelNot, etc.) |
+| `loki_handler.go` | 4 handlers: query_range, instant query, labels, label/values |
+| `router.go` | `/api/v2/loki/*` routes (matching Tempo's `/api/v2/tempo/*`) |
+| `types.go` | LogQuery + Loki fields (Labels, LabelMatch, LabelNot, Direction) |
+| `provider.go` | LogReader + ListLogLabels, ListLogLabelValues |
+| `log_reader.go` | buildLogSearchQuery + Loki labels, label values ES aggregation |
+| `reader_adapter.go` | logReaderAdapter + PG stub for ListLogLabels/ListLogLabelValues |
+| `types_reader.go` | ES-internal LogQuery + Loki fields |
+
+**ES 验证** (3.6M logs, 6 services):
+- `{service_name="java-user-service"}` → 10000+ docs ✅
+- `|= "error"` → 10000+ docs (中文/英文混合) ✅  
+- `/labels` → 6 values ✅
+- `/label/severity/values` → INFO:2.6M, WARN:860K, ERROR:161K ✅
+- `/label/service_name/values` → 6 services ✅

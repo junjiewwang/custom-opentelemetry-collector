@@ -43,11 +43,35 @@ const (
 	MatchNotRegex                  // !~
 )
 
+// PipelineStage is a single stage in the LogQL pipeline.
+// Examples: | json, | logfmt, | json | level = "error"
+type PipelineStage struct {
+	Type PipelineType
+	// Parser: "json", "logfmt", "unpack"
+	Parser string
+	// LabelFilter: pipeline-level filter (e.g., | json | level = "error")
+	LabelFilter *LabelMatcher
+	// LineFormat: template for line output (e.g., | line_format "{{.level}}: {{.msg}}")
+	LineFormat string
+	// LabelFormat: rename/modify labels
+	LabelFormat *LabelMatcher
+}
+
+// PipelineType indicates the type of pipeline stage.
+type PipelineType int
+
+const (
+	PipelineParser       PipelineType = iota // | json, | logfmt, | unpack
+	PipelineLabelFilter                      // | json | level = "error"
+	PipelineLineFormat                       // | line_format "..."
+	PipelineLabelFormat                      // | label_format key=value
+)
+
 // LogQLQuery is a fully parsed LogQL query.
-// MVP scope: StreamSelector only. Future: LineFilters + Pipeline.
 type LogQLQuery struct {
 	StreamSelector StreamSelector
 	LineFilters    []LineFilter
+	Pipeline       []PipelineStage
 
 	// Execution parameters from the HTTP request.
 	Start    time.Time
