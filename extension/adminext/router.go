@@ -354,11 +354,24 @@ func (e *Extension) newRouter() http.Handler {
 	}
 
 	// Loki API — log endpoints (requires storageLogReader)
-	// Grafana Loki datasource hardcodes path suffixes (/loki/api/v1/query_range etc.),
-	// so we register at the standard Loki paths. Set Grafana datasource URL to:
-	//   http://custom-otlp-collector.default.svc.cluster.local:8088
+	// Grafana hardcodes path suffixes (/loki/api/v1/query_range etc.) after the
+	// datasource URL. So with URL = /api/v2/loki, the full paths become:
+	//   /api/v2/loki/loki/api/v1/query
+	//   /api/v2/loki/loki/api/v1/query_range
+	//   /api/v2/loki/loki/api/v1/labels
+	//   /api/v2/loki/loki/api/v1/label/{name}/values
+	// For direct HTTP access (no Grafana), shorter aliases are also provided:
+	//   /api/v2/loki/query, /api/v2/loki/labels, etc.
 	if e.storageLogReader != nil {
-		r.Route("/loki/api/v1", func(r chi.Router) {
+		// Main routes: what Grafana actually calls (URL + hardcoded Grafana prefix)
+		r.Route("/api/v2/loki/loki/api/v1", func(r chi.Router) {
+			r.Get("/query", e.handleLokiInstantQuery)
+			r.Get("/query_range", e.handleLokiQueryRange)
+			r.Get("/labels", e.handleLokiLabels)
+			r.Get("/label/{name}/values", e.handleLokiLabelValues)
+		})
+		// Shorter aliases for direct curl/API access
+		r.Route("/api/v2/loki", func(r chi.Router) {
 			r.Get("/query", e.handleLokiInstantQuery)
 			r.Get("/query_range", e.handleLokiQueryRange)
 			r.Get("/labels", e.handleLokiLabels)
