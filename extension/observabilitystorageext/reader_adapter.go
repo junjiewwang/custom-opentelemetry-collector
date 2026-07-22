@@ -474,6 +474,12 @@ func (a *metricReaderAdapter) ListLabelCombinations(ctx context.Context, query L
 // convertSpan / convertTrace / convertTraceSearchResult removed — replaced by
 // StoredSpanToPublic() and buildTraceFromStoredSpans() using the canonical format.
 
+// NewMetricReaderAdapterForTest creates a MetricReader adapter from an ES MetricReader.
+// Exported for integration testing in downstream packages (e.g., adminext).
+func NewMetricReaderAdapterForTest(inner *elasticsearch.MetricReader) MetricReader {
+	return &metricReaderAdapter{inner: inner}
+}
+
 // computeDurationNano is retained for the PG reader adapter.
 func computeDurationNano(start, end time.Time, durationUS int64) string {
 	if !start.IsZero() && !end.IsZero() {

@@ -782,7 +782,7 @@ func (e *Extension) execRateRange(r *http.Request, expr *promqlExpr, start, end 
 		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
-	flatResult, err := e.storageMetricReader.QueryFlat(r.Context(), flatQuery)
+	flatResult, err := e.concurrentQueryFlat(r.Context(), flatQuery, e.logger)
 	if err != nil {
 		e.logger.Error("prom query_flat failed", zap.Error(err))
 		return nil
@@ -850,7 +850,7 @@ func (e *Extension) execRateInstant(r *http.Request, expr *promqlExpr, evalTime 
 		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 	}
 
-	flatResult, err := e.storageMetricReader.QueryFlat(r.Context(), flatQuery)
+	flatResult, err := e.concurrentQueryFlat(r.Context(), flatQuery, e.logger)
 	if err != nil {
 		e.logger.Error("prom query_flat failed", zap.Error(err))
 		return nil
@@ -908,7 +908,7 @@ func (e *Extension) execHistogramQuantileInstant(r *http.Request, expr *promqlEx
 		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 	}
 
-	result, err := e.storageMetricReader.QueryFlat(r.Context(), flatQuery)
+	result, err := e.concurrentQueryFlat(r.Context(), flatQuery, e.logger)
 	if err != nil {
 		e.logger.Error("histogram_quantile query_flat failed", zap.Error(err))
 		return nil
@@ -992,7 +992,7 @@ func (e *Extension) execHistogramQuantileRange(r *http.Request, expr *promqlExpr
 		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
-	result, err := e.storageMetricReader.QueryFlat(r.Context(), flatQuery)
+	result, err := e.concurrentQueryFlat(r.Context(), flatQuery, e.logger)
 	if err != nil {
 		e.logger.Error("histogram_quantile range query_flat failed", zap.Error(err))
 		return nil
