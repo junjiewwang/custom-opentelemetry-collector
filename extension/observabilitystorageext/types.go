@@ -374,7 +374,7 @@ type MetricFlatResult struct {
 // LogQuery holds parameters for searching logs.
 type LogQuery struct {
 	AppID       string            `json:"appId,omitempty"`
-	Query       string            `json:"query,omitempty"`
+	Query       string            `json:"query,omitempty"`   // free-text or ES query_string
 	ServiceName string            `json:"service,omitempty"`
 	Severity    []string          `json:"severity,omitempty"`
 	TraceID     string            `json:"traceId,omitempty"`
@@ -383,6 +383,19 @@ type LogQuery struct {
 	TimeRange   TimeRange         `json:"timeRange"`
 	Limit       int               `json:"limit,omitempty"`
 	Offset      int               `json:"offset,omitempty"`
+
+	// ── Loki-specific log stream selectors ──
+	// Labels: exact match (=) label matchers from LogQL stream selector.
+	Labels map[string]string `json:"labels,omitempty"`
+	// LabelMatch: regex match (=~) label matchers from LogQL stream selector.
+	LabelMatch map[string]string `json:"labelMatch,omitempty"`
+	// LabelNot: not-equal (!=) label matchers.
+	LabelNot map[string]string `json:"labelNot,omitempty"`
+	// LabelNotMatch: not-regex (!~) label matchers.
+	LabelNotMatch map[string]string `json:"labelNotMatch,omitempty"`
+
+	// Direction: "forward" or "backward" for log ordering.
+	Direction string `json:"direction,omitempty"`
 }
 
 // LogSearchResult holds the result of a log search.

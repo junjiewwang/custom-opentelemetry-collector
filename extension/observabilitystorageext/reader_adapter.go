@@ -285,16 +285,21 @@ var _ LogReader = (*logReaderAdapter)(nil)
 
 func (a *logReaderAdapter) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error) {
 	esQuery := elasticsearch.LogQuery{
-		AppID:       query.AppID,
-		Query:       query.Query,
-		ServiceName: query.ServiceName,
-		Severity:    query.Severity,
-		TraceID:     query.TraceID,
-		SpanID:      query.SpanID,
-		Attributes:  query.Attributes,
-		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
-		Limit:       query.Limit,
-		Offset:      query.Offset,
+		AppID:        query.AppID,
+		Query:        query.Query,
+		ServiceName:  query.ServiceName,
+		Severity:     query.Severity,
+		TraceID:      query.TraceID,
+		SpanID:       query.SpanID,
+		Attributes:   query.Attributes,
+		TimeRange:    elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		Limit:        query.Limit,
+		Offset:       query.Offset,
+		Labels:       query.Labels,
+		LabelMatch:   query.LabelMatch,
+		LabelNot:     query.LabelNot,
+		LabelNotMatch: query.LabelNotMatch,
+		Direction:    query.Direction,
 	}
 	result, err := a.inner.SearchLogs(ctx, esQuery)
 	if err != nil {
@@ -336,6 +341,16 @@ func (a *logReaderAdapter) GetLogStats(ctx context.Context, query LogStatsQuery)
 		return nil, err
 	}
 	return convertLogStats(result), nil
+}
+
+func (a *logReaderAdapter) ListLogLabels(ctx context.Context, timeRange TimeRange, appID string) ([]string, error) {
+	esTR := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
+	return a.inner.ListLogLabels(ctx, esTR, appID)
+}
+
+func (a *logReaderAdapter) ListLogLabelValues(ctx context.Context, label string, timeRange TimeRange, appID string) ([]string, error) {
+	esTR := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
+	return a.inner.ListLogLabelValues(ctx, label, esTR, appID)
 }
 
 // metricReaderAdapter adapts the ES MetricReader to the public MetricReader interface.

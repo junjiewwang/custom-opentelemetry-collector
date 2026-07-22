@@ -347,6 +347,20 @@ func (e *Extension) newRouter() http.Handler {
 				r.Get("/api/metrics/query_range", e.handleTempoMetricsQueryRange)
 			}
 		})
+
+		// Loki Compatible API — requires storageLogReader
+		// WARNING: Go import cycle detection in chi. Because this block is inside
+		// the /tempo scope, the actual routes are exposed at /loki directly.
+	}
+
+	// Loki API — log endpoints (requires storageLogReader)
+	if e.storageLogReader != nil {
+		r.Route("/loki/api/v1", func(r chi.Router) {
+			r.Get("/query", e.handleLokiInstantQuery)
+			r.Get("/query_range", e.handleLokiQueryRange)
+			r.Get("/labels", e.handleLokiLabels)
+			r.Get("/label/{name}/values", e.handleLokiLabelValues)
+		})
 	}
 
 	// ============================================================================

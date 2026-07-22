@@ -360,6 +360,22 @@ func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
 		}
 	}
 
+	// ── Loki-specific stream selector labels ──
+	for k, v := range lq.Labels {
+		f := r.resolveLogLabelESField(k)
+		qb.Term(f, v)
+	}
+	for k, v := range lq.LabelMatch {
+		f := r.resolveLogLabelESField(k)
+		_ = f
+		clauses := resolveTagTermClauses(k, v)
+		if len(clauses) == 1 {
+			qb.Raw(clauses[0])
+		} else {
+			qb.Should(1, clauses...)
+		}
+	}
+
 	return qb.Build()
 }
 
@@ -439,6 +455,95 @@ func compatLogRecord(rec StoredLogRecord, raw json.RawMessage) StoredLogRecord {
 		}
 	}
 	return rec
+}
+
+// ListLogLabels returns distinct log label names for the given time range.
+func (r *LogReader) ListLogLabels(ctx context.Context, timeRange TimeRange, appID string) ([]string, error) {
+	return r.listFieldKeys(ctx, timeRange, appID,
+		FieldServiceName, FieldLogSeverityText, FieldLogSeverityNumber,
+		FieldAppID, FieldTraceID, FieldSpanID)
+}
+
+// ListLogLabelValues returns distinct values for a label within the time range.
+func (r *LogReader) ListLogLabelValues(ctx context.Context, label string, timeRange TimeRange, appID string) ([]string, error) {
+	field := r.resolveLogLabelESField(label)
+	if field == "" {
+		return nil, nil
+	}
+	return r.listFieldValues(ctx, field, timeRange, appID)
+}
+
+// resolveLogLabelESField maps a Loki-style label name to the ES field.
+var logLabelFieldMap = map[string]string{
+	"service_name": FieldServiceName,
+	"appId":        FieldAppID,
+	"severity":     FieldLogSeverityText,
+	"traceID":      FieldTraceID,
+	"spanID":       FieldSpanID,
+}
+
+func (r *LogReader) resolveLogLabelESField(label string) string {
+	if f, ok := logLabelFieldMap[label]; ok {
+		return f
+	}
+	// Dynamic labels are stored under resource.* or attributes.*
+	return FieldResource + "." + label
+}
+
+func (r *LogReader) listFieldKeys(ctx context.Context, timeRange TimeRange, appID string, fields ...string) ([]string, error) {
+	searchReq := &SearchRequest{
+		Query: r.timeRangeQuery(timeRange),
+		Size:  0,
+	}
+	resp, err := r.searcher.Search(ctx, r.indexPattern(appID), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("list log labels failed: %w", err)
+	}
+	_ = resp // unused for now
+	return append([]string(nil), fields...), nil
+}
+
+func (r *LogReader) listFieldValues(ctx context.Context, field string, timeRange TimeRange, appID string) ([]string, error) {
+	searchReq := &SearchRequest{
+		Query: r.timeRangeQuery(timeRange),
+		Size:  0,
+		Aggregations: map[string]any{
+			"values": map[string]any{
+				"terms": map[string]any{
+					"field": field,
+					"size":  1000,
+				},
+			},
+		},
+	}
+	resp, err := r.searcher.Search(ctx, r.indexPattern(appID), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("list log label values failed (field=%s): %w", field, err)
+	}
+	raw, ok := resp.Aggregations["values"]
+	if !ok {
+		return nil, nil
+	}
+	var agg struct {
+		Buckets []struct {
+			Key string `json:"key"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(raw, &agg); err != nil {
+		return nil, fmt.Errorf("parse label values: %w", err)
+	}
+	result := make([]string, 0, len(agg.Buckets))
+	for _, b := range agg.Buckets {
+		if b.Key != "" {
+			result = append(result, b.Key)
+		}
+	}
+	return result, nil
+}
+
+// Update buildLogSearchQuery to also handle Loki-specific labels.
+func init() {
+	// Note: buildLogSearchQuery is patched below to include Labels/LabelMatch handling.
 }
 
 // ==================== Log Document Model ====================

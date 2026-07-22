@@ -277,6 +277,14 @@ func (a *pgLogReaderAdapter) GetLogStats(ctx context.Context, query LogStatsQuer
 	}, nil
 }
 
+func (a *pgLogReaderAdapter) ListLogLabels(ctx context.Context, timeRange TimeRange, appID string) ([]string, error) {
+	return nil, nil
+}
+
+func (a *pgLogReaderAdapter) ListLogLabelValues(ctx context.Context, label string, timeRange TimeRange, appID string) ([]string, error) {
+	return nil, nil
+}
+
 // --- StorageAdmin Adapter ---
 
 type pgStorageAdminAdapter struct {

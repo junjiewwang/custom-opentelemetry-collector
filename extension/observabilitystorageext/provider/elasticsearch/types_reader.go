@@ -118,6 +118,13 @@ type LogQuery struct {
 	TimeRange   TimeRange
 	Limit       int
 	Offset      int
+
+	// ── Loki-specific stream selector labels ──
+	Labels        map[string]string // exact match (=) label matchers
+	LabelMatch    map[string]string // regex match (=~) label matchers
+	LabelNot      map[string]string // not-equal (!=) label matchers
+	LabelNotMatch map[string]string // not-regex (!~) label matchers
+	Direction     string            // "forward" or "backward"
 }
 
 // LogSearchResult holds the result of a log search.

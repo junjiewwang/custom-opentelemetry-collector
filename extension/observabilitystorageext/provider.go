@@ -223,6 +223,12 @@ type LogReader interface {
 
 	// GetLogStats returns log statistics (counts, severity distribution, etc.).
 	GetLogStats(ctx context.Context, query LogStatsQuery) (*LogStats, error)
+
+	// ListLogLabels returns distinct log label names for the given time range.
+	ListLogLabels(ctx context.Context, timeRange TimeRange, appID string) ([]string, error)
+
+	// ListLogLabelValues returns distinct values for a log label within the time range.
+	ListLogLabelValues(ctx context.Context, label string, timeRange TimeRange, appID string) ([]string, error)
 }
 
 // ═══════════════════════════════════════════════════
