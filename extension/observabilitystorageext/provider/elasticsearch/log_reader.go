@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
@@ -527,6 +528,34 @@ func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
 	if lq.Query != "" {
 		qb.Match(FieldLogBody, lq.Query, map[string]any{"operator": "and"})
 	}
+	// Regex line filters (|~) → ES regexp query on body field.
+	// ES regexp on text fields matches against analyzed terms (word-level).
+	// PCRE inline flags like (?i) are stripped and mapped to ES parameters.
+	for _, re := range lq.RegexFilters {
+		esPattern, caseInsensitive := convertLokiRegex(re)
+		regSpec := map[string]any{"value": esPattern, "flags": "ALL"}
+		if caseInsensitive {
+			regSpec["case_insensitive"] = true
+		}
+		qb.Raw(map[string]any{
+			"regexp": map[string]any{FieldLogBody: regSpec},
+		})
+	}
+	// Negated regex line filters (!~) → ES must_not + regexp
+	if len(lq.NotRegexFilters) > 0 {
+		var notClauses []map[string]any
+		for _, re := range lq.NotRegexFilters {
+			esPattern, caseInsensitive := convertLokiRegex(re)
+			regSpec := map[string]any{"value": esPattern, "flags": "ALL"}
+			if caseInsensitive {
+				regSpec["case_insensitive"] = true
+			}
+			notClauses = append(notClauses, map[string]any{
+				"regexp": map[string]any{FieldLogBody: regSpec},
+			})
+		}
+		qb.MustNot(notClauses...)
+	}
 	if lq.ServiceName != "" {
 		qb.Term(FieldServiceName, lq.ServiceName)
 	}
@@ -757,6 +786,31 @@ func (r *LogReader) listFieldValues(ctx context.Context, field string, timeRange
 		}
 	}
 	return result, nil
+}
+
+// convertLokiRegex converts a LogQL |~ regex pattern to ES regexp query parameters.
+// Returns (pattern, caseInsensitive). Handles PCRE inline flags:
+//
+//	(?i) → case_insensitive:true  (ES 7.10+)
+//	(?s) → supports . matching newline (ES ALL flag covers this)
+func convertLokiRegex(pattern string) (string, bool) {
+	caseInsensitive := false
+	esPattern := pattern
+	// Strip inline flags: (?i), (?s), (?is), (?si)
+	for strings.HasPrefix(esPattern, "(?") {
+		close := strings.IndexByte(esPattern, ')')
+		if close < 0 {
+			break
+		}
+		flags := esPattern[2:close]
+		esPattern = esPattern[close+1:]
+		if strings.Contains(flags, "i") {
+			caseInsensitive = true
+		}
+		// (?s) (DOTALL) is covered by ES regexp flags: "ALL"
+		// (?m) and (?U) are not applicable to ES regexp
+	}
+	return esPattern, caseInsensitive
 }
 
 // Update buildLogSearchQuery to also handle Loki-specific labels.
