@@ -378,6 +378,9 @@ func (e *Extension) newRouter() http.Handler {
 		r.Post("/query_range", e.handleLokiQueryRange)
 		r.Get("/labels", e.handleLokiLabels)
 		r.Get("/label/{name}/values", e.handleLokiLabelValues)
+		// logs-drilldown app endpoints (Loki 3.x compatibility)
+		r.Get("/index/volume", e.handleLokiIndexVolume)
+		r.Get("/drilldown-limits", e.handleLokiDrilldownLimits)
 	})
 	// Shorter aliases for direct curl/API access
 	// Full: /api/v2 + /loki/* = /api/v2/loki/*

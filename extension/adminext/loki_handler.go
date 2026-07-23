@@ -344,3 +344,127 @@ func isLokiHealthCheckQuery(q string) bool {
 	// Grafana sends "vector(1)+vector(1)" or "1+1" depending on version
 	return strings.Contains(q, "vector(") || q == "1+1"
 }
+
+// ═══════════════════════════════════════════════════
+// logs-drilldown app endpoints (Loki 3.x compatibility)
+// ═══════════════════════════════════════════════════
+
+// handleLokiDrilldownLimits returns a minimal config for the logs-drilldown app.
+// The app uses this to discover Loki capabilities (volume_enabled, etc.).
+// Returns a synthetic 200 response so the app doesn't show errors.
+func (e *Extension) handleLokiDrilldownLimits(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"volume_enabled": true,
+		"volume_max_series": 1000,
+		"max_query_series": 1000,
+		"pattern_ingester_enabled": false,
+		"version": "custom-otel-collector",
+	})
+}
+
+// handleLokiIndexVolume returns label value volumes for the logs-drilldown app.
+// Used to populate label pickers with per-value document counts.
+//
+// Query format: {service_name=~".+"}  →  extracts label name from stream selector
+// Response format: Loki vector:
+//
+//	{"status":"success","data":{"resultType":"vector","result":[...]}}
+func (e *Extension) handleLokiIndexVolume(w http.ResponseWriter, r *http.Request) {
+	if !e.requireLokiReader(w) {
+		return
+	}
+
+	q := r.URL.Query().Get("query")
+	if q == "" {
+		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
+		return
+	}
+
+	start, startOk := parseLokiTime(r.URL.Query().Get("start"))
+	end, endOk := parseLokiTime(r.URL.Query().Get("end"))
+	if !startOk || !endOk {
+		writeLokiError(w, "invalid start/end time", http.StatusBadRequest)
+		return
+	}
+
+	// Parse the stream selector to extract the primary label name.
+	parsed, err := logql.Parse(q)
+	if err != nil {
+		e.logger.Warn("loki: failed to parse index/volume query", zap.String("query", q), zap.Error(err))
+		writeLokiError(w, "failed to parse query", http.StatusBadRequest)
+		return
+	}
+
+	// Determine the label to aggregate: use the first stream selector matcher.
+	// The logs-drilldown app passes {service_name=~".+"} where service_name is the primaryLabel.
+	groupByLabel := "service_name" // default
+	if len(parsed.StreamSelector.Matchers) > 0 {
+		groupByLabel = parsed.StreamSelector.Matchers[0].Name
+	}
+
+	// Evaluate the query into a storage LogQuery (applies filters, time range, etc.)
+	parsed.Start = start
+	parsed.End = end
+	ev := &logql.Evaluator{}
+	storageQ := ev.Evaluate(parsed)
+
+	// Execute a metric aggregation: one terms agg on the groupByLabel.
+	metricQ := &observabilitystorageext.LogMetricQuery{
+		LogQuery:      *storageQ,
+		GroupByLabels: []string{groupByLabel},
+		IntervalNanos: end.Sub(start).Nanoseconds(), // single bucket for the whole range
+		TopN:          lokiParseIntParam(r.URL.Query().Get("limit"), 100),
+	}
+
+	result, err := e.storageLogReader.SearchLogMetric(r.Context(), *metricQ)
+	if err != nil {
+		e.logger.Warn("loki: index volume query failed", zap.Error(err))
+		writeLokiError(w, "volume query failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert metric result to vector format.
+	// Matrix result → vector: take the last value from each series.
+	writeLokiVectorResponse(w, result)
+}
+
+// writeLokiVectorResponse converts LogMetricResult to Loki vector format.
+func writeLokiVectorResponse(w http.ResponseWriter, result *observabilitystorageext.LogMetricResult) {
+	type vectorRow struct {
+		Metric map[string]string `json:"metric"`
+		Value  []interface{}     `json:"value"` // [timestamp_seconds_number, "value_string"]
+	}
+
+	rows := make([]vectorRow, 0, len(result.Series))
+	for _, s := range result.Series {
+		// Use the first (or last) value point as the vector value.
+		if len(s.Values) == 0 {
+			continue
+		}
+		v := s.Values[len(s.Values)-1] // last bucket = total count
+
+		secs := v.TimestampNano / 1_000_000_000
+		nanos := v.TimestampNano % 1_000_000_000
+		ts := json.Number(fmt.Sprintf("%d.%09d", secs, nanos))
+
+		rows = append(rows, vectorRow{
+			Metric: s.Labels,
+			Value:  []interface{}{ts, fmt.Sprintf("%d", int64(v.Value))},
+		})
+	}
+
+	if rows == nil {
+		rows = []vectorRow{}
+	}
+
+	resp := map[string]interface{}{
+		"status": "success",
+		"data": map[string]interface{}{
+			"resultType": "vector",
+			"result":     rows,
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
