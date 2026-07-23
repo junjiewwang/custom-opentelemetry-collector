@@ -2548,6 +2548,12 @@ func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabil
 			if len(plan.TagsOr) > 0 {
 				query.TagsOr = plan.TagsOr
 			}
+			if len(plan.TagsNotOr) > 0 {
+				query.TagsNotOr = plan.TagsNotOr
+			}
+			if len(plan.TagsRegexOr) > 0 {
+				query.TagsRegexOr = plan.TagsRegexOr
+			}
 			if plan.ServiceName != "" {
 				query.ServiceName = plan.ServiceName
 			}

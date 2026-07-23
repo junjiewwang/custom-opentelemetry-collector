@@ -564,6 +564,46 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
+		// ── TagsNotOr (Sprint 3): OR-grouped != conditions → must_not+should ──
+	for _, orGroup := range tq.TagsNotOr {
+		var notClauses []map[string]any
+		for _, branchMap := range orGroup {
+			builder := esq.NewBuilder()
+			for k, v := range branchMap {
+				clauses := resolveTagTermClauses(k, v)
+				for _, clause := range clauses {
+					builder.Raw(esq.MustNotQ(clause))
+				}
+			}
+			notClauses = append(notClauses, builder.Build())
+		}
+		if len(notClauses) > 0 {
+			qb.Should(1, notClauses...)
+		}
+	}
+
+	// ── TagsRegexOr (Sprint 3): OR-grouped =~ conditions → regexp+should ──
+	for _, orGroup := range tq.TagsRegexOr {
+		var regexClauses []map[string]any
+		for _, branchMap := range orGroup {
+			builder := esq.NewBuilder()
+			for k, v := range branchMap {
+				paths := resolveTagFieldPaths(k)
+				for _, field := range paths {
+					builder.Raw(map[string]any{
+						"regexp": map[string]any{
+							field: map[string]any{"value": v, "flags": "ALL", "case_insensitive": true},
+						},
+					})
+				}
+			}
+			regexClauses = append(regexClauses, builder.Build())
+		}
+		if len(regexClauses) > 0 {
+			qb.Should(1, regexClauses...)
+		}
+	}
+
 	// OR conditions: each TagsOr group is an independent bool.should block (AND-ed together).
 	// Within each group, branches are OR-ed (min_should_match=1).
 	for _, orGroup := range tq.TagsOr {

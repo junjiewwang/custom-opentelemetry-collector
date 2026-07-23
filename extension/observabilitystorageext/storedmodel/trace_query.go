@@ -26,6 +26,8 @@ type TraceQuery struct {
 
 	// ── Event filters (from TraceQL event:* scope) ──
 	EventTags   []map[string]string     // AND conditions on span events (requires nested query)
+	TagsNotOr   [][]map[string]string
+	TagsRegexOr [][]map[string]string
 	EventTagsOr [][][]map[string]string // OR groups of event conditions
 
 	// ── Negation / Existence / Regex filters (Sprint 2) ──

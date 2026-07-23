@@ -4,6 +4,7 @@
 package traceql
 
 import (
+	"fmt"
 	"regexp"
 	"time"
 )
@@ -55,6 +56,13 @@ type ExecutionPlan struct {
 
 	// EventTagsOr holds parenthesized OR groups with event-scoped conditions.
 	EventTagsOr [][][]map[string]string
+
+	// TagsNotOr are OR-grouped conditions with != (not-equal) operator for ES must_not+should.
+	// Structure mirrors TagsOr: outer AND, middle OR, inner AND.
+	TagsNotOr [][]map[string]string
+
+	// TagsRegexOr are OR-grouped conditions with =~ (regex) operator for ES regexp+should.
+	TagsRegexOr [][]map[string]string
 
 	// ── Post-processing indicators ──
 	// HasStructural means the query contains &>>, >>, >, ~ operators
@@ -672,24 +680,45 @@ func (p *ExecutionPlan) extractOrConditions(or *OrExpr) {
 		return
 	}
 
-	// All leaf nodes are SpanFilters — produce one OR group.
-	var orGroup []map[string]string
+	// All leaf nodes are SpanFilters — classify conditions by operator.
+	var orGroup, notOrGroup, regexOrGroup []map[string]string
 	for _, sf := range groups {
-		m := make(map[string]string)
+		mEq := make(map[string]string)
+		mNot := make(map[string]string)
+		mRegex := make(map[string]string)
 		for _, cond := range sf.Conditions {
-			if cond.Operator == "=" {
-				valStr := condValueToString(cond.Value)
-				if valStr != "" {
-					m[scopedKey(cond.Scope, cond.Key)] = valStr
-				}
+			valStr := condValueToString(cond.Value)
+			if valStr == "" {
+				continue
+			}
+			key := scopedKey(cond.Scope, cond.Key)
+			switch cond.Operator {
+			case "=":
+				mEq[key] = valStr
+			case "!=":
+				mNot[key] = valStr
+			case "=~":
+				mRegex[key] = valStr
 			}
 		}
-		if len(m) > 0 {
-			orGroup = append(orGroup, m)
+		if len(mEq) > 0 {
+			orGroup = append(orGroup, mEq)
+		}
+		if len(mNot) > 0 {
+			notOrGroup = append(notOrGroup, mNot)
+		}
+		if len(mRegex) > 0 {
+			regexOrGroup = append(regexOrGroup, mRegex)
 		}
 	}
 	if len(orGroup) > 0 {
 		p.TagsOr = append(p.TagsOr, orGroup)
+	}
+	if len(notOrGroup) > 0 {
+		p.TagsNotOr = append(p.TagsNotOr, notOrGroup)
+	}
+	if len(regexOrGroup) > 0 {
+		p.TagsRegexOr = append(p.TagsRegexOr, regexOrGroup)
 	}
 }
 
@@ -724,13 +753,16 @@ func condValueToString(v any) string {
 	case string:
 		return val
 	case int64:
-		return ""
+		return fmt.Sprintf("%d", val)
 	case float64:
-		return ""
+		return fmt.Sprintf("%f", val)
 	case bool:
-		return ""
+		if val {
+			return "true"
+		}
+		return "false"
 	case time.Duration:
-		return ""
+		return fmt.Sprintf("%d", int64(val))
 	default:
 		return ""
 	}
