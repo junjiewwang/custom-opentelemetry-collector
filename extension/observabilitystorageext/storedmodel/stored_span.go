@@ -150,13 +150,15 @@ func toParentID(parentID pcommon.SpanID) string {
 }
 
 // pcommonMapToFlat converts a pcommon.Map to a flat map[string]any.
+// Attribute keys are sanitized via SanitizeKey to prevent ES dynamic mapping
+// conflicts caused by dotted keys (e.g. "peer.service.source" vs "peer.service").
 func pcommonMapToFlat(attrs pcommon.Map) map[string]any {
 	if attrs.Len() == 0 {
 		return nil
 	}
 	result := make(map[string]any, attrs.Len())
 	attrs.Range(func(k string, v pcommon.Value) bool {
-		result[k] = valueToAny(v)
+		result[SanitizeKey(k)] = valueToAny(v)
 		return true
 	})
 	return result
