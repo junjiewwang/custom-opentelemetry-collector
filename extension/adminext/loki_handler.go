@@ -251,12 +251,14 @@ func writeLokiStreamsResponse(w http.ResponseWriter, result *observabilitystorag
 		key := rec.ServiceName + "|" + rec.SeverityText
 		s, ok := streamMap[key]
 		if !ok {
-			s = &lokiStream{
-				Stream: map[string]string{
-					"service_name": rec.ServiceName,
-					"severity":     rec.SeverityText,
-				},
-			}
+		s = &lokiStream{
+			Stream: map[string]string{
+				"service_name":   rec.ServiceName,
+				"severity":       rec.SeverityText,
+				"level":          rec.SeverityText, // Loki standard — used for color coding
+				"detected_level": rec.SeverityText, // Loki standard — used by logs-drilldown plugin
+			},
+		}
 			streamMap[key] = s
 			streamOrder = append(streamOrder, key)
 		}

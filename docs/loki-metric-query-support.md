@@ -114,9 +114,11 @@ IsMetricQuery(q)?
 | `27a2c9b` | 1 | Health check `vector(1)+vector(1)` 处理 |
 | `fb35218` | 1 | 时间戳格式修复（纳秒→秒.纳秒） |
 | `656a43d` | 2 | Metric 查询支持 + 空 filter 修复 + `date_histogram` 修复 |
-| `1c0a556` | 3 | Drilldown 支持：`level`/`detected_level` → `severityText` 映射 |
+| `d8c2bb2` | 3 | Drilldown：`level`/`detected_level` → `severityText` 映射 |
+| `f476544` | 3 | 单元测试 (30 用例) + `parseHistogramLayer` 修复 |
+| `xxx` | 3 | 格式兼容：labels 端点 Loki 名 + stream `level`/`detected_level` 标签 |
 
-## 支持的 LogQL 语法（Sprint 1-3 合计）
+## Grafana 插件兼容性验证（grafana-loki-datasource + logs-drilldown）
 
 | 语法 | 示例 | 说明 | Sprint |
 |------|------|------|--------|
@@ -173,6 +175,26 @@ OTel 数据模型中 severity 只有单一 `severityText` 字段，没有分离 
 | `label/level/values` | 空 | **INFO, WARN, ERROR** |
 | `{level="ERROR", service_name="..."}` | 0 | **677 docs** |
 | `sum by (level) (count_over_time(...))` | 空聚合 | **IURO: 3 组 × N 桶** |
+
+### 插件期望 vs 实现对比
+
+| 接口 | grafana-loki-datasource 期望 | 我们的实现 | 验证 |
+|------|---------------------------|-----------|------|
+| Health Check | `vector(1)+vector(1)` → `resultType: "vector"`, `value=[ts, "2"]` | `isLokiHealthCheckQuery` → 合成响应 | ✅ |
+| Labels | Loki 名：`level`, `detected_level`, `service_name` | `ListLogLabels` 返回 Loki 名 | ✅ |
+| Label Values | `/label/detected_level/values` → `["INFO","WARN","ERROR"]` | `resolveLogLabelESField("detected_level")` → `severityText` | ✅ |
+| Logs Volume | `sum by (level, detected_level) (count_over_time({}[$__auto]))` → `resultType: "matrix"` | `ParseMetric` + `SearchLogMetric` → ES nested agg | ✅ |
+| Matrix Values | `[[ts_seconds_number, "count_string"], ...]` | `json.Number(ts)` + `fmt.Sprintf("%d", count)` | ✅ |
+| Stream Labels | 含 `level`, `detected_level`, `service_name`, `severity` | `writeLokiStreamsResponse` 四个标签齐全 | ✅ |
+| Drilldown | `{level="ERROR"}` → streams response | `resolveLogLabelESField("level")` → `severityText` | ✅ |
+| POST Support | Grafana 可能 POST query_range | `r.Post("/query_range", ...)` | ✅ |
+
+### logs-drilldown 插件特殊行为
+
+- **`LEVEL_VARIABLE_VALUE = "detected_level"`**：日志级别过滤的默认标签
+- **`sum by (level, detected_level)`**：Logs Volume 面板默认分组字段
+- **`isLabelLevel()`**：识别 `level` 和 `detected_level` 为特殊字段
+- **`FIELDS_TO_REMOVE`**：从通用字段列表移除这些标签（有专用 level 过滤器）
 
 ## 不支持（待 Sprint 4+）
 

@@ -656,10 +656,22 @@ func compatLogRecord(rec StoredLogRecord, raw json.RawMessage) StoredLogRecord {
 }
 
 // ListLogLabels returns distinct log label names for the given time range.
+// Labels are returned in Loki-compatible format (underscore_case, not ES camelCase).
+// This is consumed by Grafana's labels picker and the logs-drilldown plugin.
 func (r *LogReader) ListLogLabels(ctx context.Context, timeRange TimeRange, appID string) ([]string, error) {
-	return r.listFieldKeys(ctx, timeRange, appID,
-		FieldServiceName, FieldLogSeverityText, FieldLogSeverityNumber,
-		FieldAppID, FieldTraceID, FieldSpanID)
+	// Return Loki-compatible label names, not ES field names.
+	// Grafana plugins (loki-datasource, logs-drilldown) expect these names
+	// when constructing LogQL queries and populating label pickers.
+	labels := []string{
+		"service_name",   // ES: serviceName
+		"severity",       // ES: severityText
+		"level",          // ES: severityText (Loki standard)
+		"detected_level", // ES: severityText (Loki standard)
+		"appId",          // ES: appId (unchanged)
+		"traceID",        // ES: traceId
+		"spanID",         // ES: spanId
+	}
+	return labels, nil
 }
 
 // ListLogLabelValues returns distinct values for a label within the time range.
