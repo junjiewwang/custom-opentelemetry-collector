@@ -11,6 +11,7 @@ import (
 	"time"
 
 	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.uber.org/zap"
 )
 
@@ -278,7 +279,7 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 
 // ListLabelValues returns values for a specific label within the time range.
 func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
-	fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", label)
+	fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", storedmodel.SanitizeKey(label))
 
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),

@@ -26,10 +26,12 @@ func TestTranslateLabelKey(t *testing.T) {
 		{"rpc_method", "rpc_method", "rpc.method"},
 		{"rpc_service", "rpc_service", "rpc.service"},
 		{"rpc_system", "rpc_system", "rpc.system"},
-		{"rpc_grpc_status_code", "rpc_grpc_status_code", "rpc.grpc.status_code"},
+		// 3-segment key: SanitizeKey compresses "rpc.grpc.status_code" → "rpc.grpc_status_code"
+		{"rpc_grpc_status_code", "rpc_grpc_status_code", "rpc.grpc_status_code"},
 		{"db_system", "db_system", "db.system"},
 		{"db_name", "db_name", "db.name"},
-		{"net_peer_name", "net_peer_name", "net.peer.name"},
+		// 3-segment key: SanitizeKey preserves first dot, replaces rest → "net.peer_name"
+		{"net_peer_name", "net_peer_name", "net.peer_name"},
 		{"exception_type", "exception_type", "exception.type"},
 		{"thread_name", "thread_name", "thread.name"},
 		{"code_function", "code_function", "code.function"},

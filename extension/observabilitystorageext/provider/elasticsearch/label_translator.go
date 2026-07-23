@@ -3,7 +3,11 @@
 
 package elasticsearch
 
-import "strings"
+import (
+	"strings"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+)
 
 // ═══════════════════════════════════════════════════
 // PromQL → ES Metric Label Translator
@@ -97,12 +101,16 @@ var prometheusToOtelLabelKeys = map[string]string{
 }
 
 // translateLabelKey returns the ES-side label key for a Prometheus-style key.
-// Known OTel standard attributes get dot conversion. Unknown keys pass through unchanged.
+// Known OTel standard attributes get dot conversion. All keys are sanitized
+// via SanitizeKey to match the storage format (see storedmodel.SanitizeKey).
 func translateLabelKey(promKey string) string {
-	if otelKey, ok := prometheusToOtelLabelKeys[promKey]; ok {
-		return otelKey
+	var otelKey string
+	if known, ok := prometheusToOtelLabelKeys[promKey]; ok {
+		otelKey = known
+	} else {
+		otelKey = promKey
 	}
-	return promKey
+	return storedmodel.SanitizeKey(otelKey)
 }
 
 // translateLabelValue normalizes known OTel enum values for the given ES key.

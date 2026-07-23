@@ -687,7 +687,8 @@ func resolveTagFieldPaths(key string) []string {
 	}
 
 	// Unscoped custom attribute: backward-compatible dual search.
-	return []string{FieldAttributes + "." + plainKey, FieldResource + "." + plainKey}
+	sanitized := storedmodel.SanitizeKey(plainKey)
+	return []string{FieldAttributes + "." + sanitized, FieldResource + "." + sanitized}
 }
 
 // resolveTagESFields resolves a scoped tag key to ES field paths and typed value.
@@ -715,7 +716,8 @@ func resolveTagESFields(key, value string) (fields []string, val string) {
 	}
 
 	// Unscoped custom attribute: backward-compatible dual search.
-	return []string{FieldAttributes + "." + plainKey, FieldResource + "." + plainKey}, val
+	sanitized := storedmodel.SanitizeKey(plainKey)
+	return []string{FieldAttributes + "." + sanitized, FieldResource + "." + sanitized}, val
 }
 
 // timeRangeQuery returns a simple time range query using nanosecond long values.
