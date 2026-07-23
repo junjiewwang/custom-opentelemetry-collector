@@ -521,7 +521,7 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Parse spss (spans per span set) from query params, default 3.
 	spss := 3
-	if v := r.URL.Query().Get("spss"); v != "" {
+	if v := r.FormValue("spss"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
 			spss = n
 		}
@@ -1483,7 +1483,7 @@ func (e *Extension) fetchTempoTagValues(r *http.Request, tagKey string, scope st
 // Grafana sends: q={resource.service.name="tapm-api"} to filter tag values by service.
 // Returns the parsed AND conditions as a map (OR conditions not supported for tag value filtering).
 func parseTagValuesFilter(r *http.Request) map[string]string {
-	rawQ := r.URL.Query().Get("q")
+	rawQ := r.FormValue("q")
 	if rawQ == "" {
 		return nil
 	}
@@ -1565,7 +1565,7 @@ func (e *Extension) executeTempoMetricsQuery(w http.ResponseWriter, r *http.Requ
 
 // parseTempoMetricsStep extracts the step interval from the request.
 func parseTempoMetricsStep(r *http.Request, timeRange observabilitystorageext.TimeRange) time.Duration {
-	stepStr := r.URL.Query().Get("step")
+	stepStr := r.FormValue("step")
 	if stepStr != "" {
 		if d, err := parseTempoDuration(stepStr); err == nil && d > 0 {
 			return d
@@ -1588,7 +1588,7 @@ func parseTempoMetricsStep(r *http.Request, timeRange observabilitystorageext.Ti
 //  2. Fallback: Use pre-aggregated spanmetrics via MetricReader.QueryRange.
 //     Only used when AST parsing fails AND MetricReader is available.
 func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request) {
-	rawQ := r.URL.Query().Get("q")
+	rawQ := r.FormValue("q")
 	if rawQ == "" {
 		e.writeError(w, http.StatusBadRequest, "parameter 'q' is required")
 		return

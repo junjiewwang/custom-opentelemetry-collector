@@ -36,7 +36,7 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 	if !e.requireLokiReader(w) {
 		return
 	}
-	q := r.URL.Query().Get("query")
+	q := r.FormValue("query")
 	if q == "" {
 		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
 		return
@@ -48,14 +48,14 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	start, startOk := parseLokiTime(r.URL.Query().Get("start"))
-	end, endOk := parseLokiTime(r.URL.Query().Get("end"))
+	start, startOk := parseLokiTime(r.FormValue("start"))
+	end, endOk := parseLokiTime(r.FormValue("end"))
 	if !startOk || !endOk {
 		writeLokiError(w, "invalid start/end time", http.StatusBadRequest)
 		return
 	}
-	limit := lokiParseIntParam(r.URL.Query().Get("limit"), 100)
-	direction := r.URL.Query().Get("direction")
+	limit := lokiParseIntParam(r.FormValue("limit"), 100)
+	direction := r.FormValue("direction")
 	if direction == "" {
 		direction = "backward"
 	}
@@ -94,8 +94,8 @@ func (e *Extension) handleLokiLabels(w http.ResponseWriter, r *http.Request) {
 	if !e.requireLokiReader(w) {
 		return
 	}
-	start, _ := parseLokiTime(r.URL.Query().Get("start"))
-	end, _ := parseLokiTime(r.URL.Query().Get("end"))
+	start, _ := parseLokiTime(r.FormValue("start"))
+	end, _ := parseLokiTime(r.FormValue("end"))
 	tr := observabilitystorageext.TimeRange{Start: start, End: end}
 
 	labels, err := e.storageLogReader.ListLogLabels(r.Context(), tr, "")
@@ -128,8 +128,8 @@ func (e *Extension) handleLokiLabelValues(w http.ResponseWriter, r *http.Request
 		writeLokiError(w, "missing label name", http.StatusBadRequest)
 		return
 	}
-	start, _ := parseLokiTime(r.URL.Query().Get("start"))
-	end, _ := parseLokiTime(r.URL.Query().Get("end"))
+	start, _ := parseLokiTime(r.FormValue("start"))
+	end, _ := parseLokiTime(r.FormValue("end"))
 	tr := observabilitystorageext.TimeRange{Start: start, End: end}
 
 	values, err := e.storageLogReader.ListLogLabelValues(r.Context(), label, tr, "")
@@ -157,7 +157,7 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 	if !e.requireLokiReader(w) {
 		return
 	}
-	q := r.URL.Query().Get("query")
+	q := r.FormValue("query")
 	if q == "" {
 		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
 		return
@@ -194,7 +194,7 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	limit := lokiParseIntParam(r.URL.Query().Get("limit"), 100)
+	limit := lokiParseIntParam(r.FormValue("limit"), 100)
 	now := time.Now()
 
 	parsed, err := logql.Parse(q)
@@ -385,14 +385,14 @@ func (e *Extension) handleLokiIndexVolume(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	q := r.URL.Query().Get("query")
+	q := r.FormValue("query")
 	if q == "" {
 		writeLokiError(w, "missing query parameter", http.StatusBadRequest)
 		return
 	}
 
-	start, startOk := parseLokiTime(r.URL.Query().Get("start"))
-	end, endOk := parseLokiTime(r.URL.Query().Get("end"))
+	start, startOk := parseLokiTime(r.FormValue("start"))
+	end, endOk := parseLokiTime(r.FormValue("end"))
 	if !startOk || !endOk {
 		writeLokiError(w, "invalid start/end time", http.StatusBadRequest)
 		return
@@ -424,7 +424,7 @@ func (e *Extension) handleLokiIndexVolume(w http.ResponseWriter, r *http.Request
 		LogQuery:      *storageQ,
 		GroupByLabels: []string{groupByLabel},
 		IntervalNanos: end.Sub(start).Nanoseconds(), // single bucket for the whole range
-		TopN:          lokiParseIntParam(r.URL.Query().Get("limit"), 100),
+		TopN:          lokiParseIntParam(r.FormValue("limit"), 100),
 	}
 
 	result, err := e.storageLogReader.SearchLogMetric(r.Context(), *metricQ)
@@ -488,8 +488,8 @@ func (e *Extension) handleLokiDetectedLabels(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	start, startOk := parseLokiTime(r.URL.Query().Get("start"))
-	end, endOk := parseLokiTime(r.URL.Query().Get("end"))
+	start, startOk := parseLokiTime(r.FormValue("start"))
+	end, endOk := parseLokiTime(r.FormValue("end"))
 	if !startOk || !endOk {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"detectedLabels": []interface{}{}})

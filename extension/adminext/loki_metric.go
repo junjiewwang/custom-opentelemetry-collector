@@ -38,14 +38,14 @@ func (e *Extension) handleLokiMetricQuery(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	start, startOk := parseLokiTime(r.URL.Query().Get("start"))
-	end, endOk := parseLokiTime(r.URL.Query().Get("end"))
+	start, startOk := parseLokiTime(r.FormValue("start"))
+	end, endOk := parseLokiTime(r.FormValue("end"))
 	if !startOk || !endOk {
 		writeLokiError(w, "invalid start/end time", http.StatusBadRequest)
 		return
 	}
 
-	step, _ := parseLokiTime(r.URL.Query().Get("step"))
+	step, _ := parseLokiTime(r.FormValue("step"))
 
 	// Parse the metric expression
 	expr, err := logql.ParseMetric(q)

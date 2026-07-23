@@ -175,6 +175,34 @@ func (p *parser) parseMetric() (*MetricExpr, error) {
 		p.advance()
 	}
 
+	// Handle postfix by/without clause:
+	//   sum(count_over_time({}[5m])) by (level)
+	//   sum(count_over_time({}[5m])) without (service_name)
+	p.skipWhitespace()
+	if p.matchPrefix("by") || p.matchPrefix("without") {
+		kw := "by"
+		if p.matchPrefix("without") {
+			kw = "without"
+		}
+		p.advanceN(len(kw))
+		p.skipWhitespace()
+		if !p.match('(') {
+			return nil, p.errorf("expected '(' after '%s'", kw)
+		}
+		p.advance()
+		p.skipWhitespace()
+		labels, err := p.parseIdentList()
+		if err != nil {
+			return nil, err
+		}
+		expr.By = labels
+		p.skipWhitespace()
+		if !p.match(')') {
+			return nil, p.errorf("expected ')' after '%s' labels", kw)
+		}
+		p.advance()
+	}
+
 	p.skipWhitespace()
 	if p.pos < len(p.input) {
 		return nil, p.errorf("unexpected trailing input")
@@ -376,6 +404,8 @@ var knownPipelineKeywords = map[string]bool{
 	"json":        true,
 	"logfmt":      true,
 	"unpack":      true,
+	"drop":        true,
+	"keep":        true,
 	"line_format": true,
 	"label_format": true,
 }
