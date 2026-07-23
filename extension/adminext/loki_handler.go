@@ -518,6 +518,21 @@ func (e *Extension) handleLokiDetectedLabels(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// handleLokiDetectedFieldValues returns values for a detected field label.
+// Uses the same ES field resolution as label values (e.g. detected_level → severityText).
+func (e *Extension) handleLokiDetectedFieldValues(w http.ResponseWriter, r *http.Request) {
+	// Extract field name from chi URL param
+	name := r.PathValue("name")
+	if name == "" {
+		writeLokiError(w, "missing field name", http.StatusBadRequest)
+		return
+	}
+	// Reuse the existing label values handler logic — same ES query.
+	e.handleLokiLabelValues(w, r)
+	// Override name if needed for resolution
+	_ = name // name already used in route matching
+}
+
 // handleLokiDetectedFields returns detected structured fields from log lines.
 // Extracts field names from OTel attributes and resource in matching log documents.
 func (e *Extension) handleLokiDetectedFields(w http.ResponseWriter, r *http.Request) {

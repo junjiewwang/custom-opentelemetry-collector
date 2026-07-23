@@ -383,6 +383,7 @@ func (e *Extension) newRouter() http.Handler {
 		r.Get("/drilldown-limits", e.handleLokiDrilldownLimits)
 		r.Get("/detected_labels", e.handleLokiDetectedLabels)
 		r.Get("/detected_fields", e.handleLokiDetectedFields)
+		r.Get("/detected_field/{name}/values", e.handleLokiDetectedFieldValues)
 	})
 	// Shorter aliases for direct curl/API access
 	// Full: /api/v2 + /loki/* = /api/v2/loki/*

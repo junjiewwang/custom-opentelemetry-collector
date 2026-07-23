@@ -38,8 +38,16 @@ func (e *Extension) handleLokiMetricQuery(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Instant queries use "time", range queries use "start"/"end".
 	start, startOk := parseLokiTime(r.FormValue("start"))
 	end, endOk := parseLokiTime(r.FormValue("end"))
+	if !startOk || !endOk {
+		// Fallback: instant query uses "time" parameter.
+		t, tOk := parseLokiTime(r.FormValue("time"))
+		if tOk {
+			start, end, startOk, endOk = t, t, true, true
+		}
+	}
 	if !startOk || !endOk {
 		writeLokiError(w, "invalid start/end time", http.StatusBadRequest)
 		return
