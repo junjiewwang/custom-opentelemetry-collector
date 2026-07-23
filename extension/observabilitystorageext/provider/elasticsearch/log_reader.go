@@ -552,9 +552,8 @@ func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
 		qb.Term(f, v)
 	}
 	for k, v := range lq.LabelMatch {
-		f := r.resolveLogLabelESField(k)
-		_ = f
-		clauses := resolveTagTermClauses(k, v)
+		esField := r.resolveLogLabelESField(k)
+		clauses := resolveTagTermClauses(esField, v)
 		if len(clauses) == 1 {
 			qb.Raw(clauses[0])
 		} else {
