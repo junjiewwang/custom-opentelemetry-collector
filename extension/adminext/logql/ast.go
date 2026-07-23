@@ -81,11 +81,22 @@ type LogQLQuery struct {
 	Direction string // "forward" or "backward"
 }
 
+// LogQLExpression is a compound LogQL expression containing OR-connected branches.
+//
+//	{app="foo"} | json | level="error" OR level="warn"
+//
+// decomposes into two branches that share the stream selector and pre-OR pipeline.
+// Simple queries (no OR) have exactly 1 branch.
+type LogQLExpression struct {
+	Branches []*LogQLQuery
+}
+
 // MetricExpr is a parsed LogQL metric query:
 //
 //	sum by (label1, label2) (count_over_time({app="foo"} |= "error"[5m]))
 //
 // The Inner field contains the log query portion (stream selector + line filters).
+// When the inner query has OR branches, InnerBranches is populated instead of Inner.
 type MetricExpr struct {
 	// Aggregation is the outer aggregation function: "sum", "avg", "max", "min", "".
 	Aggregation string
@@ -96,5 +107,9 @@ type MetricExpr struct {
 	// RangeDuration is the range vector duration (e.g. 5m, 1h).
 	RangeDuration time.Duration
 	// Inner is the wrapped log query (stream selector + filters).
+	// Nil when InnerBranches is used (OR case).
 	Inner *LogQLQuery
+	// InnerBranches holds OR-decomposed inner queries for metric expressions.
+	// Nil when Inner is used (simple case).
+	InnerBranches []*LogQLQuery
 }

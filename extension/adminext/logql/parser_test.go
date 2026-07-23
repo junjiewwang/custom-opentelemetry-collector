@@ -280,6 +280,167 @@ func TestParseMetric_Errors(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════
+// ParseExpression — OR-branched queries
+// ═══════════════════════════════════════════════════
+
+func TestParseExpression_NoOR_ReturnsSingleBranch(t *testing.T) {
+	expr, err := ParseExpression(`{app="foo"} |= "error"`)
+	require.NoError(t, err)
+	assert.Len(t, expr.Branches, 1)
+	assert.Equal(t, "foo", expr.Branches[0].StreamSelector.Matchers[0].Value)
+}
+
+func TestParseExpression_SimpleOR(t *testing.T) {
+	expr, err := ParseExpression(`{app="foo"} |= "error" OR |= "warn"`)
+	require.NoError(t, err)
+	require.Len(t, expr.Branches, 2)
+
+	// Both branches share the stream selector.
+	b1, b2 := expr.Branches[0], expr.Branches[1]
+	assert.Equal(t, "foo", b1.StreamSelector.Matchers[0].Value)
+	assert.Equal(t, "foo", b2.StreamSelector.Matchers[0].Value)
+
+	// Each has its own line filter.
+	require.Len(t, b1.LineFilters, 1)
+	assert.Equal(t, FilterContains, b1.LineFilters[0].Type)
+	assert.Equal(t, "error", b1.LineFilters[0].Pattern)
+
+	require.Len(t, b2.LineFilters, 1)
+	assert.Equal(t, FilterContains, b2.LineFilters[0].Type)
+	assert.Equal(t, "warn", b2.LineFilters[0].Pattern)
+}
+
+func TestParseExpression_PipelineWithOR(t *testing.T) {
+	// OR between pipeline filter stages with shared prefix.
+	expr, err := ParseExpression(
+		`{service_name="test-java-stock-service"} | json | level="error" OR level="warn"`)
+	require.NoError(t, err)
+	require.Len(t, expr.Branches, 2)
+
+	b1, b2 := expr.Branches[0], expr.Branches[1]
+
+	// Shared: stream selector + json pipeline.
+	assert.Equal(t, "test-java-stock-service", b1.StreamSelector.Matchers[0].Value)
+	assert.Equal(t, "test-java-stock-service", b2.StreamSelector.Matchers[0].Value)
+
+	// Branch 0: chained json+level_error (parse() stores | json | level="error" as 1 stage).
+	assert.Len(t, b1.Pipeline, 1, "branch0: chained json+level_error (1 stage)")
+	assert.Equal(t, PipelineParser, b1.Pipeline[0].Type)
+	assert.Equal(t, "json", b1.Pipeline[0].Parser)
+	assert.NotNil(t, b1.Pipeline[0].LabelFilter)
+	assert.Equal(t, "error", b1.Pipeline[0].LabelFilter.Value)
+
+	// Branch 1: cloned json + separate level_filter_warn (2 stages after OR decomposition).
+	assert.Len(t, b2.Pipeline, 2, "branch1: cloned json + level_filter_warn (2 stages)")
+	assert.Equal(t, PipelineParser, b2.Pipeline[0].Type)
+	assert.Equal(t, "json", b2.Pipeline[0].Parser)
+	assert.NotNil(t, b2.Pipeline[1].LabelFilter)
+	assert.Equal(t, "warn", b2.Pipeline[1].LabelFilter.Value)
+
+	// Branch-specific: label filters.
+	require.Len(t, b1.Pipeline, 1)
+	// First branch: json is shared, the OR filter is branch-specific.
+	// b1 has the full query (json + level="error" after shared prefix + branch filter).
+}
+
+func TestParseExpression_PipelineOR_WithTail(t *testing.T) {
+	// OR with tail pipeline: | drop __error__ applied to all branches.
+	expr, err := ParseExpression(
+		`{service_name="test-java-stock-service"} | label_format x=` + "`{{...}}`" +
+			` | log_line_contains_trace_id="true" OR trace_id="abc123" | drop __error__`)
+	require.NoError(t, err)
+	require.Len(t, expr.Branches, 2)
+
+	b1, b2 := expr.Branches[0], expr.Branches[1]
+
+	// Both share stream selector.
+	assert.Equal(t, "test-java-stock-service", b1.StreamSelector.Matchers[0].Value)
+	assert.Equal(t, "test-java-stock-service", b2.StreamSelector.Matchers[0].Value)
+
+	// Both have the tail pipeline (drop __error__).
+	assert.True(t, len(b1.Pipeline) >= 1, "b1 should have tail pipeline")
+	assert.True(t, len(b2.Pipeline) >= 1, "b2 should have tail pipeline")
+}
+
+func TestParseExpression_MultipleOR(t *testing.T) {
+	// Three branches: A OR B OR C.
+	expr, err := ParseExpression(`{app="foo"} | json | level="error" OR level="warn" OR level="info"`)
+	require.NoError(t, err)
+	assert.Len(t, expr.Branches, 3)
+
+	for i, b := range expr.Branches {
+		assert.Equal(t, "foo", b.StreamSelector.Matchers[0].Value,
+			"branch %d should share stream selector", i)
+		assert.True(t, len(b.Pipeline) >= 1, "branch %d should have json pipeline", i)
+	}
+}
+
+func TestParseExpression_RegexFilter_OR(t *testing.T) {
+	expr, err := ParseExpression(`{app="foo"} |~ "(?i)error" OR |~ "(?i)warn"`)
+	require.NoError(t, err)
+	require.Len(t, expr.Branches, 2)
+
+	assert.Equal(t, FilterRegex, expr.Branches[0].LineFilters[0].Type)
+	assert.Equal(t, "(?i)error", expr.Branches[0].LineFilters[0].Pattern)
+	assert.Equal(t, FilterRegex, expr.Branches[1].LineFilters[0].Type)
+	assert.Equal(t, "(?i)warn", expr.Branches[1].LineFilters[0].Pattern)
+}
+
+func TestParseExpression_CaseInsensitiveOR(t *testing.T) {
+	// "or" and "OR" and "Or" should all be recognized.
+	cases := []string{
+		`{app="foo"} |= "a" or |= "b"`,
+		`{app="foo"} |= "a" Or |= "b"`,
+		`{app="foo"} |= "a" oR |= "b"`,
+	}
+	for _, input := range cases {
+		expr, err := ParseExpression(input)
+		require.NoError(t, err, "input: %s", input)
+		assert.Len(t, expr.Branches, 2, "input: %s", input)
+	}
+}
+
+func TestParseExpression_GrafanaExploreStyle(t *testing.T) {
+	// Simulates the exact Grafana Explore logs plugin query.
+	input := `{service_name="test-java-stock-service"} | label_format log_line_contains_trace_id=` +
+		"`{{ contains \"5d5f4cc370174374aefdeedff111973e\" __line__  }}`" +
+		` | log_line_contains_trace_id="true" OR trace_id="5d5f4cc370174374aefdeedff111973e"`
+
+	expr, err := ParseExpression(input)
+	require.NoError(t, err)
+	require.Len(t, expr.Branches, 2)
+
+	// Both share service_name + label_format.
+	for i, b := range expr.Branches {
+		assert.Equal(t, "test-java-stock-service", b.StreamSelector.Matchers[0].Value,
+			"branch %d should have shared service_name", i)
+	}
+
+	// Branch 1: log_line_contains_trace_id="true"
+	assert.True(t, hasLabelFilter(expr.Branches[0], "log_line_contains_trace_id", "true"),
+		"branch 1 should have log_line_contains_trace_id=true")
+	// Branch 2: trace_id="5d5f4cc..."
+	assert.True(t, hasLabelFilter(expr.Branches[1], "trace_id", "5d5f4cc370174374aefdeedff111973e"),
+		"branch 2 should have trace_id=...")
+}
+
+func TestParseExpression_EmptyInput(t *testing.T) {
+	_, err := ParseExpression(``)
+	assert.Error(t, err)
+}
+
+// helper: checks if a query contains a pipeline label filter with given name=value.
+func hasLabelFilter(q *LogQLQuery, name, value string) bool {
+	for _, s := range q.Pipeline {
+		if s.Type == PipelineLabelFilter && s.LabelFilter != nil &&
+			s.LabelFilter.Name == name && s.LabelFilter.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+// ═══════════════════════════════════════════════════
 // Evaluator: Empty Pattern Handling
 // ═══════════════════════════════════════════════════
 

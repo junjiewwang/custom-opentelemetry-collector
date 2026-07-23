@@ -21,7 +21,13 @@ import (
 //	{label="value"} !~ "regex"                   — line not regex filter
 func Parse(input string) (*LogQLQuery, error) {
 	p := &parser{input: input}
-	return p.parse()
+	expr, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	// For simple queries (no OR), return the single branch for backward compatibility.
+	// Callers that need OR decomposition should use ParseExpression instead.
+	return expr.Branches[0], nil
 }
 
 // knownAggregations lists aggregation function keywords.
@@ -643,4 +649,214 @@ func context(input string, pos int) string {
 		end = len(input)
 	}
 	return input[start:end]
+}
+
+// peekKeyword checks whether the keyword kw (case-insensitive) appears at the
+// current position without consuming it. Returns false without advancing.
+func (p *parser) peekKeyword(kw string) bool {
+	saved := p.pos
+	p.skipWhitespace()
+	if p.pos+len(kw) <= len(p.input) && strings.EqualFold(p.input[p.pos:p.pos+len(kw)], kw) {
+		// Verify it's a whole word: must be followed by whitespace, EOF, or operator.
+		after := p.pos + len(kw)
+		if after >= len(p.input) || isSpace(p.input[after]) || p.input[after] == '|' ||
+			p.input[after] == '!' || p.input[after] == '[' {
+			p.pos = saved
+			return true
+		}
+	}
+	p.pos = saved
+	return false
+}
+
+// isLineFilter checks whether the current position starts a line filter (|=, !=, |~, !~).
+// Assumes we just matched '|' or '!'. Returns true without consuming.
+func (p *parser) isLineFilter() bool {
+	if p.pos+1 >= len(p.input) {
+		return false
+	}
+	next := p.input[p.pos+1]
+	return next == '=' || next == '~'
+}
+
+// ParseExpression parses a LogQL expression that may contain OR-connected branches.
+// For simple queries without OR, the result contains exactly one branch.
+//
+//	{app="foo"} | json | level="error" OR level="warn"
+//	→ [{StreamSelector:{app=foo}, Pipeline:[json, l=error]}, {StreamSelector:{app=foo}, Pipeline:[json, l=warn]}]
+func ParseExpression(input string) (*LogQLExpression, error) {
+	p := &parser{input: input}
+	expr, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	return expr, nil
+}
+
+// parseExpression parses an OR-branched LogQL expression.
+func (p *parser) parseExpression() (*LogQLExpression, error) {
+	// Step 1: Parse the first (shared) branch.
+	shared, err := p.parse()
+	if err != nil {
+		return nil, err
+	}
+	branches := []*LogQLQuery{shared}
+
+	// Step 2: Parse OR branches.
+	for p.peekKeyword("or") {
+		// Consume "or" keyword.
+		p.skipWhitespace()
+		p.advanceN(2) // len("or")
+		p.skipWhitespace()
+
+		// Check if the OR branch has its own stream selector.
+		if p.peek() == '{' {
+			// Full independent branch.
+			branch, err := p.parse()
+			if err != nil {
+				return nil, err
+			}
+			branches = append(branches, branch)
+		} else {
+			// Inherited branch: clone the shared prefix and parse additional filters.
+			branch := cloneQueryPrefix(shared)
+
+			// Parse branch-specific filters and pipeline stages until next OR or end.
+			// Supports both:
+			//   - line filters: |= "error", |~ "(?i)err", != "warn", !~ "debug"
+			//   - pipeline label filters (with or without leading |): | level="error", trace_id="..."
+			for p.pos < len(p.input) {
+				p.skipWhitespace()
+				if p.pos >= len(p.input) {
+					break
+				}
+				// Stop at next OR keyword.
+				if p.peekKeyword("or") {
+					break
+				}
+				// Check for range vector '[' or close paren ')' (end of inner query for metric context).
+				if p.peek() == '[' || p.peek() == ')' {
+					break
+				}
+
+				// Line filter: |= != |~ !~ — these start with | or !.
+				if (p.peek() == '|' || p.peek() == '!') &&
+					p.pos+1 < len(p.input) && (p.input[p.pos+1] == '=' || p.input[p.pos+1] == '~') {
+					f, err := p.parseLineFilter()
+					if err != nil {
+						return nil, err
+					}
+					branch.LineFilters = append(branch.LineFilters, f)
+					continue
+				}
+
+				// Pipeline stage with leading pipe: | json, | logfmt, | level="error".
+				if p.peek() == '|' {
+					stage, err := p.parsePipelineStage()
+					if err != nil {
+						return nil, err
+					}
+					branch.Pipeline = append(branch.Pipeline, *stage)
+					continue
+				}
+
+				// Bare label filter (no leading pipe): e.g. trace_id="xxx" after OR.
+				// Grafana Explore-generated queries use this form.
+				if p.peek() != '{' && p.peek() != '|' && p.peek() != '!' {
+					m, err := p.parseLabelMatcher()
+					if err != nil {
+						return nil, err
+					}
+					branch.Pipeline = append(branch.Pipeline, PipelineStage{
+						Type:        PipelineLabelFilter,
+						LabelFilter: m,
+					})
+					continue
+				}
+
+				// Unknown token — stop branch parsing.
+				break
+			}
+			branches = append(branches, branch)
+		}
+	}
+
+	// Step 3: Parse tail (remaining pipeline stages after all OR branches).
+	// These are appended to ALL branches equally.
+	tailFilters, tailPipeline := p.parseTailAfterOR()
+	if len(tailFilters) > 0 || len(tailPipeline) > 0 {
+		for _, b := range branches {
+			b.LineFilters = append(b.LineFilters, tailFilters...)
+			b.Pipeline = append(b.Pipeline, tailPipeline...)
+		}
+	}
+
+	return &LogQLExpression{Branches: branches}, nil
+}
+
+// cloneQueryPrefix creates a branch-inheritable copy of the shared query.
+// Copies the stream selector and all pipeline stages, but strips the label
+// filter from the last stage (it belongs to branch 1, not the shared prefix).
+// Line filters are NOT copied — they are always OR-connected.
+func cloneQueryPrefix(shared *LogQLQuery) *LogQLQuery {
+	clone := &LogQLQuery{
+		StreamSelector: StreamSelector{
+			Matchers: make([]LabelMatcher, len(shared.StreamSelector.Matchers)),
+		},
+		Pipeline: make([]PipelineStage, len(shared.Pipeline)),
+	}
+	copy(clone.StreamSelector.Matchers, shared.StreamSelector.Matchers)
+	copy(clone.Pipeline, shared.Pipeline)
+
+	// Strip the first OR-connected filter from the last pipeline stage.
+	// For chained stages (e.g. | json | level="error"), this removes
+	// the label filter, leaving only the parser part (| json) as shared.
+	if len(clone.Pipeline) > 0 {
+		clone.Pipeline[len(clone.Pipeline)-1].LabelFilter = nil
+	}
+	// Line filters are never shared — each OR branch gets its own.
+	return clone
+}
+
+// parseTailAfterOR parses remaining pipeline stages and line filters after all
+// OR branches. These are appended to every branch.
+func (p *parser) parseTailAfterOR() ([]LineFilter, []PipelineStage) {
+	var tailFilters []LineFilter
+	var tailPipeline []PipelineStage
+
+	for p.pos < len(p.input) {
+		p.skipWhitespace()
+		if p.pos >= len(p.input) {
+			break
+		}
+
+		// Stop at range vector start or close paren (metric query context).
+		if p.peek() == '[' || p.peek() == ')' {
+			break
+		}
+
+		// Line filter or pipeline stage (peek, don't consume with match).
+		if p.peek() == '|' || p.peek() == '!' {
+			if p.pos+1 < len(p.input) && (p.input[p.pos+1] == '=' || p.input[p.pos+1] == '~') {
+				f, err := p.parseLineFilter()
+				if err != nil {
+					return tailFilters, tailPipeline
+				}
+				tailFilters = append(tailFilters, f)
+				continue
+			}
+			// Pipeline stage.
+			stage, err := p.parsePipelineStage()
+			if err != nil {
+				return tailFilters, tailPipeline
+			}
+			tailPipeline = append(tailPipeline, *stage)
+			continue
+		}
+
+		// Unknown token — done.
+		break
+	}
+
+	return tailFilters, tailPipeline
 }
