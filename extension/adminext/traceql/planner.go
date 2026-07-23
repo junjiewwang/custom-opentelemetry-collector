@@ -487,7 +487,7 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 		}
 
 	// ── Intrinsic: name (operation name) ──
-	case key == IntrinsicName && cond.Scope == "" && cond.IsIntrinsic():
+	case key == IntrinsicName && (cond.Scope == "" || cond.Scope == "span") && cond.IsIntrinsic():
 		switch cond.Operator {
 		case "=":
 			if valStr != "" {
@@ -506,7 +506,7 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 		}
 
 	// ── Intrinsic: kind ──
-	case key == IntrinsicKind && cond.Scope == "" && cond.IsIntrinsic():
+	case key == IntrinsicKind && (cond.Scope == "" || cond.Scope == "span") && cond.IsIntrinsic():
 		switch cond.Operator {
 		case "=":
 			if valStr != "" {
@@ -525,7 +525,7 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 		}
 
 	// ── Intrinsic: status ──
-	case key == IntrinsicStatus && cond.Scope == "" && cond.IsIntrinsic():
+	case key == IntrinsicStatus && (cond.Scope == "" || cond.Scope == "span") && cond.IsIntrinsic():
 		switch cond.Operator {
 		case "=":
 			if valStr != "" {
@@ -544,7 +544,7 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 		}
 
 	// ── Intrinsic: nestedSetParent < 0 (root span) ──
-	case key == IntrinsicNestedSetParent && cond.Scope == "":
+	case key == IntrinsicNestedSetParent && (cond.Scope == "" || cond.Scope == "span"):
 		if cond.Operator == "<" {
 			if n, ok := cond.Value.(int64); ok && n <= 0 {
 				p.IsRoot = true

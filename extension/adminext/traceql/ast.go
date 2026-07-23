@@ -95,14 +95,27 @@ func (c Condition) String() string {
 	return fmt.Sprintf("%s%s %s %v", scope, c.Key, c.Operator, c.Value)
 }
 
-// IsIntrinsic returns true if the condition references a built-in span field
-// (not a user-defined attribute).
+// IsIntrinsic returns true if the condition references a built-in field
+// (not a user-defined attribute). Accepts unscoped ("") and scoped ("span"/"trace")
+// forms for compatibility with Grafana Explore queries (e.g. {span:kind=server}).
 func (c Condition) IsIntrinsic() bool {
 	switch c.Key {
+	// span-scoped intrinsics (also work unscoped).
 	case IntrinsicName, IntrinsicStatus, IntrinsicKind, IntrinsicDuration,
-		IntrinsicNestedSetParent, IntrinsicNestedSetLeft, IntrinsicNestedSetRight,
-		IntrinsicRootName, IntrinsicRootServiceName, IntrinsicTraceDuration:
-		return c.Scope == "" // intrinsics have no scope prefix
+		IntrinsicNestedSetParent, IntrinsicNestedSetLeft, IntrinsicNestedSetRight:
+		return c.Scope == "" || c.Scope == "span"
+	// trace-scoped intrinsics.
+	case IntrinsicRootName, IntrinsicRootServiceName, IntrinsicTraceDuration:
+		return c.Scope == "" || c.Scope == "trace"
+	// span:id / span:spanID -> spanId (ES-pushable via AttributeResolver).
+	case "id", "spanID":
+		return c.Scope == "" || c.Scope == "span"
+	// trace:id / trace:traceID -> traceID.
+	case "traceID":
+		return c.Scope == "" || c.Scope == "trace"
+	// statusMessage (status.message).
+	case IntrinsicStatusMessage:
+		return c.Scope == "" || c.Scope == "span"
 	}
 	return false
 }
@@ -235,6 +248,7 @@ func (t *TrueExpr) String() string { return "true" }
 const (
 	IntrinsicName              = "name"
 	IntrinsicStatus            = "status"
+	IntrinsicStatusMessage     = "status.message"
 	IntrinsicKind              = "kind"
 	IntrinsicDuration          = "duration"
 	IntrinsicNestedSetParent   = "nestedSetParent"

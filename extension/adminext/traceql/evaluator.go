@@ -184,7 +184,7 @@ func matchCondition(cond Condition, span *SpanData) bool {
 
 	// ── Intrinsic: nestedSetParent (Tempo internal, maps to root span) ──
 	// nestedSetParent < 0  →  span has no parent (root span).
-	case key == IntrinsicNestedSetParent && cond.Scope == "":
+	case key == IntrinsicNestedSetParent && (cond.Scope == "" || cond.Scope == "span"):
 		if cond.Operator == "<" {
 			if n, ok := cond.Value.(int64); ok && n <= 0 {
 				return span.ParentSpanID == ""
@@ -197,7 +197,7 @@ func matchCondition(cond Condition, span *SpanData) bool {
 		return matchStringValue(cond.Operator, span.ServiceName, cond.Value)
 
 	// ── Intrinsic: status.message (nested intrinsic, Sprint 3) ──
-	case key == "status.message" && cond.Scope == "":
+	case key == "status.message" && (cond.Scope == "" || cond.Scope == "span"):
 		if cond.Operator == "!=" && cond.Value == nil {
 			return span.StatusMessage != ""
 		}
