@@ -726,6 +726,7 @@ var logLabelFieldMap = map[string]string{
 	"level":          FieldLogSeverityText, // Loki standard — log level
 	"detected_level": FieldLogSeverityText, // Loki standard — detected log level
 	"traceID":        FieldTraceID,
+	"trace_id":       FieldTraceID, // Grafana Explore uses underscore naming
 	"spanID":         FieldSpanID,
 }
 

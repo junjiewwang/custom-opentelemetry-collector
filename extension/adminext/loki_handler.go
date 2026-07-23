@@ -270,6 +270,10 @@ func filterLogsByPipeline(logs []observabilitystorageext.LogRecord, pipeline []l
 			"severity":       rec.SeverityText,
 			"level":          rec.SeverityText,
 			"detected_level": rec.SeverityText,
+			"trace_id":       rec.TraceID,
+			"traceID":        rec.TraceID,
+			"span_id":        rec.SpanID,
+			"spanID":         rec.SpanID,
 		}
 		for _, stage := range pipeline {
 			if stage.Type == logql.PipelineLabelFilter && stage.LabelFilter != nil {
