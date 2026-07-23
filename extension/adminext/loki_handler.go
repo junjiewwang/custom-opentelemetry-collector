@@ -664,8 +664,9 @@ func (e *Extension) handleLokiDetectedFields(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// logs-drilldown reads response.fields (DetectedFieldsResponse type).
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"detectedFields": fields,
+		"fields": fields,
 	})
 }
 
