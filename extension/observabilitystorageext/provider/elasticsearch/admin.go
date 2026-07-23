@@ -398,8 +398,8 @@ func (a *Admin) createLogTemplate(ctx context.Context) error {
 					FieldLogBody:                 map[string]any{"type": "text", "analyzer": "standard"},
 					FieldServiceName:             map[string]any{"type": "keyword"},
 					FieldAppID:                   map[string]any{"type": "keyword"},
-					FieldAttributes:              map[string]any{"type": "flattened"},
-					FieldResource:                map[string]any{"type": "flattened"},
+				FieldAttributes:              map[string]any{"dynamic": true}, // sub-fields via strings_as_keyword template
+				FieldResource:                map[string]any{"dynamic": true}, // sub-fields via strings_as_keyword template
 				},
 			},
 		},
