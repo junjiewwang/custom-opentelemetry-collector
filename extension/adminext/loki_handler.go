@@ -308,7 +308,10 @@ func reverseValues(vals [][]string) {
 	}
 }
 
-// parseLokiTime parses a Loki-format time value (nanosecond epoch).
+// parseLokiTime parses a Loki/ISO-format time value. Supports:
+//   - Nanosecond epoch: "1784707266594000000"
+//   - Second epoch:     "1784707266"
+//   - RFC3339/ISO 8601: "2026-07-23T02:50:19.343Z"
 func parseLokiTime(s string) (time.Time, bool) {
 	if s == "" {
 		return time.Time{}, false
@@ -322,6 +325,13 @@ func parseLokiTime(s string) (time.Time, bool) {
 	sec, err := strconv.ParseInt(s, 10, 64)
 	if err == nil {
 		return time.Unix(sec, 0), true
+	}
+	// Support RFC3339 / ISO 8601 (used by logs-drilldown index/volume)
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
 	}
 	return time.Time{}, false
 }
