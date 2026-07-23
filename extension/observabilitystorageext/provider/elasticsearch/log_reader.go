@@ -217,10 +217,12 @@ func (r *LogReader) parseHistogramLayer(raw map[string]json.RawMessage, labels m
 		}
 	}
 
+	// ES histogram on long fields may return keys in scientific notation
+	// (e.g. 1.7847756E18). Use float64 then convert to int64.
 	var histAgg struct {
 		Buckets []struct {
-			Key      int64 `json:"key"`
-			DocCount int64 `json:"doc_count"`
+			Key      float64 `json:"key"`
+			DocCount int64   `json:"doc_count"`
 		} `json:"buckets"`
 	}
 	if err := json.Unmarshal(histRaw, &histAgg); err != nil {
@@ -233,7 +235,7 @@ func (r *LogReader) parseHistogramLayer(raw map[string]json.RawMessage, labels m
 			continue // skip leading empty buckets
 		}
 		values = append(values, LogMetricValue{
-			TimestampNano: b.Key,
+			TimestampNano: int64(b.Key),
 			Value:         float64(b.DocCount),
 		})
 	}
