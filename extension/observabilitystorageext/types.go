@@ -396,6 +396,12 @@ type LogQuery struct {
 
 	// Direction: "forward" or "backward" for log ordering.
 	Direction string `json:"direction,omitempty"`
+
+	// RegexFilters: regex line filters (|~) from LogQL, matched against log body.
+	// Separated from Query to avoid tokenization by ES text analyzers.
+	RegexFilters []string `json:"regexFilters,omitempty"`
+	// NotRegexFilters: negated regex line filters (!~) from LogQL.
+	NotRegexFilters []string `json:"notRegexFilters,omitempty"`
 }
 
 // LogSearchResult holds the result of a log search.

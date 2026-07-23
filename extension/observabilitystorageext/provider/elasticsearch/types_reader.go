@@ -125,6 +125,11 @@ type LogQuery struct {
 	LabelNot      map[string]string // not-equal (!=) label matchers
 	LabelNotMatch map[string]string // not-regex (!~) label matchers
 	Direction     string            // "forward" or "backward"
+
+	// RegexFilters: regex line filters (|~) from LogQL.
+	RegexFilters []string
+	// NotRegexFilters: negated regex line filters (!~) from LogQL.
+	NotRegexFilters []string
 }
 
 // LogSearchResult holds the result of a log search.
