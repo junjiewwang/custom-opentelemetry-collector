@@ -6,6 +6,7 @@ package elasticsearch
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
@@ -216,7 +217,7 @@ func (a *Admin) createILMPolicy(ctx context.Context, name string, retention time
 func (a *Admin) createTraceTemplate(ctx context.Context) error {
 	cfg := a.config.Traces
 	template := map[string]any{
-		"index_patterns": []string{cfg.IndexPrefix + "-*"},
+        "index_patterns": []string{templateIndexPattern(cfg.IndexPrefix)},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"number_of_shards":               cfg.Shards,
@@ -310,14 +311,14 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 			},
 		},
 	}
-	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, template)
+	return a.client.PutIndexTemplate(ctx, "otel-traces", template)
 }
 
 // createMetricTemplate creates the metric index template.
 func (a *Admin) createMetricTemplate(ctx context.Context) error {
 	cfg := a.config.Metrics
 	template := map[string]any{
-		"index_patterns": []string{cfg.IndexPrefix + "-*"},
+        "index_patterns": []string{templateIndexPattern(cfg.IndexPrefix)},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"number_of_shards":               cfg.Shards,
@@ -357,14 +358,14 @@ func (a *Admin) createMetricTemplate(ctx context.Context) error {
 			},
 		},
 	}
-	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, template)
+	return a.client.PutIndexTemplate(ctx, "otel-metrics", template)
 }
 
 // createLogTemplate creates the log index template.
 func (a *Admin) createLogTemplate(ctx context.Context) error {
 	cfg := a.config.Logs
 	template := map[string]any{
-		"index_patterns": []string{cfg.IndexPrefix + "-*"},
+        "index_patterns": []string{templateIndexPattern(cfg.IndexPrefix)},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"number_of_shards":               cfg.Shards,
@@ -404,7 +405,7 @@ func (a *Admin) createLogTemplate(ctx context.Context) error {
 			},
 		},
 	}
-	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, template)
+	return a.client.PutIndexTemplate(ctx, "otel-logs", template)
 }
 
 // formatDuration converts a Go duration to an ES-compatible duration string.
@@ -418,4 +419,14 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh", hours)
 	}
 	return "1d"
+}
+
+// templateIndexPattern returns a broad index pattern that matches all apps.
+// Extracts the base prefix by stripping the last hyphen-delimited segment
+// (assumed to be the appId). e.g. "otel-logs-CIKmanlvG3sfdnpr" → "otel-logs-*"
+func templateIndexPattern(prefix string) string {
+    if idx := strings.LastIndex(prefix, "-"); idx > 0 {
+        return prefix[:idx] + "-*"
+    }
+    return prefix + "-*"
 }
