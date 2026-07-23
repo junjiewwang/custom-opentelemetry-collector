@@ -519,10 +519,128 @@ func (e *Extension) handleLokiDetectedLabels(w http.ResponseWriter, r *http.Requ
 }
 
 // handleLokiDetectedFields returns detected structured fields from log lines.
-// Returns an empty list (our logs don't have Loki-style structured metadata).
+// Extracts field names from OTel attributes and resource in matching log documents.
 func (e *Extension) handleLokiDetectedFields(w http.ResponseWriter, r *http.Request) {
+	if !e.requireLokiReader(w) {
+		return
+	}
+
+	q := r.FormValue("query")
+	start, startOk := parseLokiTime(r.FormValue("start"))
+	end, endOk := parseLokiTime(r.FormValue("end"))
+	if !startOk || !endOk {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"detectedFields": []interface{}{}})
+		return
+	}
+
+	// Parse the query to get the log filter, then fetch a sample document.
+	var storageQ *observabilitystorageext.LogQuery
+	if q != "" {
+		parsed, err := logql.Parse(q)
+		if err != nil {
+			e.logger.Warn("loki: detected_fields parse error", zap.Error(err))
+		} else {
+			parsed.Start = start
+			parsed.End = end
+			ev := &logql.Evaluator{}
+			lq := ev.Evaluate(parsed)
+			storageQ = lq
+		}
+	}
+	if storageQ == nil {
+		storageQ = &observabilitystorageext.LogQuery{
+			TimeRange: observabilitystorageext.TimeRange{Start: start, End: end},
+		}
+	}
+	storageQ.Limit = 5
+
+	result, err := e.storageLogReader.SearchLogs(r.Context(), *storageQ)
+	if err != nil || result == nil || len(result.Logs) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"detectedFields": []interface{}{}})
+		return
+	}
+
+	// Collect unique field names from attributes and resource across sample docs.
+	seen := map[string]bool{}
+	type field struct {
+		Label    string   `json:"label"`
+		Type     string   `json:"type"`
+		Cardinality int   `json:"cardinality"`
+		JsonPath []string `json:"jsonPath"`
+		Parsers  any      `json:"parsers"`
+	}
+	fields := make([]field, 0)
+
+	for _, log := range result.Logs {
+		// Attributes fields
+		for _, attr := range log.Attributes {
+			label := toLokiFieldName(attr.Key)
+			if seen[label] {
+				continue
+			}
+			seen[label] = true
+			fields = append(fields, field{
+				Label:       label,
+				Type:        inferAnyValueType(&attr.Value),
+				Cardinality: 0,
+				JsonPath:    []string{"attributes", attr.Key},
+				Parsers:     nil,
+			})
+		}
+		// Resource fields
+		for _, rsrc := range log.Resource {
+			label := toLokiFieldName(rsrc.Key)
+			if seen[label] {
+				continue
+			}
+			seen[label] = true
+			fields = append(fields, field{
+				Label:       label,
+				Type:        inferAnyValueType(&rsrc.Value),
+				Cardinality: 0,
+				JsonPath:    []string{"resource", rsrc.Key},
+				Parsers:     nil,
+			})
+		}
+	}
+
+	if fields == nil {
+		fields = []field{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"detectedFields": []interface{}{},
+		"detectedFields": fields,
 	})
+}
+
+// toLokiFieldName converts a dot-separated OTel attribute name to a Loki-friendly
+// label name (underscore separator).
+func toLokiFieldName(name string) string {
+	s := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c == '.' {
+			s = append(s, '_')
+		} else {
+			s = append(s, c)
+		}
+	}
+	return string(s)
+}
+
+// inferAnyValueType returns the LogQL type for an OTel AnyValue.
+func inferAnyValueType(v *observabilitystorageext.AnyValue) string {
+	if v.StringValue != nil || v.BytesValue != nil {
+		return "string"
+	}
+	if v.BoolValue != nil {
+		return "boolean"
+	}
+	if v.IntValue != nil || v.DoubleValue != nil {
+		return "number"
+	}
+	return "string"
 }
