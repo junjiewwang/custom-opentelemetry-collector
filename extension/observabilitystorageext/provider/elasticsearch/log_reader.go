@@ -553,12 +553,15 @@ func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
 	}
 	for k, v := range lq.LabelMatch {
 		esField := r.resolveLogLabelESField(k)
-		clauses := resolveTagTermClauses(esField, v)
-		if len(clauses) == 1 {
-			qb.Raw(clauses[0])
-		} else {
-			qb.Should(1, clauses...)
-		}
+		// LabelMatch represents regex patterns (=~ operator) on log labels.
+		// resolveTagTermClauses produces term queries with trace-style attribute
+		// field paths — wrong for log labels which are top-level keyword fields.
+		// Build a regexp query directly on the resolved ES field.
+		qb.Raw(map[string]any{
+			"regexp": map[string]any{
+				esField: map[string]any{"value": v, "flags": "ALL"},
+			},
+		})
 	}
 
 	return qb.Build()
