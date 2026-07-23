@@ -380,6 +380,7 @@ func (e *Extension) newRouter() http.Handler {
 		r.Get("/label/{name}/values", e.handleLokiLabelValues)
 		// logs-drilldown app endpoints (Loki 3.x compatibility)
 		r.Get("/index/volume", e.handleLokiIndexVolume)
+		r.Get("/index/stats", e.handleLokiIndexStats)
 		r.Get("/drilldown-limits", e.handleLokiDrilldownLimits)
 		r.Get("/detected_labels", e.handleLokiDetectedLabels)
 		r.Get("/detected_fields", e.handleLokiDetectedFields)

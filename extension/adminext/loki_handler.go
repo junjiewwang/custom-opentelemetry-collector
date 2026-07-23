@@ -698,3 +698,17 @@ func inferAnyValueType(v *observabilitystorageext.AnyValue) string {
 	}
 	return "string"
 }
+
+// ── Index Stats (log query cost estimation) ──
+
+// handleLokiIndexStats returns index statistics for query cost estimation.
+// Used by Grafana Loki datasource internally (showErrorAlert=false, optional).
+func (e *Extension) handleLokiIndexStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"streams": 1,
+		"chunks":  0,
+		"bytes":   0,
+		"entries": 0,
+	})
+}
