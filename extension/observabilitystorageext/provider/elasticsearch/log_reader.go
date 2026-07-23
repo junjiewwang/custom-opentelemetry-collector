@@ -664,12 +664,16 @@ func (r *LogReader) ListLogLabelValues(ctx context.Context, label string, timeRa
 }
 
 // resolveLogLabelESField maps a Loki-style label name to the ES field.
+// Loki standard labels (level, detected_level) are mapped to severityText
+// since OTel data model stores log severity in that single field.
 var logLabelFieldMap = map[string]string{
-	"service_name": FieldServiceName,
-	"appId":        FieldAppID,
-	"severity":     FieldLogSeverityText,
-	"traceID":      FieldTraceID,
-	"spanID":       FieldSpanID,
+	"service_name":   FieldServiceName,
+	"appId":          FieldAppID,
+	"severity":       FieldLogSeverityText,
+	"level":          FieldLogSeverityText, // Loki standard — log level
+	"detected_level": FieldLogSeverityText, // Loki standard — detected log level
+	"traceID":        FieldTraceID,
+	"spanID":         FieldSpanID,
 }
 
 func (r *LogReader) resolveLogLabelESField(label string) string {

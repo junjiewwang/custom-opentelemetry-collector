@@ -132,3 +132,30 @@ func TestNormalizeMetricQueryLabels(t *testing.T) {
 		assert.Equal(t, "Server", labels["span.kind"])
 	})
 }
+
+func TestResolveLogLabelESField(t *testing.T) {
+	r := &LogReader{}
+
+	tests := []struct {
+		label string
+		want  string
+	}{
+		// Loki standard labels → severityText
+		{"level", FieldLogSeverityText},
+		{"detected_level", FieldLogSeverityText},
+		// Loki label names with underscore → ES camelCase
+		{"service_name", FieldServiceName},
+		{"appId", FieldAppID},
+		{"severity", FieldLogSeverityText},
+		{"traceID", FieldTraceID},
+		{"spanID", FieldSpanID},
+		// Unknown labels → resource.<label>
+		{"custom_label", "resource.custom_label"},
+		{"unknown", "resource.unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.label, func(t *testing.T) {
+			assert.Equal(t, tt.want, r.resolveLogLabelESField(tt.label))
+		})
+	}
+}

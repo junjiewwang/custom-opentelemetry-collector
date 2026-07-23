@@ -114,23 +114,67 @@ IsMetricQuery(q)?
 | `27a2c9b` | 1 | Health check `vector(1)+vector(1)` 处理 |
 | `fb35218` | 1 | 时间戳格式修复（纳秒→秒.纳秒） |
 | `656a43d` | 2 | Metric 查询支持 + 空 filter 修复 + `date_histogram` 修复 |
+| `1c0a556` | 3 | Drilldown 支持：`level`/`detected_level` → `severityText` 映射 |
 
-## 支持的 LogQL 语法（Sprint 1+2 合计）
+## 支持的 LogQL 语法（Sprint 1-3 合计）
 
-| 语法 | 示例 | 说明 |
-|------|------|------|
-| 流选择器 | `{app="foo", env=~"prod\|stag"}` | `=`, `!=`, `=~`, `!~` |
-| 行过滤器 | `\|= "error"`, `!= "debug"`, `\|~ "pattern"` | 含/不含/正则 |
-| 管道解析 | `\| json`, `\| logfmt`, `\| unpack` | 结构化解析 |
-| 管道过滤 | `\| json \| level = "error"` | 解析后按标签过滤 |
-| 行格式化 | `\| line_format "{{.level}}"` | 模板输出 |
-| 空过滤器 | `\|= ""`, `!= ""` | 匹配所有行 / 不匹配任意行 |
-| 范围聚合 | `count_over_time({}[5m])` | 按时间桶计数 |
-| 聚合分组 | `sum by (level) (...)` | 按标签分组聚合 |
-| 嵌套聚合 | `sum by (level, service_name) (...)` | 多级分组 |
-| 速率函数 | `rate({}[1m])`, `increase({}[1m])` | 速率/增量 |
+| 语法 | 示例 | 说明 | Sprint |
+|------|------|------|--------|
+| 流选择器 | `{app="foo", env=~"prod\|stag"}` | `=`, `!=`, `=~`, `!~` | 1 |
+| 行过滤器 | `\|= "error"`, `!= "debug"`, `\|~ "pattern"` | 含/不含/正则 | 1 |
+| 管道解析 | `\| json`, `\| logfmt`, `\| unpack` | 结构化解析 | 1 |
+| 管道过滤 | `\| json \| level = "error"` | 解析后按标签过滤 | 1 |
+| 行格式化 | `\| line_format "{{.level}}"` | 模板输出 | 1 |
+| 空过滤器 | `\|= ""`, `!= ""` | 匹配所有行 / 不匹配任意行 | 2 |
+| 标准标签 | `{level="ERROR"}`, `{detected_level="WARN"}` | Loki 标准 level 标签 | **3** |
+| 范围聚合 | `count_over_time({}[5m])` | 按时间桶计数 | 2 |
+| 聚合分组 | `sum by (level) (...)` | 按标签分组聚合 | 2+3 |
+| 嵌套聚合 | `sum by (level, service_name) (...)` | 多级分组 | 2+3 |
+| 速率函数 | `rate({}[1m])`, `increase({}[1m])` | 速率/增量 | 2 |
 
-## 不支持（待 Sprint 3+）
+## Sprint 3: Drilldown 支持
+
+### 问题
+
+Grafana Logs Volume 的 `sum by (level)` 查询生成的 ES 聚合字段是 `resource.level`（不存在），导致返回空结果。
+
+用户点击 Logs Volume 柱状图钻取时，Grafana 发送 `{level="ERROR"}` 查询，`resolveLogLabelESField("level")` → `resource.level` → 0 结果。
+
+### 修复
+
+`logLabelFieldMap` 增加两条映射：
+
+```go
+"level":          FieldLogSeverityText,  // 3229598 docs verified
+"detected_level": FieldLogSeverityText,  // same as above
+```
+
+OTel 数据模型中 severity 只有单一 `severityText` 字段，没有分离 "level" 和 "detected_level" 概念，所以两者都映射到同一字段。
+
+### Drilldown 全链路（修复后）
+
+```
+用户点击 Logs Volume ERROR 柱 → Grafana 发送:
+  GET /loki/api/v1/query_range?query={level="ERROR"}&start=...&end=...
+
+→ Parse("{level=\"ERROR\"}") → StreamSelector{level=ERROR}
+→ Evaluator.Evaluate() → LogQuery{Labels: {"level":"ERROR"}}
+→ buildLogSearchQuery() → resolveLogLabelESField("level") → "severityText" ✅
+→ ES: term severityText:"ERROR" → 3,959 docs
+→ writeLokiStreamsResponse() → resultType:"streams"
+→ Grafana 展示 ERROR 日志
+```
+
+### ES 验证结果
+
+| 测试 | 修复前 | 修复后 |
+|------|--------|--------|
+| `{level="ERROR"}` | 0 docs (`resource.level` 为空) | **3,959 docs** |
+| `label/level/values` | 空 | **INFO, WARN, ERROR** |
+| `{level="ERROR", service_name="..."}` | 0 | **677 docs** |
+| `sum by (level) (count_over_time(...))` | 空聚合 | **IURO: 3 组 × N 桶** |
+
+## 不支持（待 Sprint 4+）
 
 | 语法 | 说明 |
 |------|------|
@@ -140,12 +184,13 @@ IsMetricQuery(q)?
 | `offset` modifier | `count_over_time({}[5m] offset 10m)` |
 | `unwrap` + metric | `quantile_over_time(... \| unwrap latency)` |
 | `label_replace`, `label_join` | 标签变换函数 |
+| `\| label_format` | 管道标签重命名（parser 已支持，evaluator 未实现） |
 
 ## 遗留事项
 
-- [ ] **集成验证**：部署到集群后验证 Grafana health check + Logs Volume 面板
+- [ ] **集成验证**：部署到集群后验证 Grafana health check + Logs Volume 面板 + Drilldown
 - [ ] **PG backend**：`SearchLogMetric` 当前 stub 返回 "not implemented"
+- [ ] **`ListLogLabels` 返回 Loki 格式**：当前返回 ES 字段名（`serviceName`），应返回 Loki 标签名（`service_name`）
+- [ ] **性能测试**：大时间范围 + 多级分组的 ES 聚合性能评估（已确认 `histogram` 替代 `date_histogram` 不爆桶）
 - [ ] **appId 多租户**：`LogMetricQuery` 继承 `LogQuery.AppID`，但 metric handler 未显式传递 `appId` 参数
-- [ ] **错误信息优化**：metric 查询失败时返回更有意义的 Loki 格式错误
-- [ ] **性能测试**：大时间范围 + 多级分组的 ES 聚合性能评估
-- [ ] **测试覆盖**：`loki_metric.go` + ES `SearchLogMetric` 的单元测试
+- [ ] **测试覆盖**：`loki_metric.go` handler 的 HTTP 层单元测试
