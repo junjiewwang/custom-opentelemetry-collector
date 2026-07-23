@@ -108,7 +108,7 @@ func (c Condition) IsIntrinsic() bool {
 	case IntrinsicRootName, IntrinsicRootServiceName, IntrinsicTraceDuration:
 		return c.Scope == "" || c.Scope == "trace"
 	// span:id / span:spanID -> spanId (ES-pushable via AttributeResolver).
-	case "id", "spanID":
+	case "id", "spanID", IntrinsicParentID, "parentId":
 		return c.Scope == "" || c.Scope == "span"
 	// trace:id / trace:traceID -> traceID.
 	case "traceID":
@@ -254,6 +254,7 @@ const (
 	IntrinsicNestedSetParent   = "nestedSetParent"
 	IntrinsicNestedSetLeft     = "nestedSetLeft"
 	IntrinsicNestedSetRight    = "nestedSetRight"
+	IntrinsicParentID         = "parentID"
 	IntrinsicRootName          = "rootName"
 	IntrinsicRootServiceName   = "rootServiceName"
 	IntrinsicTraceDuration     = "traceDuration"

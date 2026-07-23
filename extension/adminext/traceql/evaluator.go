@@ -203,6 +203,19 @@ func matchCondition(cond Condition, span *SpanData) bool {
 		}
 		return matchStringValue(cond.Operator, span.StatusMessage, cond.Value)
 
+	// ── Intrinsic: span:id / span:spanID (Sprint 2) ──
+	case key == "id" || key == "spanID": 
+		if cond.Scope == "" || cond.Scope == "span" {
+			return matchStringValue(cond.Operator, span.SpanID, cond.Value)
+		}
+		return false
+	// ── Intrinsic: parentID / parentId (Sprint 2) ──
+	case key == IntrinsicParentID || key == "parentId":
+		if cond.Scope == "" || cond.Scope == "span" {
+			return matchStringValue(cond.Operator, span.ParentSpanID, cond.Value)
+		}
+		return false
+
 	// ── Generic attribute/resource (check both) ──
 	default:
 		// Check attributes first, then resource.

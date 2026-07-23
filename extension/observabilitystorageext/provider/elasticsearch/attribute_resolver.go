@@ -90,6 +90,24 @@ func (r *AttributeResolver) resolveWithScope(scope, key string) ResolvedField {
 		if scope == "" || scope == "trace" {
 			return ResolvedField{ESField: FieldServiceName}
 		}
+	// span:id / span:spanID / span.spanID → spanId (top-level ES field).
+	// span:parentID / parentId → parentSpanId.
+	// trace:id → traceID.
+	case "id", "spanID", "parentID", "parentId":
+		if scope == "" || scope == "span" {
+			if key == "id" || key == "spanID" {
+				return ResolvedField{ESField: FieldSpanID}
+			}
+			return ResolvedField{ESField: FieldParentSpanID}
+		}
+		if scope == "trace" {
+			return ResolvedField{ESField: FieldTraceID}
+		}
+	// trace:traceID → traceID (top-level ES field).
+	case "traceID":
+		if scope == "" || scope == "trace" {
+			return ResolvedField{ESField: FieldTraceID}
+		}
 	}
 
 	// Custom attributes — scope determines the ES field path prefix.
