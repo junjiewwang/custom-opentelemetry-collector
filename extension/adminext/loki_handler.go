@@ -60,34 +60,36 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 		direction = "backward"
 	}
 
-	// Parse LogQL
-	parsed, err := logql.Parse(q)
+	// Parse LogQL — supports OR-branched queries via ParseExpression.
+	expr, err := logql.ParseExpression(q)
 	if err != nil {
 		e.logger.Debug("loki: failed to parse LogQL", zap.Error(err), zap.String("query", q))
 		writeLokiError(w, "failed to parse query: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	parsed.Start = start
-	parsed.End = end
-	parsed.Limit = limit
-	parsed.Direction = direction
 
-	// Convert to storage query
+	// Evaluate and execute each OR branch independently, then merge.
+	var branchResults []*observabilitystorageext.LogSearchResult
 	ev := &logql.Evaluator{}
-	storageQ := ev.Evaluate(parsed)
-
-	// Execute
-	logs, err := e.storageLogReader.SearchLogs(r.Context(), *storageQ)
-	if err != nil {
-		e.logger.Warn("loki: search logs failed", zap.Error(err))
-		writeLokiError(w, "search failed", http.StatusInternalServerError)
+	for _, branch := range expr.Branches {
+		branch.Start = start
+		branch.End = end
+		branch.Limit = limit
+		branch.Direction = direction
+		storageQ := ev.Evaluate(branch)
+		logs, err := e.storageLogReader.SearchLogs(r.Context(), *storageQ)
+		if err != nil {
+			e.logger.Warn("loki: search logs failed for OR branch", zap.Error(err))
+			continue
+		}
+		logs.Logs = filterLogsByPipeline(logs.Logs, branch.Pipeline)
+		branchResults = append(branchResults, logs)
+	}
+	if len(branchResults) == 0 {
+		writeLokiError(w, "all OR branches failed", http.StatusInternalServerError)
 		return
 	}
-
-	// Apply pipeline label filters (e.g. | detected_level="WARN")
-	logs.Logs = filterLogsByPipeline(logs.Logs, parsed.Pipeline)
-
-	// Build Loki streams response
+	logs := mergeLogResults(branchResults, limit, direction)
 	writeLokiStreamsResponse(w, logs, direction)
 }
 
@@ -200,29 +202,33 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 	limit := lokiParseIntParam(r.FormValue("limit"), 100)
 	now := time.Now()
 
-	parsed, err := logql.Parse(q)
+	parsed, err := logql.ParseExpression(q)
 	if err != nil {
 		writeLokiError(w, "failed to parse query: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	parsed.Start = now.Add(-1 * time.Minute)
-	parsed.End = now
-	parsed.Limit = limit
-	parsed.Direction = "backward"
 
+	var branchResults []*observabilitystorageext.LogSearchResult
 	ev := &logql.Evaluator{}
-	storageQ := ev.Evaluate(parsed)
-
-	logs, err := e.storageLogReader.SearchLogs(r.Context(), *storageQ)
-	if err != nil {
-		e.logger.Warn("loki: instant search failed", zap.Error(err))
-		writeLokiError(w, "search failed", http.StatusInternalServerError)
+	for _, branch := range parsed.Branches {
+		branch.Start = now.Add(-1 * time.Minute)
+		branch.End = now
+		branch.Limit = limit
+		branch.Direction = "backward"
+		storageQ := ev.Evaluate(branch)
+		logs, err := e.storageLogReader.SearchLogs(r.Context(), *storageQ)
+		if err != nil {
+			e.logger.Warn("loki: instant search failed for OR branch", zap.Error(err))
+			continue
+		}
+		logs.Logs = filterLogsByPipeline(logs.Logs, branch.Pipeline)
+		branchResults = append(branchResults, logs)
+	}
+	if len(branchResults) == 0 {
+		writeLokiError(w, "all OR branches failed", http.StatusInternalServerError)
 		return
 	}
-
-	// Apply pipeline label filters
-	logs.Logs = filterLogsByPipeline(logs.Logs, parsed.Pipeline)
-
+	logs := mergeLogResults(branchResults, limit, "backward")
 	writeLokiStreamsResponse(w, logs, "backward")
 }
 
