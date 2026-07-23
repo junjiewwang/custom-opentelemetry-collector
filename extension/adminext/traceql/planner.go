@@ -73,7 +73,9 @@ type ExecutionPlan struct {
 	// TagsNot: != value conditions → ES must_not term.
 	TagsNot map[string]string
 	// TagsExists: != nil conditions → ES exists query.
-	TagsExists []string
+	TagsExists    []string
+	// TagsNotExists: = nil conditions → ES must_not exists query.
+	TagsNotExists  []string
 	// TagsRegex: =~ regex conditions → ES regexp query.
 	TagsRegex map[string]string
 
@@ -85,6 +87,9 @@ type ExecutionPlan struct {
 
 	// SelectFields from | select() pipeline stage.
 	SelectFields []string
+
+	// HasCount indicates the query has a count() pipeline stage (Sprint 4).
+	HasCount bool
 
 	// MetricsStage from | rate() / quantile_over_time() / histogram_over_time() pipeline stage.
 	MetricsStage *MetricsStage
@@ -429,6 +434,9 @@ func (p *ExecutionPlan) extract(expr Expr) {
 				p.HasMetrics = true
 				p.MetricsStage = ms
 			}
+			if _, ok := stage.(*CountStage); ok {
+				p.HasCount = true
+			}
 		}
 
 	case *TrueExpr:
@@ -617,6 +625,8 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 		case "=":
 			if valStr != "" {
 				p.Tags[fullKey] = valStr
+			} else if isNil {
+				p.addTagNotExists(fullKey)
 			}
 		case "!=":
 			if isNil {
@@ -643,6 +653,11 @@ func (p *ExecutionPlan) addTagNot(key, val string) {
 // addTagExists records a != nil existence condition.
 func (p *ExecutionPlan) addTagExists(key string) {
 	p.TagsExists = append(p.TagsExists, key)
+}
+
+// addTagNotExists records a = nil absence condition.
+func (p *ExecutionPlan) addTagNotExists(key string) {
+	p.TagsNotExists = append(p.TagsNotExists, key)
 }
 
 // addTagRegex records a =~ regex condition, with Compile pre-validation.

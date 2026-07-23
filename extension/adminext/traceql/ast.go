@@ -172,6 +172,21 @@ func (s *SelectStage) String() string {
 
 // ── Metrics Pipeline Stages ──────────────────────
 
+// CountStage represents | count() pipeline stage.
+type CountStage struct {
+	By string // optional by(field) modifier, empty if not specified
+}
+
+func (cs *CountStage) stageType() string { return "count" }
+
+// String returns a human-readable representation.
+func (cs *CountStage) String() string {
+	if cs.By != "" {
+		return fmt.Sprintf("count() by(%s)", cs.By)
+	}
+	return "count()"
+}
+
 // MetricsFunc identifies the type of a metrics pipeline stage.
 type MetricsFunc string
 

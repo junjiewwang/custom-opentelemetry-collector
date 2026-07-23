@@ -34,6 +34,7 @@ type TraceQuery struct {
 	// TagsNot: != value conditions → ES must_not + term.
 	TagsNot map[string]string
 	// TagsExists: != nil conditions → ES exists query.
+	TagsNotExists []string
 	TagsExists []string
 	// TagsRegex: =~ regex conditions → ES regexp query.
 	TagsRegex map[string]string

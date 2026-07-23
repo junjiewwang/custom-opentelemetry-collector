@@ -45,6 +45,7 @@ const (
 	TokenTrue                   // true
 	TokenFalse                  // false
 	TokenSelect                 // select
+	TokenCount                  // count
 	TokenBy                     // by
 	TokenWith                   // with
 	TokenRate                   // rate
@@ -307,6 +308,8 @@ func (l *Lexer) readIdent(pos int) (Token, error) {
 		return Token{Type: TokenFalse, Literal: literal, Pos: pos}, nil
 	case "select":
 		return Token{Type: TokenSelect, Literal: literal, Pos: pos}, nil
+	case "count":
+		return Token{Type: TokenCount, Literal: "count", Pos: pos}, nil
 	case "by":
 		return Token{Type: TokenBy, Literal: literal, Pos: pos}, nil
 	case "with":

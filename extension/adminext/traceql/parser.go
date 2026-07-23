@@ -334,6 +334,8 @@ func (p *Parser) parsePipelineStage() (PipelineStage, error) {
 	switch tok.Type {
 	case TokenSelect:
 		return p.parseSelectStage()
+	case TokenCount:
+		return p.parseCountStage()
 	case TokenRate, TokenQuantileOverTime, TokenHistogramOverTime:
 		return p.parseMetricsStage()
 	}
@@ -371,6 +373,44 @@ func (p *Parser) parseSelectStage() (*SelectStage, error) {
 	p.advance() // consume )
 
 	return &SelectStage{Fields: fields}, nil
+}
+
+// parseCountStage parses a | count() or | count() by(field) pipeline stage.
+func (p *Parser) parseCountStage() (*CountStage, error) {
+	p.advance() // consume "count"
+
+	if p.peek().Type != TokenLParen {
+		return nil, fmt.Errorf("expected '(' after count at position %d", p.peek().Pos)
+	}
+	p.advance() // consume (
+	for p.peek().Type != TokenRParen && p.peek().Type != TokenEOF {
+		p.advance()
+	}
+	if p.peek().Type != TokenRParen {
+		return nil, fmt.Errorf("expected ')' at position %d", p.peek().Pos)
+	}
+	p.advance() // consume )
+
+	stage := &CountStage{}
+
+	// Optional by(field) modifier.
+	if p.peek().Type == TokenBy {
+		p.advance() // consume "by"
+		if p.peek().Type != TokenLParen {
+			return nil, fmt.Errorf("expected '(' after by at position %d", p.peek().Pos)
+		}
+		p.advance() // consume (
+		if p.peek().Type == TokenIdent || p.peek().Type == TokenString {
+			stage.By = p.peek().Literal
+			p.advance()
+		}
+		if p.peek().Type != TokenRParen {
+			return nil, fmt.Errorf("expected ')' after by(field) at position %d", p.peek().Pos)
+		}
+		p.advance() // consume )
+	}
+
+	return stage, nil
 }
 
 // parseMetricsStage parses metrics pipeline stages:

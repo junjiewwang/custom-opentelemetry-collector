@@ -132,6 +132,7 @@ type TraceQuery struct {
 
 	// ── Negation / Existence / Regex filters (Sprint 2) ──
 	TagsNot    map[string]string `json:"tagsNot,omitempty"`    // != value conditions → ES must_not + term
+	TagsNotExists []string
 	TagsExists []string          `json:"tagsExists,omitempty"` // != nil conditions → ES exists query
 	TagsRegex  map[string]string `json:"tagsRegex,omitempty"`  // =~ regex conditions → ES regexp query
 

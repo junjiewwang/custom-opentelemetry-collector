@@ -632,6 +632,14 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
+	// ── TagsNotExists (Sprint 4): = nil → must_not exists ──
+	for _, k := range tq.TagsNotExists {
+		paths := resolveTagFieldPaths(k)
+		for _, p := range paths {
+			qb.Raw(esq.MustNotQ(esq.ExistsQ(p)))
+		}
+	}
+
 	// ── TagsExists (Sprint 2): != nil → exists ──
 	for _, k := range tq.TagsExists {
 		paths := resolveTagFieldPaths(k)

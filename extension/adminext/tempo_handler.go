@@ -2593,6 +2593,9 @@ func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabil
 			if len(plan.TagsExists) > 0 {
 				query.TagsExists = plan.TagsExists
 			}
+			if len(plan.TagsNotExists) > 0 {
+				query.TagsNotExists = plan.TagsNotExists
+			}
 			if len(plan.TagsRegex) > 0 {
 				query.TagsRegex = plan.TagsRegex
 			}
