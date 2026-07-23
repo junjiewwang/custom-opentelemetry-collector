@@ -359,11 +359,16 @@ func (p *parser) parseMatchOp() (MatchType, error) {
 	}
 }
 
-// knownParserNames lists pipeline parser keywords (json, logfmt, unpack).
+// knownParserNames lists pipeline parser keywords (json, logfmt, unpack, etc.).
+// drop and keep are Loki pipeline stages that remove/retain labels from the stream.
+// They don't affect ES query construction but must be parseable for Grafana compatibility
+// (grafana-loki-datasource appends | drop __error__ to volume queries).
 var knownParserNames = map[string]bool{
 	"json":   true,
 	"logfmt": true,
 	"unpack": true,
+	"drop":   true,
+	"keep":   true,
 }
 
 // knownPipelineKeywords lists all pipeline keywords (parser + formatter).
@@ -384,6 +389,26 @@ func (p *parser) parsePipelineStage() (*PipelineStage, error) {
 
 	keyword := p.parseIdentifier()
 	switch {
+	// ── drop / keep: consumes label name arguments ──
+	// Grafana appends "| drop __error__" to volume queries to suppress
+	// Loki's internal error label. We consume the label names but the
+	// evaluator ignores them (they don't affect ES query construction).
+	case keyword == "drop" || keyword == "keep":
+		stage := &PipelineStage{Type: PipelineParser, Parser: keyword}
+		// Consume the label name(s): drop label1, label2, ...
+		p.skipWhitespace()
+		for p.pos < len(p.input) {
+			_ = p.parseIdentifier()
+			p.skipWhitespace()
+			if p.match(',') {
+				p.advance()
+				p.skipWhitespace()
+				continue
+			}
+			break
+		}
+		return stage, nil
+
 	case knownParserNames[keyword]:
 		// Parser stage: | json, | logfmt, | unpack
 		stage := &PipelineStage{Type: PipelineParser, Parser: keyword}
@@ -427,14 +452,15 @@ func (p *parser) parsePipelineStage() (*PipelineStage, error) {
 		return &PipelineStage{Type: PipelineLabelFormat, LabelFormat: m}, nil
 
 	default:
-		// Not a known keyword — treat as pipeline label filter
-		// Rewind to before the identifier
+		// Not a known pipeline keyword — treat as label filter expression.
+		// E.g.: | detected_level = "ERROR"  or  | level != "WARN"
+		// The "|" was already consumed; parseLabelMatcher() handles "name = value".
 		p.pos -= len(keyword)
-		lf, err := p.parsePipelineLabelFilter()
+		m, err := p.parseLabelMatcher()
 		if err != nil {
-			return nil, err
+			return nil, p.errorf("expected pipeline keyword or label filter: %v", err)
 		}
-		return &PipelineStage{Type: PipelineLabelFilter, LabelFilter: lf}, nil
+		return &PipelineStage{Type: PipelineLabelFilter, LabelFilter: m}, nil
 	}
 }
 
