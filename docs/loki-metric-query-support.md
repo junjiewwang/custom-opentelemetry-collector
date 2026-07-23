@@ -193,4 +193,4 @@ OTel 数据模型中 severity 只有单一 `severityText` 字段，没有分离 
 - [ ] **`ListLogLabels` 返回 Loki 格式**：当前返回 ES 字段名（`serviceName`），应返回 Loki 标签名（`service_name`）
 - [ ] **性能测试**：大时间范围 + 多级分组的 ES 聚合性能评估（已确认 `histogram` 替代 `date_histogram` 不爆桶）
 - [ ] **appId 多租户**：`LogMetricQuery` 继承 `LogQuery.AppID`，但 metric handler 未显式传递 `appId` 参数
-- [ ] **测试覆盖**：`loki_metric.go` handler 的 HTTP 层单元测试
+- [x] **测试覆盖**：`loki_metric.go` (15 用例) + ES `SearchLogMetric` 解析 (15 用例)，全部通过

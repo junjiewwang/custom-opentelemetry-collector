@@ -204,9 +204,17 @@ func (r *LogReader) parseNestedAgg(raw map[string]json.RawMessage, remainingLabe
 }
 
 func (r *LogReader) parseHistogramLayer(raw map[string]json.RawMessage, labels map[string]string) []LogMetricSeries {
-	aggRaw, ok := raw["over_time"]
+	// When called from the top-level (no group-by), raw contains {"over_time": {...}}.
+	// When called from an inner terms bucket, the "over_time" key has already been
+	// consumed by bucketWithAggs, and raw directly contains {"buckets": [...]}.
+	histRaw, ok := raw["over_time"]
 	if !ok {
-		return nil
+		if _, hasBuckets := raw["buckets"]; hasBuckets {
+			reEncoded, _ := json.Marshal(raw)
+			histRaw = json.RawMessage(reEncoded)
+		} else {
+			return nil
+		}
 	}
 
 	var histAgg struct {
@@ -215,7 +223,7 @@ func (r *LogReader) parseHistogramLayer(raw map[string]json.RawMessage, labels m
 			DocCount int64 `json:"doc_count"`
 		} `json:"buckets"`
 	}
-	if err := json.Unmarshal(aggRaw, &histAgg); err != nil {
+	if err := json.Unmarshal(histRaw, &histAgg); err != nil {
 		return nil
 	}
 
