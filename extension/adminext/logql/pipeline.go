@@ -106,6 +106,12 @@ func applyParserStage(parser string, body string, labels map[string]string) (str
 	}
 }
 
+// MatchPipelineLabelFilter checks whether a label matcher passes for the given labels.
+// Exported so the Loki handler can apply pipeline label filters to log query results.
+func MatchPipelineLabelFilter(m *LabelMatcher, labels map[string]string) bool {
+	return matchLabelFilter(m, labels)
+}
+
 func matchLabelFilter(m *LabelMatcher, labels map[string]string) bool {
 	val, ok := labels[m.Name]
 	switch m.Type {

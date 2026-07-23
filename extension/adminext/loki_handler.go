@@ -84,6 +84,9 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Apply pipeline label filters (e.g. | detected_level="WARN")
+	logs.Logs = filterLogsByPipeline(logs.Logs, parsed.Pipeline)
+
 	// Build Loki streams response
 	writeLokiStreamsResponse(w, logs, direction)
 }
@@ -217,6 +220,9 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Apply pipeline label filters
+	logs.Logs = filterLogsByPipeline(logs.Logs, parsed.Pipeline)
+
 	writeLokiStreamsResponse(w, logs, "backward")
 }
 
@@ -240,6 +246,38 @@ type lokiQueryData struct {
 type lokiLabelsResponse struct {
 	Status string   `json:"status"`
 	Data   []string `json:"data"`
+}
+
+// filterLogsByPipeline applies pipeline label filters to filter out non-matching
+// log entries. Pipeline label filters like | detected_level="WARN" check the
+// log record's labels against the filter.
+func filterLogsByPipeline(logs []observabilitystorageext.LogRecord, pipeline []logql.PipelineStage) []observabilitystorageext.LogRecord {
+	if len(pipeline) == 0 {
+		return logs
+	}
+	filtered := make([]observabilitystorageext.LogRecord, 0, len(logs))
+	for _, rec := range logs {
+		keep := true
+		// Build label map for pipeline matching
+		labels := map[string]string{
+			"service_name":   rec.ServiceName,
+			"severity":       rec.SeverityText,
+			"level":          rec.SeverityText,
+			"detected_level": rec.SeverityText,
+		}
+		for _, stage := range pipeline {
+			if stage.Type == logql.PipelineLabelFilter && stage.LabelFilter != nil {
+				if !logql.MatchPipelineLabelFilter(stage.LabelFilter, labels) {
+					keep = false
+					break
+				}
+			}
+		}
+		if keep {
+			filtered = append(filtered, rec)
+		}
+	}
+	return filtered
 }
 
 func writeLokiStreamsResponse(w http.ResponseWriter, result *observabilitystorageext.LogSearchResult, direction string) {
