@@ -150,12 +150,17 @@ func (p *parser) parseMetric() (*MetricExpr, error) {
 	p.advance()
 	p.skipWhitespace()
 
-	// Parse inner log query (stream selector + optional filters)
-	inner, err := p.parse()
+	// Parse inner log query (stream selector + optional filters).
+	// Supports OR-branched inner queries by decomposing into InnerBranches.
+	innerExpr, err := p.parseExpression()
 	if err != nil {
 		return nil, err
 	}
-	expr.Inner = inner
+	if len(innerExpr.Branches) > 1 {
+		expr.InnerBranches = innerExpr.Branches
+	} else {
+		expr.Inner = innerExpr.Branches[0]
+	}
 
 	// Parse range vector: [5m], [1h30s]
 	p.skipWhitespace()

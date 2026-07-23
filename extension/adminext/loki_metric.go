@@ -66,33 +66,44 @@ func (e *Extension) handleLokiMetricQuery(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Evaluate inner log query (stream selector + filters) → LogQuery
-	expr.Inner.Start = start
-	expr.Inner.End = end
-	logEv := &logql.Evaluator{}
-	storageQ := logEv.Evaluate(expr.Inner)
+	// Resolve inner branches: OR-decomposed or single query.
+	innerBranches := expr.InnerBranches
+	if innerBranches == nil {
+		innerBranches = []*logql.LogQLQuery{expr.Inner}
+	}
 
 	// Compute histogram interval.
-	// Priority: 1) MetricExpr range duration  2) HTTP step parameter  3) auto-calculate
 	interval := computeMetricInterval(expr.RangeDuration, step, start, end)
 
-	// Build the metric query
-	metricQ := &observabilitystorageext.LogMetricQuery{
-		LogQuery:     *storageQ,
-		GroupByLabels: expr.By,
-		IntervalNanos: interval,
-		TopN:         10,
+	// Evaluate and execute each OR branch independently.
+	var branchResults []*observabilitystorageext.LogMetricResult
+	logEv := &logql.Evaluator{}
+	for _, branch := range innerBranches {
+		branch.Start = start
+		branch.End = end
+		storageQ := logEv.Evaluate(branch)
+
+		metricQ := &observabilitystorageext.LogMetricQuery{
+			LogQuery:      *storageQ,
+			GroupByLabels: expr.By,
+			IntervalNanos: interval,
+			TopN:          10,
+		}
+
+		result, err := e.storageLogReader.SearchLogMetric(r.Context(), *metricQ)
+		if err != nil {
+			e.logger.Warn("loki: metric query failed for OR branch", zap.Error(err))
+			continue
+		}
+		branchResults = append(branchResults, result)
 	}
 
-	result, err := e.storageLogReader.SearchLogMetric(r.Context(), *metricQ)
-	if err != nil {
-		e.logger.Warn("loki: metric query failed", zap.Error(err))
-		writeLokiError(w, "metric query failed", http.StatusInternalServerError)
+	if len(branchResults) == 0 {
+		writeLokiError(w, "all metric OR branches failed", http.StatusInternalServerError)
 		return
 	}
-
-	// Build matrix response
-	writeLokiMatrixResponse(w, result)
+	merged := mergeMetricResults(branchResults)
+	writeLokiMatrixResponse(w, merged)
 }
 
 // computeMetricInterval determines the histogram bucket interval in nanoseconds.
