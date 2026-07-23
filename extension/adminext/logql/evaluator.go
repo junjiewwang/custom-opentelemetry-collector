@@ -51,24 +51,28 @@ func (e *Evaluator) Evaluate(lq *LogQLQuery) *observabilitystorageext.LogQuery {
 	}
 
 	// Line filters → query body search
+	// Contains filters (|=, !=) go into the full-text Query field (match query on body).
+	// Regex filters (|~, !~) go into separate RegexFilters / NotRegexFilters because
+	// ES match queries apply the text analyzer to the query string, which tokenizes
+	// PCRE patterns (e.g. "(?i)order" → tokens ["i", "order"]) and breaks matching.
+	// Regex filters use ES regexp query instead.
 	var lineQueries []string
 	for _, f := range lq.LineFilters {
 		// Empty pattern means "match everything" in Loki semantics
-		// (empty string is a substring of every string).
-		// Converted to ES, this means: skip the content filter entirely.
 		if f.Pattern == "" {
 			continue
 		}
-		pattern := escapeLokiPattern(f.Pattern)
 		switch f.Type {
 		case FilterContains:
+			pattern := escapeLokiPattern(f.Pattern)
 			lineQueries = append(lineQueries, `"`+pattern+`"`)
 		case FilterNotContains:
+			pattern := escapeLokiPattern(f.Pattern)
 			lineQueries = append(lineQueries, `-"`+pattern+`"`)
 		case FilterRegex:
-			lineQueries = append(lineQueries, "/"+f.Pattern+"/")
+			q.RegexFilters = append(q.RegexFilters, f.Pattern)
 		case FilterNotRegex:
-			lineQueries = append(lineQueries, "-/"+f.Pattern+"/")
+			q.NotRegexFilters = append(q.NotRegexFilters, f.Pattern)
 		}
 	}
 	if len(lineQueries) > 0 {
