@@ -478,3 +478,51 @@ func writeLokiVectorResponse(w http.ResponseWriter, result *observabilitystorage
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
+
+// ── Detected Labels / Fields (logs-drilldown) ──
+
+// handleLokiDetectedLabels returns the list of labels detected from log lines.
+// Used by logs-drilldown to populate the label picker with available metadata.
+func (e *Extension) handleLokiDetectedLabels(w http.ResponseWriter, r *http.Request) {
+	if !e.requireLokiReader(w) {
+		return
+	}
+
+	start, startOk := parseLokiTime(r.URL.Query().Get("start"))
+	end, endOk := parseLokiTime(r.URL.Query().Get("end"))
+	if !startOk || !endOk {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"detectedLabels": []interface{}{}})
+		return
+	}
+
+	labels, err := e.storageLogReader.ListLogLabels(r.Context(),
+		observabilitystorageext.TimeRange{Start: start, End: end}, "")
+	if err != nil {
+		e.logger.Warn("loki: detected_labels query failed", zap.Error(err))
+	}
+
+	type detectedLabel struct {
+		Label       string `json:"label"`
+		Cardinality int    `json:"cardinality"`
+	}
+
+	result := make([]detectedLabel, 0, len(labels))
+	for _, l := range labels {
+		result = append(result, detectedLabel{Label: l, Cardinality: 0})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"detectedLabels": result,
+	})
+}
+
+// handleLokiDetectedFields returns detected structured fields from log lines.
+// Returns an empty list (our logs don't have Loki-style structured metadata).
+func (e *Extension) handleLokiDetectedFields(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"detectedFields": []interface{}{},
+	})
+}

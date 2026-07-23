@@ -381,6 +381,8 @@ func (e *Extension) newRouter() http.Handler {
 		// logs-drilldown app endpoints (Loki 3.x compatibility)
 		r.Get("/index/volume", e.handleLokiIndexVolume)
 		r.Get("/drilldown-limits", e.handleLokiDrilldownLimits)
+		r.Get("/detected_labels", e.handleLokiDetectedLabels)
+		r.Get("/detected_fields", e.handleLokiDetectedFields)
 	})
 	// Shorter aliases for direct curl/API access
 	// Full: /api/v2 + /loki/* = /api/v2/loki/*
