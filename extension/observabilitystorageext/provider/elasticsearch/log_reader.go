@@ -161,7 +161,7 @@ func (r *LogReader) parseNestedAgg(raw map[string]json.RawMessage, remainingLabe
 
 	var termsAgg struct {
 		Buckets []struct {
-			Key string `json:"key"`
+			Key json.RawMessage `json:"key"` // handles both string and numeric (long) keys
 		} `json:"buckets"`
 	}
 	if err := json.Unmarshal(aggRaw, &termsAgg); err != nil {
@@ -180,7 +180,7 @@ func (r *LogReader) parseNestedAgg(raw map[string]json.RawMessage, remainingLabe
 	var allSeries []LogMetricSeries
 	for i, b := range termsAgg.Buckets {
 		childAcc := copyMap(labelAcc)
-		childAcc[labelName] = b.Key
+		childAcc[labelName] = termKeyToString(b.Key)
 
 		// Parse the child aggregations from the raw bucket
 		var bucketWithAggs struct {
@@ -871,3 +871,16 @@ func init() {
 // ==================== Log Document Model ====================
 // logDocument and toLogRecord() replaced by storedmodel.StoredLogRecord.
 // For backward compat with old index data, see compatLogRecord().
+
+// termKeyToString converts an ES terms aggregation bucket key to string.
+// Handles both string (keyword fields) and numeric (long fields) keys.
+func termKeyToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// String key: "value" → strip quotes.
+	if raw[0] == '"' {
+		return string(raw[1 : len(raw)-1])
+	}
+	return string(raw)
+}
