@@ -147,8 +147,8 @@ func TestResolveLogLabelESField(t *testing.T) {
 		{"severity", FieldLogSeverityText},
 		{"traceID", FieldTraceID},
 		{"spanID", FieldSpanID},
-		// Unknown labels → resource.<label> (underscore→dot conversion)
-		{"custom_label", "resource.custom.label"},
+		// Unknown labels → resource.<label> (no generic conversion)
+		{"custom_label", "resource.custom_label"},
 		{"unknown", "resource.unknown"},
 	}
 	for _, tt := range tests {
