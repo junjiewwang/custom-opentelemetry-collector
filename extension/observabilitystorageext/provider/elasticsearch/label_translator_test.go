@@ -15,26 +15,24 @@ func TestTranslateLabelKey(t *testing.T) {
 		input  string
 		want   string
 	}{
-		// OTel standard attributes → dot conversion
-		{"span_kind", "span_kind", "span.kind"},
-		{"span_name", "span_name", "span.name"},
-		{"service_name", "service_name", "service.name"},
-		{"status_code", "status_code", "status.code"},
-		{"peer_service", "peer_service", "peer.service"},
-		{"http_method", "http_method", "http.method"},
-		{"http_status_code", "http_status_code", "http.status_code"},
-		{"rpc_method", "rpc_method", "rpc.method"},
-		{"rpc_service", "rpc_service", "rpc.service"},
-		{"rpc_system", "rpc_system", "rpc.system"},
-		// 3-segment key: SanitizeKey compresses "rpc.grpc.status_code" → "rpc.grpc_status_code"
-		{"rpc_grpc_status_code", "rpc_grpc_status_code", "rpc.grpc_status_code"},
-		{"db_system", "db_system", "db.system"},
-		{"db_name", "db_name", "db.name"},
-		// 3-segment key: SanitizeKey preserves first dot, replaces rest → "net.peer_name"
-		{"net_peer_name", "net_peer_name", "net.peer_name"},
-		{"exception_type", "exception_type", "exception.type"},
-		{"thread_name", "thread_name", "thread.name"},
-		{"code_function", "code_function", "code.function"},
+		// OTel standard attributes → all dots replaced with underscores (SanitizeMetricKey)
+		{"span_kind", "span_kind", "span_kind"},
+		{"span_name", "span_name", "span_name"},
+		{"service_name", "service_name", "service_name"},
+		{"status_code", "status_code", "status_code"},
+		{"peer_service", "peer_service", "peer_service"},
+		{"http_method", "http_method", "http_method"},
+		{"http_status_code", "http_status_code", "http_status_code"},
+		{"rpc_method", "rpc_method", "rpc_method"},
+		{"rpc_service", "rpc_service", "rpc_service"},
+		{"rpc_system", "rpc_system", "rpc_system"},
+		{"rpc_grpc_status_code", "rpc_grpc_status_code", "rpc_grpc_status_code"},
+		{"db_system", "db_system", "db_system"},
+		{"db_name", "db_name", "db_name"},
+		{"net_peer_name", "net_peer_name", "net_peer_name"},
+		{"exception_type", "exception_type", "exception_type"},
+		{"thread_name", "thread_name", "thread_name"},
+		{"code_function", "code_function", "code_function"},
 		// Custom labels → pass through unchanged
 		{"client", "client", "client"},
 		{"server", "server", "server"},
@@ -92,15 +90,13 @@ func TestNormalizeMetricQueryLabels(t *testing.T) {
 			},
 			nil,
 		)
-		// Key translated, value normalized to ES short form
-		assert.Equal(t, "Server", labels["span.kind"])
-		assert.Equal(t, "GET /users", labels["span.name"])
+		// Key translated via SanitizeMetricKey (all dots → underscores)
+		assert.Equal(t, "Server", labels["span_kind"])
+		assert.Equal(t, "GET /users", labels["span_name"])
 		assert.Equal(t, "test-java-gateway-service", labels["client"])
 		assert.Equal(t, "test-java-market-service", labels["server"])
-		assert.Equal(t, "Ok", labels["status.code"])
-		// Original keys should not exist
-		assert.NotContains(t, labels, "span_kind")
-		assert.NotContains(t, labels, "status_code")
+		assert.Equal(t, "Ok", labels["status_code"])
+		assert.NotContains(t, labels, "span.kind")
 	})
 
 	t.Run("regex match labels key-only translated", func(t *testing.T) {
@@ -111,10 +107,10 @@ func TestNormalizeMetricQueryLabels(t *testing.T) {
 				"client":     "test.*",
 			},
 		)
-		assert.Equal(t, "Server", match["span.kind"])     // pattern unchanged
-		assert.Equal(t, ".*", match["span.name"])
+		assert.Equal(t, "Server", match["span_kind"])
+		assert.Equal(t, ".*", match["span_name"])
 		assert.Equal(t, "test.*", match["client"])
-		assert.NotContains(t, match, "span_kind")
+		assert.NotContains(t, match, "span.kind")
 	})
 
 	t.Run("empty inputs", func(t *testing.T) {
@@ -131,7 +127,7 @@ func TestNormalizeMetricQueryLabels(t *testing.T) {
 			nil,
 		)
 		// "SPAN_KIND_SERVER" should be normalized to "Server" (ES Storage format)
-		assert.Equal(t, "Server", labels["span.kind"])
+		assert.Equal(t, "Server", labels["span_kind"])
 	})
 }
 

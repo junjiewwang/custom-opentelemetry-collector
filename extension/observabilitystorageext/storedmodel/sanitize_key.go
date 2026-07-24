@@ -8,22 +8,8 @@ import "strings"
 // SanitizeKey normalizes an OTel attribute key for ES storage by compressing
 // segment depth to ≤ 2 to prevent dynamic mapping conflicts.
 //
-// ES dynamic:true interprets dots (.) in field names as nested path separators.
-// This causes mapper_parsing_exception when a dotted key in one document creates
-// an intermediate object that a different document's attribute conflicts with.
-//
-// Example conflict:
-//
-//	Document A: "peer.service.source" → ES creates peer(ojb) → service(obj) → source(field)
-//	Document B: "peer.service"        → ES tries peer.service = string, but peer.service is already an object
-//
-// Algorithm: keep the first dot, replace all subsequent dots with underscores.
-//
-//	"kind"               → "kind"
-//	"http.method"         → "http.method"          (2 segments: unchanged)
-//	"peer.service"        → "peer.service"         (2 segments: unchanged)
-//	"peer.service.source" → "peer.service_source"  (3 segments: compress to 2)
-//	"a.b.c.d"            → "a.b_c_d"              (4 segments: compress to 2)
+// Used for traces/logs where 2-segment OTel keys (http.method) are intentional.
+// For metric labels, use SanitizeMetricKey instead (replaces all dots).
 func SanitizeKey(key string) string {
 	// 0-1 segment: no dot, return as-is.
 	firstDot := strings.IndexByte(key, '.')
@@ -36,8 +22,26 @@ func SanitizeKey(key string) string {
 		return key
 	}
 	// ≥3 segments: keep the first dot, replace subsequent dots with underscores.
-	secondDotAbs := firstDot + 1 + secondDot   // absolute position of second dot
-	prefix := key[:secondDotAbs]               // "peer.service"
-	suffix := key[secondDotAbs+1:]             // "source" or "source.extra"
+	secondDotAbs := firstDot + 1 + secondDot
+	prefix := key[:secondDotAbs]
+	suffix := key[secondDotAbs+1:]
 	return prefix + "_" + strings.ReplaceAll(suffix, ".", "_")
+}
+
+// SanitizeMetricKey normalizes a metric label key for ES storage by replacing
+// ALL dots with underscores. Unlike SanitizeKey (which preserves 2-segment
+// dotted keys like http.method for OTel trace convention), metric labels
+// must have zero dots because ES dynamic:true interprets dots as object nesting.
+//
+// This prevents conflicts between scalar and nested values of the same label:
+//
+//	Doc A: server = "my-svc"        → labels.server = "my-svc"
+//	Doc B: server.address = "10.0"  → labels.server_address = "10.0" (no nesting)
+//
+//	"server"             → "server"
+//	"server.address"     → "server_address"
+//	"http.method"         → "http_method"
+//	"peer.service.source" → "peer_service_source"
+func SanitizeMetricKey(key string) string {
+	return strings.ReplaceAll(SanitizeKey(key), ".", "_")
 }

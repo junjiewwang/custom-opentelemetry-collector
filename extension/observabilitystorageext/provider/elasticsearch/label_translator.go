@@ -102,7 +102,7 @@ var prometheusToOtelLabelKeys = map[string]string{
 
 // translateLabelKey returns the ES-side label key for a Prometheus-style key.
 // Known OTel standard attributes get dot conversion. All keys are sanitized
-// via SanitizeKey to match the storage format (see storedmodel.SanitizeKey).
+// via SanitizeMetricKey to match the metric storage format (dots → underscores).
 func translateLabelKey(promKey string) string {
 	var otelKey string
 	if known, ok := prometheusToOtelLabelKeys[promKey]; ok {
@@ -110,7 +110,7 @@ func translateLabelKey(promKey string) string {
 	} else {
 		otelKey = promKey
 	}
-	return storedmodel.SanitizeKey(otelKey)
+	return storedmodel.SanitizeMetricKey(otelKey)
 }
 
 // translateLabelValue normalizes known OTel enum values for the given ES key.
@@ -119,12 +119,9 @@ func translateLabelKey(promKey string) string {
 // any input to the short-form value stored in ES.
 func translateLabelValue(esKey, value string) string {
 	switch esKey {
-	case "span.kind":
-		// Normalize to ES short form (Server, Client, Internal, etc.)
-		// Matches the values stored by the OTel collector in ES labels.span.kind field.
+	case "span.kind", "span_kind":
 		return normalizeSpanKindForStorage(value)
-	case "status.code":
-		// Normalize to ES short form (Ok, Error, Unset).
+	case "status.code", "status_code":
 		return normalizeStatusCodeForStorage(value)
 	default:
 		return value

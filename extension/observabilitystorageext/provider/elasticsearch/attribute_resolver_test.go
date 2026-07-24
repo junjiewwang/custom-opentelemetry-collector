@@ -50,6 +50,16 @@ func TestAttributeResolver_Resolve(t *testing.T) {
 		{name: "event:name → attributes.xxx", raw: "event:name", want: FieldAttributes + ".name"},
 		{name: "link:traceID → attributes.xxx", raw: "link:traceID", want: FieldAttributes + ".traceID"},
 
+		// ── Span ID / Trace ID intrinsic ──
+		{name: "span:id → spanId", raw: "span:id", want: FieldSpanID},
+		{name: "span:spanID → spanId", raw: "span:spanID", want: FieldSpanID},
+		{name: "span.spanID → spanId", raw: "span.spanID", want: FieldSpanID},
+		{name: "trace:traceID → traceID", raw: "trace:traceID", want: FieldTraceID},
+		{name: "id unscoped → spanId", raw: "id", want: FieldSpanID},
+		{name: "span:parentID → parentSpanId", raw: "span:parentID", want: FieldParentSpanID},
+		{name: "parentId → parentSpanId", raw: "span:parentId", want: FieldParentSpanID},
+		{name: "trace:id → traceID", raw: "trace:id", want: FieldTraceID},
+
 		// ── Edge cases ──
 		{name: "empty string", raw: "", want: FieldAttributes + "."},
 		{name: "dot only", raw: ".", want: FieldAttributes + "."},

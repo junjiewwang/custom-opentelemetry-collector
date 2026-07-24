@@ -191,7 +191,8 @@ func pcommonMapToFlatWithSep(attrs pcommon.Map, sep string) map[string]any {
 }
 
 // flattenMapToFlat recursively flattens a pcommon.Map joining nested keys
-// with the given separator. Keys are sanitized via SanitizeKey before storage.
+// with the given separator. For "_" separator (metrics), all dots are replaced
+// with underscores to prevent ES nested path interpretation.
 func flattenMapToFlat(result map[string]any, prefix, sep string, attrs pcommon.Map) {
 	attrs.Range(func(k string, v pcommon.Value) bool {
 		fullKey := k
@@ -201,7 +202,11 @@ func flattenMapToFlat(result map[string]any, prefix, sep string, attrs pcommon.M
 		if v.Type() == pcommon.ValueTypeMap {
 			flattenMapToFlat(result, fullKey, sep, v.Map())
 		} else {
-			result[SanitizeKey(fullKey)] = valueToAny(v)
+			if sep == "_" {
+				result[SanitizeMetricKey(fullKey)] = valueToAny(v)
+			} else {
+				result[SanitizeKey(fullKey)] = valueToAny(v)
+			}
 		}
 		return true
 	})

@@ -160,7 +160,8 @@ func TestBuildMetricFilter_LabelMatch_UnsupportedRegex(t *testing.T) {
 
 	// Should have post-filters.
 	assert.NotEmpty(t, result.PostFilters)
-	assert.Equal(t, `opentelemetry.*Export`, result.PostFilters["span.name"])
+	// Key translated by SanitizeMetricKey: span.name → span_name
+	assert.Equal(t, `opentelemetry.*Export`, result.PostFilters["span_name"])
 }
 
 func TestBuildMetricFilter_LabelMatch_SingleLiteral(t *testing.T) {

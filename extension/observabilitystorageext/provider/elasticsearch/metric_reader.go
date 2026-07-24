@@ -279,7 +279,7 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 
 // ListLabelValues returns values for a specific label within the time range.
 func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
-	fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", storedmodel.SanitizeKey(label))
+	fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", storedmodel.SanitizeMetricKey(label))
 
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),
