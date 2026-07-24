@@ -89,8 +89,9 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 		must = append(must, map[string]any{"term": map[string]any{FieldKind: capitalizeFirst(query.SpanKind)}})
 	}
 	if query.Status != "" {
-		// TraceQL uses lowercase (error, ok), ES stores capitalized (Error, Ok) in status.code.
-		must = append(must, map[string]any{"term": map[string]any{FieldStatus + ".code": capitalizeFirst(query.Status)}})
+		// ES stores status.code values as-is (lowercase from OTel enum String()).
+		// No capitalizeFirst needed — verified with ES: 277K lowercase "error" docs.
+		must = append(must, map[string]any{"term": map[string]any{FieldStatus + ".code": query.Status}})
 	}
 	if query.IsRoot {
 		// Root span: parentSpanId field is absent (omitempty) for new data,
@@ -313,7 +314,6 @@ func metricsTermClause(field, value string) map[string]any {
 // resourceFieldsNoKeyword lists resource.* fields explicitly mapped as keyword/long
 // (not text) and therefore do NOT need a .keyword suffix for aggregation.
 var resourceFieldsNoKeyword = map[string]bool{
-	FieldResource + ".app_id":             true,
 	FieldResource + ".host.name":          true,
 	FieldResource + ".service.namespace":  true,
 	FieldResource + ".service.version":    true,
