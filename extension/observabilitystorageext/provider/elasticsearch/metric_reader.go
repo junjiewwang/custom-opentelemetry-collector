@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +37,12 @@ func NewMetricReader(searcher Searcher, config *Config, logger *zap.Logger) *Met
 
 // Query executes an instant metric query, returning the latest value(s) before the given time.
 // AppID is optional: when empty, queries all app indices (admin mode).
+//
+// Returns one data point per distinct label set (the latest sample for each
+// series), matching the PromQL instant-vector contract consumed by the
+// Prometheus handler. Grouping is done in Go (not via an ES terms aggregation
+// on the "labels" object field, which ES silently returns empty for — object
+// fields have no terms to aggregate).
 func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricResult, error) {
 	// Use buildMetricFilter for consistent label/labelMatch handling across all query paths.
 	var timeRange TimeRange
@@ -45,26 +52,21 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 	filterResult := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, timeRange)
 	esQuery := filterResult.Query
 
-	// Use top_hits aggregation grouped by label set to get latest value per series.
+	// Fetch matching documents sorted newest-first, then dedupe by label set in
+	// Go. top_hits cannot group by an arbitrary object field, and a terms agg on
+	// "labels" returns no buckets. Size is a per-query cap on documents scanned
+	// for dedup; it bounds the result series count (latest-per-series) and the
+	// worst-case scan when many series exist.
+	const instantScanSize = 500
 	searchReq := &SearchRequest{
 		Query: esQuery,
-		Size:  0,
-		Aggregations: map[string]any{
-			"by_labels": map[string]any{
-				"terms": map[string]any{
-					"field": FieldMetricLabels,
-					"size":  1000,
-				},
-				"aggs": map[string]any{
-					"latest": map[string]any{
-						"top_hits": map[string]any{
-							"size":    1,
-							"sort":    []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}}},
-							"_source": []string{FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels, FieldMetricBucketCounts, FieldMetricExplicitBounds},
-						},
-					},
-				},
-			},
+		Size:  instantScanSize,
+		Sort: []map[string]any{
+			{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}},
+		},
+		Source: []string{
+			FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels,
+			FieldMetricBucketCounts, FieldMetricExplicitBounds,
 		},
 	}
 
@@ -73,31 +75,18 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 		return nil, fmt.Errorf("metric query failed: %w", err)
 	}
 
-	// Fallback: if aggregation doesn't work well with object fields,
-	// use a direct query approach.
-	if resp.Aggregations == nil || len(resp.Aggregations) == 0 {
-		return r.queryDirect(ctx, query.AppID, esQuery)
-	}
-
-	result := &MetricResult{}
-	if raw, ok := resp.Aggregations["by_labels"]; ok {
-		var agg struct {
-			Buckets []struct {
-				Latest struct {
-					Hits struct {
-						Hits []SearchHit `json:"hits"`
-					} `json:"hits"`
-				} `json:"latest"`
-			} `json:"buckets"`
+	// Dedupe by label set: since hits are newest-first, the first hit seen for
+	// a given label set is that series' latest sample.
+	seen := make(map[string]struct{}, len(resp.Hits.Hits))
+	result := &MetricResult{Data: make([]MetricDataPoint, 0, len(resp.Hits.Hits))}
+	for _, hit := range resp.Hits.Hits {
+		dp := r.hitToDataPoint(hit)
+		key := labelsKey(dp.Labels)
+		if _, dup := seen[key]; dup {
+			continue
 		}
-		if err := json.Unmarshal(raw, &agg); err == nil {
-			for _, bucket := range agg.Buckets {
-				for _, hit := range bucket.Latest.Hits.Hits {
-					dp := r.hitToDataPoint(hit)
-					result.Data = append(result.Data, dp)
-				}
-			}
-		}
+		seen[key] = struct{}{}
+		result.Data = append(result.Data, dp)
 	}
 
 	// Post-filter for complex regex patterns unsupported by ES flattened fields.
@@ -106,27 +95,32 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 	return result, nil
 }
 
-// queryDirect performs a direct search as fallback when aggregation on object fields fails.
-func (r *MetricReader) queryDirect(ctx context.Context, appID string, query map[string]any) (*MetricResult, error) {
-	searchReq := &SearchRequest{
-		Query: query,
-		Size:  100,
-		Sort: []map[string]any{
-			{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}},
-		},
+// labelsKey returns a stable string key for a metric label set, for dedup.
+// Empty/nil labels map to "". Keys are sorted for determinism.
+func labelsKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
 	}
-
-	resp, err := r.searcher.Search(ctx, r.indexPattern(appID), searchReq)
-	if err != nil {
-		return nil, fmt.Errorf("metric direct query failed: %w", err)
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
 	}
-
-	result := &MetricResult{Data: make([]MetricDataPoint, 0, len(resp.Hits.Hits))}
-	for _, hit := range resp.Hits.Hits {
-		result.Data = append(result.Data, r.hitToDataPoint(hit))
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(labels[k])
 	}
-	return result, nil
+	return b.String()
 }
+
+// queryDirect was removed: Query no longer uses an object-field aggregation
+// that could fail, so the direct-search fallback is unnecessary. Query itself
+// now fetches newest-first and dedupes by label set in Go.
 
 // QueryRange executes a range metric query, returning time series data.
 // AppID is optional: when empty, queries all app indices (admin mode).
