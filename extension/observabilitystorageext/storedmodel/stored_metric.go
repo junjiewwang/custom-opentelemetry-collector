@@ -64,7 +64,7 @@ func convertNumberPoints(dps any, kind string, base StoredMetricDataPoint) []Sto
 			pt := base
 			pt.TimeUnixMilli = int64(dp.Timestamp()) / 1e6
 			pt.Type = kind
-			pt.Labels = pcommonMapToFlat(dp.Attributes())
+			pt.Labels = pcommonMapToFlatMetric(dp.Attributes())
 			switch dp.ValueType() {
 			case pmetric.NumberDataPointValueTypeDouble:
 				pt.Value = dp.DoubleValue()
@@ -86,7 +86,7 @@ func convertHistogramPoints(dps pmetric.HistogramDataPointSlice, base StoredMetr
 		pt := base
 		pt.TimeUnixMilli = int64(dp.Timestamp()) / 1e6
 		pt.Type = "histogram"
-		pt.Labels = pcommonMapToFlat(dp.Attributes())
+		pt.Labels = pcommonMapToFlatMetric(dp.Attributes())
 		if dp.HasSum() {
 			pt.Value = dp.Sum()
 		}
@@ -104,7 +104,7 @@ func convertSummaryPoints(dps pmetric.SummaryDataPointSlice, base StoredMetricDa
 		pt := base
 		pt.TimeUnixMilli = int64(dp.Timestamp()) / 1e6
 		pt.Type = "summary"
-		pt.Labels = pcommonMapToFlat(dp.Attributes())
+		pt.Labels = pcommonMapToFlatMetric(dp.Attributes())
 		pt.Value = dp.Sum()
 		result[i] = pt
 	}

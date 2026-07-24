@@ -150,35 +150,56 @@ func toParentID(parentID pcommon.SpanID) string {
 }
 
 // pcommonMapToFlat converts a pcommon.Map to a flat map[string]any.
-// Nested maps (ValueTypeMap) are recursively flattened using "_" to
-// prevent ES from interpreting the separator as nested path.
-// ES treats "." in JSON keys as object nesting, so flattening with "."
-// would create "labels.server.address" which conflicts with "labels.server".
-// Using "_" produces independent flat keys with no nesting ambiguity.
-//   {server: {name: "foo"}} -> {"server_name": "foo"}
-//   {server: "my-svc"}       -> {"server": "my-svc"}
+// Uses "." as the separator between nested keys. For traces/logs/resource
+// attributes, nested maps become flattenMapToFlat(seg: ".") by recursively collapsing
+// ValueTypeMap into flat {"a.b": val} — ES interprets dots as object nesting,
+// which is the expected behavior for these signal types.
+//
+// For metric labels, use pcommonMapToFlatMetric instead (uses "_" separator
+// to align with Prometheus convention and prevent ES mapping conflicts).
+//
+//	{server: {name: "foo"}} -> {"server.name": "foo"}
+//	{server: "my-svc"}       -> {"server": "my-svc"}
 func pcommonMapToFlat(attrs pcommon.Map) map[string]any {
+	return pcommonMapToFlatWithSep(attrs, ".")
+}
+
+// pcommonMapToFlatMetric is the metric-labels variant of pcommonMapToFlat.
+// Uses "_" as the separator to prevent ES from interpreting dots in JSON keys
+// as object nesting. Example:
+//
+//	Doc A: server = "my-svc"           -> labels.server = "my-svc"
+//	Doc B: server = {address: "x"}     -> labels.server_address = "x"
+//
+//	ES: labels.server (keyword) and labels.server_address (keyword) are
+//	    completely independent fields → no mapping conflict.
+func pcommonMapToFlatMetric(attrs pcommon.Map) map[string]any {
+	return pcommonMapToFlatWithSep(attrs, "_")
+}
+
+// pcommonMapToFlatWithSep flattens with the given key-join separator.
+func pcommonMapToFlatWithSep(attrs pcommon.Map, sep string) map[string]any {
 	if attrs.Len() == 0 {
 		return nil
 	}
 	result := make(map[string]any)
-	flattenMapToFlat(result, "" /* parent prefix */, attrs)
+	flattenMapToFlat(result, "" /* parent prefix */, sep, attrs)
 	if len(result) == 0 {
 		return nil
 	}
 	return result
 }
 
-// flattenMapToFlat recursively flattens a pcommon.Map, joining nested keys
-// with "_" to avoid ES dot-path nesting. Keys are sanitized via SanitizeKey.
-func flattenMapToFlat(result map[string]any, prefix string, attrs pcommon.Map) {
+// flattenMapToFlat recursively flattens a pcommon.Map joining nested keys
+// with the given separator. Keys are sanitized via SanitizeKey before storage.
+func flattenMapToFlat(result map[string]any, prefix, sep string, attrs pcommon.Map) {
 	attrs.Range(func(k string, v pcommon.Value) bool {
 		fullKey := k
 		if prefix != "" {
-			fullKey = prefix + "_" + k
+			fullKey = prefix + sep + k
 		}
 		if v.Type() == pcommon.ValueTypeMap {
-			flattenMapToFlat(result, fullKey, v.Map())
+			flattenMapToFlat(result, fullKey, sep, v.Map())
 		} else {
 			result[SanitizeKey(fullKey)] = valueToAny(v)
 		}
