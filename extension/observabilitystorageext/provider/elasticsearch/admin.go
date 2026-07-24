@@ -270,11 +270,11 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 						"properties": map[string]any{
 							"name":       map[string]any{"type": "keyword"},
 							"version":    map[string]any{"type": "keyword"},
-							"attributes": map[string]any{"dynamic": true},
+							"attributes": map[string]any{"type": "object", "dynamic": true},
 						},
 					},
 				// Attributes via strings_as_keyword dynamic template (sub-fields queryable)
-				FieldAttributes: map[string]any{"dynamic": true},
+				FieldAttributes: map[string]any{"type": "object", "dynamic": true},
 					FieldResource: map[string]any{
 						"properties": map[string]any{
 							"service.name":      map[string]any{"type": "keyword"},
@@ -290,7 +290,7 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 						"properties": map[string]any{
 							FieldLogTimeUnixNano: map[string]any{"type": "long"},
 							"name":               map[string]any{"type": "keyword"},
-							FieldAttributes:      map[string]any{"dynamic": true},
+							FieldAttributes:      map[string]any{"type": "object", "dynamic": true},
 						},
 					},
 					// Links (new format, extended)
@@ -300,7 +300,7 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 							FieldTraceID:    map[string]any{"type": "keyword"},
 							FieldSpanID:     map[string]any{"type": "keyword"},
 							FieldTraceState: map[string]any{"type": "keyword"},
-							FieldAttributes: map[string]any{"dynamic": true},
+							FieldAttributes: map[string]any{"type": "object", "dynamic": true},
 						},
 					},
 					// Derived fields
@@ -351,8 +351,8 @@ func (a *Admin) createMetricTemplate(ctx context.Context) error {
 					FieldMetricValue:        map[string]any{"type": "double"},
 					FieldServiceName:        map[string]any{"type": "keyword"},
 					FieldAppID:              map[string]any{"type": "keyword"},
-				FieldMetricLabels:       map[string]any{"dynamic": true},
-				FieldResource:           map[string]any{"dynamic": true},
+				FieldMetricLabels:       map[string]any{"type": "object", "dynamic": true},
+				FieldResource:           map[string]any{"type": "object", "dynamic": true},
 				},
 			},
 		},
@@ -398,8 +398,8 @@ func (a *Admin) createLogTemplate(ctx context.Context) error {
 					FieldLogBody:                 map[string]any{"type": "text", "analyzer": "standard"},
 					FieldServiceName:             map[string]any{"type": "keyword"},
 					FieldAppID:                   map[string]any{"type": "keyword"},
-				FieldAttributes:              map[string]any{"dynamic": true}, // sub-fields via strings_as_keyword template
-				FieldResource:                map[string]any{"dynamic": true}, // sub-fields via strings_as_keyword template
+				FieldAttributes:              map[string]any{"type": "object", "dynamic": true}, // sub-fields via strings_as_keyword template
+				FieldResource:                map[string]any{"type": "object", "dynamic": true}, // sub-fields via strings_as_keyword template
 				},
 			},
 		},
