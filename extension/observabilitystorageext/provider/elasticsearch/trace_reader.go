@@ -1203,6 +1203,14 @@ func (r *TraceReader) GetTagValues(ctx context.Context, tagKey string, timeRange
 	}
 	fieldName := fieldPrefix + "." + tagKey
 
+	// Custom attributes are text fields from ES dynamic template.
+	// Terms aggregation on text fields returns empty buckets;
+	// must use .keyword sub-field. Known keyword fields (in knownAggregatableFields)
+	// support aggregation directly without .keyword.
+	if !knownAggregatableFields[fieldName] {
+		fieldName = fieldName + ".keyword"
+	}
+
 	// Build query with time range + optional filter conditions.
 	qb := esq.NewBuilder().
 		Raw(esq.TimeRangeFilter(FieldStartTimeUnixNano, timeRange))
