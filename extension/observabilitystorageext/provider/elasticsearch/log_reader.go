@@ -100,7 +100,10 @@ func (r *LogReader) SearchLogMetric(ctx context.Context, query LogMetricQuery) (
 	// Nested terms aggregations for each group-by label, from innermost to outermost
 	outerAgg := innerAgg
 	for i := len(query.GroupByLabels) - 1; i >= 0; i-- {
-		esField := r.resolveLogLabelESField(query.GroupByLabels[i])
+		esField, isDynamic := r.resolveLogLabelESField(query.GroupByLabels[i])
+		if isDynamic {
+			esField = esField + ".keyword"
+		}
 		outerAgg = map[string]any{
 			"by_" + query.GroupByLabels[i]: map[string]any{
 				"terms": map[string]any{
@@ -579,15 +582,15 @@ func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
 
 	// ── Loki-specific stream selector labels ──
 	for k, v := range lq.Labels {
-		f := r.resolveLogLabelESField(k)
-		if !knownAggregatableFields[f] {
+		f, isDynamic := r.resolveLogLabelESField(k)
+		if isDynamic {
 			f = f + ".keyword"
 		}
 		qb.Term(f, v)
 	}
 	for k, v := range lq.LabelMatch {
-		esField := r.resolveLogLabelESField(k)
-		if !knownAggregatableFields[esField] {
+		esField, isDynamic := r.resolveLogLabelESField(k)
+		if isDynamic {
 			esField = esField + ".keyword"
 		}
 		// LabelMatch represents regex patterns (=~ operator) on log labels.
@@ -712,11 +715,11 @@ func (r *LogReader) ListLogLabels(ctx context.Context, timeRange TimeRange, appI
 
 // ListLogLabelValues returns distinct values for a label within the time range.
 func (r *LogReader) ListLogLabelValues(ctx context.Context, label string, timeRange TimeRange, appID string) ([]string, error) {
-	field := r.resolveLogLabelESField(label)
+	field, isDynamic := r.resolveLogLabelESField(label)
 	if field == "" {
 		return nil, nil
 	}
-	return r.listFieldValues(ctx, field, timeRange, appID)
+	return r.listFieldValues(ctx, field, isDynamic, timeRange, appID)
 }
 
 // resolveLogLabelESField maps a Loki-style label name to the ES field.
@@ -733,20 +736,22 @@ var logLabelFieldMap = map[string]string{
 	"spanID":         FieldSpanID,
 }
 
-func (r *LogReader) resolveLogLabelESField(label string) string {
+// resolveLogLabelESField returns (field, isDynamic) where isDynamic=true
+// for labels NOT in logLabelFieldMap. Dynamic fields are resource.* text
+// fields requiring .keyword suffix for exact term matching.
+func (r *LogReader) resolveLogLabelESField(label string) (string, bool) {
 	if f, ok := logLabelFieldMap[label]; ok {
-		return f
+		return f, false // explicit keyword field, no .keyword needed
 	}
 	// Dynamic labels (resource.* or attributes.*): Loki uses underscore naming
 	// (e.g. process_runtime_name), OTel/ES uses dot naming (process.runtime_name).
-	// Convert underscore → dot to match the stored ES field path.
 	otelKey := label
 	if known, ok := prometheusToOtelLabelKeys[label]; ok {
 		otelKey = known
 	} else {
 		otelKey = strings.ReplaceAll(label, "_", ".")
 	}
-	return FieldResource + "." + otelKey
+	return FieldResource + "." + otelKey, true // dynamic text field, needs .keyword
 }
 
 func (r *LogReader) listFieldKeys(ctx context.Context, timeRange TimeRange, appID string, fields ...string) ([]string, error) {
@@ -762,10 +767,11 @@ func (r *LogReader) listFieldKeys(ctx context.Context, timeRange TimeRange, appI
 	return append([]string(nil), fields...), nil
 }
 
-func (r *LogReader) listFieldValues(ctx context.Context, field string, timeRange TimeRange, appID string) ([]string, error) {
+func (r *LogReader) listFieldValues(ctx context.Context, field string, isDynamic bool, timeRange TimeRange, appID string) ([]string, error) {
 	// Dynamic text fields from ES template need .keyword for terms aggregation.
+	// Explicit keyword fields (from logLabelFieldMap) do not.
 	aggField := field
-	if !knownAggregatableFields[aggField] {
+	if isDynamic {
 		aggField = aggField + ".keyword"
 	}
 	searchReq := &SearchRequest{

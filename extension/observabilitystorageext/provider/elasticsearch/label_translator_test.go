@@ -147,13 +147,14 @@ func TestResolveLogLabelESField(t *testing.T) {
 		{"severity", FieldLogSeverityText},
 		{"traceID", FieldTraceID},
 		{"spanID", FieldSpanID},
-		// Unknown labels → resource.<label>
-		{"custom_label", "resource.custom_label"},
+		// Unknown labels → resource.<label> (underscore→dot conversion)
+		{"custom_label", "resource.custom.label"},
 		{"unknown", "resource.unknown"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.label, func(t *testing.T) {
-			assert.Equal(t, tt.want, r.resolveLogLabelESField(tt.label))
+			got, _ := r.resolveLogLabelESField(tt.label)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
