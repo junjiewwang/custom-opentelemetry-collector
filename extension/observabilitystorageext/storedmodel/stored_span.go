@@ -150,18 +150,37 @@ func toParentID(parentID pcommon.SpanID) string {
 }
 
 // pcommonMapToFlat converts a pcommon.Map to a flat map[string]any.
-// Attribute keys are sanitized via SanitizeKey to prevent ES dynamic mapping
-// conflicts caused by dotted keys (e.g. "peer.service.source" vs "peer.service").
+// Nested maps (ValueTypeMap) are recursively flattened into dotted keys to
+// prevent ES object-vs-scalar type conflicts across polymorphic OTel values.
+//   {server: {name: "foo"}} -> {"server.name": "foo"}
+//   {server: "my-svc"}       -> {"server": "my-svc"}
 func pcommonMapToFlat(attrs pcommon.Map) map[string]any {
 	if attrs.Len() == 0 {
 		return nil
 	}
-	result := make(map[string]any, attrs.Len())
+	result := make(map[string]any)
+	flattenMapToFlat(result, "" /* parent prefix */, attrs)
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// flattenMapToFlat recursively flattens a pcommon.Map, joining nested keys
+// with "." and sanitizing the final key via SanitizeKey.
+func flattenMapToFlat(result map[string]any, prefix string, attrs pcommon.Map) {
 	attrs.Range(func(k string, v pcommon.Value) bool {
-		result[SanitizeKey(k)] = valueToAny(v)
+		fullKey := k
+		if prefix != "" {
+			fullKey = prefix + "." + k
+		}
+		if v.Type() == pcommon.ValueTypeMap {
+			flattenMapToFlat(result, fullKey, v.Map())
+		} else {
+			result[SanitizeKey(fullKey)] = valueToAny(v)
+		}
 		return true
 	})
-	return result
 }
 
 // valueToAny converts a pcommon.Value to a native Go type.
