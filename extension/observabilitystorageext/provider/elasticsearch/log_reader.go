@@ -734,6 +734,20 @@ var logLabelFieldMap = map[string]string{
 	"traceID":        FieldTraceID,
 	"trace_id":       FieldTraceID, // Grafana Explore uses underscore naming
 	"spanID":         FieldSpanID,
+
+	// Known OTel log attributes stored under attributes.* in ES.
+	// These are text fields → need .keyword, marked as dynamic.
+	"exception_message":    FieldAttributes + ".exception.message",
+	"exception_stacktrace": FieldAttributes + ".exception.stacktrace",
+	"exception_type":       FieldAttributes + ".exception.type",
+}
+
+// labelFieldsNeedKeyword lists labels in logLabelFieldMap that are text fields
+// (stored under attributes.*) and need .keyword suffix for term aggregation.
+var labelFieldsNeedKeyword = map[string]bool{
+	"exception_message":    true,
+	"exception_stacktrace": true,
+	"exception_type":       true,
 }
 
 // resolveLogLabelESField returns (field, isDynamic) where isDynamic=true
@@ -741,16 +755,18 @@ var logLabelFieldMap = map[string]string{
 // fields requiring .keyword suffix for exact term matching.
 func (r *LogReader) resolveLogLabelESField(label string) (string, bool) {
 	if f, ok := logLabelFieldMap[label]; ok {
-		return f, false // explicit keyword field, no .keyword needed
+		return f, labelFieldsNeedKeyword[label]
 	}
-	// Dynamic labels (resource.* or attributes.*): Loki uses underscore naming
-	// (e.g. process_runtime_name), OTel/ES uses dot naming (process.runtime_name).
+	// Dynamic labels: use known Prom→OTel mappings, fall back to label as-is.
+	// Generic underscore→dot is NOT safe: process_command_line → process.command.line
+	// (wrong) vs process.command_line (correct). Only promTable has correct conversions.
 	otelKey := label
 	if known, ok := prometheusToOtelLabelKeys[label]; ok {
 		otelKey = known
-	} else {
-		otelKey = strings.ReplaceAll(label, "_", ".")
 	}
+	// NOTE: unknown labels are stored as-is (underscore preserved).
+	// They may not match any ES field and return empty results.
+	// Add known resource/attribute labels to logLabelFieldMap or promTable.
 	return FieldResource + "." + otelKey, true // dynamic text field, needs .keyword
 }
 

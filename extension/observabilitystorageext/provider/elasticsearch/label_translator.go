@@ -41,6 +41,34 @@ var prometheusToOtelLabelKeys = map[string]string{
 	"service_version":     "service.version",
 	"service_namespace":   "service.namespace",
 
+	// ── Process ──
+	"process_pid":                  "process.pid",
+	"process_command_line":         "process.command_line",
+	"process_executable_path":      "process.executable_path",
+	"process_runtime_name":         "process.runtime_name",
+	"process_runtime_version":      "process.runtime_version",
+	"process_runtime_description":  "process.runtime_description",
+
+	// ── Telemetry ──
+	"telemetry_sdk_name":      "telemetry.sdk_name",
+	"telemetry_sdk_language":  "telemetry.sdk_language",
+	"telemetry_sdk_version":   "telemetry.sdk_version",
+	"telemetry_distro_name":   "telemetry.distro_name",
+	"telemetry_distro_version": "telemetry.distro_version",
+
+	// ── Host / OS ──
+	"host_arch":        "host.arch",
+	"host_name":        "host.name",
+	"os_type":          "os.type",
+	"os_description":   "os.description",
+
+	// ── Container ──
+	"container_id": "container.id",
+
+	// ── App ──
+	"app_id": "app_id",
+	"custom": "custom",
+
 	// ── Status ──
 	"status_code":    "status.code",
 	"status_message": "status.message",
