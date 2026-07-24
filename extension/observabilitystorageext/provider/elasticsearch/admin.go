@@ -96,23 +96,26 @@ func (a *Admin) SetRetention(ctx context.Context, indexPrefix string, retention 
 	return a.createILMPolicy(ctx, policyName, retention)
 }
 
-// Purge deletes all documents older than `before` in the indices matching the given prefix.
-// It uses delete_by_query with a timestamp range filter.
-func (a *Admin) Purge(ctx context.Context, indexPrefix string, timestampField string, before time.Time) (int64, error) {
+// Purge deletes all documents older than `before` in the indices matching the
+// given prefix, for the given signal type. It uses delete_by_query with a
+// timestamp range filter on the signal's canonical ES timestamp field.
+//
+// `signal` ("trace"/"metric"/"log") selects both the timestamp field and the
+// bound type (nanoseconds for trace/log long fields, milliseconds for the
+// metric epoch_millis date field) via signalTimestampField /
+// signalTimestampBound. The query is built by the shared buildDeleteByQuery
+// helper, which the Purger fallback and Provider purge paths also use.
+func (a *Admin) Purge(ctx context.Context, indexPrefix string, signal string, before time.Time) (int64, error) {
 	indexPattern := indexPrefix + "-*"
+	tsField := signalTimestampField(signal)
 	a.logger.Info("Purging data",
 		zap.String("index_pattern", indexPattern),
-		zap.String("timestamp_field", timestampField),
+		zap.String("signal", signal),
+		zap.String("timestamp_field", tsField),
 		zap.Time("before", before),
 	)
 
-	query := map[string]any{
-		"range": map[string]any{
-			timestampField: map[string]any{
-				"lt": before.Format(time.RFC3339Nano),
-			},
-		},
-	}
+	query := buildDeleteByQuery(tsField, signalTimestampBound(signal, before), "")
 
 	deleted, err := a.client.DeleteByQuery(ctx, indexPattern, query)
 	if err != nil {
@@ -126,42 +129,33 @@ func (a *Admin) Purge(ctx context.Context, indexPrefix string, timestampField st
 	return deleted, nil
 }
 
-// PurgeByApp deletes documents for a specific app_id older than `before`.
-// Uses app-scoped index pattern for better performance.
+// PurgeByApp deletes documents for a specific app_id older than `before`, for
+// the given signal type. Uses an app-scoped index pattern for better
+// performance.
+//
+// `signal` selects the timestamp field and bound type as in Purge. The query
+// is built by the shared buildDeleteByQuery helper, which adds the appId term
+// scoping.
 //
 // The AppID is sanitized using the same storedmodel.SanitizeAppID function
 // (with Lowercase: false) that TraceWriter.WriteSpans uses when constructing
 // index names on write. Using a different sanitization here previously
 // caused this method's index pattern to never match the actual (mixed-case)
 // indices — see docs/2026-07-09/appid-sanitize-unification-design.md §2.2.
-func (a *Admin) PurgeByApp(ctx context.Context, indexPrefix string, timestampField string, appID string, before time.Time) (int64, error) {
+func (a *Admin) PurgeByApp(ctx context.Context, indexPrefix string, signal string, appID string, before time.Time) (int64, error) {
 	// Use app-scoped index pattern to limit search scope.
 	sanitizedAppID := storedmodel.SanitizeAppID(appID, storedmodel.SanitizeOptions{Lowercase: false})
 	indexPattern := indexPrefix + "-" + sanitizedAppID + "-*"
+	tsField := signalTimestampField(signal)
 	a.logger.Info("Purging data by app",
 		zap.String("index_pattern", indexPattern),
+		zap.String("signal", signal),
 		zap.String("app_id", appID),
+		zap.String("timestamp_field", tsField),
 		zap.Time("before", before),
 	)
 
-	query := map[string]any{
-		"bool": map[string]any{
-			"must": []map[string]any{
-				{
-					"range": map[string]any{
-						timestampField: map[string]any{
-							"lt": before.Format(time.RFC3339Nano),
-						},
-					},
-				},
-				{
-					"term": map[string]any{
-						FieldAppID: appID,
-					},
-				},
-			},
-		},
-	}
+	query := buildDeleteByQuery(tsField, signalTimestampBound(signal, before), appID)
 
 	deleted, err := a.client.DeleteByQuery(ctx, indexPattern, query)
 	if err != nil {
@@ -215,8 +209,15 @@ func (a *Admin) createILMPolicy(ctx context.Context, name string, retention time
 // createTraceTemplate creates the trace index template.
 func (a *Admin) createTraceTemplate(ctx context.Context) error {
 	cfg := a.config.Traces
-	template := map[string]any{
-        "index_patterns": []string{cfg.IndexPrefix + "-*"},
+	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, traceTemplateMappings(cfg))
+}
+
+// traceTemplateMappings builds the trace index template body for the given
+// index config. Extracted from createTraceTemplate so the mappings can be
+// inspected by field_consistency_test.go without a client/ctx.
+func traceTemplateMappings(cfg IndexConfig) map[string]any {
+	return map[string]any{
+		"index_patterns": []string{cfg.IndexPrefix + "-*"},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"number_of_shards":               cfg.Shards,
@@ -273,8 +274,8 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 							"attributes": map[string]any{"type": "object", "dynamic": true},
 						},
 					},
-				// Attributes via strings_as_keyword dynamic template (sub-fields queryable)
-				FieldAttributes: map[string]any{"type": "object", "dynamic": true},
+					// Attributes via strings_as_keyword dynamic template (sub-fields queryable)
+					FieldAttributes: map[string]any{"type": "object", "dynamic": true},
 					FieldResource: map[string]any{
 						"properties": map[string]any{
 							"service.name":      map[string]any{"type": "keyword"},
@@ -310,14 +311,19 @@ func (a *Admin) createTraceTemplate(ctx context.Context) error {
 			},
 		},
 	}
-	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, template)
 }
 
 // createMetricTemplate creates the metric index template.
 func (a *Admin) createMetricTemplate(ctx context.Context) error {
 	cfg := a.config.Metrics
-	template := map[string]any{
-        "index_patterns": []string{cfg.IndexPrefix + "-*"},
+	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, metricTemplateMappings(cfg))
+}
+
+// metricTemplateMappings builds the metric index template body. See
+// traceTemplateMappings for the extraction rationale.
+func metricTemplateMappings(cfg IndexConfig) map[string]any {
+	return map[string]any{
+		"index_patterns": []string{cfg.IndexPrefix + "-*"},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"number_of_shards":               cfg.Shards,
@@ -343,28 +349,33 @@ func (a *Admin) createMetricTemplate(ctx context.Context) error {
 				}},
 				"properties": map[string]any{
 					FieldMetricTimeUnixMilli: map[string]any{
-				"type":   "date",
-				"format": "epoch_millis",
-			},
-					FieldName:               map[string]any{"type": "keyword"},
-					FieldMetricType:         map[string]any{"type": "keyword"},
-					FieldMetricValue:        map[string]any{"type": "double"},
-					FieldServiceName:        map[string]any{"type": "keyword"},
-					FieldAppID:              map[string]any{"type": "keyword"},
-				FieldMetricLabels:       map[string]any{"type": "object", "dynamic": true},
-				FieldResource:           map[string]any{"type": "object", "dynamic": true},
+						"type":   "date",
+						"format": "epoch_millis",
+					},
+					FieldName:         map[string]any{"type": "keyword"},
+					FieldMetricType:   map[string]any{"type": "keyword"},
+					FieldMetricValue:  map[string]any{"type": "double"},
+					FieldServiceName:  map[string]any{"type": "keyword"},
+					FieldAppID:        map[string]any{"type": "keyword"},
+					FieldMetricLabels: map[string]any{"type": "object", "dynamic": true},
+					FieldResource:     map[string]any{"type": "object", "dynamic": true},
 				},
 			},
 		},
 	}
-	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, template)
 }
 
 // createLogTemplate creates the log index template.
 func (a *Admin) createLogTemplate(ctx context.Context) error {
 	cfg := a.config.Logs
-	template := map[string]any{
-        "index_patterns": []string{cfg.IndexPrefix + "-*"},
+	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, logTemplateMappings(cfg))
+}
+
+// logTemplateMappings builds the log index template body. See
+// traceTemplateMappings for the extraction rationale.
+func logTemplateMappings(cfg IndexConfig) map[string]any {
+	return map[string]any{
+		"index_patterns": []string{cfg.IndexPrefix + "-*"},
 		"template": map[string]any{
 			"settings": map[string]any{
 				"number_of_shards":               cfg.Shards,
@@ -398,13 +409,12 @@ func (a *Admin) createLogTemplate(ctx context.Context) error {
 					FieldLogBody:                 map[string]any{"type": "text", "analyzer": "standard"},
 					FieldServiceName:             map[string]any{"type": "keyword"},
 					FieldAppID:                   map[string]any{"type": "keyword"},
-				FieldAttributes:              map[string]any{"type": "object", "dynamic": true}, // sub-fields via strings_as_keyword template
-				FieldResource:                map[string]any{"type": "object", "dynamic": true}, // sub-fields via strings_as_keyword template
+					FieldAttributes:              map[string]any{"type": "object", "dynamic": true}, // sub-fields via strings_as_keyword template
+					FieldResource:                map[string]any{"type": "object", "dynamic": true}, // sub-fields via strings_as_keyword template
 				},
 			},
 		},
 	}
-	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, template)
 }
 
 // formatDuration converts a Go duration to an ES-compatible duration string.
@@ -419,4 +429,3 @@ func formatDuration(d time.Duration) string {
 	}
 	return "1d"
 }
-

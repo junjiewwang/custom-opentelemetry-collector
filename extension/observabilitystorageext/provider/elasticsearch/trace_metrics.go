@@ -10,6 +10,7 @@ import (
 	"math"
 	"time"
 
+	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/unitconv"
 	"go.uber.org/zap"
 )
@@ -135,62 +136,19 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 		})
 	}
 
-	resolver := &AttributeResolver{}
-	for k, v := range query.Tags {
-		field := resolver.Resolve(k).ESField
-		must = append(must, metricsTermClause(field, v))
-	}
-
-	// Handle TagsOr: each group becomes a should, groups are AND-ed together.
-	for _, orGroup := range query.TagsOr {
-		should := []map[string]any{}
-		for _, branch := range orGroup {
-			branchMust := []map[string]any{}
-			for k, v := range branch {
-				field := resolver.Resolve(k).ESField
-				branchMust = append(branchMust, metricsTermClause(field, v))
-			}
-			if len(branchMust) == 1 {
-				should = append(should, branchMust[0])
-			} else if len(branchMust) > 0 {
-				should = append(should, map[string]any{"bool": map[string]any{"must": branchMust}})
-			}
-		}
-		if len(should) > 0 {
-			must = append(must, map[string]any{
-				"bool": map[string]any{"should": should, "minimum_should_match": 1},
-			})
-		}
-	}
-
-	// Handle TagsNot (Sprint 2): != value → must_not + term.
-	for k, v := range query.TagsNot {
-		field := resolver.Resolve(k).ESField
-		must = append(must, map[string]any{
-			"bool": map[string]any{
-				"must_not": []map[string]any{{"term": map[string]any{field: v}}},
-			},
-		})
-	}
-
-	// Handle TagsExists (Sprint 2): != nil → exists.
-	for _, k := range query.TagsExists {
-		field := resolver.Resolve(k).ESField
-		must = append(must, map[string]any{
-			"exists": map[string]any{"field": field},
-		})
-	}
-
-	// Handle TagsRegex (Sprint 2): =~ regex → regexp query.
-	for k, pattern := range query.TagsRegex {
-		field := resolver.Resolve(k).ESField
-		must = append(must, map[string]any{
-			"regexp": map[string]any{
-				field: map[string]any{
-					"value": pattern,
-				},
-			},
-		})
+	// ── Shared tag filters (Tags / TagsOr / TagsNot / TagsExists / TagsRegex) ──
+	// Route through the same appendSharedTagFilters used by buildTraceSearchQuery
+	// so that field resolution, value transformation (capitalizeFirst for
+	// kind/status), status.message match-vs-term handling, and the unscoped
+	// attribute dual-path (attributes.X + resource.X) are identical across the
+	// search and metrics filter paths. Previously this inlined its own
+	// resolver.Resolve + metricsTermClause logic, which skipped the value
+	// transforms (e.g. span.kind "server" was not capitalized → matched nothing)
+	// and the backward-compatible dual-path search.
+	qb := esq.NewBuilder()
+	appendSharedTagFilters(qb, query.Tags, query.TagsOr, query.TagsNot, query.TagsExists, query.TagsRegex)
+	for _, clause := range qb.MustClauses() {
+		must = append(must, clause)
 	}
 
 	if len(must) == 1 {

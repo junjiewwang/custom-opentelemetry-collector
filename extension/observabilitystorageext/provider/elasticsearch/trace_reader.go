@@ -535,15 +535,12 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		})
 	}
 
-	// AND conditions: each tag must match.
-	for k, v := range tq.Tags {
-		clauses := resolveTagTermClauses(k, v)
-		if len(clauses) == 1 {
-			qb.Raw(clauses[0])
-		} else {
-			qb.Should(1, clauses...)
-		}
-	}
+	// ── Shared tag filters (Tags / TagsOr / TagsNot / TagsExists / TagsRegex) ──
+	// Both buildTraceSearchQuery and buildMetricsFilter route the five common
+	// tag-filter shapes through appendSharedTagFilters so field resolution,
+	// value transformation (capitalizeFirst for kind/status), and the
+	// unscoped-attribute dual-path (attributes.X + resource.X) stay in one place.
+	appendSharedTagFilters(qb, tq.Tags, tq.TagsOr, tq.TagsNot, tq.TagsExists, tq.TagsRegex)
 
 	// ── Event filters (nested queries on the events field) ──
 	for _, eventTag := range tq.EventTags {
@@ -607,9 +604,51 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
-	// OR conditions: each TagsOr group is an independent bool.should block (AND-ed together).
-	// Within each group, branches are OR-ed (min_should_match=1).
-	for _, orGroup := range tq.TagsOr {
+	// ── TagsNotExists (Sprint 4): = nil → must_not exists ──
+	for _, k := range tq.TagsNotExists {
+		paths := resolveTagFieldPaths(k)
+		for _, p := range paths {
+			qb.Raw(esq.MustNotQ(esq.ExistsQ(p)))
+		}
+	}
+
+	return qb.Build()
+}
+
+// appendSharedTagFilters appends the five tag-filter shapes common to both
+// TraceQuery (search) and TraceMetricsQuery (metrics) to the given builder:
+//
+//   - Tags:      AND conditions, each resolved via resolveTagTermClauses (so
+//                unscoped custom attributes search attributes.X + resource.X,
+//                and kind/status values are transformed to ES-stored form).
+//   - TagsOr:    OR groups (outer AND-ed, inner OR-ed).
+//   - TagsNot:   != value → must_not + term.
+//   - TagsExists: != nil → exists (dual-path OR-ed when unscoped).
+//   - TagsRegex: =~ regex → regexp (dual-path OR-ed when unscoped).
+//
+// Keeping these in one place prevents the value-transform / dual-path logic
+// from diverging between the search and metrics filter builders.
+func appendSharedTagFilters(
+	qb *esq.Builder,
+	tags map[string]string,
+	tagsOr [][]map[string]string,
+	tagsNot map[string]string,
+	tagsExists []string,
+	tagsRegex map[string]string,
+) {
+	// AND conditions: each tag must match.
+	for k, v := range tags {
+		clauses := resolveTagTermClauses(k, v)
+		if len(clauses) == 1 {
+			qb.Raw(clauses[0])
+		} else {
+			qb.Should(1, clauses...)
+		}
+	}
+
+	// OR conditions: each TagsOr group is an independent bool.should block
+	// (AND-ed together). Within a group, branches are OR-ed (min_should_match=1).
+	for _, orGroup := range tagsOr {
 		var orClauses []map[string]any
 		for _, branchMap := range orGroup {
 			builder := esq.NewBuilder()
@@ -628,23 +667,15 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
-	// ── TagsNot (Sprint 2): != value → must_not + term ──
-	for k, v := range tq.TagsNot {
+	// TagsNot: != value → must_not + term.
+	for k, v := range tagsNot {
 		for _, clause := range resolveTagTermClauses(k, v) {
 			qb.Raw(esq.MustNotQ(clause))
 		}
 	}
 
-	// ── TagsNotExists (Sprint 4): = nil → must_not exists ──
-	for _, k := range tq.TagsNotExists {
-		paths := resolveTagFieldPaths(k)
-		for _, p := range paths {
-			qb.Raw(esq.MustNotQ(esq.ExistsQ(p)))
-		}
-	}
-
-	// ── TagsExists (Sprint 2): != nil → exists ──
-	for _, k := range tq.TagsExists {
+	// TagsExists: != nil → exists (dual-path OR-ed when unscoped).
+	for _, k := range tagsExists {
 		paths := resolveTagFieldPaths(k)
 		if len(paths) == 1 {
 			qb.Raw(esq.ExistsQ(paths[0]))
@@ -657,8 +688,8 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
-	// ── TagsRegex (Sprint 2): =~ regex → regexp ──
-	for k, pattern := range tq.TagsRegex {
+	// TagsRegex: =~ regex → regexp (dual-path OR-ed when unscoped).
+	for k, pattern := range tagsRegex {
 		paths := resolveTagFieldPaths(k)
 		if len(paths) == 1 {
 			qb.Raw(map[string]any{
@@ -674,8 +705,6 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 			qb.Should(1, regexClauses...)
 		}
 	}
-
-	return qb.Build()
 }
 
 // capitalizeFirst returns the string with the first letter capitalized.

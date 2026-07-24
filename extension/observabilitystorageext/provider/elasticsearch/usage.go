@@ -144,16 +144,7 @@ func (r *UsageReporter) classifyIndex(indexName string) lifecycle.SignalType {
 
 // signalPrefix returns the index prefix for the given signal.
 func (r *UsageReporter) signalPrefix(signal lifecycle.SignalType) string {
-	switch signal {
-	case lifecycle.SignalTrace:
-		return r.config.Traces.IndexPrefix
-	case lifecycle.SignalMetric:
-		return r.config.Metrics.IndexPrefix
-	case lifecycle.SignalLog:
-		return r.config.Logs.IndexPrefix
-	default:
-		return ""
-	}
+	return signalPrefix(r.config, string(signal))
 }
 
 // GetDailyStorage returns storage usage broken down by calendar day.

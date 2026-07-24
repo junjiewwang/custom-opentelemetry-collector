@@ -64,7 +64,7 @@ func (w *LogWriter) WriteLogs(ctx context.Context, ld plog.Logs) error {
 				}
 				indexName := w.getIndexName(doc.AppID, lr.Timestamp().AsTime())
 
-				if err := w.buffer.Add(indexName, doc); err != nil {
+				if err := w.buffer.Add(ctx, indexName, doc); err != nil {
 					return fmt.Errorf("failed to buffer log document: %w", err)
 				}
 			}
@@ -91,7 +91,7 @@ func (w *LogWriter) WriteLogRecords(ctx context.Context, records []storedmodel.S
 			return fmt.Errorf("app_id is required, refusing to write logs without app-level data isolation")
 		}
 		indexName := w.getIndexName(appID, time.Unix(0, rec.TimeUnixNano))
-		if err := w.buffer.Add(indexName, rec); err != nil {
+		if err := w.buffer.Add(ctx, indexName, rec); err != nil {
 			return fmt.Errorf("failed to buffer log document: %w", err)
 		}
 	}

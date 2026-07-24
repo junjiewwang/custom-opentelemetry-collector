@@ -60,7 +60,7 @@ func (w *TraceWriter) WriteSpans(ctx context.Context, spans []StoredSpan) error 
 			return fmt.Errorf("app_id is required in resource attributes, refusing to write traces without app-level data isolation")
 		}
 		indexName := w.getIndexName(appID, time.Unix(0, ss.StartUnixNano))
-		if err := w.buffer.Add(indexName, ss); err != nil {
+		if err := w.buffer.Add(ctx, indexName, ss); err != nil {
 			return fmt.Errorf("failed to buffer trace document: %w", err)
 		}
 	}

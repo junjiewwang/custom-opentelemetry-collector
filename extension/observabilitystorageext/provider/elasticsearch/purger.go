@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -56,7 +55,7 @@ func (p *Purger) PurgeExpired(ctx context.Context, signal lifecycle.SignalType, 
 	pattern := prefix + "-*"
 
 	// Strategy 1: Try to delete entire expired indices
-	deletedIndices, err := p.deleteExpiredIndices(ctx, prefix, before)
+	deletedIndices, err := p.deleteExpiredIndices(ctx, prefix, signal, before)
 	if err != nil {
 		p.logger.Warn("Index deletion failed, falling back to delete_by_query",
 			zap.String("signal", string(signal)),
@@ -82,7 +81,7 @@ func (p *Purger) PurgeByApp(ctx context.Context, appID string, signal lifecycle.
 	appPattern := prefix + "-" + appID + "-*"
 
 	// Try index deletion first (app-scoped pattern)
-	deletedIndices, err := p.deleteExpiredIndicesWithPattern(ctx, appPattern, before)
+	deletedIndices, err := p.deleteExpiredIndicesWithPattern(ctx, appPattern, signal, before)
 	if err != nil {
 		// Fallback: delete_by_query on app-scoped indices
 		return p.deleteByQueryForApp(ctx, appPattern, signal, appID, before, start)
@@ -110,7 +109,7 @@ func (p *Purger) EstimatePurge(ctx context.Context, signal lifecycle.SignalType,
 
 	var affected []string
 	for _, idx := range indices {
-		indexDate := p.extractDate(idx, prefix)
+		indexDate := p.extractDate(idx, signal)
 		if indexDate != nil && indexDate.Before(before) {
 			affected = append(affected, idx)
 		}
@@ -150,7 +149,7 @@ func (p *Purger) GetDataBoundary(ctx context.Context, signal lifecycle.SignalTyp
 	// Parse dates from index names to find the time range
 	var oldest, newest *time.Time
 	for _, idx := range indices {
-		t := p.extractDate(idx, prefix)
+		t := p.extractDate(idx, signal)
 		if t == nil {
 			continue
 		}
@@ -181,12 +180,12 @@ func (p *Purger) GetDataBoundary(ctx context.Context, signal lifecycle.SignalTyp
 // ═══════════════════════════════════════════════════
 
 // deleteExpiredIndices finds and deletes indices whose date suffix is before the cutoff.
-func (p *Purger) deleteExpiredIndices(ctx context.Context, prefix string, before time.Time) (int, error) {
-	return p.deleteExpiredIndicesWithPattern(ctx, prefix+"-*", before)
+func (p *Purger) deleteExpiredIndices(ctx context.Context, prefix string, signal lifecycle.SignalType, before time.Time) (int, error) {
+	return p.deleteExpiredIndicesWithPattern(ctx, prefix+"-*", signal, before)
 }
 
 // deleteExpiredIndicesWithPattern finds and deletes matching indices whose date is before cutoff.
-func (p *Purger) deleteExpiredIndicesWithPattern(ctx context.Context, pattern string, before time.Time) (int, error) {
+func (p *Purger) deleteExpiredIndicesWithPattern(ctx context.Context, pattern string, signal lifecycle.SignalType, before time.Time) (int, error) {
 	indices, err := p.client.ListIndices(ctx, pattern)
 	if err != nil {
 		return 0, fmt.Errorf("list indices failed: %w", err)
@@ -196,14 +195,9 @@ func (p *Purger) deleteExpiredIndicesWithPattern(ctx context.Context, pattern st
 		return 0, nil
 	}
 
-	// Extract prefix from pattern (remove trailing "-*")
-	prefix := strings.TrimSuffix(pattern, "-*")
-	// If pattern is like "otel-traces-myapp-*", the prefix for date parsing is the whole thing
-	// except the trailing "*"
-
 	var deleted int
 	for _, idx := range indices {
-		indexDate := p.extractDate(idx, prefix)
+		indexDate := p.extractDate(idx, signal)
 		if indexDate == nil {
 			continue // can't parse date, skip
 		}
@@ -230,14 +224,7 @@ func (p *Purger) deleteExpiredIndicesWithPattern(ctx context.Context, pattern st
 
 // deleteByQuery uses delete_by_query with a timestamp range filter as fallback.
 func (p *Purger) deleteByQuery(ctx context.Context, pattern string, signal lifecycle.SignalType, before time.Time, start time.Time) (*lifecycle.PurgeResult, error) {
-	tsField := p.timestampField(signal)
-	query := map[string]any{
-		"range": map[string]any{
-			tsField: map[string]any{
-				"lt": before.Format(time.RFC3339Nano),
-			},
-		},
-	}
+	query := buildDeleteByQuery(signalTimestampField(string(signal)), signalTimestampBound(string(signal), before), "")
 
 	deleted, err := p.client.DeleteByQuery(ctx, pattern, query)
 	if err != nil {
@@ -254,25 +241,7 @@ func (p *Purger) deleteByQuery(ctx context.Context, pattern string, signal lifec
 
 // deleteByQueryForApp uses delete_by_query with app_id + timestamp filter.
 func (p *Purger) deleteByQueryForApp(ctx context.Context, pattern string, signal lifecycle.SignalType, appID string, before time.Time, start time.Time) (*lifecycle.PurgeResult, error) {
-	tsField := p.timestampField(signal)
-	query := map[string]any{
-		"bool": map[string]any{
-			"must": []map[string]any{
-				{
-					"range": map[string]any{
-						tsField: map[string]any{
-							"lt": before.Format(time.RFC3339Nano),
-						},
-					},
-				},
-				{
-					"term": map[string]any{
-						FieldAppID: appID,
-					},
-				},
-			},
-		},
-	}
+	query := buildDeleteByQuery(signalTimestampField(string(signal)), signalTimestampBound(string(signal), before), appID)
 
 	deleted, err := p.client.DeleteByQuery(ctx, pattern, query)
 	if err != nil {
@@ -293,54 +262,38 @@ func (p *Purger) deleteByQueryForApp(ctx context.Context, pattern string, signal
 
 // indexPrefix returns the ES index prefix for the given signal.
 func (p *Purger) indexPrefix(signal lifecycle.SignalType) string {
-	switch signal {
-	case lifecycle.SignalTrace:
-		return p.config.Traces.IndexPrefix
-	case lifecycle.SignalMetric:
-		return p.config.Metrics.IndexPrefix
-	case lifecycle.SignalLog:
-		return p.config.Logs.IndexPrefix
-	default:
-		return "otel-unknown"
+	if prefix := signalPrefix(p.config, string(signal)); prefix != "" {
+		return prefix
 	}
+	return "otel-unknown"
 }
 
-// timestampField returns the timestamp field name for the given signal.
-func (p *Purger) timestampField(signal lifecycle.SignalType) string {
-	switch signal {
-	case lifecycle.SignalTrace:
-		return FieldStartTimeUnixNano
-	case lifecycle.SignalMetric:
-		return FieldMetricTimeUnixMilli
-	case lifecycle.SignalLog:
-		return FieldLogTimeUnixNano
-	default:
-		return FieldMetricTimeUnixMilli
-	}
-}
-
-// extractDate parses the date suffix from an index name.
+// extractDate parses the date suffix from an index name using the date format
+// configured for the given signal.
 //
 // Index naming convention: {prefix}-{appID}-{date} or {prefix}-{date}
-// Date format: yyyy.MM.dd (configurable via IndexDateFormat)
+// Date format: yyyy.MM.dd (configurable per signal via IndexDateFormat)
 //
 // Examples:
 //
 //	"otel-traces-myapp-2026.05.25" → 2026-05-25
 //	"otel-traces-2026.05.25"       → 2026-05-25
 //	"otel-traces-my-app-2026.05.25"→ 2026-05-25
-func (p *Purger) extractDate(indexName, prefix string) *time.Time {
-	// Use regex to find date pattern at the end
+func (p *Purger) extractDate(indexName string, signal lifecycle.SignalType) *time.Time {
+	// Use regex to find date pattern at the end.
 	matches := datePattern.FindStringSubmatch(indexName)
 	if len(matches) < 2 {
 		return nil
 	}
 
 	dateStr := matches[1]
-	// Determine the date format from config (default: "2006.01.02")
-	format := "2006.01.02"
-	if p.config.Traces.IndexDateFormat != "" {
-		format = p.config.Traces.IndexDateFormat
+	// Determine the date format from the signal's own IndexConfig (default: "2006.01.02").
+	// Previously this always read Traces.IndexDateFormat, which broke date parsing
+	// for metrics/logs indices when they used a different format — those indices
+	// would never be matched for deletion.
+	format := p.dateFormatFor(signal)
+	if format == "" {
+		format = "2006.01.02"
 	}
 
 	t, err := time.Parse(format, dateStr)
@@ -348,6 +301,11 @@ func (p *Purger) extractDate(indexName, prefix string) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// dateFormatFor returns the configured index date format for the given signal.
+func (p *Purger) dateFormatFor(signal lifecycle.SignalType) string {
+	return signalDateFormat(p.config, string(signal))
 }
 
 // ═══════════════════════════════════════════════════
@@ -369,7 +327,7 @@ func (p *Purger) ListExpired(ctx context.Context, signal lifecycle.SignalType, b
 
 	var expired []string
 	for _, idx := range indices {
-		indexDate := p.extractDate(idx, prefix)
+		indexDate := p.extractDate(idx, signal)
 		if indexDate != nil && indexDate.Before(before) {
 			expired = append(expired, idx)
 		}

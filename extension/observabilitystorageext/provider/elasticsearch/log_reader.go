@@ -21,16 +21,16 @@ type StoredLogRecord = storedmodel.StoredLogRecord
 // LogReader implements log query operations against Elasticsearch.
 type LogReader struct {
 	searcher Searcher
-	config *Config
-	logger *zap.Logger
+	config   *Config
+	logger   *zap.Logger
 }
 
 // NewLogReader creates a new LogReader instance.
 func NewLogReader(searcher Searcher, config *Config, logger *zap.Logger) *LogReader {
 	return &LogReader{
 		searcher: searcher,
-		config: config,
-		logger: logger.Named("log-reader"),
+		config:   config,
+		logger:   logger.Named("log-reader"),
 	}
 }
 
@@ -428,7 +428,7 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 		Aggregations: map[string]any{
 			"by_severity": map[string]any{
 				"terms": map[string]any{
-					"field": "severity",
+					"field": FieldLogSeverityText,
 					"size":  20,
 				},
 			},
@@ -438,13 +438,13 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 					"size":  500,
 				},
 			},
-		"time_histogram": map[string]any{
-			"histogram": map[string]any{
-				"field":         FieldLogTimeUnixNano,
-				"interval":      float64(r.calculateNanoInterval(query.TimeRange)),
-				"min_doc_count": 0,
+			"time_histogram": map[string]any{
+				"histogram": map[string]any{
+					"field":         FieldLogTimeUnixNano,
+					"interval":      float64(r.calculateNanoInterval(query.TimeRange)),
+					"min_doc_count": 0,
+				},
 			},
-		},
 		},
 	}
 
@@ -859,11 +859,6 @@ func convertLokiRegex(pattern string) (string, bool) {
 		// (?m) and (?U) are not applicable to ES regexp
 	}
 	return esPattern, caseInsensitive
-}
-
-// Update buildLogSearchQuery to also handle Loki-specific labels.
-func init() {
-	// Note: buildLogSearchQuery is patched below to include Labels/LabelMatch handling.
 }
 
 // ==================== Log Document Model ====================

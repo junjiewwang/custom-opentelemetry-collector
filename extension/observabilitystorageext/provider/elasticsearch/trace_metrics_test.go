@@ -334,3 +334,87 @@ func TestMetricsAggField_ResourceFields(t *testing.T) {
 			"resource text field %q should get .keyword suffix (got %q)", label, field)
 	}
 }
+
+// TestBuildMetricsFilter_SharedTagPath_SpanKindTransform is a regression test for
+// the filter unification: buildMetricsFilter must route span.kind through the
+// shared resolveTagTermClauses, which capitalizes the value (server → Server).
+// Previously it called resolver.Resolve + metricsTermClause directly, leaving
+// "server" lowercase — which never matched ES's stored "Server".
+func TestBuildMetricsFilter_SharedTagPath_SpanKindTransform(t *testing.T) {
+	r := &TraceReader{logger: zap.NewNop()}
+	now := time.Now()
+
+	query := TraceMetricsQuery{
+		Tags: map[string]string{"span.kind": "server"},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	filter := r.buildMetricsFilter(query)
+	raw, err := json.Marshal(filter)
+	require.NoError(t, err)
+	queryStr := string(raw)
+
+	assert.Contains(t, queryStr, `"kind":"Server"`,
+		"span.kind=server must be capitalized to match ES-stored form")
+	assert.NotContains(t, queryStr, `"kind":"server"`,
+		"raw lowercase value must not leak into the query")
+}
+
+// TestBuildMetricsFilter_SharedTagPath_DualAttributeSearch verifies that an
+// unscoped custom attribute tag produces the backward-compatible dual-path
+// (attributes.X + resource.X) should query, matching the search path — which
+// the old inline resolver.Resolve logic omitted entirely.
+func TestBuildMetricsFilter_SharedTagPath_DualAttributeSearch(t *testing.T) {
+	r := &TraceReader{logger: zap.NewNop()}
+	now := time.Now()
+
+	query := TraceMetricsQuery{
+		Tags: map[string]string{"http.method": "GET"},
+		TimeRange: TimeRange{
+			Start: now.Add(-1 * time.Hour),
+			End:   now,
+		},
+	}
+
+	filter := r.buildMetricsFilter(query)
+	raw, err := json.Marshal(filter)
+	require.NoError(t, err)
+	queryStr := string(raw)
+
+	assert.Contains(t, queryStr, `"attributes.http.method"`,
+		"unscoped attribute must search the attributes.* path")
+	assert.Contains(t, queryStr, `"resource.http.method"`,
+		"unscoped attribute must also search the resource.* path (backward compat)")
+	assert.Contains(t, queryStr, `"should"`,
+		"dual-path search must be wrapped in a bool.should")
+}
+
+// TestBuildMetricsFilter_MatchesSearchPath_SpanKind confirms the metrics and
+// search filter builders now emit identical sub-clauses for span.kind, so the
+// two paths can never drift again.
+func TestBuildMetricsFilter_MatchesSearchPath_SpanKind(t *testing.T) {
+	r := &TraceReader{logger: zap.NewNop()}
+	now := time.Now()
+	tr := TimeRange{Start: now.Add(-1 * time.Hour), End: now}
+
+	metricsFilter := r.buildMetricsFilter(TraceMetricsQuery{
+		Tags:      map[string]string{"span.kind": "client"},
+		TimeRange: tr,
+	})
+	// buildTraceSearchQuery emits the full bool query including the time range;
+	// extract just the kind clause for comparison by checking both contain the
+	// capitalized value via the same transformation.
+	searchQuery := r.buildTraceSearchQuery(TraceQuery{
+		Tags:      map[string]string{"span.kind": "client"},
+		TimeRange: tr,
+	})
+
+	mRaw, _ := json.Marshal(metricsFilter)
+	sRaw, _ := json.Marshal(searchQuery)
+	assert.Contains(t, string(mRaw), `"kind":"Client"`)
+	assert.Contains(t, string(sRaw), `"kind":"Client"`,
+		"search and metrics paths must agree on the capitalized kind value")
+}

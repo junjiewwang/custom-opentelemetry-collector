@@ -56,6 +56,9 @@ func defaultHTTPTransport() *http.Transport {
 
 // NewClient creates a new ES HTTP client with tuned connection pooling.
 func NewClient(config *Config, logger *zap.Logger) (*Client, error) {
+	if len(config.Addresses) == 0 {
+		return nil, fmt.Errorf("elasticsearch config addresses must not be empty")
+	}
 	return &Client{
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
@@ -90,6 +93,11 @@ func (c *Client) ClusterHealth(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("cluster health returned status %d: %s", resp.StatusCode, string(body))
+	}
 
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -130,4 +138,12 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 func (c *Client) getNextAddress() string {
 	idx := int(c.nextAddr.Add(1)) % len(c.addresses)
 	return c.addresses[idx]
+}
+
+// Close releases the HTTP connection pool's idle connections. It is safe to
+// call after all in-flight requests have completed (e.g. from Provider.Shutdown
+// once the writers are flushed and stopped). Calling it while requests are
+// in flight does not interrupt them, but may force new connections afterward.
+func (c *Client) Close() {
+	c.httpClient.CloseIdleConnections()
 }

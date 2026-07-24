@@ -286,22 +286,22 @@ var _ LogReader = (*logReaderAdapter)(nil)
 func (a *logReaderAdapter) SearchLogMetric(ctx context.Context, query LogMetricQuery) (*LogMetricResult, error) {
 	esQuery := elasticsearch.LogMetricQuery{
 		LogQuery: elasticsearch.LogQuery{
-			AppID:          query.AppID,
-			Query:          query.Query,
-			ServiceName:    query.ServiceName,
-			Severity:       query.Severity,
-			TraceID:        query.TraceID,
-			SpanID:         query.SpanID,
-			Attributes:     query.Attributes,
-			TimeRange:      elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
-			Limit:          query.Limit,
-			Offset:         query.Offset,
-			Labels:         query.Labels,
-			LabelMatch:     query.LabelMatch,
-			LabelNot:       query.LabelNot,
-			LabelNotMatch:  query.LabelNotMatch,
-			Direction:      query.Direction,
-			RegexFilters:   query.RegexFilters,
+			AppID:           query.AppID,
+			Query:           query.Query,
+			ServiceName:     query.ServiceName,
+			Severity:        query.Severity,
+			TraceID:         query.TraceID,
+			SpanID:          query.SpanID,
+			Attributes:      query.Attributes,
+			TimeRange:       elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+			Limit:           query.Limit,
+			Offset:          query.Offset,
+			Labels:          query.Labels,
+			LabelMatch:      query.LabelMatch,
+			LabelNot:        query.LabelNot,
+			LabelNotMatch:   query.LabelNotMatch,
+			Direction:       query.Direction,
+			RegexFilters:    query.RegexFilters,
 			NotRegexFilters: query.NotRegexFilters,
 		},
 		GroupByLabels: query.GroupByLabels,
@@ -325,22 +325,22 @@ func (a *logReaderAdapter) SearchLogMetric(ctx context.Context, query LogMetricQ
 
 func (a *logReaderAdapter) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error) {
 	esQuery := elasticsearch.LogQuery{
-		AppID:          query.AppID,
-		Query:          query.Query,
-		ServiceName:    query.ServiceName,
-		Severity:       query.Severity,
-		TraceID:        query.TraceID,
-		SpanID:         query.SpanID,
-		Attributes:     query.Attributes,
-		TimeRange:      elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
-		Limit:          query.Limit,
-		Offset:         query.Offset,
-		Labels:         query.Labels,
-		LabelMatch:     query.LabelMatch,
-		LabelNot:       query.LabelNot,
-		LabelNotMatch:  query.LabelNotMatch,
-		Direction:      query.Direction,
-		RegexFilters:   query.RegexFilters,
+		AppID:           query.AppID,
+		Query:           query.Query,
+		ServiceName:     query.ServiceName,
+		Severity:        query.Severity,
+		TraceID:         query.TraceID,
+		SpanID:          query.SpanID,
+		Attributes:      query.Attributes,
+		TimeRange:       elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		Limit:           query.Limit,
+		Offset:          query.Offset,
+		Labels:          query.Labels,
+		LabelMatch:      query.LabelMatch,
+		LabelNot:        query.LabelNot,
+		LabelNotMatch:   query.LabelNotMatch,
+		Direction:       query.Direction,
+		RegexFilters:    query.RegexFilters,
 		NotRegexFilters: query.NotRegexFilters,
 	}
 	result, err := a.inner.SearchLogs(ctx, esQuery)
@@ -765,9 +765,8 @@ func (a *storageAdminAdapter) Purge(ctx context.Context, signal SignalType, befo
 	if err != nil {
 		return nil, err
 	}
-	timestampField := a.timestampFieldForSignal(signal)
 
-	deleted, err := a.inner.Purge(ctx, indexPrefix, timestampField, before)
+	deleted, err := a.inner.Purge(ctx, indexPrefix, string(signal), before)
 	if err != nil {
 		return nil, err
 	}
@@ -782,9 +781,8 @@ func (a *storageAdminAdapter) PurgeByApp(ctx context.Context, appID string, sign
 	if err != nil {
 		return nil, err
 	}
-	timestampField := a.timestampFieldForSignal(signal)
 
-	deleted, err := a.inner.PurgeByApp(ctx, indexPrefix, timestampField, appID, before)
+	deleted, err := a.inner.PurgeByApp(ctx, indexPrefix, string(signal), appID, before)
 	if err != nil {
 		return nil, err
 	}
@@ -828,19 +826,11 @@ func (a *storageAdminAdapter) classifyIndexSignal(indexName string) SignalType {
 	}
 }
 
-// timestampFieldForSignal returns the timestamp field name used in ES documents for the given signal.
-func (a *storageAdminAdapter) timestampFieldForSignal(signal SignalType) string {
-	switch signal {
-	case SignalTrace:
-		return "start_time"
-	case SignalMetric:
-		return "@timestamp"
-	case SignalLog:
-		return "timestamp"
-	default:
-		return "@timestamp"
-	}
-}
+// timestampFieldForSignal was removed: the ES Admin.Purge/PurgeByApp methods now
+// derive the timestamp field from the signal internally (see
+// signalTimestampField in the elasticsearch package), so the adapter no longer
+// needs to pass a field name. The PostgreSQL adapter keeps its own
+// pgStorageAdminAdapter.timestampFieldForSignal.
 
 func (a *storageAdminAdapter) GetDiskUsage(ctx context.Context) (*DiskUsage, error) {
 	stats, err := a.inner.GetIndicesStats(ctx)

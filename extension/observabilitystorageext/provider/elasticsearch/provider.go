@@ -121,6 +121,12 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 		p.logWriter.Stop()
 	}
 
+	// Release the HTTP connection pool's idle connections now that the
+	// background flush loops are stopped and no in-flight requests remain.
+	if p.client != nil {
+		p.client.Close()
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("shutdown errors: %v", errs)
 	}
@@ -202,29 +208,27 @@ func (p *Provider) GetDailyStorage(ctx context.Context, req storedmodel.DailySto
 }
 
 // Purge removes data older than the given time for the given index pattern.
+//
+// This is a legacy field-based entry point (no external callers; kept for
+// direct/test use). The query is built by the shared buildDeleteByQuery
+// helper, so its construction matches the Admin and Purger purge paths. The
+// caller-supplied timeField is honored with a nanosecond integer bound
+// (appropriate for the long-typed startTimeUnixNano / timeUnixNano fields);
+// callers querying the metric epoch_millis field should prefer Admin.Purge,
+// which derives the field and bound type from the signal.
 func (p *Provider) Purge(ctx context.Context, indexPattern, timeField string, before time.Time) (int64, error) {
-	query := map[string]any{
-		"range": map[string]any{
-			timeField: map[string]any{
-				"lt": formatTimestamp(before),
-			},
-		},
-	}
+	query := buildDeleteByQuery(timeField, before.UnixNano(), "")
 	return p.client.DeleteByQuery(ctx, indexPattern, query)
 }
 
 // PurgeByApp removes data for a specific app older than the given time.
+//
+// Legacy field-based entry point (see Purge). The query is built by the shared
+// buildDeleteByQuery helper, which scopes to the app via the canonical
+// top-level appId field (matching Admin.PurgeByApp), rather than the
+// resource.app_id sub-field used previously.
 func (p *Provider) PurgeByApp(ctx context.Context, appID, indexPattern, timeField string, before time.Time) (int64, error) {
-	query := map[string]any{
-		"bool": map[string]any{
-			"must": []map[string]any{
-				{"term": map[string]any{FieldResource + ".app_id": appID}},
-				{"range": map[string]any{
-					timeField: map[string]any{"lt": formatTimestamp(before)},
-				}},
-			},
-		},
-	}
+	query := buildDeleteByQuery(timeField, before.UnixNano(), appID)
 	return p.client.DeleteByQuery(ctx, indexPattern, query)
 }
 
