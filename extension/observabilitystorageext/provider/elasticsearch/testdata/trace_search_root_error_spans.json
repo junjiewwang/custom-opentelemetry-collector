@@ -1,0 +1,42 @@
+{
+  "bool": {
+    "must": [
+      {
+        "range": {
+          "startTimeUnixNano": {
+            "gte": 1784793600000000000,
+            "lte": 1784797200000000000
+          }
+        }
+      },
+      {
+        "term": {
+          "status.code": "error"
+        }
+      },
+      {
+        "bool": {
+          "minimum_should_match": 1,
+          "should": [
+            {
+              "bool": {
+                "must_not": [
+                  {
+                    "exists": {
+                      "field": "parentSpanId"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "term": {
+                "parentSpanId": "0000000000000000"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "bool": {
+    "must": [
+      {
+        "range": {
+          "startTimeUnixNano": {
+            "gte": 1784793600000000000,
+            "lte": 1784797200000000000
+          }
+        }
+      },
+      {
+        "term": {
+          "serviceName": "test-service"
+        }
+      },
+      {
+        "term": {
+          "kind": "Server"
+        }
+      }
+    ]
+  }
+}
