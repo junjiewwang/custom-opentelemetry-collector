@@ -737,10 +737,15 @@ func (r *LogReader) resolveLogLabelESField(label string) string {
 	if f, ok := logLabelFieldMap[label]; ok {
 		return f
 	}
-	// Dynamic labels (resource.* or attributes.*): convert underscore-form
-	// Loki label names back to OTel dotted format via translateLabelKey.
-	// e.g. process_runtime_name → process.runtime_name → resource.process.runtime_name
-	otelKey := translateLabelKey(label)
+	// Dynamic labels (resource.* or attributes.*): Loki uses underscore naming
+	// (e.g. process_runtime_name), OTel/ES uses dot naming (process.runtime_name).
+	// Convert underscore → dot to match the stored ES field path.
+	otelKey := label
+	if known, ok := prometheusToOtelLabelKeys[label]; ok {
+		otelKey = known
+	} else {
+		otelKey = strings.ReplaceAll(label, "_", ".")
+	}
 	return FieldResource + "." + otelKey
 }
 
