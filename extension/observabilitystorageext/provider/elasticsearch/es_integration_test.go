@@ -4,6 +4,7 @@ package elasticsearch
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -365,9 +366,9 @@ func TestIntegration_TraceMetrics_AggregationFields(t *testing.T) {
 		{label: "resource.app_id", mustWork: true},
 		{label: "resource.service.name", mustWork: true},
 		{label: "resource.host.name", mustWork: true},
-		// Known gaps — currently no .keyword, test documents this.
-		{label: "http.method", mustWork: false},
-		{label: "db.system", mustWork: false},
+		// Custom span attributes — now get .keyword via general solution.
+		{label: "http.method", mustWork: true},
+		{label: "db.system", mustWork: true},
 	}
 
 	for _, tc := range labels {
@@ -396,6 +397,80 @@ func TestIntegration_TraceMetrics_AggregationFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ── Tag Values (GetTagValues) ───────────────────────────────────────────
+
+// TestIntegration_GetTagValues_CustomAttribute verifies that
+// GetTagValues returns results for custom span attributes.
+// This covers the .keyword suffix fix — without it, the text field
+// aggregation returns empty buckets.
+func TestIntegration_GetTagValues_CustomAttribute(t *testing.T) {
+	client := esPing(t)
+	reader := newTestTagValuesReader(client)
+
+	timeRange := TimeRange{
+		Start: time.Now().Add(-1 * time.Hour),
+		End:   time.Now(),
+	}
+
+	// Custom span attribute — requires .keyword suffix.
+	values, err := reader.GetTagValues(t.Context(), "db.name", timeRange, "span", nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, values, "span.db.name must return values (if empty, .keyword fix may be missing)")
+	t.Logf("span.db.name: %d values, sample=%v", len(values), values[:min(3, len(values))])
+}
+
+// TestIntegration_GetTagValues_ResourceAttribute verifies tag values
+// for resource-scoped custom attributes.
+func TestIntegration_GetTagValues_ResourceAttribute(t *testing.T) {
+	client := esPing(t)
+	reader := newTestTagValuesReader(client)
+
+	timeRange := TimeRange{
+		Start: time.Now().Add(-1 * time.Hour),
+		End:   time.Now(),
+	}
+
+	values, err := reader.GetTagValues(t.Context(), "app_id", timeRange, "resource", nil)
+	require.NoError(t, err)
+	// resource.app_id may or may not have data — just verify no error
+	t.Logf("resource.app_id: %d values, sample=%v", len(values), values[:min(3, len(values))])
+}
+
+// newTestTagValuesReader creates a TraceReader backed by the ES client
+// for GetTagValues integration tests.
+func newTestTagValuesReader(client *esClient) *TraceReader {
+	return &TraceReader{
+		searcher: &esClientSearcherAdapter{client: client},
+		config:   &Config{Traces: IndexConfig{IndexPrefix: "otel-traces"}},
+		logger:   zap.NewNop(),
+	}
+}
+
+// esClientSearcherAdapter adapts esClient to the Searcher interface.
+type esClientSearcherAdapter struct {
+	client *esClient
+}
+
+func (a *esClientSearcherAdapter) Search(ctx context.Context, indexPattern string, req *SearchRequest) (*SearchResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := a.client.search(indexPattern, string(body))
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse the ES response into SearchResponse.
+	respBytes, _ := json.Marshal(resp)
+	var sr SearchResponse
+	if err := json.Unmarshal(respBytes, &sr); err != nil {
+		return nil, fmt.Errorf("parse search response: %w", err)
+	}
+	return &sr, nil
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
