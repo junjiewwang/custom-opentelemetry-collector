@@ -373,14 +373,17 @@ func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFu
 
 	sources := make([]map[string]any, 0, len(groupBy))
 	for _, label := range groupBy {
-		// Translate PromQL underscore-format label keys to ES dot-format keys
-		// (e.g. "http_method" → "http.method") so the composite aggregation
-		// field path matches the actual ES document structure.
 		esKey := translateLabelKey(label)
+		aggField := fmt.Sprintf("%s.%s", FieldMetricLabels, esKey)
+		// Metric labels are text fields from ES dynamic template — must use
+		// .keyword sub-field for terms/composite aggregation.
+		if !knownAggregatableFields[aggField] {
+			aggField = aggField + ".keyword"
+		}
 		sources = append(sources, map[string]any{
 			label: map[string]any{
 				"terms": map[string]any{
-					"field":          fmt.Sprintf("%s.%s", FieldMetricLabels, esKey),
+					"field":          aggField,
 					"missing_bucket": true,
 				},
 			},
