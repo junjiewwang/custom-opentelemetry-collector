@@ -340,6 +340,8 @@ func TestAggregatableFields_DynamicNumericEntriesAreDocumented(t *testing.T) {
 		FieldAttributes + ".messaging.kafka_message_offset",
 		FieldAttributes + ".messaging.message_body_size",
 		FieldAttributes + ".messaging.destination_partition_id",
+		FieldAttributes + ".http.status_code",
+		FieldAttributes + ".http.response_status_code",
 		// resource.process.pid is dynamically mapped (long) by ES at runtime —
 		// not in the trace template's explicit resource.properties.
 		FieldResource + ".process.pid",

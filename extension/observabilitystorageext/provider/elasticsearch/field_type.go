@@ -50,6 +50,8 @@ var aggregatableFields = map[string]map[string]bool{
 		FieldAttributes + ".messaging.kafka_message_offset":     true, // long
 		FieldAttributes + ".messaging.message_body_size":        true, // long
 		FieldAttributes + ".messaging.destination_partition_id": true, // long
+		FieldAttributes + ".http.status_code":                   true, // long
+		FieldAttributes + ".http.response_status_code":          true, // long
 
 		// resource.* fields explicitly mapped as keyword in the trace template.
 		FieldResource + ".service.name":      true,
