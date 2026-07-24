@@ -59,8 +59,8 @@ func (r *TraceReader) QueryTraceMetrics(ctx context.Context, query TraceMetricsQ
 	searchAggs := r.buildMetricsAggTree(query, histogramAgg, bucketAggName)
 
 	searchReq := &SearchRequest{
-		Query: baseFilter,
-		Size:  0,
+		Query:        baseFilter,
+		Size:         0,
 		Aggregations: searchAggs,
 	}
 
@@ -246,11 +246,15 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 }
 
 // metricsAggField resolves the correct ES aggregation field for a by() label.
-// Strategy: instead of listing fields that need .keyword, we maintain a set of
-// known keyword/long fields that DON'T need .keyword. Everything else is assumed
-// to be a dynamic text field (via ES dynamic template) and gets .keyword suffix.
+// Delegates to the per-signal aggregatableField helper (see field_type.go):
+// intrinsic keyword/long fields and explicitly-mapped resource keyword fields
+// keep no suffix; everything else (text fields from the dynamic template) gets
+// a .keyword suffix so terms aggregation works.
 //
-// This covers all three cases uniformly:
+// Trace metrics operate on the trace signal, so the trace aggregatable table
+// is used.
+//
+// This covers all cases uniformly:
 //   - intrinsic keyword: kind, name, spanId → no suffix
 //   - intrinsic text: status.code, status.message → gets .keyword
 //   - resource keyword: resource.host.name → no suffix
@@ -258,56 +262,14 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 //   - custom attributes: attributes.http.method, attributes.db.system → gets .keyword
 func metricsAggField(resolver *AttributeResolver, label string) string {
 	field := resolver.Resolve(label).ESField
-
-	// Known keyword/long/numeric fields from the ES index template.
-	// These support aggregation directly without .keyword suffix.
-	if knownAggregatableFields[field] {
-		return field
-	}
-	// Default: text field from dynamic template → must use .keyword for aggregation.
-	return field + ".keyword"
-}
-
-// knownAggregatableFields lists ES fields that are explicitly mapped as keyword,
-// long, or other aggregatable types (not text) in the index template.
-// Any field NOT in this set is assumed to be a dynamic text field requiring
-// .keyword suffix for terms aggregation.
-var knownAggregatableFields = map[string]bool{
-	// Intrinsic top-level fields (from admin.go template).
-	FieldKind:                true, // keyword
-	FieldName:                true, // keyword
-	FieldSpanID:              true, // keyword
-	FieldTraceID:             true, // keyword
-	FieldParentSpanID:        true, // keyword
-	FieldServiceName:         true, // keyword
-	FieldStartTimeUnixNano:   true, // long
-	FieldEndTimeUnixNano:     true, // long
-	FieldDurationNano:        true, // long
-
-	// Dynamic numeric fields — discovered via ES mapping validation.
-	// These resolve via ES dot-nesting to numeric/bool sub-fields.
-	// They have NO .keyword sub-field → must NOT add .keyword suffix.
-	FieldAttributes + ".thread.id":              true, // long
-	FieldAttributes + ".order_error":            true, // boolean
-	FieldAttributes + ".rpc.grpc_status_code":   true, // int
-	FieldAttributes + ".server.port":            true, // long
-	FieldAttributes + ".network.peer_port":      true, // long
-	FieldAttributes + ".messaging.kafka_message_offset": true, // long
-	FieldAttributes + ".messaging.message_body_size":    true, // long
-	FieldAttributes + ".messaging.destination_partition_id": true, // long
-
-	// resource.* fields explicitly mapped as keyword in template.
-	FieldResource + ".service.name":      true,
-	FieldResource + ".host.name":         true,
-	FieldResource + ".service.namespace": true,
-	FieldResource + ".service.version":   true,
-	FieldResource + ".process.pid":       true,
+	return aggregatableField("trace", field)
 }
 
 // metricsTermClause generates the correct ES match/term clause based on field type.
-// Text fields (status.message) must use match query instead of term.
+// Fields that need analyzed full-text matching (status.message) use "match";
+// all others use "term". See needsMatchQuery in field_type.go.
 func metricsTermClause(field, value string) map[string]any {
-	if field == FieldStatus+".message" {
+	if needsMatchQuery(field) {
 		return map[string]any{"match": map[string]any{field: value}}
 	}
 	return map[string]any{"term": map[string]any{field: value}}

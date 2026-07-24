@@ -253,53 +253,85 @@ func aggregatableType(t string) bool {
 	return false
 }
 
-// TestKnownAggregatableFields_MatchTraceTemplate guards the .keyword decision
-// table against the trace index template. Every explicitly-mapped field that
-// knownAggregatableFields claims is aggregatable (no .keyword needed) must
-// actually be mapped as an aggregatable type in the trace template. A field
-// that drifted to "text" in the template but stayed true in the table would
-// cause silent empty aggregations — the same class of bug as the P0
-// GetLogStats "severity" field.
+// TestAggregatableFields_MatchTemplates guards the per-signal .keyword
+// decision table against each signal's index template. For every signal, each
+// explicitly-mapped field the table claims is aggregatable (no .keyword) must
+// actually be mapped as an aggregatable type in that signal's template. A field
+// that drifted to "text" in the template but stayed in the table would cause
+// silent empty aggregations — the same class of bug as the P0 GetLogStats
+// "severity" field.
 //
-// The attributes.* "dynamic numeric" entries (thread.id, server.port, etc.)
-// are deliberately excluded: they are NOT explicitly mapped — their type is
-// assigned at runtime by ES dynamic mapping, so it cannot be asserted from the
-// static template. They are documented empirical knowledge.
-func TestKnownAggregatableFields_MatchTraceTemplate(t *testing.T) {
+// Dynamic-numeric entries (attributes.*, resource.process.pid) are excluded:
+// they are NOT explicitly mapped — their type is assigned at runtime by ES
+// dynamic mapping, so it cannot be asserted from the static template. They are
+// covered by TestAggregatableFields_DynamicNumericEntriesAreDocumented.
+func TestAggregatableFields_MatchTemplates(t *testing.T) {
 	cfg := IndexConfig{IndexPrefix: "otel", IndexDateFormat: "2006.01.02"}
-	traceTypes := templateFieldTypes(traceTemplateMappings(cfg))
 
-	// Explicitly-mapped fields whose aggregatability CAN be verified from the
-	// trace template. (Excludes attributes.* and resource.process.pid
-	// dynamic-numeric entries — those are dynamically typed by ES at runtime.)
-	verifiable := []string{
-		FieldKind, FieldName, FieldSpanID, FieldTraceID, FieldParentSpanID,
-		FieldServiceName, FieldStartTimeUnixNano, FieldEndTimeUnixNano, FieldDurationNano,
-		FieldResource + ".service.name",
-		FieldResource + ".host.name",
-		FieldResource + ".service.namespace",
-		FieldResource + ".service.version",
+	cases := []struct {
+		signal     string
+		types      map[string]string // template field path → type
+		agg        map[string]bool   // signal's aggregatable table
+		verifiable []string          // explicitly-mapped aggregatable fields to check
+	}{
+		{
+			signal: "trace",
+			types:  templateFieldTypes(traceTemplateMappings(cfg)),
+			agg:    aggregatableFields["trace"],
+			verifiable: []string{
+				FieldKind, FieldName, FieldSpanID, FieldTraceID, FieldParentSpanID,
+				FieldServiceName, FieldStartTimeUnixNano, FieldEndTimeUnixNano, FieldDurationNano,
+				FieldResource + ".service.name",
+				FieldResource + ".host.name",
+				FieldResource + ".service.namespace",
+				FieldResource + ".service.version",
+			},
+		},
+		{
+			signal: "metric",
+			types:  templateFieldTypes(metricTemplateMappings(cfg)),
+			agg:    aggregatableFields["metric"],
+			verifiable: []string{
+				FieldMetricTimeUnixMilli, FieldName, FieldMetricType, FieldMetricValue,
+				FieldServiceName, FieldAppID,
+			},
+		},
+		{
+			signal: "log",
+			types:  templateFieldTypes(logTemplateMappings(cfg)),
+			agg:    aggregatableFields["log"],
+			verifiable: []string{
+				FieldLogTimeUnixNano, FieldLogObservedTimeUnixNano, FieldTraceID,
+				FieldSpanID, FieldLogSeverityText, FieldLogSeverityNumber,
+				FieldServiceName, FieldAppID,
+			},
+		},
 	}
-	for _, f := range verifiable {
-		require.True(t, knownAggregatableFields[f],
-			"field %q is verifiable from the template but missing from knownAggregatableFields — "+
-				"if it was removed, confirm it is still aggregatable, else it needs .keyword", f)
-		typ, ok := traceTypes[f]
-		require.True(t, ok, "field %q in knownAggregatableFields is not explicitly mapped in the trace template "+
-			"(it may be dynamically typed — move it to the dynamic-numeric group if so)", f)
-		assert.True(t, aggregatableType(typ),
-			"field %q is in knownAggregatableFields (claims no .keyword needed) but trace template maps it as %q — "+
-				"terms aggregation on a text field returns empty buckets", f, typ)
+	for _, tc := range cases {
+		t.Run(tc.signal, func(t *testing.T) {
+			for _, f := range tc.verifiable {
+				require.True(t, tc.agg[f],
+					"[%s] field %q is verifiable from the template but missing from the aggregatable table — "+
+						"if it was removed, confirm it is still aggregatable, else it needs .keyword", tc.signal, f)
+				typ, ok := tc.types[f]
+				require.True(t, ok, "[%s] field %q in the aggregatable table is not explicitly mapped in the template "+
+					"(it may be dynamically typed — move it to the dynamic-numeric group if so)", tc.signal, f)
+				assert.True(t, aggregatableType(typ),
+					"[%s] field %q is in the aggregatable table (claims no .keyword needed) but template maps it as %q — "+
+						"terms aggregation on a text field returns empty buckets", tc.signal, f, typ)
+			}
+		})
 	}
 }
 
-// TestKnownAggregatableFields_DynamicNumericEntriesAreDocumented ensures the
-// attributes.* entries in knownAggregatableFields (which cannot be verified
-// from the static template) are at least explicitly enumerated here, so a new
-// entry is a conscious decision rather than an accident. If someone adds an
-// attributes.* entry, they must also add it to this list.
-func TestKnownAggregatableFields_DynamicNumericEntriesAreDocumented(t *testing.T) {
-	dynamicNumeric := []string{
+// TestAggregatableFields_DynamicNumericEntriesAreDocumented ensures the
+// attributes.* entries in the trace aggregatable table (which cannot be
+// verified from the static template) are at least explicitly enumerated here,
+// so a new entry is a conscious decision rather than an accident. If someone
+// adds an attributes.* entry, they must also add it to this list.
+func TestAggregatableFields_DynamicNumericEntriesAreDocumented(t *testing.T) {
+	// trace: dynamic numeric/bool attributes + resource.process.pid.
+	traceDynamic := []string{
 		FieldAttributes + ".thread.id",
 		FieldAttributes + ".order_error",
 		FieldAttributes + ".rpc.grpc_status_code",
@@ -312,8 +344,13 @@ func TestKnownAggregatableFields_DynamicNumericEntriesAreDocumented(t *testing.T
 		// not in the trace template's explicit resource.properties.
 		FieldResource + ".process.pid",
 	}
-	for _, f := range dynamicNumeric {
-		assert.True(t, knownAggregatableFields[f],
-			"dynamic-numeric field %q is documented but missing from knownAggregatableFields", f)
+	for _, f := range traceDynamic {
+		assert.True(t, aggregatableFields["trace"][f],
+			"trace dynamic-numeric field %q is documented but missing from the trace aggregatable table", f)
 	}
+
+	// log: resource.process.pid is dynamically mapped (long) in the log signal
+	// too (the log template's resource is a bare dynamic object).
+	assert.True(t, aggregatableFields["log"][FieldResource+".process.pid"],
+		"log dynamic-numeric field resource.process.pid is documented but missing from the log aggregatable table")
 }

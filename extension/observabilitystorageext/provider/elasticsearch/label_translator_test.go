@@ -11,9 +11,9 @@ import (
 
 func TestTranslateLabelKey(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   string
+		name  string
+		input string
+		want  string
 	}{
 		// OTel standard attributes → all dots replaced with underscores (SanitizeMetricKey)
 		{"span_kind", "span_kind", "span_kind"},
@@ -102,9 +102,9 @@ func TestNormalizeMetricQueryLabels(t *testing.T) {
 	t.Run("regex match labels key-only translated", func(t *testing.T) {
 		_, match := normalizeMetricQueryLabels(nil,
 			map[string]string{
-				"span_kind":  "Server",
-				"span_name":  ".*",
-				"client":     "test.*",
+				"span_kind": "Server",
+				"span_name": ".*",
+				"client":    "test.*",
 			},
 		)
 		assert.Equal(t, "Server", match["span_kind"])
@@ -135,26 +135,50 @@ func TestResolveLogLabelESField(t *testing.T) {
 	r := &LogReader{}
 
 	tests := []struct {
-		label string
-		want  string
+		label       string
+		wantField   string
+		wantNeedsKW bool // true = text field, needs .keyword; false = aggregatable as-is
 	}{
-		// Loki standard labels → severityText
-		{"level", FieldLogSeverityText},
-		{"detected_level", FieldLogSeverityText},
-		// Loki label names with underscore → ES camelCase
-		{"service_name", FieldServiceName},
-		{"appId", FieldAppID},
-		{"severity", FieldLogSeverityText},
-		{"traceID", FieldTraceID},
-		{"spanID", FieldSpanID},
-		// Unknown labels → resource.<label> (no generic conversion)
-		{"custom_label", "resource.custom_label"},
-		{"unknown", "resource.unknown"},
+		// Loki standard labels → severityText (keyword) → no .keyword
+		{"level", FieldLogSeverityText, false},
+		{"detected_level", FieldLogSeverityText, false},
+		// Loki label names with underscore → ES camelCase (keyword) → no .keyword
+		{"service_name", FieldServiceName, false},
+		{"appId", FieldAppID, false},
+		{"severity", FieldLogSeverityText, false},
+		{"traceID", FieldTraceID, false},
+		{"spanID", FieldSpanID, false},
+		// attributes.* text fields → needs .keyword
+		{"exception_message", FieldAttributes + ".exception.message", true},
+		{"exception_type", FieldAttributes + ".exception.type", true},
+		// resource.process.pid is dynamically mapped long → no .keyword
+		{"process_pid", FieldResource + ".process.pid", false},
+		// resource.host.name is text in the log template → needs .keyword
+		{"host_name", FieldResource + ".host.name", true},
+		// Unknown labels → resource.<label> (no generic conversion), text → .keyword
+		{"custom_label", "resource.custom_label", true},
+		{"unknown", "resource.unknown", true},
+		// Prom→OTel mapped unknown label: http_method → http.method, text → .keyword
+		{"http_method", "resource.http.method", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.label, func(t *testing.T) {
-			got, _ := r.resolveLogLabelESField(tt.label)
-			assert.Equal(t, tt.want, got)
+			gotField, gotNeedsKW := r.resolveLogLabelESField(tt.label)
+			assert.Equal(t, tt.wantField, gotField, "ES field path")
+			assert.Equal(t, tt.wantNeedsKW, gotNeedsKW, "needsKeyword flag")
 		})
 	}
+}
+
+// TestResolveLogLabelESField_HostNamePerSignalDifference guards the key
+// per-signal invariant: resource.host.name is explicitly keyword in the trace
+// template (no .keyword) but a dynamic text field in the log template (needs
+// .keyword). This cross-signal difference is exactly what a single global
+// aggregatable table could not represent; the per-signal table in
+// field_type.go resolves it.
+func TestResolveLogLabelESField_HostNamePerSignalDifference(t *testing.T) {
+	// Trace signal: resource.host.name is explicitly keyword → no .keyword.
+	assert.Equal(t, "resource.host.name", aggregatableField("trace", FieldResource+".host.name"))
+	// Log signal: resource.host.name is dynamic text → needs .keyword.
+	assert.Equal(t, "resource.host.name.keyword", aggregatableField("log", FieldResource+".host.name"))
 }

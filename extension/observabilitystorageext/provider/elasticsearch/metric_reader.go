@@ -30,7 +30,7 @@ func NewMetricReader(searcher Searcher, config *Config, logger *zap.Logger) *Met
 	return &MetricReader{
 		searcher: searcher,
 		config:   config,
-		logger: logger.Named("metric-reader"),
+		logger:   logger.Named("metric-reader"),
 	}
 }
 
@@ -279,7 +279,10 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 
 // ListLabelValues returns values for a specific label within the time range.
 func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
-	fieldPath := fmt.Sprintf(FieldMetricLabels+".%s", storedmodel.SanitizeMetricKey(label))
+	// Metric labels are dynamic text+keyword fields — terms aggregation
+	// requires the .keyword sub-field (aggregating on the bare text field is
+	// rejected by ES with "Text fields are not optimised for aggregations").
+	fieldPath := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", storedmodel.SanitizeMetricKey(label)))
 
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),
@@ -333,10 +336,7 @@ func (r *MetricReader) buildMetricQuery(metricName string, labels map[string]str
 		qb.Term(FieldServiceName, serviceName)
 	}
 	for k, v := range labels {
-		field := fmt.Sprintf(FieldMetricLabels+".%s", k)
-		if !knownAggregatableFields[field] {
-			field = field + ".keyword"
-		}
+		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
 		qb.Term(field, v)
 	}
 
@@ -378,12 +378,9 @@ func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFu
 	sources := make([]map[string]any, 0, len(groupBy))
 	for _, label := range groupBy {
 		esKey := translateLabelKey(label)
-		aggField := fmt.Sprintf("%s.%s", FieldMetricLabels, esKey)
 		// Metric labels are text fields from ES dynamic template — must use
 		// .keyword sub-field for terms/composite aggregation.
-		if !knownAggregatableFields[aggField] {
-			aggField = aggField + ".keyword"
-		}
+		aggField := aggregatableField("metric", fmt.Sprintf("%s.%s", FieldMetricLabels, esKey))
 		sources = append(sources, map[string]any{
 			label: map[string]any{
 				"terms": map[string]any{
@@ -701,10 +698,7 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 		qb.Term(FieldServiceName, serviceName)
 	}
 	for k, v := range labels {
-		field := fmt.Sprintf(FieldMetricLabels+".%s", k)
-		if !knownAggregatableFields[field] {
-			field = field + ".keyword"
-		}
+		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
 		qb.Term(field, v)
 	}
 
@@ -934,9 +928,9 @@ func (r *MetricReader) parseRawResult(resp *SearchResponse) ([]MetricRawSeries, 
 
 // LabelCombinationsQuery is the ES-specific options for label exploration.
 type MetricLabelQuery struct {
-	MetricName string
-	Labels     map[string]string
-	LabelKeys  []string
+	MetricName  string
+	Labels      map[string]string
+	LabelKeys   []string
 	ServiceName string
 }
 
