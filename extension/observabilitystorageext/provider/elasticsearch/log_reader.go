@@ -102,7 +102,7 @@ func (r *LogReader) SearchLogMetric(ctx context.Context, query LogMetricQuery) (
 	for i := len(query.GroupByLabels) - 1; i >= 0; i-- {
 		esField, isDynamic := r.resolveLogLabelESField(query.GroupByLabels[i])
 		// Add .keyword for text fields; skip for known keyword/long fields.
-		if isDynamic && !knownAggregatableFields[esField] {
+		if isDynamic {
 			esField = esField + ".keyword"
 		}
 		outerAgg = map[string]any{
@@ -584,14 +584,14 @@ func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
 	// ── Loki-specific stream selector labels ──
 	for k, v := range lq.Labels {
 		f, isDynamic := r.resolveLogLabelESField(k)
-		if isDynamic && !knownAggregatableFields[f] {
+		if isDynamic {
 			f = f + ".keyword"
 		}
 		qb.Term(f, v)
 	}
 	for k, v := range lq.LabelMatch {
 		esField, isDynamic := r.resolveLogLabelESField(k)
-		if isDynamic && !knownAggregatableFields[esField] {
+		if isDynamic {
 			esField = esField + ".keyword"
 		}
 		// LabelMatch represents regex patterns (=~ operator) on log labels.
@@ -741,14 +741,23 @@ var logLabelFieldMap = map[string]string{
 	"exception_message":    FieldAttributes + ".exception.message",
 	"exception_stacktrace": FieldAttributes + ".exception.stacktrace",
 	"exception_type":       FieldAttributes + ".exception.type",
+
+	// Known resource labels explicitly mapped to keyword/long types in log template.
+	// Not dynamic (no .keyword needed).
+	"process_pid": FieldResource + ".process.pid", // long
+
+	// Known resource labels mapped to text fields in log template.
+	// Dynamic (.keyword needed) — use labelFieldsNeedKeyword.
+	"host_name": FieldResource + ".host.name", // text + keyword
 }
 
 // labelFieldsNeedKeyword lists labels in logLabelFieldMap that are text fields
-// (stored under attributes.*) and need .keyword suffix for term aggregation.
+// (e.g. attributes.* or resource.* text fields) and need .keyword suffix.
 var labelFieldsNeedKeyword = map[string]bool{
 	"exception_message":    true,
 	"exception_stacktrace": true,
 	"exception_type":       true,
+	"host_name":            true, // log template: resource.host.name is text
 }
 
 // resolveLogLabelESField returns (field, isDynamic) where isDynamic=true
@@ -787,7 +796,7 @@ func (r *LogReader) listFieldKeys(ctx context.Context, timeRange TimeRange, appI
 func (r *LogReader) listFieldValues(ctx context.Context, field string, isDynamic bool, timeRange TimeRange, appID string) ([]string, error) {
 	// Dynamic text fields need .keyword; skip for known keyword/long fields.
 	aggField := field
-	if isDynamic && !knownAggregatableFields[aggField] {
+	if isDynamic {
 		aggField = aggField + ".keyword"
 	}
 	searchReq := &SearchRequest{
