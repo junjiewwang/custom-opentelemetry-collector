@@ -296,11 +296,11 @@ func TestMetricsAggField_OtherFields(t *testing.T) {
 			"intrinsic %q should NOT get .keyword (got %q)", label, field)
 	}
 
-	// attributes.* (flattened) → no .keyword needed.
+	// Custom attributes (text via dynamic template) → needs .keyword.
 	for _, label := range []string{"http.method", "span.peer.service"} {
 		field := metricsAggField(resolver, label)
-		assert.NotContains(t, field, ".keyword",
-			"flattened %q should NOT get .keyword (got %q)", label, field)
+		assert.Contains(t, field, ".keyword",
+			"custom attribute %q should get .keyword (got %q)", label, field)
 	}
 
 	// resource.* (text sub-fields) → needs .keyword.

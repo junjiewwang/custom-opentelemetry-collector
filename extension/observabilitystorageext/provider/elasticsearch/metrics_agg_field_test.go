@@ -64,13 +64,14 @@ func TestMetricsAggField_AllIntrinsics(t *testing.T) {
 			note: "explicit keyword in template"},
 
 		// ── Custom span attributes (resolved to attributes.xxx) → text, needs .keyword ──
-		// NOTE: This is a KNOWN GAP — custom attributes currently don't get .keyword
-		// in metricsAggField. Documented here for visibility. If this becomes a
-		// production issue, extend the function to handle attributes.* text fields.
-		{label: "http.method", want: "attributes.http.method",
-			note: "KNOWN GAP: custom attributes are text but no .keyword added yet"},
-		{label: "db.system", want: "attributes.db.system",
-			note: "KNOWN GAP: custom attributes are text but no .keyword added yet"},
+		{label: "http.method", want: "attributes.http.method.keyword",
+			note: "custom attributes are text → needs .keyword (general solution)"},
+		{label: "db.system", want: "attributes.db.system.keyword",
+			note: "custom attributes are text → needs .keyword (general solution)"},
+		{label: "span.peer.service", want: "attributes.peer.service.keyword",
+			note: "scoped custom attr → attributes.<key> + .keyword"},
+		{label: "resource.app_id", want: "resource.app_id.keyword",
+			note: "resource.app_id is text → needs .keyword (was KNOWN GAP)"},
 	}
 
 	for _, tt := range tests {

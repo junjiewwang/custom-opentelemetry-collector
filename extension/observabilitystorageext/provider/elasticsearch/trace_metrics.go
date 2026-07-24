@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/unitconv"
@@ -288,19 +287,51 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 	}
 }
 
-// metricsAggField resolves the correct ES field for a by() group-by label.
-// Most resource.* sub-fields are text → need .keyword. Exceptions (keyword/long)
-// in resourceFieldsNoKeyword are aggregated as-is.
+// metricsAggField resolves the correct ES aggregation field for a by() label.
+// Strategy: instead of listing fields that need .keyword, we maintain a set of
+// known keyword/long fields that DON'T need .keyword. Everything else is assumed
+// to be a dynamic text field (via ES dynamic template) and gets .keyword suffix.
+//
+// This covers all three cases uniformly:
+//   - intrinsic keyword: kind, name, spanId → no suffix
+//   - intrinsic text: status.code, status.message → gets .keyword
+//   - resource keyword: resource.host.name → no suffix
+//   - resource text: resource.app_id, resource.service.instance.id → gets .keyword
+//   - custom attributes: attributes.http.method, attributes.db.system → gets .keyword
 func metricsAggField(resolver *AttributeResolver, label string) string {
 	field := resolver.Resolve(label).ESField
-	// status.message and status.code are text fields — must use .keyword for aggregation.
-	if field == FieldStatus+".message" || field == FieldStatus+".code" {
-		return field + ".keyword"
+
+	// Known keyword/long/numeric fields from the ES index template.
+	// These support aggregation directly without .keyword suffix.
+	if knownAggregatableFields[field] {
+		return field
 	}
-	if strings.HasPrefix(field, FieldResource+".") && !resourceFieldsNoKeyword[field] {
-		return field + ".keyword"
-	}
-	return field
+	// Default: text field from dynamic template → must use .keyword for aggregation.
+	return field + ".keyword"
+}
+
+// knownAggregatableFields lists ES fields that are explicitly mapped as keyword,
+// long, or other aggregatable types (not text) in the index template.
+// Any field NOT in this set is assumed to be a dynamic text field requiring
+// .keyword suffix for terms aggregation.
+var knownAggregatableFields = map[string]bool{
+	// Intrinsic top-level fields (from admin.go template).
+	FieldKind:                true, // keyword
+	FieldName:                true, // keyword
+	FieldSpanID:              true, // keyword
+	FieldTraceID:             true, // keyword
+	FieldParentSpanID:        true, // keyword
+	FieldServiceName:         true, // keyword
+	FieldStartTimeUnixNano:   true, // long
+	FieldEndTimeUnixNano:     true, // long
+	FieldDurationNano:        true, // long
+
+	// resource.* fields explicitly mapped as keyword in template.
+	FieldResource + ".service.name":      true,
+	FieldResource + ".host.name":         true,
+	FieldResource + ".service.namespace": true,
+	FieldResource + ".service.version":   true,
+	FieldResource + ".process.pid":       true,
 }
 
 // metricsTermClause generates the correct ES match/term clause based on field type.
@@ -310,15 +341,6 @@ func metricsTermClause(field, value string) map[string]any {
 		return map[string]any{"match": map[string]any{field: value}}
 	}
 	return map[string]any{"term": map[string]any{field: value}}
-}
-
-// resourceFieldsNoKeyword lists resource.* fields explicitly mapped as keyword/long
-// (not text) and therefore do NOT need a .keyword suffix for aggregation.
-var resourceFieldsNoKeyword = map[string]bool{
-	FieldResource + ".host.name":          true,
-	FieldResource + ".service.namespace":  true,
-	FieldResource + ".service.version":    true,
-	FieldResource + ".process.pid":        true,
 }
 
 // fieldForIntrinsic maps a TraceQL intrinsic field name to the ES field name.
