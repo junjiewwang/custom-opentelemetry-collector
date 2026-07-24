@@ -1,8 +1,40 @@
 # ES 索引模板自动校验与修复（Template Reconciler）设计方案
 
 > 文档创建日期：2026-07-23  
-> 状态：方案设计中  
-> 关联问题：模板推送失败/被覆盖/被删除导致新索引 mapping 错误（如 `timeUnixNano` 被推断为 `double`）
+> 状态：方案设计中
+> 关联问题：模板推送失败/被覆盖/被删除导致新索引 mapping 错误
+
+---
+
+## 附：LogQL Regex Filter 修复 (2026-07-23 已实施)
+
+### 根因
+Grafana `|~ "(?i)order"` 正则过滤器被错误地转换为 ES `match` 查询：
+- LogQL: `{service_name="test-java-order-service"} |~ "(?i)order"`
+- 旧 ES 查询: `{"match": {"body": {"query": "/(?i)order/", "operator": "and"}}}`
+- ES `match` 查询对 `body` (text/standard analyzer) 分词: `["i", "order"]`
+- `operator: "and"` 要求两个 token 都匹配 → 0 结果
+
+### 修复方案
+1. `LogQuery` 新增 `RegexFilters []string` 和 `NotRegexFilters []string` 字段
+2. Evaluator 将 `|~` / `!~` 过滤器路由到新字段（不再进入 `Query`）
+3. `buildLogSearchQuery` 对 `RegexFilters` 生成 ES `regexp` 查询（`case_insensitive: true`）
+4. `convertLokiRegex()` 转换 PCRE 标志 → ES 参数
+
+### ES 验证结果
+| 查询方式 | 结果 | 
+|---------|------|
+| 旧方式 (match + `"/(?i)order/"`) | total=0 ❌ |
+| 新方式 (regexp + `case_insensitive`) | total=1592 ✅ |
+
+### 改动文件
+- `extension/observabilitystorageext/types.go` — LogQuery 新增字段
+- `extension/observabilitystorageext/provider/elasticsearch/types_reader.go` — ES LogQuery 新增字段
+- `extension/adminext/logql/evaluator.go` — 正则过滤器路由到新字段
+- `extension/observabilitystorageext/provider/elasticsearch/log_reader.go` — ES regexp 查询构建 + convertLokiRegex
+- `extension/observabilitystorageext/reader_adapter.go` — 字段拷贝补全
+- `extension/adminext/logql/evaluator_test.go` — 新增 6 个测试
+- `extension/observabilitystorageext/provider/elasticsearch/log_reader_test.go` — 新增 convertLokiRegex 测试
 
 ---
 

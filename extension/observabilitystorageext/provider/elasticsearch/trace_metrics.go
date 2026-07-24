@@ -326,6 +326,12 @@ var knownAggregatableFields = map[string]bool{
 	FieldEndTimeUnixNano:     true, // long
 	FieldDurationNano:        true, // long
 
+	// Dynamic numeric fields — discovered via ES mapping validation.
+	// These resolve via ES dot-nesting to numeric sub-fields (e.g.
+	// attributes.thread.id → attributes.thread{object} → id{long}).
+	// They have NO .keyword sub-field → must NOT add .keyword suffix.
+	FieldAttributes + ".thread.id": true, // long
+
 	// resource.* fields explicitly mapped as keyword in template.
 	FieldResource + ".service.name":      true,
 	FieldResource + ".host.name":         true,
