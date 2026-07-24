@@ -293,7 +293,8 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 // in resourceFieldsNoKeyword are aggregated as-is.
 func metricsAggField(resolver *AttributeResolver, label string) string {
 	field := resolver.Resolve(label).ESField
-	if field == FieldStatus+".message" {
+	// status.message and status.code are text fields — must use .keyword for aggregation.
+	if field == FieldStatus+".message" || field == FieldStatus+".code" {
 		return field + ".keyword"
 	}
 	if strings.HasPrefix(field, FieldResource+".") && !resourceFieldsNoKeyword[field] {

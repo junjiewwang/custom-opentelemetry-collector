@@ -268,6 +268,15 @@ func TestMetricsAggField_StatusMessage(t *testing.T) {
 		"statusMessage should aggregate on status.message.keyword")
 }
 
+func TestMetricsAggField_StatusCode(t *testing.T) {
+	resolver := &AttributeResolver{}
+
+	// by(status) → status.code.keyword (for terms agg on text field).
+	field := metricsAggField(resolver, "status")
+	assert.Equal(t, FieldStatus+".code.keyword", field,
+		"status should aggregate on status.code.keyword")
+}
+
 func TestMetricsAggField_StatusMessageWithDot(t *testing.T) {
 	resolver := &AttributeResolver{}
 
@@ -280,7 +289,8 @@ func TestMetricsAggField_OtherFields(t *testing.T) {
 	resolver := &AttributeResolver{}
 
 	// Intrinsic keyword fields → no .keyword needed.
-	for _, label := range []string{"rootName", "status", "kind", "name"} {
+	// status resolves to status.code (text) → needs .keyword, tested separately.
+	for _, label := range []string{"rootName", "kind", "name"} {
 		field := metricsAggField(resolver, label)
 		assert.NotContains(t, field, ".keyword",
 			"intrinsic %q should NOT get .keyword (got %q)", label, field)
