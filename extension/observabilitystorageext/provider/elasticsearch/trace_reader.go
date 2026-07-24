@@ -499,8 +499,11 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		qb.Term(FieldKind, capitalizeFirst(tq.SpanKind))
 	}
 	if tq.Status != "" {
-		// TraceQL uses lowercase (error, ok), ES stores capitalized (Error, Ok) in status.code.
-		qb.Term(FieldStatus+".code", capitalizeFirst(tq.Status))
+		// ES stores status.code values as-is from OTel enum String():
+		// STATUS_CODE_ERROR -> "STATUS_CODE_ERROR", STATUS_CODE_OK -> "STATUS_CODE_OK".
+		// But actual data in ES is lowercase due to historical write behavior.
+		// Use ToUpper for API consistency while matching ES data.
+		qb.Term(FieldStatus+".code", tq.Status)
 	}
 	if tq.IsRoot {
 		// Root span: parentSpanId field is absent (omitempty) for new data,
@@ -748,8 +751,10 @@ func resolveTagESFields(key, value string) (fields []string, val string) {
 	// Transform value for fields stored with capitalized first letter.
 	val = value
 	switch esField {
-	case FieldKind, FieldStatus + ".code":
+	case FieldKind:
 		val = capitalizeFirst(value)
+	case FieldStatus + ".code":
+		val = value // ES stores lowercase; no transform needed
 	}
 
 	// Scoped keys: use precise resolver mapping.
