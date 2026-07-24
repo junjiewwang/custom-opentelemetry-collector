@@ -580,14 +580,17 @@ func (r *LogReader) buildLogSearchQuery(lq LogQuery) map[string]any {
 	// ── Loki-specific stream selector labels ──
 	for k, v := range lq.Labels {
 		f := r.resolveLogLabelESField(k)
+		if !knownAggregatableFields[f] {
+			f = f + ".keyword"
+		}
 		qb.Term(f, v)
 	}
 	for k, v := range lq.LabelMatch {
 		esField := r.resolveLogLabelESField(k)
+		if !knownAggregatableFields[esField] {
+			esField = esField + ".keyword"
+		}
 		// LabelMatch represents regex patterns (=~ operator) on log labels.
-		// resolveTagTermClauses produces term queries with trace-style attribute
-		// field paths — wrong for log labels which are top-level keyword fields.
-		// Build a regexp query directly on the resolved ES field.
 		qb.Raw(map[string]any{
 			"regexp": map[string]any{
 				esField: map[string]any{"value": v, "flags": "ALL"},
@@ -734,8 +737,11 @@ func (r *LogReader) resolveLogLabelESField(label string) string {
 	if f, ok := logLabelFieldMap[label]; ok {
 		return f
 	}
-	// Dynamic labels are stored under resource.* or attributes.*
-	return FieldResource + "." + label
+	// Dynamic labels (resource.* or attributes.*): convert underscore-form
+	// Loki label names back to OTel dotted format via translateLabelKey.
+	// e.g. process_runtime_name → process.runtime_name → resource.process.runtime_name
+	otelKey := translateLabelKey(label)
+	return FieldResource + "." + otelKey
 }
 
 func (r *LogReader) listFieldKeys(ctx context.Context, timeRange TimeRange, appID string, fields ...string) ([]string, error) {
@@ -752,13 +758,18 @@ func (r *LogReader) listFieldKeys(ctx context.Context, timeRange TimeRange, appI
 }
 
 func (r *LogReader) listFieldValues(ctx context.Context, field string, timeRange TimeRange, appID string) ([]string, error) {
+	// Dynamic text fields from ES template need .keyword for terms aggregation.
+	aggField := field
+	if !knownAggregatableFields[aggField] {
+		aggField = aggField + ".keyword"
+	}
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),
 		Size:  0,
 		Aggregations: map[string]any{
 			"values": map[string]any{
 				"terms": map[string]any{
-					"field": field,
+					"field": aggField,
 					"size":  1000,
 				},
 			},
