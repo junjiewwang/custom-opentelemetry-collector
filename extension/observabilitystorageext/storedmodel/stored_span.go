@@ -150,9 +150,12 @@ func toParentID(parentID pcommon.SpanID) string {
 }
 
 // pcommonMapToFlat converts a pcommon.Map to a flat map[string]any.
-// Nested maps (ValueTypeMap) are recursively flattened into dotted keys to
-// prevent ES object-vs-scalar type conflicts across polymorphic OTel values.
-//   {server: {name: "foo"}} -> {"server.name": "foo"}
+// Nested maps (ValueTypeMap) are recursively flattened using "_" to
+// prevent ES from interpreting the separator as nested path.
+// ES treats "." in JSON keys as object nesting, so flattening with "."
+// would create "labels.server.address" which conflicts with "labels.server".
+// Using "_" produces independent flat keys with no nesting ambiguity.
+//   {server: {name: "foo"}} -> {"server_name": "foo"}
 //   {server: "my-svc"}       -> {"server": "my-svc"}
 func pcommonMapToFlat(attrs pcommon.Map) map[string]any {
 	if attrs.Len() == 0 {
@@ -167,12 +170,12 @@ func pcommonMapToFlat(attrs pcommon.Map) map[string]any {
 }
 
 // flattenMapToFlat recursively flattens a pcommon.Map, joining nested keys
-// with "." and sanitizing the final key via SanitizeKey.
+// with "_" to avoid ES dot-path nesting. Keys are sanitized via SanitizeKey.
 func flattenMapToFlat(result map[string]any, prefix string, attrs pcommon.Map) {
 	attrs.Range(func(k string, v pcommon.Value) bool {
 		fullKey := k
 		if prefix != "" {
-			fullKey = prefix + "." + k
+			fullKey = prefix + "_" + k
 		}
 		if v.Type() == pcommon.ValueTypeMap {
 			flattenMapToFlat(result, fullKey, v.Map())

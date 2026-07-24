@@ -19,8 +19,8 @@ func TestFlattenMapToFlat_NestedMap(t *testing.T) {
 	result := pcommonMapToFlat(m)
 
 	assert.Equal(t, "my-svc", result["server"])
-	assert.Equal(t, "prod", result["env.name"])
-	assert.Equal(t, "us-east-1", result["env.region"])
+	assert.Equal(t, "prod", result["env_name"])
+	assert.Equal(t, "us-east-1", result["env_region"])
 	assert.NotContains(t, result, "env") // no nested objects
 }
 
@@ -32,8 +32,8 @@ func TestFlattenMapToFlat_DeepNested(t *testing.T) {
 
 	result := pcommonMapToFlat(m)
 
-	// "a.b.c" (3 segments) → SanitizeKey → "a.b_c" (2 segments)
-	assert.Equal(t, "value", result["a.b_c"])
+	// "a_b_c" → SanitizeKey (no dots) → "a_b_c"
+	assert.Equal(t, "value", result["a_b_c"])
 	assert.NotContains(t, result, "a") // no intermediate object
 }
 
@@ -51,7 +51,7 @@ func TestFlattenMapToFlat_NoConflict(t *testing.T) {
 
 	// Different keys → no ES mapping conflict.
 	assert.Equal(t, "my-svc", r1["server"])
-	assert.Equal(t, "foo-svc", r2["server.name"])
+	assert.Equal(t, "foo-svc", r2["server_name"])
 	assert.NotContains(t, r2, "server")
 }
 
@@ -74,10 +74,10 @@ func TestFlattenMapToFlat_ProductionServerConflict(t *testing.T) {
 
 	// Doc A: labels.server = "mock_project_db"
 	assert.Equal(t, "mock_project_db", r1["server"])
-	// Doc B: labels.server.address, labels.server.port (flattened, NOT sub-objects of labels.server)
-	assert.Equal(t, "10.0.0.5", r2["server.address"])
-	assert.Equal(t, "8080", r2["server.port"])
-	// Critical: labels.server must NOT appear as a key in r2 (no intermediate object)
+	// Doc B: labels.server_address, labels.server_port (_ sep, no ES nesting)
+	assert.Equal(t, "10.0.0.5", r2["server_address"])
+	assert.Equal(t, "8080", r2["server_port"])
+	// Critical: labels.server must NOT appear in r2 (no intermediate object)
 	assert.NotContains(t, r2, "server",
 		"deep flatten eliminated the intermediate server object")
 }
@@ -108,10 +108,10 @@ func TestFlattenMapToFlat_MultiPolymorphic(t *testing.T) {
 	assert.Equal(t, "ok", r1["status"])
 	assert.Equal(t, "my-app", r1["service"])
 
-	// Doc 2: nested maps become dotted keys
-	assert.Equal(t, "10.0.0.1", r2["server.address"])
-	assert.Equal(t, int64(200), r2["status.code"])
-	assert.Equal(t, "my-app-svc", r2["service.name"])
+	// Doc 2: nested maps become _-separated flat keys
+	assert.Equal(t, "10.0.0.1", r2["server_address"])
+	assert.Equal(t, int64(200), r2["status_code"])
+	assert.Equal(t, "my-app-svc", r2["service_name"])
 
 	// No intermediate objects leaked
 	assert.NotContains(t, r2, "server")
