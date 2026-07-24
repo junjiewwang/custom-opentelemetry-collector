@@ -327,10 +327,16 @@ var knownAggregatableFields = map[string]bool{
 	FieldDurationNano:        true, // long
 
 	// Dynamic numeric fields — discovered via ES mapping validation.
-	// These resolve via ES dot-nesting to numeric sub-fields (e.g.
-	// attributes.thread.id → attributes.thread{object} → id{long}).
+	// These resolve via ES dot-nesting to numeric/bool sub-fields.
 	// They have NO .keyword sub-field → must NOT add .keyword suffix.
-	FieldAttributes + ".thread.id": true, // long
+	FieldAttributes + ".thread.id":              true, // long
+	FieldAttributes + ".order_error":            true, // boolean
+	FieldAttributes + ".rpc.grpc_status_code":   true, // int
+	FieldAttributes + ".server.port":            true, // long
+	FieldAttributes + ".network.peer_port":      true, // long
+	FieldAttributes + ".messaging.kafka_message_offset": true, // long
+	FieldAttributes + ".messaging.message_body_size":    true, // long
+	FieldAttributes + ".messaging.destination_partition_id": true, // long
 
 	// resource.* fields explicitly mapped as keyword in template.
 	FieldResource + ".service.name":      true,
