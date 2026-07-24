@@ -208,3 +208,112 @@ func TestSignalSpec_Lookups(t *testing.T) {
 	assert.Equal(t, FieldMetricTimeUnixMilli, signalTimestampField("metric"))
 	assert.Equal(t, FieldLogTimeUnixNano, signalTimestampField("log"))
 }
+
+// templateFieldTypes returns a map from dotted field path → ES mapping "type"
+// for every explicitly-mapped property in a template, recursing into nested
+// "properties" (status, events, links, scope, resource). Fields reached only
+// via dynamic_templates (e.g. unmapped attributes.*) are NOT present — their
+// type is determined at runtime by ES, so it cannot be statically asserted.
+func templateFieldTypes(tmpl map[string]any) map[string]string {
+	out := map[string]string{}
+	tmplVal, _ := tmpl["template"].(map[string]any)
+	mappings, _ := tmplVal["mappings"].(map[string]any)
+	props, _ := mappings["properties"].(map[string]any)
+	var walk func(prefix string, props map[string]any)
+	walk = func(prefix string, props map[string]any) {
+		for k, v := range props {
+			vMap, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			path := k
+			if prefix != "" {
+				path = prefix + "." + k
+			}
+			if t, ok := vMap["type"].(string); ok && t != "" {
+				out[path] = t
+			}
+			if nested, ok := vMap["properties"].(map[string]any); ok {
+				walk(path, nested)
+			}
+		}
+	}
+	walk("", props)
+	return out
+}
+
+// aggregatableType reports whether an ES mapping type supports terms/composite
+// aggregation directly (without a .keyword sub-field). keyword/long/integer/
+// boolean/double/date are all aggregatable; "text" and "object" are not.
+func aggregatableType(t string) bool {
+	switch t {
+	case "keyword", "long", "integer", "short", "byte", "boolean", "double", "float", "date":
+		return true
+	}
+	return false
+}
+
+// TestKnownAggregatableFields_MatchTraceTemplate guards the .keyword decision
+// table against the trace index template. Every explicitly-mapped field that
+// knownAggregatableFields claims is aggregatable (no .keyword needed) must
+// actually be mapped as an aggregatable type in the trace template. A field
+// that drifted to "text" in the template but stayed true in the table would
+// cause silent empty aggregations — the same class of bug as the P0
+// GetLogStats "severity" field.
+//
+// The attributes.* "dynamic numeric" entries (thread.id, server.port, etc.)
+// are deliberately excluded: they are NOT explicitly mapped — their type is
+// assigned at runtime by ES dynamic mapping, so it cannot be asserted from the
+// static template. They are documented empirical knowledge.
+func TestKnownAggregatableFields_MatchTraceTemplate(t *testing.T) {
+	cfg := IndexConfig{IndexPrefix: "otel", IndexDateFormat: "2006.01.02"}
+	traceTypes := templateFieldTypes(traceTemplateMappings(cfg))
+
+	// Explicitly-mapped fields whose aggregatability CAN be verified from the
+	// trace template. (Excludes attributes.* and resource.process.pid
+	// dynamic-numeric entries — those are dynamically typed by ES at runtime.)
+	verifiable := []string{
+		FieldKind, FieldName, FieldSpanID, FieldTraceID, FieldParentSpanID,
+		FieldServiceName, FieldStartTimeUnixNano, FieldEndTimeUnixNano, FieldDurationNano,
+		FieldResource + ".service.name",
+		FieldResource + ".host.name",
+		FieldResource + ".service.namespace",
+		FieldResource + ".service.version",
+	}
+	for _, f := range verifiable {
+		require.True(t, knownAggregatableFields[f],
+			"field %q is verifiable from the template but missing from knownAggregatableFields — "+
+				"if it was removed, confirm it is still aggregatable, else it needs .keyword", f)
+		typ, ok := traceTypes[f]
+		require.True(t, ok, "field %q in knownAggregatableFields is not explicitly mapped in the trace template "+
+			"(it may be dynamically typed — move it to the dynamic-numeric group if so)", f)
+		assert.True(t, aggregatableType(typ),
+			"field %q is in knownAggregatableFields (claims no .keyword needed) but trace template maps it as %q — "+
+				"terms aggregation on a text field returns empty buckets", f, typ)
+	}
+}
+
+// TestKnownAggregatableFields_DynamicNumericEntriesAreDocumented ensures the
+// attributes.* entries in knownAggregatableFields (which cannot be verified
+// from the static template) are at least explicitly enumerated here, so a new
+// entry is a conscious decision rather than an accident. If someone adds an
+// attributes.* entry, they must also add it to this list.
+func TestKnownAggregatableFields_DynamicNumericEntriesAreDocumented(t *testing.T) {
+	dynamicNumeric := []string{
+		FieldAttributes + ".thread.id",
+		FieldAttributes + ".order_error",
+		FieldAttributes + ".rpc.grpc_status_code",
+		FieldAttributes + ".server.port",
+		FieldAttributes + ".network.peer_port",
+		FieldAttributes + ".messaging.kafka_message_offset",
+		FieldAttributes + ".messaging.message_body_size",
+		FieldAttributes + ".messaging.destination_partition_id",
+		// resource.process.pid is dynamically mapped (long) by ES at runtime —
+		// not in the trace template's explicit resource.properties.
+		FieldResource + ".process.pid",
+	}
+	for _, f := range dynamicNumeric {
+		assert.True(t, knownAggregatableFields[f],
+			"dynamic-numeric field %q is documented but missing from knownAggregatableFields", f)
+	}
+}
