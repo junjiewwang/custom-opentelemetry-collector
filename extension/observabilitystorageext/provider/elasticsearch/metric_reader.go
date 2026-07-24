@@ -333,7 +333,11 @@ func (r *MetricReader) buildMetricQuery(metricName string, labels map[string]str
 		qb.Term(FieldServiceName, serviceName)
 	}
 	for k, v := range labels {
-		qb.Term(fmt.Sprintf(FieldMetricLabels+".%s", k), v)
+		field := fmt.Sprintf(FieldMetricLabels+".%s", k)
+		if !knownAggregatableFields[field] {
+			field = field + ".keyword"
+		}
+		qb.Term(field, v)
 	}
 
 	return qb.Build()
@@ -697,7 +701,11 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 		qb.Term(FieldServiceName, serviceName)
 	}
 	for k, v := range labels {
-		qb.Term(fmt.Sprintf(FieldMetricLabels+".%s", k), v)
+		field := fmt.Sprintf(FieldMetricLabels+".%s", k)
+		if !knownAggregatableFields[field] {
+			field = field + ".keyword"
+		}
+		qb.Term(field, v)
 	}
 
 	// Translate regex patterns to ES-compatible queries for flattened fields.
