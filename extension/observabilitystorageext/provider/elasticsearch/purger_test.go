@@ -338,7 +338,7 @@ func TestPurger_PurgeByApp_DeletesAppScopedIndices(t *testing.T) {
 	// Mix of app-scoped and global indices
 	mock.addIndex("otel-traces-myapp-2026.05.20", 100, 1024)
 	mock.addIndex("otel-traces-myapp-2026.05.21", 200, 1024)
-	mock.addIndex("otel-traces-myapp-2026.06.01", 300, 1024) // recent, keep
+	mock.addIndex("otel-traces-myapp-2026.06.01", 300, 1024)    // recent, keep
 	mock.addIndex("otel-traces-otherapp-2026.05.20", 150, 1024) // different app, keep
 	mock.addIndex("otel-traces-2026.05.20", 500, 1024)          // global, keep
 
@@ -384,8 +384,8 @@ func TestPurger_EstimatePurge_ReturnsCorrectPreview(t *testing.T) {
 
 	mock.addIndex("otel-traces-2026.05.20", 1000, 1024*1024)
 	mock.addIndex("otel-traces-2026.05.21", 2000, 1024*1024*2)
-	mock.addIndex("otel-traces-2026.05.28", 500, 512*1024)   // recent
-	mock.addIndex("otel-traces-2026.06.01", 300, 256*1024)   // recent
+	mock.addIndex("otel-traces-2026.05.28", 500, 512*1024) // recent
+	mock.addIndex("otel-traces-2026.06.01", 300, 256*1024) // recent
 
 	ts := httptest.NewServer(mock.handler())
 	defer ts.Close()
@@ -511,9 +511,9 @@ func TestPurger_GetDataBoundary_UnparseableIndexNames(t *testing.T) {
 func TestPurger_PurgeExpired_SkipsUnparseableIndices(t *testing.T) {
 	mock := newPurgerMockES(t)
 
-	mock.addIndex("otel-traces-2026.05.20", 1000, 1024)       // old, should delete
-	mock.addIndex("otel-traces-rollover-000001", 500, 1024)    // unparseable, skip
-	mock.addIndex("otel-traces-2026.06.01", 300, 1024)         // recent, keep
+	mock.addIndex("otel-traces-2026.05.20", 1000, 1024)     // old, should delete
+	mock.addIndex("otel-traces-rollover-000001", 500, 1024) // unparseable, skip
+	mock.addIndex("otel-traces-2026.06.01", 300, 1024)      // recent, keep
 
 	ts := httptest.NewServer(mock.handler())
 	defer ts.Close()
@@ -646,50 +646,50 @@ func TestPurger_extractDate_Various(t *testing.T) {
 	tests := []struct {
 		name      string
 		indexName string
-		prefix    string
+		signal    lifecycle.SignalType
 		expected  *time.Time
 	}{
 		{
 			name:      "standard date suffix",
 			indexName: "otel-traces-2026.05.25",
-			prefix:    "otel-traces",
+			signal:    lifecycle.SignalTrace,
 			expected:  timePtr(time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			name:      "app-scoped with date",
 			indexName: "otel-traces-myapp-2026.05.25",
-			prefix:    "otel-traces",
+			signal:    lifecycle.SignalTrace,
 			expected:  timePtr(time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			name:      "app with hyphens",
 			indexName: "otel-traces-my-cool-app-2026.05.25",
-			prefix:    "otel-traces",
+			signal:    lifecycle.SignalTrace,
 			expected:  timePtr(time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			name:      "rollover index (no date)",
 			indexName: "otel-traces-000001",
-			prefix:    "otel-traces",
+			signal:    lifecycle.SignalTrace,
 			expected:  nil,
 		},
 		{
 			name:      "partial date (invalid)",
 			indexName: "otel-traces-2026.13.40",
-			prefix:    "otel-traces",
+			signal:    lifecycle.SignalTrace,
 			expected:  nil, // invalid month/day
 		},
 		{
 			name:      "empty index name",
 			indexName: "",
-			prefix:    "otel-traces",
+			signal:    lifecycle.SignalTrace,
 			expected:  nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := purger.extractDate(tt.indexName, tt.prefix)
+			result := purger.extractDate(tt.indexName, tt.signal)
 			if tt.expected == nil {
 				if result != nil {
 					t.Errorf("expected nil, got %v", *result)
@@ -702,6 +702,37 @@ func TestPurger_extractDate_Various(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPurger_extractDate_UsesPerSignalFormat is a regression test: extractDate
+// previously always read Traces.IndexDateFormat. When traces and metrics use
+// different formats, a metrics/logs index date was parsed with the traces
+// format and silently failed, so those indices were never matched for deletion.
+// Each signal must use its own IndexDateFormat.
+func TestPurger_extractDate_UsesPerSignalFormat(t *testing.T) {
+	purger := &Purger{
+		config: &Config{
+			// Traces uses dash format; metrics/logs use dot format.
+			Traces:  IndexConfig{IndexDateFormat: "2006-01-02"},
+			Metrics: IndexConfig{IndexDateFormat: "2006.01.02"},
+			Logs:    IndexConfig{IndexDateFormat: "2006.01.02"},
+		},
+	}
+
+	want := timePtr(time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC))
+
+	// Metrics index with a dot-format date must parse via the Metrics config.
+	// With the old bug (always Traces format = "2006-01-02"), this returned nil.
+	got := purger.extractDate("otel-metrics-app-2026.05.25", lifecycle.SignalMetric)
+	if got == nil || !got.Equal(*want) {
+		t.Fatalf("metrics signal: expected %v, got %v", *want, got)
+	}
+
+	// Logs index with a dot-format date must parse via the Logs config.
+	got = purger.extractDate("otel-logs-app-2026.05.25", lifecycle.SignalLog)
+	if got == nil || !got.Equal(*want) {
+		t.Fatalf("logs signal: expected %v, got %v", *want, got)
 	}
 }
 

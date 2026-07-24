@@ -21,16 +21,16 @@ type StoredLogRecord = storedmodel.StoredLogRecord
 // LogReader implements log query operations against Elasticsearch.
 type LogReader struct {
 	searcher Searcher
-	config *Config
-	logger *zap.Logger
+	config   *Config
+	logger   *zap.Logger
 }
 
 // NewLogReader creates a new LogReader instance.
 func NewLogReader(searcher Searcher, config *Config, logger *zap.Logger) *LogReader {
 	return &LogReader{
 		searcher: searcher,
-		config: config,
-		logger: logger.Named("log-reader"),
+		config:   config,
+		logger:   logger.Named("log-reader"),
 	}
 }
 
@@ -428,7 +428,7 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 		Aggregations: map[string]any{
 			"by_severity": map[string]any{
 				"terms": map[string]any{
-					"field": "severity",
+					"field": FieldLogSeverityText,
 					"size":  20,
 				},
 			},
@@ -438,13 +438,13 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 					"size":  500,
 				},
 			},
-		"time_histogram": map[string]any{
-			"histogram": map[string]any{
-				"field":         FieldLogTimeUnixNano,
-				"interval":      float64(r.calculateNanoInterval(query.TimeRange)),
-				"min_doc_count": 0,
+			"time_histogram": map[string]any{
+				"histogram": map[string]any{
+					"field":         FieldLogTimeUnixNano,
+					"interval":      float64(r.calculateNanoInterval(query.TimeRange)),
+					"min_doc_count": 0,
+				},
 			},
-		},
 		},
 	}
 
@@ -737,35 +737,28 @@ var logLabelFieldMap = map[string]string{
 	"spanID":         FieldSpanID,
 
 	// Known OTel log attributes stored under attributes.* in ES.
-	// These are text fields → need .keyword, marked as dynamic.
+	// These are text fields → need .keyword (resolved via needsKeyword below).
 	"exception_message":    FieldAttributes + ".exception.message",
 	"exception_stacktrace": FieldAttributes + ".exception.stacktrace",
 	"exception_type":       FieldAttributes + ".exception.type",
 
-	// Known resource labels explicitly mapped to keyword/long types in log template.
-	// Not dynamic (no .keyword needed).
-	"process_pid": FieldResource + ".process.pid", // long
-
-	// Known resource labels mapped to text fields in log template.
-	// Dynamic (.keyword needed) — use labelFieldsNeedKeyword.
-	"host_name": FieldResource + ".host.name", // text + keyword
+	// resource.* sub-fields: the log template maps resource as a bare dynamic
+	// object, so these are text → need .keyword. (Contrast the trace template,
+	// where resource.host.name is explicitly keyword — the per-signal table in
+	// field_type.go captures this difference.)
+	"process_pid": FieldResource + ".process.pid", // dynamically typed long
+	"host_name":   FieldResource + ".host.name",   // text + keyword
 }
 
-// labelFieldsNeedKeyword lists labels in logLabelFieldMap that are text fields
-// (e.g. attributes.* or resource.* text fields) and need .keyword suffix.
-var labelFieldsNeedKeyword = map[string]bool{
-	"exception_message":    true,
-	"exception_stacktrace": true,
-	"exception_type":       true,
-	"host_name":            true, // log template: resource.host.name is text
-}
-
-// resolveLogLabelESField returns (field, isDynamic) where isDynamic=true
-// for labels NOT in logLabelFieldMap. Dynamic fields are resource.* text
-// fields requiring .keyword suffix for exact term matching.
+// resolveLogLabelESField returns (field, needsKeyword) for a Loki-style label.
+// needsKeyword=true means the ES field is a text field requiring a .keyword
+// suffix for exact term matching; false means it is aggregatable as-is
+// (keyword/long). The decision is delegated to the per-signal aggregatable
+// table (field_type.go) for the log signal, replacing the old parallel
+// labelFieldsNeedKeyword map.
 func (r *LogReader) resolveLogLabelESField(label string) (string, bool) {
 	if f, ok := logLabelFieldMap[label]; ok {
-		return f, labelFieldsNeedKeyword[label]
+		return f, needsKeyword("log", f)
 	}
 	// Dynamic labels: use known Prom→OTel mappings, fall back to label as-is.
 	// Generic underscore→dot is NOT safe: process_command_line → process.command.line
@@ -859,11 +852,6 @@ func convertLokiRegex(pattern string) (string, bool) {
 		// (?m) and (?U) are not applicable to ES regexp
 	}
 	return esPattern, caseInsensitive
-}
-
-// Update buildLogSearchQuery to also handle Loki-specific labels.
-func init() {
-	// Note: buildLogSearchQuery is patched below to include Labels/LabelMatch handling.
 }
 
 // ==================== Log Document Model ====================

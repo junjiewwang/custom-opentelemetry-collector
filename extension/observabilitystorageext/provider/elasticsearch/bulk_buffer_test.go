@@ -87,12 +87,12 @@ func TestBulkBuffer_FlushOnBatchSize(t *testing.T) {
 	// Don't start the flush loop for this test - we want to test batch size trigger only.
 
 	// Add 2 docs - should not flush
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "value1"}))
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "value2"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "value1"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "value2"}))
 	assert.Equal(t, int32(0), bulkCalls.Load(), "should not flush before batch_size")
 
 	// Add 3rd doc - should trigger flush
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "value3"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "value3"}))
 	assert.Equal(t, int32(1), bulkCalls.Load(), "should flush on batch_size reached")
 
 	// Buffer should be empty now
@@ -134,8 +134,8 @@ func TestBulkBuffer_ManualFlush(t *testing.T) {
 	buf := newBulkBuffer(client, cfg, zaptest.NewLogger(t), "trace")
 
 	// Add docs below batch size
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "v1"}))
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "v2"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "v1"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "v2"}))
 	assert.Equal(t, int32(0), bulkCalls.Load())
 
 	// Manual flush should send them
@@ -172,7 +172,7 @@ func TestBulkBuffer_RetryOnFailure(t *testing.T) {
 	buf := newBulkBuffer(client, cfg, zaptest.NewLogger(t), "trace")
 
 	// This should trigger flush (batch_size=1), which will retry
-	err = buf.Add("test-index", map[string]any{"field": "value"})
+	err = buf.Add(context.Background(), "test-index", map[string]any{"field": "value"})
 	require.NoError(t, err)
 
 	// Should have made 3 attempts (1 initial + 2 retries)
@@ -197,7 +197,7 @@ func TestBulkBuffer_RetryExhausted(t *testing.T) {
 	buf := newBulkBuffer(client, cfg, zaptest.NewLogger(t), "trace")
 
 	// This should fail after exhausting retries
-	err = buf.Add("test-index", map[string]any{"field": "value"})
+	err = buf.Add(context.Background(), "test-index", map[string]any{"field": "value"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bulk request failed after")
 }
@@ -221,7 +221,7 @@ func TestBulkBuffer_ContextCancellation(t *testing.T) {
 	buf := newBulkBuffer(client, cfg, zaptest.NewLogger(t), "trace")
 
 	// Add a doc
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "value"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "value"}))
 
 	// Create a context that's already cancelled
 	ctx, cancel := context.WithCancel(context.Background())
@@ -259,7 +259,7 @@ func TestBulkBuffer_FlushLoop(t *testing.T) {
 	buf.Start()
 
 	// Add a doc
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "value"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "value"}))
 
 	// Wait for flush loop to kick in
 	time.Sleep(200 * time.Millisecond)
@@ -318,10 +318,10 @@ func TestBulkBuffer_BulkResponseWithErrors(t *testing.T) {
 	buf := newBulkBuffer(client, cfg, logger, "trace")
 
 	// Add docs to trigger flush
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "v1"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "v1"}))
 	// Note: Bulk response with partial errors still returns nil error
 	// (only logs warnings) - this is by design since some docs succeeded
-	require.NoError(t, buf.Add("test-index", map[string]any{"field": "v2"}))
+	require.NoError(t, buf.Add(context.Background(), "test-index", map[string]any{"field": "v2"}))
 }
 
 func TestBulkBuffer_ConcurrentAdds(t *testing.T) {
@@ -349,7 +349,7 @@ func TestBulkBuffer_ConcurrentAdds(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			err := buf.Add("test-index", map[string]any{"idx": idx})
+			err := buf.Add(context.Background(), "test-index", map[string]any{"idx": idx})
 			assert.NoError(t, err)
 		}(i)
 	}
@@ -375,7 +375,7 @@ func TestBulkBuffer_MarshalError(t *testing.T) {
 
 	// Add a value that can't be marshaled to JSON
 	ch := make(chan int)
-	err = buf.Add("test-index", map[string]any{"bad": ch})
+	err = buf.Add(context.Background(), "test-index", map[string]any{"bad": ch})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to marshal document")
 }
@@ -409,7 +409,7 @@ func TestBulkBuffer_RoundRobinLoadBalancing(t *testing.T) {
 
 	// Add 4 docs (each triggers flush due to batch_size=1)
 	for i := 0; i < 4; i++ {
-		err = buf.Add("test-index", map[string]any{"idx": i})
+		err = buf.Add(context.Background(), "test-index", map[string]any{"idx": i})
 		if err != nil {
 			// retry exhaustion is fine for this test since we're testing load balancing
 			continue

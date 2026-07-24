@@ -33,16 +33,16 @@ const MaxResultWindow = 10000
 //   - Step 2: bulk fetch all spans for those trace IDs.
 type TraceReader struct {
 	searcher Searcher
-	config *Config
-	logger *zap.Logger
+	config   *Config
+	logger   *zap.Logger
 }
 
 // NewTraceReader creates a new TraceReader instance.
 func NewTraceReader(searcher Searcher, config *Config, logger *zap.Logger) *TraceReader {
 	return &TraceReader{
 		searcher: searcher,
-		config: config,
-		logger: logger.Named("trace-reader"),
+		config:   config,
+		logger:   logger.Named("trace-reader"),
 	}
 }
 
@@ -156,7 +156,7 @@ func (r *TraceReader) SearchTraceSummaries(ctx context.Context, query TraceQuery
 					},
 					"root_span": map[string]any{
 						"top_hits": map[string]any{
-							"size":  spss,
+							"size": spss,
 							"sort": []map[string]any{
 								{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
 							},
@@ -509,8 +509,8 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		// Root span: parentSpanId field is absent (omitempty) for new data,
 		// or "0000000000000000" for historical data written before the writer bug fix.
 		qb.Should(1,
-			esq.MustNotQ(esq.ExistsQ(FieldParentSpanID)),       // field absent (new data)
-			esq.T(FieldParentSpanID, "0000000000000000"),        // zero-value (historical data)
+			esq.MustNotQ(esq.ExistsQ(FieldParentSpanID)), // field absent (new data)
+			esq.T(FieldParentSpanID, "0000000000000000"), // zero-value (historical data)
 		)
 	}
 
@@ -535,15 +535,12 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		})
 	}
 
-	// AND conditions: each tag must match.
-	for k, v := range tq.Tags {
-		clauses := resolveTagTermClauses(k, v)
-		if len(clauses) == 1 {
-			qb.Raw(clauses[0])
-		} else {
-			qb.Should(1, clauses...)
-		}
-	}
+	// ── Shared tag filters (Tags / TagsOr / TagsNot / TagsExists / TagsRegex) ──
+	// Both buildTraceSearchQuery and buildMetricsFilter route the five common
+	// tag-filter shapes through appendSharedTagFilters so field resolution,
+	// value transformation (capitalizeFirst for kind/status), and the
+	// unscoped-attribute dual-path (attributes.X + resource.X) stay in one place.
+	appendSharedTagFilters(qb, tq.Tags, tq.TagsOr, tq.TagsNot, tq.TagsExists, tq.TagsRegex)
 
 	// ── Event filters (nested queries on the events field) ──
 	for _, eventTag := range tq.EventTags {
@@ -567,7 +564,7 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
-		// ── TagsNotOr (Sprint 3): OR-grouped != conditions → must_not+should ──
+	// ── TagsNotOr (Sprint 3): OR-grouped != conditions → must_not+should ──
 	for _, orGroup := range tq.TagsNotOr {
 		var notClauses []map[string]any
 		for _, branchMap := range orGroup {
@@ -607,9 +604,51 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
-	// OR conditions: each TagsOr group is an independent bool.should block (AND-ed together).
-	// Within each group, branches are OR-ed (min_should_match=1).
-	for _, orGroup := range tq.TagsOr {
+	// ── TagsNotExists (Sprint 4): = nil → must_not exists ──
+	for _, k := range tq.TagsNotExists {
+		paths := resolveTagFieldPaths(k)
+		for _, p := range paths {
+			qb.Raw(esq.MustNotQ(esq.ExistsQ(p)))
+		}
+	}
+
+	return qb.Build()
+}
+
+// appendSharedTagFilters appends the five tag-filter shapes common to both
+// TraceQuery (search) and TraceMetricsQuery (metrics) to the given builder:
+//
+//   - Tags:      AND conditions, each resolved via resolveTagTermClauses (so
+//     unscoped custom attributes search attributes.X + resource.X,
+//     and kind/status values are transformed to ES-stored form).
+//   - TagsOr:    OR groups (outer AND-ed, inner OR-ed).
+//   - TagsNot:   != value → must_not + term.
+//   - TagsExists: != nil → exists (dual-path OR-ed when unscoped).
+//   - TagsRegex: =~ regex → regexp (dual-path OR-ed when unscoped).
+//
+// Keeping these in one place prevents the value-transform / dual-path logic
+// from diverging between the search and metrics filter builders.
+func appendSharedTagFilters(
+	qb *esq.Builder,
+	tags map[string]string,
+	tagsOr [][]map[string]string,
+	tagsNot map[string]string,
+	tagsExists []string,
+	tagsRegex map[string]string,
+) {
+	// AND conditions: each tag must match.
+	for k, v := range tags {
+		clauses := resolveTagTermClauses(k, v)
+		if len(clauses) == 1 {
+			qb.Raw(clauses[0])
+		} else {
+			qb.Should(1, clauses...)
+		}
+	}
+
+	// OR conditions: each TagsOr group is an independent bool.should block
+	// (AND-ed together). Within a group, branches are OR-ed (min_should_match=1).
+	for _, orGroup := range tagsOr {
 		var orClauses []map[string]any
 		for _, branchMap := range orGroup {
 			builder := esq.NewBuilder()
@@ -628,23 +667,15 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
-	// ── TagsNot (Sprint 2): != value → must_not + term ──
-	for k, v := range tq.TagsNot {
+	// TagsNot: != value → must_not + term.
+	for k, v := range tagsNot {
 		for _, clause := range resolveTagTermClauses(k, v) {
 			qb.Raw(esq.MustNotQ(clause))
 		}
 	}
 
-	// ── TagsNotExists (Sprint 4): = nil → must_not exists ──
-	for _, k := range tq.TagsNotExists {
-		paths := resolveTagFieldPaths(k)
-		for _, p := range paths {
-			qb.Raw(esq.MustNotQ(esq.ExistsQ(p)))
-		}
-	}
-
-	// ── TagsExists (Sprint 2): != nil → exists ──
-	for _, k := range tq.TagsExists {
+	// TagsExists: != nil → exists (dual-path OR-ed when unscoped).
+	for _, k := range tagsExists {
 		paths := resolveTagFieldPaths(k)
 		if len(paths) == 1 {
 			qb.Raw(esq.ExistsQ(paths[0]))
@@ -657,8 +688,8 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		}
 	}
 
-	// ── TagsRegex (Sprint 2): =~ regex → regexp ──
-	for k, pattern := range tq.TagsRegex {
+	// TagsRegex: =~ regex → regexp (dual-path OR-ed when unscoped).
+	for k, pattern := range tagsRegex {
 		paths := resolveTagFieldPaths(k)
 		if len(paths) == 1 {
 			qb.Raw(map[string]any{
@@ -674,8 +705,6 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 			qb.Should(1, regexClauses...)
 		}
 	}
-
-	return qb.Build()
 }
 
 // capitalizeFirst returns the string with the first letter capitalized.
@@ -704,16 +733,15 @@ var attrResolver = &AttributeResolver{}
 //
 // The returned value is transformed (capitalizeFirst for kind/status fields).
 //
-// Special case: status.message is a "text" field (no .keyword sub-field),
-// so a "match" query is used instead of a "term" query to support
-// full-text search on the analyzed field. A "term" query on a text
-// field would always return 0 results.
+// Fields that need analyzed full-text matching (status.message) use a "match"
+// query instead of "term"; see needsMatchQuery in field_type.go. (status.message
+// does have a .keyword sub-field, but status-message filters want tokenized
+// substring matching, so "match" is the deliberate choice.)
 func resolveTagTermClauses(key, value string) []map[string]any {
 	fields, val := resolveTagESFields(key, value)
 	clauses := make([]map[string]any, 0, len(fields))
 	for _, f := range fields {
-		if f == FieldStatus+".message" {
-			// text field → use match query (term returns 0 on text fields)
+		if needsMatchQuery(f) {
 			clauses = append(clauses, map[string]any{
 				"match": map[string]any{f: val},
 			})
@@ -829,7 +857,7 @@ func (r *TraceReader) fetchTracesByIDs(ctx context.Context, traceIDs []string, a
 	}
 	searchReq := &SearchRequest{
 		Query: esq.TermsQ(FieldTraceID, traceIDs),
-		Size: size,
+		Size:  size,
 		Sort: []map[string]any{
 			{FieldTraceID: map[string]any{"order": "asc"}},
 			{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
@@ -1204,12 +1232,10 @@ func (r *TraceReader) GetTagValues(ctx context.Context, tagKey string, timeRange
 	fieldName := fieldPrefix + "." + tagKey
 
 	// Custom attributes are text fields from ES dynamic template.
-	// Terms aggregation on text fields returns empty buckets;
-	// must use .keyword sub-field. Known keyword fields (in knownAggregatableFields)
-	// support aggregation directly without .keyword.
-	if !knownAggregatableFields[fieldName] {
-		fieldName = fieldName + ".keyword"
-	}
+	// Terms aggregation on text fields returns empty buckets; use the .keyword
+	// sub-field unless the field is aggregatable (keyword/long) per the trace
+	// table (e.g. resource.host.name). aggregatableField centralizes this.
+	fieldName = aggregatableField("trace", fieldName)
 
 	// Build query with time range + optional filter conditions.
 	qb := esq.NewBuilder().

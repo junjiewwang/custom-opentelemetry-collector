@@ -40,10 +40,8 @@ func TestGetTagValues_FieldNameConstruction(t *testing.T) {
 
 			assert.Equal(t, tt.wantBase, fieldName)
 
-			// Same logic as GetTagValues.
-			if !knownAggregatableFields[fieldName] {
-				fieldName = fieldName + ".keyword"
-			}
+			// Same logic as GetTagValues (trace signal).
+			fieldName = aggregatableField("trace", fieldName)
 
 			if tt.wantKW {
 				assert.Contains(t, fieldName, ".keyword",

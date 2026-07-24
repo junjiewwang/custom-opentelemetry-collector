@@ -971,7 +971,7 @@ func TestIntegration_Admin_Purge(t *testing.T) {
 
 	// Purge with a future timestamp (should delete all docs)
 	futureTime := time.Now().Add(1 * time.Hour)
-	deleted, err := admin.Purge(ctx, cfg.Traces.IndexPrefix, "start_time", futureTime)
+	deleted, err := admin.Purge(ctx, cfg.Traces.IndexPrefix, "trace", futureTime)
 	require.NoError(t, err)
 	t.Logf("🗑️ Purge deleted %d documents", deleted)
 	assert.Equal(t, countBefore, deleted, "Purge should delete all documents when before is in the future")
@@ -1018,22 +1018,24 @@ func TestIntegration_Admin_PurgeByApp(t *testing.T) {
 	t.Logf("📊 Total log documents before purge: %d", countBefore)
 	require.Greater(t, countBefore, int64(0))
 
-	// Count documents for "app-to-purge"
-	appQuery := map[string]any{"term": map[string]any{"app_id": "app-to-purge"}}
+	// Count documents for "app-to-purge". Use the canonical appId field
+	// (FieldAppID = "appId", camelCase) — the storedmodel/templates store app
+	// id at the top-level "appId" field, not "app_id".
+	appQuery := map[string]any{"term": map[string]any{FieldAppID: "app-to-purge"}}
 	countApp, err := client.Count(ctx, cfg.Logs.IndexPrefix+"-*", appQuery)
 	require.NoError(t, err)
 	t.Logf("📊 Documents for app-to-purge: %d", countApp)
 
 	// PurgeByApp: delete only "app-to-purge" data
 	futureTime := time.Now().Add(1 * time.Hour)
-	deleted, err := admin.PurgeByApp(ctx, cfg.Logs.IndexPrefix, "timestamp", "app-to-purge", futureTime)
+	deleted, err := admin.PurgeByApp(ctx, cfg.Logs.IndexPrefix, "log", "app-to-purge", futureTime)
 	require.NoError(t, err)
 	t.Logf("🗑️ PurgeByApp deleted %d documents", deleted)
 	assert.Equal(t, countApp, deleted, "should delete only app-to-purge documents")
 
 	// Verify "app-to-keep" documents still exist
 	_ = client.RefreshIndex(ctx, cfg.Logs.IndexPrefix+"-*")
-	keepQuery := map[string]any{"term": map[string]any{"app_id": "app-to-keep"}}
+	keepQuery := map[string]any{"term": map[string]any{FieldAppID: "app-to-keep"}}
 	countKeep, err := client.Count(ctx, cfg.Logs.IndexPrefix+"-*", keepQuery)
 	require.NoError(t, err)
 	assert.Greater(t, countKeep, int64(0), "app-to-keep documents should still exist")

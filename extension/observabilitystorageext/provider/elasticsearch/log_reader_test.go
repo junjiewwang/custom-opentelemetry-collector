@@ -9,57 +9,57 @@ import (
 
 func TestConvertLokiRegex(t *testing.T) {
 	tests := []struct {
-		name             string
-		input            string
-		wantPattern      string
+		name                string
+		input               string
+		wantPattern         string
 		wantCaseInsensitive bool
 	}{
 		{
-			name:               "bare pattern",
-			input:              "order",
-			wantPattern:        "order",
+			name:                "bare pattern",
+			input:               "order",
+			wantPattern:         "order",
 			wantCaseInsensitive: false,
 		},
 		{
-			name:               "(?i) prefix",
-			input:              "(?i)order",
-			wantPattern:        "order",
+			name:                "(?i) prefix",
+			input:               "(?i)order",
+			wantPattern:         "order",
 			wantCaseInsensitive: true,
 		},
 		{
-			name:               "(?i) with special chars",
-			input:              "(?i)error|warn",
-			wantPattern:        "error|warn",
+			name:                "(?i) with special chars",
+			input:               "(?i)error|warn",
+			wantPattern:         "error|warn",
 			wantCaseInsensitive: true,
 		},
 		{
-			name:               "(?is) multiple flags",
-			input:              "(?is)order.*",
-			wantPattern:        "order.*",
+			name:                "(?is) multiple flags",
+			input:               "(?is)order.*",
+			wantPattern:         "order.*",
 			wantCaseInsensitive: true,
 		},
 		{
-			name:               "(?si) reversed order",
-			input:              "(?si)order.*",
-			wantPattern:        "order.*",
+			name:                "(?si) reversed order",
+			input:               "(?si)order.*",
+			wantPattern:         "order.*",
 			wantCaseInsensitive: true,
 		},
 		{
-			name:               "no flags",
-			input:              "order.*",
-			wantPattern:        "order.*",
+			name:                "no flags",
+			input:               "order.*",
+			wantPattern:         "order.*",
 			wantCaseInsensitive: false,
 		},
 		{
-			name:               "empty pattern",
-			input:              "",
-			wantPattern:        "",
+			name:                "empty pattern",
+			input:               "",
+			wantPattern:         "",
 			wantCaseInsensitive: false,
 		},
 		{
-			name:               "pattern with special chars",
-			input:              `\d+`,
-			wantPattern:        `\d+`,
+			name:                "pattern with special chars",
+			input:               `\d+`,
+			wantPattern:         `\d+`,
 			wantCaseInsensitive: false,
 		},
 	}

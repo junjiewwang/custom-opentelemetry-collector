@@ -4,10 +4,13 @@
 package elasticsearch
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestBuildLabelComboAgg_SingleKey(t *testing.T) {
@@ -305,4 +308,121 @@ func TestListLabelNamesQueryWithMetricFilter(t *testing.T) {
 		termQ := mustList[1]["term"].(map[string]any)
 		assert.Equal(t, metricName, termQ[FieldName])
 	})
+}
+
+// ── Query (instant) per-series dedup tests ──────────────────────────────
+
+// metricDoc is a minimal metric document for building canned search hits.
+type metricDoc struct {
+	TimeUnixMilli int64             `json:"timeUnixMilli"`
+	Value         float64           `json:"value"`
+	Labels        map[string]string `json:"labels"`
+}
+
+// metricHits builds SearchHits from docs (in the order given — caller controls
+// newest-first ordering to mimic ES desc sort).
+func metricHits(docs ...metricDoc) []SearchHit {
+	hits := make([]SearchHit, 0, len(docs))
+	for i, d := range docs {
+		src, _ := json.Marshal(d)
+		hits = append(hits, SearchHit{ID: string(rune('a' + i)), Source: src})
+	}
+	return hits
+}
+
+func newTestMetricReaderForQuery(s Searcher) *MetricReader {
+	return &MetricReader{
+		searcher: s,
+		config:   &Config{Metrics: IndexConfig{IndexPrefix: "otel-metrics"}},
+		logger:   zap.NewNop(),
+	}
+}
+
+// TestQuery_DedupSameLabelsKeepsLatest verifies that multiple docs with the
+// same label set collapse to one data point — the newest (first in desc order).
+func TestQuery_DedupSameLabelsKeepsLatest(t *testing.T) {
+	hits := metricHits(
+		metricDoc{TimeUnixMilli: 3000, Value: 0.9, Labels: map[string]string{"cpu": "cpu0"}},
+		metricDoc{TimeUnixMilli: 2000, Value: 0.5, Labels: map[string]string{"cpu": "cpu0"}},
+		metricDoc{TimeUnixMilli: 1000, Value: 0.1, Labels: map[string]string{"cpu": "cpu0"}},
+	)
+	fake := &fakeSearcher{
+		Responses: []any{&SearchResponse{}},
+	}
+	fake.Responses[0].(*SearchResponse).Hits.Hits = hits
+	r := newTestMetricReaderForQuery(fake)
+
+	res, err := r.Query(t.Context(), MetricQuery{MetricName: "system.cpu.usage"})
+	require.NoError(t, err)
+	require.Len(t, res.Data, 1, "same-label docs collapse to one point")
+	assert.Equal(t, 0.9, res.Data[0].Value, "should keep the newest value")
+	assert.Equal(t, time.UnixMilli(3000), res.Data[0].Time)
+}
+
+// TestQuery_DistinctLabelsKeepsAll verifies docs with different label sets
+// each produce a data point (no over-dedup).
+func TestQuery_DistinctLabelsKeepsAll(t *testing.T) {
+	hits := metricHits(
+		metricDoc{TimeUnixMilli: 3000, Value: 0.9, Labels: map[string]string{"cpu": "cpu0"}},
+		metricDoc{TimeUnixMilli: 3000, Value: 0.4, Labels: map[string]string{"cpu": "cpu1"}},
+		metricDoc{TimeUnixMilli: 2000, Value: 0.1, Labels: map[string]string{"cpu": "cpu0"}}, // older dup of cpu0
+	)
+	fake := &fakeSearcher{
+		Responses: []any{&SearchResponse{}},
+	}
+	fake.Responses[0].(*SearchResponse).Hits.Hits = hits
+	r := newTestMetricReaderForQuery(fake)
+
+	res, err := r.Query(t.Context(), MetricQuery{MetricName: "system.cpu.usage"})
+	require.NoError(t, err)
+	require.Len(t, res.Data, 2, "two distinct label sets → two points")
+	// Newest per series kept: cpu0→0.9, cpu1→0.4.
+	vals := map[float64]string{}
+	for _, dp := range res.Data {
+		vals[dp.Value] = dp.Labels["cpu"]
+	}
+	assert.Equal(t, "cpu0", vals[0.9])
+	assert.Equal(t, "cpu1", vals[0.4])
+}
+
+// TestQuery_EmptyResult verifies no hits → empty result, no error.
+func TestQuery_EmptyResult(t *testing.T) {
+	fake := &fakeSearcher{
+		Responses: []any{&SearchResponse{}}, // no hits
+	}
+	r := newTestMetricReaderForQuery(fake)
+
+	res, err := r.Query(t.Context(), MetricQuery{MetricName: "no.such.metric"})
+	require.NoError(t, err)
+	assert.Empty(t, res.Data)
+}
+
+// TestQuery_EmptyLabelsTreatedAsOneSeries verifies docs with no labels all
+// dedupe to a single series (labelsKey returns "" for empty labels).
+func TestQuery_EmptyLabelsTreatedAsOneSeries(t *testing.T) {
+	hits := metricHits(
+		metricDoc{TimeUnixMilli: 3000, Value: 9.0, Labels: nil},
+		metricDoc{TimeUnixMilli: 2000, Value: 1.0, Labels: map[string]string{}},
+	)
+	fake := &fakeSearcher{
+		Responses: []any{&SearchResponse{}},
+	}
+	fake.Responses[0].(*SearchResponse).Hits.Hits = hits
+	r := newTestMetricReaderForQuery(fake)
+
+	res, err := r.Query(t.Context(), MetricQuery{MetricName: "gauge"})
+	require.NoError(t, err)
+	require.Len(t, res.Data, 1, "nil and empty labels are the same series")
+	assert.Equal(t, 9.0, res.Data[0].Value, "keeps newest")
+}
+
+// TestLabelsKey verifies the dedup key is order-independent and stable.
+func TestLabelsKey(t *testing.T) {
+	assert.Equal(t, "", labelsKey(nil))
+	assert.Equal(t, "", labelsKey(map[string]string{}))
+	// Same labels, different map iteration order → same key.
+	a := labelsKey(map[string]string{"cpu": "cpu0", "method": "GET"})
+	b := labelsKey(map[string]string{"method": "GET", "cpu": "cpu0"})
+	assert.Equal(t, a, b)
+	assert.Equal(t, "cpu=cpu0,method=GET", a)
 }

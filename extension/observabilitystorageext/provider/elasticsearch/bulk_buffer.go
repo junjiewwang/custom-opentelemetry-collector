@@ -54,8 +54,10 @@ func (b *bulkBuffer) Stop() {
 }
 
 // Add adds a document to the buffer. If batch size is reached, triggers a flush.
-// indexName is the target ES index for this document.
-func (b *bulkBuffer) Add(indexName string, doc any) error {
+// indexName is the target ES index for this document. The ctx is honored by the
+// triggered flush (previously this dropped the caller's context and flushed with
+// context.Background(), which could write data the caller had already cancelled).
+func (b *bulkBuffer) Add(ctx context.Context, indexName string, doc any) error {
 	action := map[string]any{
 		"index": map[string]any{
 			"_index": indexName,
@@ -82,7 +84,7 @@ func (b *bulkBuffer) Add(indexName string, doc any) error {
 	b.mu.Unlock()
 
 	if shouldFlush {
-		return b.Flush(context.Background())
+		return b.Flush(ctx)
 	}
 	return nil
 }
