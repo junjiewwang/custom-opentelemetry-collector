@@ -33,100 +33,100 @@ import (
 
 // handleSearchTracesV2 searches for traces and returns structured results.
 // GET /api/v2/observability/traces?service=xxx&operation=xxx&tags=key:value&limit=20&start=xxx&end=xxx&minDuration=xxx&maxDuration=xxx
-func (e *Extension) handleSearchTracesV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *obsV2Handlers) handleSearchTracesV2(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
 	query := parseTraceQuery(r)
-	result, err := e.storageTraceReader.SearchTraces(r.Context(), query)
+	result, err := h.traceReader.SearchTraces(r.Context(), query)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 // handleGetTraceV2 retrieves a single trace by its trace ID.
 // GET /api/v2/observability/traces/{traceID}
-func (e *Extension) handleGetTraceV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *obsV2Handlers) handleGetTraceV2(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
 	traceID := chi.URLParam(r, "traceID")
 	if traceID == "" {
-		e.writeError(w, http.StatusBadRequest, "traceID parameter is required")
+		h.writeError(w, http.StatusBadRequest, "traceID parameter is required")
 		return
 	}
 
-	trace, err := e.storageTraceReader.GetTrace(r.Context(), traceID)
+	trace, err := h.traceReader.GetTrace(r.Context(), traceID)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if trace == nil {
-		e.writeError(w, http.StatusNotFound, "trace not found")
+		h.writeError(w, http.StatusNotFound, "trace not found")
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, trace)
+	h.writeJSON(w, http.StatusOK, trace)
 }
 
 // handleGetTraceServicesV2 returns all available service names.
 // GET /api/v2/observability/traces/services?start=xxx&end=xxx
-func (e *Extension) handleGetTraceServicesV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *obsV2Handlers) handleGetTraceServicesV2(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
 	timeRange := parseTimeRange(r)
-	services, err := e.storageTraceReader.GetServices(r.Context(), timeRange)
+	services, err := h.traceReader.GetServices(r.Context(), timeRange)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"data": services,
 	})
 }
 
 // handleGetTraceOperationsV2 returns all operations for the specified service.
 // GET /api/v2/observability/traces/services/{service}/operations?start=xxx&end=xxx
-func (e *Extension) handleGetTraceOperationsV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *obsV2Handlers) handleGetTraceOperationsV2(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
 	service := chi.URLParam(r, "service")
 	if service == "" {
-		e.writeError(w, http.StatusBadRequest, "service parameter is required")
+		h.writeError(w, http.StatusBadRequest, "service parameter is required")
 		return
 	}
 
 	timeRange := parseTimeRange(r)
-	operations, err := e.storageTraceReader.GetOperations(r.Context(), service, timeRange)
+	operations, err := h.traceReader.GetOperations(r.Context(), service, timeRange)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"data": operations,
 	})
 }
 
 // handleGetDependenciesV2 returns service dependency links for the Service Map.
 // GET /api/v2/observability/dependencies?endTs=xxx&lookback=xxx
-func (e *Extension) handleGetDependenciesV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *obsV2Handlers) handleGetDependenciesV2(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
@@ -147,13 +147,13 @@ func (e *Extension) handleGetDependenciesV2(w http.ResponseWriter, r *http.Reque
 	startTs := endTs.Add(-time.Duration(lookbackMs) * time.Millisecond)
 
 	timeRange := observabilitystorageext.TimeRange{Start: startTs, End: endTs}
-	deps, err := e.storageTraceReader.GetDependencies(r.Context(), timeRange)
+	deps, err := h.traceReader.GetDependencies(r.Context(), timeRange)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"data": deps,
 	})
 }
@@ -164,27 +164,27 @@ func (e *Extension) handleGetDependenciesV2(w http.ResponseWriter, r *http.Reque
 
 // handleMetricQueryV2 executes an instant metric query.
 // GET /api/v2/observability/metrics/query?metric=xxx&service=xxx&time=xxx&labels=key:value,key:value
-func (e *Extension) handleMetricQueryV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
+func (h *obsV2Handlers) handleMetricQueryV2(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
 		return
 	}
 
 	query := parseMetricQuery(r)
-	result, err := e.storageMetricReader.Query(r.Context(), query)
+	result, err := h.metricReader.Query(r.Context(), query)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 // handleMetricQueryRangeV2 executes a range metric query.
 // GET /api/v2/observability/metrics/query_range?metric=xxx&service=xxx&start=xxx&end=xxx&step=xxx&labels=key:value
-func (e *Extension) handleMetricQueryRangeV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
+func (h *obsV2Handlers) handleMetricQueryRangeV2(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
 		return
 	}
 
@@ -197,7 +197,7 @@ func (e *Extension) handleMetricQueryRangeV2(w http.ResponseWriter, r *http.Requ
 		duration := query.TimeRange.End.Sub(query.TimeRange.Start)
 		buckets := int64(duration) / int64(query.Step)
 		if buckets > 10000 {
-			e.logger.Warn("metric range query step would produce excessive buckets, will be clamped by reader",
+			h.logger.Warn("metric range query step would produce excessive buckets, will be clamped by reader",
 				zap.Duration("step", query.Step),
 				zap.Duration("duration", duration),
 				zap.Int64("estimated_buckets", buckets),
@@ -205,77 +205,77 @@ func (e *Extension) handleMetricQueryRangeV2(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	result, err := e.storageMetricReader.QueryRange(r.Context(), query)
+	result, err := h.metricReader.QueryRange(r.Context(), query)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 // handleMetricNamesV2 returns all available metric names.
 // GET /api/v2/observability/metrics/names?start=xxx&end=xxx
-func (e *Extension) handleMetricNamesV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
+func (h *obsV2Handlers) handleMetricNamesV2(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
 		return
 	}
 
 	timeRange := parseTimeRange(r)
-	names, err := e.storageMetricReader.ListMetricNames(r.Context(), timeRange)
+	names, err := h.metricReader.ListMetricNames(r.Context(), timeRange)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"data": names,
 	})
 }
 
 // handleMetricLabelsV2 returns all available label names.
 // GET /api/v2/observability/metrics/labels?start=xxx&end=xxx
-func (e *Extension) handleMetricLabelsV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
+func (h *obsV2Handlers) handleMetricLabelsV2(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
 		return
 	}
 
 	timeRange := parseTimeRange(r)
-	names, err := e.storageMetricReader.ListLabelNames(r.Context(), timeRange, "")
+	names, err := h.metricReader.ListLabelNames(r.Context(), timeRange, "")
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"data": names,
 	})
 }
 
 // handleMetricLabelValuesV2 returns all values for the specified label name.
 // GET /api/v2/observability/metrics/labels/{labelName}/values?start=xxx&end=xxx
-func (e *Extension) handleMetricLabelValuesV2(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
+func (h *obsV2Handlers) handleMetricLabelValuesV2(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
 		return
 	}
 
 	labelName := chi.URLParam(r, "labelName")
 	if labelName == "" {
-		e.writeError(w, http.StatusBadRequest, "labelName parameter is required")
+		h.writeError(w, http.StatusBadRequest, "labelName parameter is required")
 		return
 	}
 
 	timeRange := parseTimeRange(r)
-	values, err := e.storageMetricReader.ListLabelValues(r.Context(), labelName, timeRange)
+	values, err := h.metricReader.ListLabelValues(r.Context(), labelName, timeRange)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"data": values,
 	})
 }
@@ -286,33 +286,33 @@ func (e *Extension) handleMetricLabelValuesV2(w http.ResponseWriter, r *http.Req
 
 // handleSearchLogs searches for logs matching query parameters.
 // GET /api/v2/observability/logs?query=xxx&service=xxx&severity=ERROR,WARN&traceId=xxx&start=xxx&end=xxx&limit=50&offset=0
-func (e *Extension) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
-	if e.storageLogReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Log reader not available")
+func (h *obsV2Handlers) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
+	if h.logReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Log reader not available")
 		return
 	}
 
 	query := parseLogQuery(r)
-	result, err := e.storageLogReader.SearchLogs(r.Context(), query)
+	result, err := h.logReader.SearchLogs(r.Context(), query)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 // handleGetLogContext retrieves surrounding log lines for context.
 // GET /api/v2/observability/logs/{logID}/context?lines=10
-func (e *Extension) handleGetLogContext(w http.ResponseWriter, r *http.Request) {
-	if e.storageLogReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Log reader not available")
+func (h *obsV2Handlers) handleGetLogContext(w http.ResponseWriter, r *http.Request) {
+	if h.logReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Log reader not available")
 		return
 	}
 
 	logID := chi.URLParam(r, "logID")
 	if logID == "" {
-		e.writeError(w, http.StatusBadRequest, "logID parameter is required")
+		h.writeError(w, http.StatusBadRequest, "logID parameter is required")
 		return
 	}
 
@@ -323,40 +323,40 @@ func (e *Extension) handleGetLogContext(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	ctx, err := e.storageLogReader.GetLogContext(r.Context(), logID, lines)
+	ctx, err := h.logReader.GetLogContext(r.Context(), logID, lines)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, ctx)
+	h.writeJSON(w, http.StatusOK, ctx)
 }
 
 // handleListLogFields returns available log fields for filtering.
 // GET /api/v2/observability/logs/fields?start=xxx&end=xxx
-func (e *Extension) handleListLogFields(w http.ResponseWriter, r *http.Request) {
-	if e.storageLogReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Log reader not available")
+func (h *obsV2Handlers) handleListLogFields(w http.ResponseWriter, r *http.Request) {
+	if h.logReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Log reader not available")
 		return
 	}
 
 	timeRange := parseTimeRange(r)
-	fields, err := e.storageLogReader.ListLogFields(r.Context(), timeRange)
+	fields, err := h.logReader.ListLogFields(r.Context(), timeRange)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"data": fields,
 	})
 }
 
 // handleGetLogStats returns log statistics (counts, severity distribution, etc.).
 // GET /api/v2/observability/logs/stats?service=xxx&start=xxx&end=xxx&groupBy=severity
-func (e *Extension) handleGetLogStats(w http.ResponseWriter, r *http.Request) {
-	if e.storageLogReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Log reader not available")
+func (h *obsV2Handlers) handleGetLogStats(w http.ResponseWriter, r *http.Request) {
+	if h.logReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Log reader not available")
 		return
 	}
 
@@ -366,13 +366,13 @@ func (e *Extension) handleGetLogStats(w http.ResponseWriter, r *http.Request) {
 		GroupBy:     r.URL.Query().Get("groupBy"),
 	}
 
-	stats, err := e.storageLogReader.GetLogStats(r.Context(), query)
+	stats, err := h.logReader.GetLogStats(r.Context(), query)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, stats)
+	h.writeJSON(w, http.StatusOK, stats)
 }
 
 // ============================================================================
@@ -381,43 +381,43 @@ func (e *Extension) handleGetLogStats(w http.ResponseWriter, r *http.Request) {
 
 // handleStorageStatus returns the current storage health and statistics.
 // GET /api/v2/observability/admin/status
-func (e *Extension) handleStorageStatus(w http.ResponseWriter, r *http.Request) {
-	if e.storageAdmin == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
+func (h *obsV2Handlers) handleStorageStatus(w http.ResponseWriter, r *http.Request) {
+	if h.admin == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
 		return
 	}
 
-	status, err := e.storageAdmin.GetStatus(r.Context())
+	status, err := h.admin.GetStatus(r.Context())
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, status)
+	h.writeJSON(w, http.StatusOK, status)
 }
 
 // handleStorageRetention returns current retention policies.
 // GET /api/v2/observability/admin/retention
-func (e *Extension) handleStorageRetention(w http.ResponseWriter, r *http.Request) {
-	if e.storageAdmin == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
+func (h *obsV2Handlers) handleStorageRetention(w http.ResponseWriter, r *http.Request) {
+	if h.admin == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
 		return
 	}
 
-	retention, err := e.storageAdmin.GetRetention(r.Context())
+	retention, err := h.admin.GetRetention(r.Context())
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, retention)
+	h.writeJSON(w, http.StatusOK, retention)
 }
 
 // handleSetStorageRetention updates the retention policy for a signal type.
 // PUT /api/v2/observability/admin/retention/{signal}
-func (e *Extension) handleSetStorageRetention(w http.ResponseWriter, r *http.Request) {
-	if e.storageAdmin == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
+func (h *obsV2Handlers) handleSetStorageRetention(w http.ResponseWriter, r *http.Request) {
+	if h.admin == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
 		return
 	}
 
@@ -426,7 +426,7 @@ func (e *Extension) handleSetStorageRetention(w http.ResponseWriter, r *http.Req
 	switch signal {
 	case observabilitystorageext.SignalTrace, observabilitystorageext.SignalMetric, observabilitystorageext.SignalLog:
 	default:
-		e.writeError(w, http.StatusBadRequest, "signal must be 'trace', 'metric', or 'log'")
+		h.writeError(w, http.StatusBadRequest, "signal must be 'trace', 'metric', or 'log'")
 		return
 	}
 
@@ -434,30 +434,30 @@ func (e *Extension) handleSetStorageRetention(w http.ResponseWriter, r *http.Req
 		Duration string `json:"duration"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
-		e.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	duration, err := time.ParseDuration(req.Duration)
 	if err != nil {
-		e.writeError(w, http.StatusBadRequest, "invalid duration format: "+err.Error())
+		h.writeError(w, http.StatusBadRequest, "invalid duration format: "+err.Error())
 		return
 	}
 
 	policy := observabilitystorageext.RetentionPolicy{Duration: observabilitystorageext.RetentionDuration(duration)}
-	if err := e.storageAdmin.SetRetention(r.Context(), signal, policy); err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+	if err := h.admin.SetRetention(r.Context(), signal, policy); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, successResponse("retention policy updated"))
+	h.writeJSON(w, http.StatusOK, successResponse("retention policy updated"))
 }
 
 // handleStoragePurge triggers a data purge for the specified signal type.
 // POST /api/v2/observability/admin/purge/{signal}?before=xxx
-func (e *Extension) handleStoragePurge(w http.ResponseWriter, r *http.Request) {
-	if e.storageAdmin == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
+func (h *obsV2Handlers) handleStoragePurge(w http.ResponseWriter, r *http.Request) {
+	if h.admin == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
 		return
 	}
 
@@ -466,7 +466,7 @@ func (e *Extension) handleStoragePurge(w http.ResponseWriter, r *http.Request) {
 	switch signal {
 	case observabilitystorageext.SignalTrace, observabilitystorageext.SignalMetric, observabilitystorageext.SignalLog:
 	default:
-		e.writeError(w, http.StatusBadRequest, "signal must be 'trace', 'metric', or 'log'")
+		h.writeError(w, http.StatusBadRequest, "signal must be 'trace', 'metric', or 'log'")
 		return
 	}
 
@@ -475,46 +475,46 @@ func (e *Extension) handleStoragePurge(w http.ResponseWriter, r *http.Request) {
 	if beforeStr != "" {
 		t, err := time.Parse(time.RFC3339, beforeStr)
 		if err != nil {
-			e.writeError(w, http.StatusBadRequest, "invalid 'before' time format (use RFC3339)")
+			h.writeError(w, http.StatusBadRequest, "invalid 'before' time format (use RFC3339)")
 			return
 		}
 		before = t
 	} else {
-		e.writeError(w, http.StatusBadRequest, "'before' query parameter is required (RFC3339 format)")
+		h.writeError(w, http.StatusBadRequest, "'before' query parameter is required (RFC3339 format)")
 		return
 	}
 
-	result, err := e.storageAdmin.Purge(r.Context(), signal, before)
+	result, err := h.admin.Purge(r.Context(), signal, before)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 // handleStorageDiskUsage returns storage space usage information.
 // GET /api/v2/observability/admin/disk-usage
-func (e *Extension) handleStorageDiskUsage(w http.ResponseWriter, r *http.Request) {
-	if e.storageAdmin == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
+func (h *obsV2Handlers) handleStorageDiskUsage(w http.ResponseWriter, r *http.Request) {
+	if h.admin == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Storage admin not available")
 		return
 	}
 
-	usage, err := e.storageAdmin.GetDiskUsage(r.Context())
+	usage, err := h.admin.GetDiskUsage(r.Context())
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, usage)
+	h.writeJSON(w, http.StatusOK, usage)
 }
 
 // handleStorageDailyUsage returns per-day storage usage from index-level stats.
 // GET /api/v2/observability/admin/disk-usage/daily?start=xxx&end=xxx&appId=xxx
-func (e *Extension) handleStorageDailyUsage(w http.ResponseWriter, r *http.Request) {
-	if e.observabilityStorage == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Storage extension not available")
+func (h *obsV2Handlers) handleStorageDailyUsage(w http.ResponseWriter, r *http.Request) {
+	if h.storage == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Storage extension not available")
 		return
 	}
 
@@ -536,27 +536,27 @@ func (e *Extension) handleStorageDailyUsage(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Get the daily storage provider from the storage extension
-	provider := e.observabilityStorage.GetProvider()
+	provider := h.storage.GetProvider()
 	resp, err := provider.GetDailyStorage(r.Context(), req)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, resp)
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // handleStorageHealth returns the health status of the storage backend.
 // GET /api/v2/observability/admin/health
-func (e *Extension) handleStorageHealth(w http.ResponseWriter, r *http.Request) {
-	if e.observabilityStorage == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Storage extension not available")
+func (h *obsV2Handlers) handleStorageHealth(w http.ResponseWriter, r *http.Request) {
+	if h.storage == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Storage extension not available")
 		return
 	}
 
-	health, err := e.observabilityStorage.HealthCheck(r.Context())
+	health, err := h.storage.HealthCheck(r.Context())
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -564,7 +564,7 @@ func (e *Extension) handleStorageHealth(w http.ResponseWriter, r *http.Request) 
 	if !health.Healthy {
 		status = http.StatusServiceUnavailable
 	}
-	e.writeJSON(w, status, health)
+	h.writeJSON(w, status, health)
 }
 
 // ============================================================================

@@ -203,70 +203,72 @@ func (e *Extension) newRouter() http.Handler {
 		//   1. Storage Extension mode (preferred): structured JSON responses from ES Reader
 		//   2. Legacy Proxy mode: raw proxying to Jaeger/Prometheus (backward compatible)
 		// ============================================================================
+		obsV2 := newObsV2Handlers(e)
+		obsLegacy := newObsLegacyHandlers(e)
 		r.Route("/observability", func(r chi.Router) {
 			// --- Trace 查询 ---
 			if e.storageTraceReader != nil {
 				// V2 mode: structured responses from storage extension
 				r.Route("/traces", func(r chi.Router) {
-					r.Get("/", e.handleSearchTracesV2)
-					r.Get("/services", e.handleGetTraceServicesV2)
-					r.Get("/services/{service}/operations", e.handleGetTraceOperationsV2)
-					r.Get("/{traceID}", e.handleGetTraceV2)
+					r.Get("/", obsV2.handleSearchTracesV2)
+					r.Get("/services", obsV2.handleGetTraceServicesV2)
+					r.Get("/services/{service}/operations", obsV2.handleGetTraceOperationsV2)
+					r.Get("/{traceID}", obsV2.handleGetTraceV2)
 				})
-				r.Get("/dependencies", e.handleGetDependenciesV2)
+				r.Get("/dependencies", obsV2.handleGetDependenciesV2)
 			} else if e.traceReader != nil {
 				// Legacy mode: raw proxy to Jaeger
 				r.Route("/traces", func(r chi.Router) {
-					r.Get("/", e.handleSearchTraces)
-					r.Get("/services", e.handleGetTraceServices)
-					r.Get("/services/{service}/operations", e.handleGetTraceOperations)
-					r.Get("/{traceID}", e.handleGetTrace)
+					r.Get("/", obsLegacy.handleSearchTraces)
+					r.Get("/services", obsLegacy.handleGetTraceServices)
+					r.Get("/services/{service}/operations", obsLegacy.handleGetTraceOperations)
+					r.Get("/{traceID}", obsLegacy.handleGetTrace)
 				})
-				r.Get("/dependencies", e.handleGetDependencies)
+				r.Get("/dependencies", obsLegacy.handleGetDependencies)
 			}
 
 			// --- Metric 查询 ---
 			if e.storageMetricReader != nil {
 				// V2 mode: structured responses from storage extension
 				r.Route("/metrics", func(r chi.Router) {
-					r.Get("/query", e.handleMetricQueryV2)
-					r.Get("/query_range", e.handleMetricQueryRangeV2)
-					r.Get("/names", e.handleMetricNamesV2)
-					r.Get("/labels", e.handleMetricLabelsV2)
-					r.Get("/labels/{labelName}/values", e.handleMetricLabelValuesV2)
+					r.Get("/query", obsV2.handleMetricQueryV2)
+					r.Get("/query_range", obsV2.handleMetricQueryRangeV2)
+					r.Get("/names", obsV2.handleMetricNamesV2)
+					r.Get("/labels", obsV2.handleMetricLabelsV2)
+					r.Get("/labels/{labelName}/values", obsV2.handleMetricLabelValuesV2)
 				})
 			} else if e.metricReader != nil {
 				// Legacy mode: raw proxy to Prometheus
 				r.Route("/metrics", func(r chi.Router) {
-					r.Get("/query", e.handleMetricQuery)
-					r.Get("/query_range", e.handleMetricQueryRange)
-					r.Get("/labels", e.handleMetricLabels)
-					r.Get("/labels/{labelName}/values", e.handleMetricLabelValues)
-					r.Get("/series", e.handleMetricSeries)
-					r.Get("/metadata", e.handleMetricMetadata)
+					r.Get("/query", obsLegacy.handleMetricQuery)
+					r.Get("/query_range", obsLegacy.handleMetricQueryRange)
+					r.Get("/labels", obsLegacy.handleMetricLabels)
+					r.Get("/labels/{labelName}/values", obsLegacy.handleMetricLabelValues)
+					r.Get("/series", obsLegacy.handleMetricSeries)
+					r.Get("/metadata", obsLegacy.handleMetricMetadata)
 				})
 			}
 
 			// --- Log 查询 (仅 storage extension 模式) ---
 			if e.storageLogReader != nil {
 				r.Route("/logs", func(r chi.Router) {
-					r.Get("/", e.handleSearchLogs)
-					r.Get("/fields", e.handleListLogFields)
-					r.Get("/stats", e.handleGetLogStats)
-					r.Get("/{logID}/context", e.handleGetLogContext)
+					r.Get("/", obsV2.handleSearchLogs)
+					r.Get("/fields", obsV2.handleListLogFields)
+					r.Get("/stats", obsV2.handleGetLogStats)
+					r.Get("/{logID}/context", obsV2.handleGetLogContext)
 				})
 			}
 
 			// --- Storage Admin (仅 storage extension 模式) ---
 			if e.storageAdmin != nil {
 				r.Route("/admin", func(r chi.Router) {
-					r.Get("/status", e.handleStorageStatus)
-					r.Get("/health", e.handleStorageHealth)
-					r.Get("/retention", e.handleStorageRetention)
-					r.Put("/retention/{signal}", e.handleSetStorageRetention)
-					r.Post("/purge/{signal}", e.handleStoragePurge)
-					r.Get("/disk-usage", e.handleStorageDiskUsage)
-					r.Get("/disk-usage/daily", e.handleStorageDailyUsage)
+					r.Get("/status", obsV2.handleStorageStatus)
+					r.Get("/health", obsV2.handleStorageHealth)
+					r.Get("/retention", obsV2.handleStorageRetention)
+					r.Put("/retention/{signal}", obsV2.handleSetStorageRetention)
+					r.Post("/purge/{signal}", obsV2.handleStoragePurge)
+					r.Get("/disk-usage", obsV2.handleStorageDiskUsage)
+					r.Get("/disk-usage/daily", obsV2.handleStorageDailyUsage)
 				})
 			}
 		})
