@@ -22,8 +22,8 @@ import (
 
 // requireLokiReader checks that the LogReader is available and writes an
 // HTTP error if not. Returns false when unavailable.
-func (e *Extension) requireLokiReader(w http.ResponseWriter) bool {
-	if e.storageLogReader == nil {
+func (h *lokiHandlers) requireLokiReader(w http.ResponseWriter) bool {
+	if h.logReader == nil {
 		writeLokiError(w, "log storage not available — check collector configuration", http.StatusServiceUnavailable)
 		return false
 	}
@@ -32,8 +32,8 @@ func (e *Extension) requireLokiReader(w http.ResponseWriter) bool {
 
 // ==================== query_range ====================
 
-func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request) {
-	if !e.requireLokiReader(w) {
+func (h *lokiHandlers) handleLokiQueryRange(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLokiReader(w) {
 		return
 	}
 	q := r.FormValue("query")
@@ -44,7 +44,7 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 
 	// Route metric queries (sum by, count_over_time, etc.) to metric handler.
 	if logql.IsMetricQuery(q) {
-		e.handleLokiMetricQuery(w, r, q)
+		h.handleLokiMetricQuery(w, r, q)
 		return
 	}
 
@@ -63,7 +63,7 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 	// Parse LogQL — supports OR-branched queries via ParseExpression.
 	expr, err := logql.ParseExpression(q)
 	if err != nil {
-		e.logger.Debug("loki: failed to parse LogQL", zap.Error(err), zap.String("query", q))
+		h.logger.Debug("loki: failed to parse LogQL", zap.Error(err), zap.String("query", q))
 		writeLokiError(w, "failed to parse query: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -77,9 +77,9 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 		branch.Limit = limit
 		branch.Direction = direction
 		storageQ := ev.Evaluate(branch)
-		logs, err := e.storageLogReader.SearchLogs(r.Context(), *storageQ)
+		logs, err := h.logReader.SearchLogs(r.Context(), *storageQ)
 		if err != nil {
-			e.logger.Warn("loki: search logs failed for OR branch", zap.Error(err))
+			h.logger.Warn("loki: search logs failed for OR branch", zap.Error(err))
 			continue
 		}
 		logs.Logs = filterLogsByPipeline(logs.Logs, branch.Pipeline)
@@ -95,17 +95,17 @@ func (e *Extension) handleLokiQueryRange(w http.ResponseWriter, r *http.Request)
 
 // ==================== labels ====================
 
-func (e *Extension) handleLokiLabels(w http.ResponseWriter, r *http.Request) {
-	if !e.requireLokiReader(w) {
+func (h *lokiHandlers) handleLokiLabels(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLokiReader(w) {
 		return
 	}
 	start, _ := parseLokiTime(r.FormValue("start"))
 	end, _ := parseLokiTime(r.FormValue("end"))
 	tr := observabilitystorageext.TimeRange{Start: start, End: end}
 
-	labels, err := e.storageLogReader.ListLogLabels(r.Context(), tr, "")
+	labels, err := h.logReader.ListLogLabels(r.Context(), tr, "")
 	if err != nil {
-		e.logger.Warn("loki: list labels failed", zap.Error(err))
+		h.logger.Warn("loki: list labels failed", zap.Error(err))
 		writeLokiError(w, "labels query failed", http.StatusInternalServerError)
 		return
 	}
@@ -124,8 +124,8 @@ func (e *Extension) handleLokiLabels(w http.ResponseWriter, r *http.Request) {
 
 // ==================== label values ====================
 
-func (e *Extension) handleLokiLabelValues(w http.ResponseWriter, r *http.Request) {
-	if !e.requireLokiReader(w) {
+func (h *lokiHandlers) handleLokiLabelValues(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLokiReader(w) {
 		return
 	}
 	label := r.PathValue("name")
@@ -137,9 +137,9 @@ func (e *Extension) handleLokiLabelValues(w http.ResponseWriter, r *http.Request
 	end, _ := parseLokiTime(r.FormValue("end"))
 	tr := observabilitystorageext.TimeRange{Start: start, End: end}
 
-	values, err := e.storageLogReader.ListLogLabelValues(r.Context(), label, tr, "")
+	values, err := h.logReader.ListLogLabelValues(r.Context(), label, tr, "")
 	if err != nil {
-		e.logger.Warn("loki: list label values failed", zap.Error(err), zap.String("label", label))
+		h.logger.Warn("loki: list label values failed", zap.Error(err), zap.String("label", label))
 		writeLokiError(w, "label values query failed", http.StatusInternalServerError)
 		return
 	}
@@ -158,8 +158,8 @@ func (e *Extension) handleLokiLabelValues(w http.ResponseWriter, r *http.Request
 
 // ==================== instant query ====================
 
-func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Request) {
-	if !e.requireLokiReader(w) {
+func (h *lokiHandlers) handleLokiInstantQuery(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLokiReader(w) {
 		return
 	}
 	q := r.FormValue("query")
@@ -170,7 +170,7 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 
 	// Route metric queries (sum by, count_over_time, etc.) to metric handler.
 	if logql.IsMetricQuery(q) {
-		e.handleLokiMetricQuery(w, r, q)
+		h.handleLokiMetricQuery(w, r, q)
 		return
 	}
 
@@ -216,9 +216,9 @@ func (e *Extension) handleLokiInstantQuery(w http.ResponseWriter, r *http.Reques
 		branch.Limit = limit
 		branch.Direction = "backward"
 		storageQ := ev.Evaluate(branch)
-		logs, err := e.storageLogReader.SearchLogs(r.Context(), *storageQ)
+		logs, err := h.logReader.SearchLogs(r.Context(), *storageQ)
 		if err != nil {
-			e.logger.Warn("loki: instant search failed for OR branch", zap.Error(err))
+			h.logger.Warn("loki: instant search failed for OR branch", zap.Error(err))
 			continue
 		}
 		logs.Logs = filterLogsByPipeline(logs.Logs, branch.Pipeline)
@@ -410,7 +410,7 @@ func isLokiHealthCheckQuery(q string) bool {
 // handleLokiDrilldownLimits returns a minimal config for the logs-drilldown app.
 // The app uses this to discover Loki capabilities (volume_enabled, etc.).
 // Returns a synthetic 200 response so the app doesn't show errors.
-func (e *Extension) handleLokiDrilldownLimits(w http.ResponseWriter, r *http.Request) {
+func (h *lokiHandlers) handleLokiDrilldownLimits(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"volume_enabled": true,
@@ -428,8 +428,8 @@ func (e *Extension) handleLokiDrilldownLimits(w http.ResponseWriter, r *http.Req
 // Response format: Loki vector:
 //
 //	{"status":"success","data":{"resultType":"vector","result":[...]}}
-func (e *Extension) handleLokiIndexVolume(w http.ResponseWriter, r *http.Request) {
-	if !e.requireLokiReader(w) {
+func (h *lokiHandlers) handleLokiIndexVolume(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLokiReader(w) {
 		return
 	}
 
@@ -449,7 +449,7 @@ func (e *Extension) handleLokiIndexVolume(w http.ResponseWriter, r *http.Request
 	// Parse the stream selector to extract the primary label name.
 	parsed, err := logql.Parse(q)
 	if err != nil {
-		e.logger.Warn("loki: failed to parse index/volume query", zap.String("query", q), zap.Error(err))
+		h.logger.Warn("loki: failed to parse index/volume query", zap.String("query", q), zap.Error(err))
 		writeLokiError(w, "failed to parse query", http.StatusBadRequest)
 		return
 	}
@@ -475,9 +475,9 @@ func (e *Extension) handleLokiIndexVolume(w http.ResponseWriter, r *http.Request
 		TopN:          lokiParseIntParam(r.FormValue("limit"), 100),
 	}
 
-	result, err := e.storageLogReader.SearchLogMetric(r.Context(), *metricQ)
+	result, err := h.logReader.SearchLogMetric(r.Context(), *metricQ)
 	if err != nil {
-		e.logger.Warn("loki: index volume query failed", zap.Error(err))
+		h.logger.Warn("loki: index volume query failed", zap.Error(err))
 		writeLokiError(w, "volume query failed", http.StatusInternalServerError)
 		return
 	}
@@ -531,8 +531,8 @@ func writeLokiVectorResponse(w http.ResponseWriter, result *observabilitystorage
 
 // handleLokiDetectedLabels returns the list of labels detected from log lines.
 // Used by logs-drilldown to populate the label picker with available metadata.
-func (e *Extension) handleLokiDetectedLabels(w http.ResponseWriter, r *http.Request) {
-	if !e.requireLokiReader(w) {
+func (h *lokiHandlers) handleLokiDetectedLabels(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLokiReader(w) {
 		return
 	}
 
@@ -544,10 +544,10 @@ func (e *Extension) handleLokiDetectedLabels(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	labels, err := e.storageLogReader.ListLogLabels(r.Context(),
+	labels, err := h.logReader.ListLogLabels(r.Context(),
 		observabilitystorageext.TimeRange{Start: start, End: end}, "")
 	if err != nil {
-		e.logger.Warn("loki: detected_labels query failed", zap.Error(err))
+		h.logger.Warn("loki: detected_labels query failed", zap.Error(err))
 	}
 
 	type detectedLabel struct {
@@ -568,7 +568,7 @@ func (e *Extension) handleLokiDetectedLabels(w http.ResponseWriter, r *http.Requ
 
 // handleLokiDetectedFieldValues returns values for a detected field label.
 // Uses the same ES field resolution as label values (e.g. detected_level → severityText).
-func (e *Extension) handleLokiDetectedFieldValues(w http.ResponseWriter, r *http.Request) {
+func (h *lokiHandlers) handleLokiDetectedFieldValues(w http.ResponseWriter, r *http.Request) {
 	// Extract field name from chi URL param
 	name := r.PathValue("name")
 	if name == "" {
@@ -576,7 +576,7 @@ func (e *Extension) handleLokiDetectedFieldValues(w http.ResponseWriter, r *http
 		return
 	}
 	// Reuse the existing label values handler logic — same ES query.
-	e.handleLokiLabelValues(w, r)
+	h.handleLokiLabelValues(w, r)
 	// Override name if needed for resolution
 	_ = name // name already used in route matching
 }
@@ -585,8 +585,8 @@ func (e *Extension) handleLokiDetectedFieldValues(w http.ResponseWriter, r *http
 // Returns both top-level Loki labels (service_name, level, etc.) and OTel resource/attribute
 // sub-fields. After the index template fix (flattened → dynamic:true), resource.* and
 // attributes.* become real ES keyword sub-fields, enabling aggregation and filtering.
-func (e *Extension) handleLokiDetectedFields(w http.ResponseWriter, r *http.Request) {
-	if !e.requireLokiReader(w) {
+func (h *lokiHandlers) handleLokiDetectedFields(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLokiReader(w) {
 		return
 	}
 
@@ -602,7 +602,7 @@ func (e *Extension) handleLokiDetectedFields(w http.ResponseWriter, r *http.Requ
 	seen := map[string]bool{}
 	fields := make([]field, 0)
 
-	labels, _ := e.storageLogReader.ListLogLabels(r.Context(), observabilitystorageext.TimeRange{}, "")
+	labels, _ := h.logReader.ListLogLabels(r.Context(), observabilitystorageext.TimeRange{}, "")
 	for _, l := range labels {
 		if l == "traceID" || l == "spanID" {
 			continue
@@ -632,7 +632,7 @@ func (e *Extension) handleLokiDetectedFields(w http.ResponseWriter, r *http.Requ
 		}
 		storageQ.Limit = 5
 
-		if result, err := e.storageLogReader.SearchLogs(r.Context(), *storageQ); err == nil && result != nil {
+		if result, err := h.logReader.SearchLogs(r.Context(), *storageQ); err == nil && result != nil {
 			for _, log := range result.Logs {
 				for _, attr := range log.Attributes {
 					label := toLokiFieldName(attr.Key)
@@ -679,7 +679,7 @@ func inferAnyValueType(v *observabilitystorageext.AnyValue) string {
 
 // handleLokiIndexStats returns index statistics for query cost estimation.
 // Used by Grafana Loki datasource internally (showErrorAlert=false, optional).
-func (e *Extension) handleLokiIndexStats(w http.ResponseWriter, r *http.Request) {
+func (h *lokiHandlers) handleLokiIndexStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"streams": 1,

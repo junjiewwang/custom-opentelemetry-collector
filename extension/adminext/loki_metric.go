@@ -33,8 +33,8 @@ func isMetricQuery(q string) bool {
 // Response format (Loki matrix):
 //
 //	{"status":"success","data":{"resultType":"matrix","result":[...]}}
-func (e *Extension) handleLokiMetricQuery(w http.ResponseWriter, r *http.Request, q string) {
-	if !e.requireLokiReader(w) {
+func (h *lokiHandlers) handleLokiMetricQuery(w http.ResponseWriter, r *http.Request, q string) {
+	if !h.requireLokiReader(w) {
 		return
 	}
 
@@ -58,7 +58,7 @@ func (e *Extension) handleLokiMetricQuery(w http.ResponseWriter, r *http.Request
 	// Parse the metric expression
 	expr, err := logql.ParseMetric(q)
 	if err != nil {
-		e.logger.Warn("loki: failed to parse metric query",
+		h.logger.Warn("loki: failed to parse metric query",
 			zap.Error(err),
 			zap.String("query", q),
 		)
@@ -90,9 +90,9 @@ func (e *Extension) handleLokiMetricQuery(w http.ResponseWriter, r *http.Request
 			TopN:          10,
 		}
 
-		result, err := e.storageLogReader.SearchLogMetric(r.Context(), *metricQ)
+		result, err := h.logReader.SearchLogMetric(r.Context(), *metricQ)
 		if err != nil {
-			e.logger.Warn("loki: metric query failed for OR branch", zap.Error(err))
+			h.logger.Warn("loki: metric query failed for OR branch", zap.Error(err))
 			continue
 		}
 		branchResults = append(branchResults, result)
