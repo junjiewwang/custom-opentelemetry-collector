@@ -16,20 +16,11 @@ import (
 	"go.uber.org/zap"
 )
 
-func newTestExtension(_ *testing.T, config *Config) *Extension {
-	if config == nil {
-		config = createDefaultConfig()
-	}
-	return &Extension{
-		config: config,
-		logger: zap.NewNop(),
-	}
-}
+// Middleware is now decoupled from *Extension, so these tests construct
+// middleware directly via NewXxxMiddleware(deps) — no Extension needed.
 
 func TestLoggingMiddleware(t *testing.T) {
-	ext := newTestExtension(t, nil)
-
-	handler := ext.loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewLoggingMiddleware(zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	}))
@@ -44,9 +35,7 @@ func TestLoggingMiddleware(t *testing.T) {
 }
 
 func TestLoggingMiddleware_StatusCode(t *testing.T) {
-	ext := newTestExtension(t, nil)
-
-	handler := ext.loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewLoggingMiddleware(zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 
@@ -59,12 +48,11 @@ func TestLoggingMiddleware_StatusCode(t *testing.T) {
 }
 
 func TestCORSMiddleware_AllowedOrigin(t *testing.T) {
-	config := createDefaultConfig()
-	config.CORS.Enabled = true
-	config.CORS.AllowedOrigins = []string{"http://localhost:3000"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := CORSConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"http://localhost:3000"},
+	}
+	handler := NewCORSMiddleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -78,12 +66,8 @@ func TestCORSMiddleware_AllowedOrigin(t *testing.T) {
 }
 
 func TestCORSMiddleware_WildcardOrigin(t *testing.T) {
-	config := createDefaultConfig()
-	config.CORS.Enabled = true
-	config.CORS.AllowedOrigins = []string{"*"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := CORSConfig{Enabled: true, AllowedOrigins: []string{"*"}}
+	handler := NewCORSMiddleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -97,12 +81,11 @@ func TestCORSMiddleware_WildcardOrigin(t *testing.T) {
 }
 
 func TestCORSMiddleware_DisallowedOrigin(t *testing.T) {
-	config := createDefaultConfig()
-	config.CORS.Enabled = true
-	config.CORS.AllowedOrigins = []string{"http://localhost:3000"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := CORSConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"http://localhost:3000"},
+	}
+	handler := NewCORSMiddleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -116,14 +99,14 @@ func TestCORSMiddleware_DisallowedOrigin(t *testing.T) {
 }
 
 func TestCORSMiddleware_Preflight(t *testing.T) {
-	config := createDefaultConfig()
-	config.CORS.Enabled = true
-	config.CORS.AllowedOrigins = []string{"*"}
-	config.CORS.AllowedMethods = []string{"GET", "POST"}
-	config.CORS.AllowedHeaders = []string{"Authorization", "Content-Type"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := CORSConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"GET", "POST"},
+		AllowedHeaders: []string{"Authorization", "Content-Type"},
+		MaxAge:         86400,
+	}
+	handler := NewCORSMiddleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("Handler should not be called for preflight")
 	}))
 
@@ -141,13 +124,12 @@ func TestCORSMiddleware_Preflight(t *testing.T) {
 }
 
 func TestCORSMiddleware_AllowCredentials(t *testing.T) {
-	config := createDefaultConfig()
-	config.CORS.Enabled = true
-	config.CORS.AllowedOrigins = []string{"*"}
-	config.CORS.AllowCredentials = true
-	ext := newTestExtension(t, config)
-
-	handler := ext.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := CORSConfig{
+		Enabled:          true,
+		AllowedOrigins:   []string{"*"},
+		AllowCredentials: true,
+	}
+	handler := NewCORSMiddleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -161,13 +143,8 @@ func TestCORSMiddleware_AllowCredentials(t *testing.T) {
 }
 
 func TestAuthMiddleware_SkipHealthCheck(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "api_key"
-	config.Auth.APIKey.Keys = []string{"secret-key"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := AuthConfig{Enabled: true, Type: "api_key", APIKey: APIKeyAuthConfig{Keys: []string{"secret-key"}}}
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -180,13 +157,8 @@ func TestAuthMiddleware_SkipHealthCheck(t *testing.T) {
 }
 
 func TestAuthMiddleware_SkipOptions(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "api_key"
-	config.Auth.APIKey.Keys = []string{"secret-key"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := AuthConfig{Enabled: true, Type: "api_key", APIKey: APIKeyAuthConfig{Keys: []string{"secret-key"}}}
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -199,14 +171,11 @@ func TestAuthMiddleware_SkipOptions(t *testing.T) {
 }
 
 func TestAuthMiddleware_BasicAuth_Success(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "basic"
-	config.Auth.Basic.Username = "admin"
-	config.Auth.Basic.Password = "secret"
-	ext := newTestExtension(t, config)
-
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := AuthConfig{
+		Enabled: true, Type: "basic",
+		Basic: BasicAuthConfig{Username: "admin", Password: "secret"},
+	}
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -220,14 +189,11 @@ func TestAuthMiddleware_BasicAuth_Success(t *testing.T) {
 }
 
 func TestAuthMiddleware_BasicAuth_Failure(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "basic"
-	config.Auth.Basic.Username = "admin"
-	config.Auth.Basic.Password = "secret"
-	ext := newTestExtension(t, config)
-
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := AuthConfig{
+		Enabled: true, Type: "basic",
+		Basic: BasicAuthConfig{Username: "admin", Password: "secret"},
+	}
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -258,11 +224,7 @@ func TestAuthMiddleware_BasicAuth_Failure(t *testing.T) {
 }
 
 func TestAuthMiddleware_JWTAuth_Success(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "jwt"
-	config.Auth.JWT.Secret = "my-secret"
-	ext := newTestExtension(t, config)
+	cfg := AuthConfig{Enabled: true, Type: "jwt", JWT: JWTAuthConfig{Secret: "my-secret"}}
 
 	// A properly signed HS256 JWT with a future exp must authenticate.
 	token, err := signHS256JWT("my-secret", map[string]any{
@@ -271,7 +233,7 @@ func TestAuthMiddleware_JWTAuth_Success(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -285,11 +247,7 @@ func TestAuthMiddleware_JWTAuth_Success(t *testing.T) {
 }
 
 func TestAuthMiddleware_JWTAuth_Failure(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "jwt"
-	config.Auth.JWT.Secret = "my-secret"
-	ext := newTestExtension(t, config)
+	cfg := AuthConfig{Enabled: true, Type: "jwt", JWT: JWTAuthConfig{Secret: "my-secret"}}
 
 	// A token signed with the WRONG secret must be rejected.
 	wrongKeyToken, err := signHS256JWT("not-my-secret", map[string]any{
@@ -304,7 +262,7 @@ func TestAuthMiddleware_JWTAuth_Failure(t *testing.T) {
 	assert.NoError(t, err)
 
 	// A non-JWT string must be rejected (was the old insecure "any token" hole).
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -336,14 +294,11 @@ func TestAuthMiddleware_JWTAuth_Failure(t *testing.T) {
 }
 
 func TestAuthMiddleware_APIKeyAuth_Success(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "api_key"
-	config.Auth.APIKey.Header = "X-API-Key"
-	config.Auth.APIKey.Keys = []string{"key1", "key2"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := AuthConfig{
+		Enabled: true, Type: "api_key",
+		APIKey: APIKeyAuthConfig{Header: "X-API-Key", Keys: []string{"key1", "key2"}},
+	}
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -365,14 +320,11 @@ func TestAuthMiddleware_APIKeyAuth_Success(t *testing.T) {
 }
 
 func TestAuthMiddleware_APIKeyAuth_Failure(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "api_key"
-	config.Auth.APIKey.Header = "X-API-Key"
-	config.Auth.APIKey.Keys = []string{"valid-key"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := AuthConfig{
+		Enabled: true, Type: "api_key",
+		APIKey: APIKeyAuthConfig{Header: "X-API-Key", Keys: []string{"valid-key"}},
+	}
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -401,14 +353,11 @@ func TestAuthMiddleware_APIKeyAuth_Failure(t *testing.T) {
 }
 
 func TestAuthMiddleware_APIKeyAuth_DefaultHeader(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "api_key"
-	config.Auth.APIKey.Header = "" // Empty, should use default
-	config.Auth.APIKey.Keys = []string{"valid-key"}
-	ext := newTestExtension(t, config)
-
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := AuthConfig{
+		Enabled: true, Type: "api_key",
+		APIKey: APIKeyAuthConfig{Header: "", Keys: []string{"valid-key"}}, // Empty → default X-API-Key
+	}
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -422,12 +371,8 @@ func TestAuthMiddleware_APIKeyAuth_DefaultHeader(t *testing.T) {
 }
 
 func TestAuthMiddleware_UnknownAuthType(t *testing.T) {
-	config := createDefaultConfig()
-	config.Auth.Enabled = true
-	config.Auth.Type = "unknown"
-	ext := newTestExtension(t, config)
-
-	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := AuthConfig{Enabled: true, Type: "unknown"}
+	handler := NewAuthMiddleware(cfg, zap.NewNop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

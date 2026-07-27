@@ -25,7 +25,10 @@ const tracerName = "go.opentelemetry.io/collector/custom/extension/adminext"
 // Bodies larger than this are truncated to avoid bloating spans.
 const maxBodyBytes = 65536 // 64KB
 
-// tracingMiddleware creates OpenTelemetry spans for every HTTP request.
+// NewTracingMiddleware returns middleware that creates OpenTelemetry spans for
+// every HTTP request. It relies on the global TracerProvider/Propagator (set up
+// by Extension.Start), so it has no *Extension dependency.
+//
 // Spans capture:
 //   - HTTP metadata (method, path, status, remote IP)
 //   - Full request body (truncated at 64KB, only for text-like Content-Types)
@@ -34,70 +37,72 @@ const maxBodyBytes = 65536 // 64KB
 //
 // Downstream handlers can enrich spans with domain-specific attributes
 // (e.g., PromQL expressions) via: trace.SpanFromContext(r.Context()).
-func (e *Extension) tracingMiddleware(next http.Handler) http.Handler {
+func NewTracingMiddleware() func(http.Handler) http.Handler {
 	tracer := otel.Tracer(tracerName)
 	propagator := otel.GetTextMapPropagator()
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Extract incoming trace context (W3C TraceContext / B3 / etc.)
-		ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Extract incoming trace context (W3C TraceContext / B3 / etc.)
+			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
-		// Build span attributes
-		attrs := []attribute.KeyValue{
-			attribute.String("http.method", r.Method),
-			attribute.String("http.url", r.URL.String()),
-			attribute.String("http.target", r.URL.Path),
-			attribute.String("net.peer.ip", r.RemoteAddr),
-			attribute.String("net.host.name", r.Host),
-			attribute.String("http.scheme", r.URL.Scheme),
-			attribute.String("http.user_agent", truncate(r.UserAgent(), 256)),
-		}
+			// Build span attributes
+			attrs := []attribute.KeyValue{
+				attribute.String("http.method", r.Method),
+				attribute.String("http.url", r.URL.String()),
+				attribute.String("http.target", r.URL.Path),
+				attribute.String("net.peer.ip", r.RemoteAddr),
+				attribute.String("net.host.name", r.Host),
+				attribute.String("http.scheme", r.URL.Scheme),
+				attribute.String("http.user_agent", truncate(r.UserAgent(), 256)),
+			}
 
-		// Record query string (separate from body for debugging)
-		if r.URL.RawQuery != "" {
-			attrs = append(attrs,
-				attribute.String("http.query_string", truncate(r.URL.RawQuery, 4096)),
+			// Record query string (separate from body for debugging)
+			if r.URL.RawQuery != "" {
+				attrs = append(attrs,
+					attribute.String("http.query_string", truncate(r.URL.RawQuery, 4096)),
+				)
+			}
+
+			// Record request body (supports POST form data, JSON, etc.)
+			bodyAttr, bodyReader := captureRequestBody(r)
+			if bodyAttr.Valid() {
+				attrs = append(attrs, bodyAttr)
+			}
+			r.Body = bodyReader // restore body for downstream handlers
+
+			// Record Grafana-specific headers for debugging
+			if grafanaUA := r.Header.Get("X-Grafana-Org-Id"); grafanaUA != "" {
+				attrs = append(attrs, attribute.String("grafana.org_id", grafanaUA))
+			}
+
+			// Start span
+			spanName := r.Method + " " + r.URL.Path
+			ctx, span := tracer.Start(ctx, spanName,
+				trace.WithSpanKind(trace.SpanKindServer),
+				trace.WithAttributes(attrs...),
 			)
-		}
+			defer span.End()
 
-		// Record request body (supports POST form data, JSON, etc.)
-		bodyAttr, bodyReader := captureRequestBody(r)
-		if bodyAttr.Valid() {
-			attrs = append(attrs, bodyAttr)
-		}
-		r.Body = bodyReader // restore body for downstream handlers
+			// Attach span to context for downstream handlers
+			r = r.WithContext(ctx)
 
-		// Record Grafana-specific headers for debugging
-		if grafanaUA := r.Header.Get("X-Grafana-Org-Id"); grafanaUA != "" {
-			attrs = append(attrs, attribute.String("grafana.org_id", grafanaUA))
-		}
+			// Capture status code
+			wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			next.ServeHTTP(wrapped, r)
 
-		// Start span
-		spanName := r.Method + " " + r.URL.Path
-		ctx, span := tracer.Start(ctx, spanName,
-			trace.WithSpanKind(trace.SpanKindServer),
-			trace.WithAttributes(attrs...),
-		)
-		defer span.End()
-
-		// Attach span to context for downstream handlers
-		r = r.WithContext(ctx)
-
-		// Capture status code
-		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		next.ServeHTTP(wrapped, r)
-
-		// Record response status
-		span.SetAttributes(
-			attribute.Int("http.status_code", wrapped.statusCode),
-		)
-		if wrapped.statusCode >= 400 {
-			span.SetStatus(codes.Error, http.StatusText(wrapped.statusCode))
+			// Record response status
 			span.SetAttributes(
-				attribute.String("error.type", strconv.Itoa(wrapped.statusCode)),
+				attribute.Int("http.status_code", wrapped.statusCode),
 			)
-		}
-	})
+			if wrapped.statusCode >= 400 {
+				span.SetStatus(codes.Error, http.StatusText(wrapped.statusCode))
+				span.SetAttributes(
+					attribute.String("error.type", strconv.Itoa(wrapped.statusCode)),
+				)
+			}
+		})
+	}
 }
 
 // captureRequestBody reads the request body and returns it as a span attribute.

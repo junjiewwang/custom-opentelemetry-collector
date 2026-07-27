@@ -22,10 +22,10 @@ func (e *Extension) newRouter() http.Handler {
 
 	// Global middleware (must be defined before any routes)
 	r.Use(middleware.Recoverer)
-	r.Use(e.tracingMiddleware)
-	r.Use(e.loggingMiddleware)
+	r.Use(NewTracingMiddleware())
+	r.Use(NewLoggingMiddleware(e.logger))
 	if e.config.CORS.Enabled {
-		r.Use(e.corsMiddleware)
+		r.Use(NewCORSMiddleware(e.config.CORS))
 	}
 
 	// Health check (no auth required)
@@ -88,7 +88,7 @@ func (e *Extension) newRouter() http.Handler {
 	r.Route("/api/v2", func(r chi.Router) {
 		// Apply auth middleware only to API routes
 		if e.config.Auth.Enabled {
-			r.Use(e.authMiddleware)
+			r.Use(NewAuthMiddleware(e.config.Auth, e.logger))
 		}
 
 		// ============================================================================
