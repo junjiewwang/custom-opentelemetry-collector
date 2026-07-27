@@ -51,7 +51,7 @@ type influxdbSeries struct {
 // handleInfluxDBPing handles GET /api/v2/influxdb/ping.
 // InfluxDB standard ping returns 204 No Content with X-Influxdb-Version header.
 // Grafana uses this to verify the InfluxDB instance is reachable.
-func (e *Extension) handleInfluxDBPing(w http.ResponseWriter, _ *http.Request) {
+func (h *influxHandlers) handleInfluxDBPing(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("X-Influxdb-Version", "1.8.10-compatible")
 	w.Header().Set("X-Influxdb-Build", "custom-otel-collector")
 	w.WriteHeader(http.StatusNoContent)
@@ -69,15 +69,15 @@ func (e *Extension) handleInfluxDBPing(w http.ResponseWriter, _ *http.Request) {
 // Response format (InfluxDB v1):
 //
 //	{"results":[{"statement_id":0,"series":[{"name":"my_metric","columns":["time","value"],"values":[[time1,val1],...]}]}]}
-func (e *Extension) handleInfluxDBQuery(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writeInfluxDBError(w, "metric reader not available")
+func (h *influxHandlers) handleInfluxDBQuery(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writeInfluxDBError(w, "metric reader not available")
 		return
 	}
 
 	// 1. Parse request parameters
 	if err := r.ParseForm(); err != nil {
-		e.writeInfluxDBError(w, fmt.Sprintf("failed to parse form: %v", err))
+		h.writeInfluxDBError(w, fmt.Sprintf("failed to parse form: %v", err))
 		return
 	}
 
@@ -86,7 +86,7 @@ func (e *Extension) handleInfluxDBQuery(w http.ResponseWriter, r *http.Request) 
 		q = r.URL.Query().Get("q")
 	}
 	if q == "" {
-		e.writeInfluxDBError(w, "missing required parameter: q")
+		h.writeInfluxDBError(w, "missing required parameter: q")
 		return
 	}
 
@@ -106,14 +106,14 @@ func (e *Extension) handleInfluxDBQuery(w http.ResponseWriter, r *http.Request) 
 	// 4. Parse InfluxQL
 	stmt, err := influxql.ParseStatement(q)
 	if err != nil {
-		e.writeInfluxDBError(w, fmt.Sprintf("InfluxQL parse error: %v", err))
+		h.writeInfluxDBError(w, fmt.Sprintf("InfluxQL parse error: %v", err))
 		return
 	}
 
 	// 5. Handle non-SELECT statements (SHOW queries used by Grafana for connection test & autocomplete)
 	sel, ok := stmt.(*influxql.SelectStatement)
 	if !ok {
-		e.handleInfluxDBShowQuery(w, r, stmt, db, epoch)
+		h.handleInfluxDBShowQuery(w, r, stmt, db, epoch)
 		return
 	}
 
@@ -160,16 +160,16 @@ func (e *Extension) handleInfluxDBQuery(w http.ResponseWriter, r *http.Request) 
 		SeriesLimit: seriesLimit,
 	}
 
-	result, err := e.storageMetricReader.QueryRange(r.Context(), query)
+	result, err := h.metricReader.QueryRange(r.Context(), query)
 	if err != nil {
-		e.writeInfluxDBError(w, fmt.Sprintf("query execution failed: %v", err))
+		h.writeInfluxDBError(w, fmt.Sprintf("query execution failed: %v", err))
 		return
 	}
 
 	// 12. Convert to InfluxDB v1 response format
 	series := convertToInfluxDBSeries(result, metricName, epoch)
 
-	e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+	h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 		Results: []influxdbResult{
 			{
 				StatementID: 0,
@@ -180,8 +180,8 @@ func (e *Extension) handleInfluxDBQuery(w http.ResponseWriter, r *http.Request) 
 }
 
 // writeInfluxDBError writes an InfluxDB-compatible error response.
-func (e *Extension) writeInfluxDBError(w http.ResponseWriter, msg string) {
-	e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+func (h *influxHandlers) writeInfluxDBError(w http.ResponseWriter, msg string) {
+	h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 		Results: []influxdbResult{
 			{
 				StatementID: 0,
@@ -446,34 +446,34 @@ func parseInfluxDBTimeRange(r *http.Request) (startMs, endMs int64, tr observabi
 //   - "SHOW TAG VALUES" → autocomplete label values
 //   - "SHOW FIELD KEYS" → autocomplete fields
 //   - "SHOW RETENTION POLICIES" → list retention policies
-func (e *Extension) handleInfluxDBShowQuery(w http.ResponseWriter, r *http.Request, stmt influxql.Statement, db string, epoch string) {
+func (h *influxHandlers) handleInfluxDBShowQuery(w http.ResponseWriter, r *http.Request, stmt influxql.Statement, db string, epoch string) {
 	switch stmt.(type) {
 	case *influxql.ShowMeasurementsStatement:
 		// Health check: list available metrics
-		e.handleShowMeasurements(w, r, db)
+		h.handleShowMeasurements(w, r, db)
 	case *influxql.ShowDatabasesStatement:
 		// List available "databases" (app IDs)
-		e.handleShowDatabases(w)
+		h.handleShowDatabases(w)
 	case *influxql.ShowTagKeysStatement:
 		// List available label keys for a metric
-		e.handleShowTagKeys(w, r, stmt.(*influxql.ShowTagKeysStatement), db)
+		h.handleShowTagKeys(w, r, stmt.(*influxql.ShowTagKeysStatement), db)
 	case *influxql.ShowTagValuesStatement:
 		// List available label values for a key
-		e.handleShowTagValues(w, r, stmt.(*influxql.ShowTagValuesStatement), db)
+		h.handleShowTagValues(w, r, stmt.(*influxql.ShowTagValuesStatement), db)
 	case *influxql.ShowFieldKeysStatement:
 		// Metrics always have a single "value" field
-		e.handleShowFieldKeys(w, stmt.(*influxql.ShowFieldKeysStatement))
+		h.handleShowFieldKeys(w, stmt.(*influxql.ShowFieldKeysStatement))
 	case *influxql.ShowRetentionPoliciesStatement:
 		// Return a default retention policy
-		e.handleShowRetentionPolicies(w)
+		h.handleShowRetentionPolicies(w)
 	default:
-		e.writeInfluxDBError(w, fmt.Sprintf("unsupported statement type: %T", stmt))
+		h.writeInfluxDBError(w, fmt.Sprintf("unsupported statement type: %T", stmt))
 	}
 }
 
 // handleShowMeasurements returns available metric names.
 // This is the primary health check query Grafana uses when testing the InfluxDB connection.
-func (e *Extension) handleShowMeasurements(w http.ResponseWriter, r *http.Request, db string) {
+func (h *influxHandlers) handleShowMeasurements(w http.ResponseWriter, r *http.Request, db string) {
 	// Use a wide time range (last 30 days) for discovery
 	now := time.Now()
 	timeRange := observabilitystorageext.TimeRange{
@@ -481,11 +481,11 @@ func (e *Extension) handleShowMeasurements(w http.ResponseWriter, r *http.Reques
 		End:   now,
 	}
 
-	names, err := e.storageMetricReader.ListMetricNames(r.Context(), timeRange)
+	names, err := h.metricReader.ListMetricNames(r.Context(), timeRange)
 	if err != nil {
 		// Even if listing fails, return an empty successful response
 		// so Grafana considers the connection healthy
-		e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+		h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 			Results: []influxdbResult{
 				{
 					StatementID: 0,
@@ -507,7 +507,7 @@ func (e *Extension) handleShowMeasurements(w http.ResponseWriter, r *http.Reques
 		values = append(values, []any{name})
 	}
 
-	e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+	h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 		Results: []influxdbResult{
 			{
 				StatementID: 0,
@@ -524,9 +524,9 @@ func (e *Extension) handleShowMeasurements(w http.ResponseWriter, r *http.Reques
 }
 
 // handleShowDatabases returns available "databases" (mapped to app IDs).
-func (e *Extension) handleShowDatabases(w http.ResponseWriter) {
+func (h *influxHandlers) handleShowDatabases(w http.ResponseWriter) {
 	// Return a minimal response that satisfies Grafana
-	e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+	h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 		Results: []influxdbResult{
 			{
 				StatementID: 0,
@@ -543,7 +543,7 @@ func (e *Extension) handleShowDatabases(w http.ResponseWriter) {
 }
 
 // handleShowTagKeys returns label keys for a measurement.
-func (e *Extension) handleShowTagKeys(w http.ResponseWriter, r *http.Request, stmt *influxql.ShowTagKeysStatement, _ string) {
+func (h *influxHandlers) handleShowTagKeys(w http.ResponseWriter, r *http.Request, stmt *influxql.ShowTagKeysStatement, _ string) {
 	metricName := ""
 	if len(stmt.Sources) > 0 {
 		if m, ok := stmt.Sources[0].(*influxql.Measurement); ok {
@@ -558,9 +558,9 @@ func (e *Extension) handleShowTagKeys(w http.ResponseWriter, r *http.Request, st
 		End:   now,
 	}
 
-	labels, err := e.storageMetricReader.ListLabelNames(r.Context(), timeRange, "")
+	labels, err := h.metricReader.ListLabelNames(r.Context(), timeRange, "")
 	if err != nil {
-		e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+		h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 			Results: []influxdbResult{{StatementID: 0, Series: []influxdbSeries{}}},
 		})
 		return
@@ -571,7 +571,7 @@ func (e *Extension) handleShowTagKeys(w http.ResponseWriter, r *http.Request, st
 		values = append(values, []any{label})
 	}
 
-	e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+	h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 		Results: []influxdbResult{
 			{
 				StatementID: 0,
@@ -588,7 +588,7 @@ func (e *Extension) handleShowTagKeys(w http.ResponseWriter, r *http.Request, st
 }
 
 // handleShowTagValues returns label values for a specific key.
-func (e *Extension) handleShowTagValues(w http.ResponseWriter, r *http.Request, stmt *influxql.ShowTagValuesStatement, _ string) {
+func (h *influxHandlers) handleShowTagValues(w http.ResponseWriter, r *http.Request, stmt *influxql.ShowTagValuesStatement, _ string) {
 	metricName := ""
 	if len(stmt.Sources) > 0 {
 		if m, ok := stmt.Sources[0].(*influxql.Measurement); ok {
@@ -605,7 +605,7 @@ func (e *Extension) handleShowTagValues(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if tagKey == "" {
-		e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+		h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 			Results: []influxdbResult{{StatementID: 0, Series: []influxdbSeries{}}},
 		})
 		return
@@ -618,9 +618,9 @@ func (e *Extension) handleShowTagValues(w http.ResponseWriter, r *http.Request, 
 		End:   now,
 	}
 
-	values, err := e.storageMetricReader.ListLabelValues(r.Context(), tagKey, timeRange)
+	values, err := h.metricReader.ListLabelValues(r.Context(), tagKey, timeRange)
 	if err != nil {
-		e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+		h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 			Results: []influxdbResult{{StatementID: 0, Series: []influxdbSeries{}}},
 		})
 		return
@@ -631,7 +631,7 @@ func (e *Extension) handleShowTagValues(w http.ResponseWriter, r *http.Request, 
 		rows = append(rows, []any{tagKey, v})
 	}
 
-	e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+	h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 		Results: []influxdbResult{
 			{
 				StatementID: 0,
@@ -649,7 +649,7 @@ func (e *Extension) handleShowTagValues(w http.ResponseWriter, r *http.Request, 
 
 // handleShowFieldKeys returns field keys for a measurement.
 // Our metrics always have a single "value" field of type float.
-func (e *Extension) handleShowFieldKeys(w http.ResponseWriter, stmt *influxql.ShowFieldKeysStatement) {
+func (h *influxHandlers) handleShowFieldKeys(w http.ResponseWriter, stmt *influxql.ShowFieldKeysStatement) {
 	metricName := ""
 	if len(stmt.Sources) > 0 {
 		if m, ok := stmt.Sources[0].(*influxql.Measurement); ok {
@@ -657,7 +657,7 @@ func (e *Extension) handleShowFieldKeys(w http.ResponseWriter, stmt *influxql.Sh
 		}
 	}
 
-	e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+	h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 		Results: []influxdbResult{
 			{
 				StatementID: 0,
@@ -674,8 +674,8 @@ func (e *Extension) handleShowFieldKeys(w http.ResponseWriter, stmt *influxql.Sh
 }
 
 // handleShowRetentionPolicies returns a default retention policy.
-func (e *Extension) handleShowRetentionPolicies(w http.ResponseWriter) {
-	e.writeJSON(w, http.StatusOK, influxdbQueryResponse{
+func (h *influxHandlers) handleShowRetentionPolicies(w http.ResponseWriter) {
+	h.writeJSON(w, http.StatusOK, influxdbQueryResponse{
 		Results: []influxdbResult{
 			{
 				StatementID: 0,

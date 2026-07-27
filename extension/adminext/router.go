@@ -280,11 +280,12 @@ func (e *Extension) newRouter() http.Handler {
 		//   Access: Server
 		//   Database: <app_id>
 		if e.storageMetricReader != nil {
+			influx := newInfluxHandlers(e)
 			r.Route("/influxdb", func(r chi.Router) {
-				r.Get("/ping", e.handleInfluxDBPing)   // Health check (some Grafana versions)
-				r.Head("/ping", e.handleInfluxDBPing)  // Health check HEAD variant
-				r.Post("/query", e.handleInfluxDBQuery)
-				r.Get("/query", e.handleInfluxDBQuery) // Grafana may use GET with params
+				r.Get("/ping", influx.handleInfluxDBPing)  // Health check (some Grafana versions)
+				r.Head("/ping", influx.handleInfluxDBPing) // Health check HEAD variant
+				r.Post("/query", influx.handleInfluxDBQuery)
+				r.Get("/query", influx.handleInfluxDBQuery) // Grafana may use GET with params
 			})
 		}
 
