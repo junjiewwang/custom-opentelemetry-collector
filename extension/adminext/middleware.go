@@ -5,10 +5,12 @@ package adminext
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,7 +63,7 @@ func (e *Extension) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Methods", strings.Join(e.config.CORS.AllowedMethods, ", "))
 			w.Header().Set("Access-Control-Allow-Headers", strings.Join(e.config.CORS.AllowedHeaders, ", "))
 			if e.config.CORS.MaxAge > 0 {
-				w.Header().Set("Access-Control-Max-Age", string(rune(e.config.CORS.MaxAge)))
+				w.Header().Set("Access-Control-Max-Age", strconv.Itoa(e.config.CORS.MaxAge))
 			}
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -145,24 +147,34 @@ func (e *Extension) authenticateBasic(r *http.Request) bool {
 		return false
 	}
 
-	return parts[0] == e.config.Auth.Basic.Username && parts[1] == e.config.Auth.Basic.Password
+	// Constant-time comparison to avoid timing side channels on credentials.
+	userOK := subtle.ConstantTimeCompare([]byte(parts[0]), []byte(e.config.Auth.Basic.Username)) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(parts[1]), []byte(e.config.Auth.Basic.Password)) == 1
+	return userOK && passOK
 }
 
-// authenticateJWT performs JWT authentication.
+// authenticateJWT validates an HS256 JWT bearer token against the configured
+// secret/issuer/audience. A token that is missing, malformed, expired, or
+// signed with the wrong key is rejected. Only HS256 is accepted (alg confusion
+// is prevented in the validator).
 func (e *Extension) authenticateJWT(r *http.Request) bool {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
 		return false
 	}
-
 	if !strings.HasPrefix(auth, "Bearer ") {
 		return false
 	}
-
-	// TODO: Implement proper JWT validation
-	// For now, just check if token is not empty
-	token := auth[7:]
-	return token != ""
+	token := strings.TrimSpace(auth[7:])
+	if token == "" {
+		return false
+	}
+	validator := newJWTValidator(e.config.Auth.JWT)
+	if err := validator.validate(token); err != nil {
+		e.logger.Debug("JWT authentication rejected", zap.Error(err))
+		return false
+	}
+	return true
 }
 
 // authenticateAPIKey performs API key authentication.
@@ -177,8 +189,9 @@ func (e *Extension) authenticateAPIKey(r *http.Request) bool {
 		return false
 	}
 
+	// Constant-time comparison per candidate key to avoid timing side channels.
 	for _, validKey := range e.config.Auth.APIKey.Keys {
-		if key == validKey {
+		if subtle.ConstantTimeCompare([]byte(key), []byte(validKey)) == 1 {
 			return true
 		}
 	}

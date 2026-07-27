@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
@@ -135,6 +136,8 @@ func TestCORSMiddleware_Preflight(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, rr.Code)
 	assert.Contains(t, rr.Header().Get("Access-Control-Allow-Methods"), "GET")
 	assert.Contains(t, rr.Header().Get("Access-Control-Allow-Methods"), "POST")
+	// MaxAge must be rendered as a decimal integer (86400 default), not a rune.
+	assert.Equal(t, "86400", rr.Header().Get("Access-Control-Max-Age"))
 }
 
 func TestCORSMiddleware_AllowCredentials(t *testing.T) {
@@ -261,17 +264,24 @@ func TestAuthMiddleware_JWTAuth_Success(t *testing.T) {
 	config.Auth.JWT.Secret = "my-secret"
 	ext := newTestExtension(t, config)
 
+	// A properly signed HS256 JWT with a future exp must authenticate.
+	token, err := signHS256JWT("my-secret", map[string]any{
+		"sub": "user-1",
+		"exp": time.Now().Add(1 * time.Hour).Unix(),
+	})
+	assert.NoError(t, err)
+
 	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-	req.Header.Set("Authorization", "Bearer some-jwt-token")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
 
-	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, http.StatusOK, rr.Code, "valid signed JWT should authenticate")
 }
 
 func TestAuthMiddleware_JWTAuth_Failure(t *testing.T) {
@@ -281,6 +291,19 @@ func TestAuthMiddleware_JWTAuth_Failure(t *testing.T) {
 	config.Auth.JWT.Secret = "my-secret"
 	ext := newTestExtension(t, config)
 
+	// A token signed with the WRONG secret must be rejected.
+	wrongKeyToken, err := signHS256JWT("not-my-secret", map[string]any{
+		"exp": time.Now().Add(1 * time.Hour).Unix(),
+	})
+	assert.NoError(t, err)
+
+	// An expired token (signed with the right secret) must be rejected.
+	expiredToken, err := signHS256JWT("my-secret", map[string]any{
+		"exp": time.Now().Add(-1 * time.Hour).Unix(),
+	})
+	assert.NoError(t, err)
+
+	// A non-JWT string must be rejected (was the old insecure "any token" hole).
 	handler := ext.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -292,6 +315,9 @@ func TestAuthMiddleware_JWTAuth_Failure(t *testing.T) {
 		{"no auth header", ""},
 		{"wrong prefix", "Basic token"},
 		{"empty token", "Bearer "},
+		{"arbitrary non-jwt string", "Bearer some-jwt-token"},
+		{"wrong signing key", "Bearer " + wrongKeyToken},
+		{"expired token", "Bearer " + expiredToken},
 	}
 
 	for _, tt := range tests {
