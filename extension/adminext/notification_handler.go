@@ -19,9 +19,9 @@ import (
 // listNotifications handles GET /api/v2/notifications?status=failed&limit=50
 //
 // Lists notification records filtered by status.
-func (e *Extension) listNotifications(w http.ResponseWriter, r *http.Request) {
-	if e.notificationStore == nil {
-		e.handleError(w, errNotImplemented("notification store not configured"))
+func (h *adminHandlers) listNotifications(w http.ResponseWriter, r *http.Request) {
+	if h.notificationStore == nil {
+		h.handleError(w, errNotImplemented("notification store not configured"))
 		return
 	}
 
@@ -37,79 +37,79 @@ func (e *Extension) listNotifications(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	records, err := e.notificationStore.ListByStatus(r.Context(), status, limit)
+	records, err := h.notificationStore.ListByStatus(r.Context(), status, limit)
 	if err != nil {
-		e.logger.Error("Failed to list notifications",
+		h.logger.Error("Failed to list notifications",
 			zap.String("status", string(status)),
 			zap.Error(err),
 		)
-		e.handleError(w, errInternal("failed to list notifications"))
+		h.handleError(w, errInternal("failed to list notifications"))
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, listResponse("notifications", records, len(records)))
+	h.writeJSON(w, http.StatusOK, listResponse("notifications", records, len(records)))
 }
 
 // getNotification handles GET /api/v2/notifications/{id}
-func (e *Extension) getNotification(w http.ResponseWriter, r *http.Request) {
-	if e.notificationStore == nil {
-		e.handleError(w, errNotImplemented("notification store not configured"))
+func (h *adminHandlers) getNotification(w http.ResponseWriter, r *http.Request) {
+	if h.notificationStore == nil {
+		h.handleError(w, errNotImplemented("notification store not configured"))
 		return
 	}
 
 	id := chi.URLParam(r, "id")
 	if id == "" {
-		e.handleError(w, errBadRequest("id is required"))
+		h.handleError(w, errBadRequest("id is required"))
 		return
 	}
 
-	record, err := e.notificationStore.Get(r.Context(), id)
+	record, err := h.notificationStore.Get(r.Context(), id)
 	if err != nil {
-		e.handleError(w, errInternal("failed to get notification"))
+		h.handleError(w, errInternal("failed to get notification"))
 		return
 	}
 	if record == nil {
-		e.handleError(w, errNotFound("notification not found"))
+		h.handleError(w, errNotFound("notification not found"))
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, record)
+	h.writeJSON(w, http.StatusOK, record)
 }
 
 // retryNotification handles POST /api/v2/notifications/{id}/retry
 //
 // Retries a single failed notification.
-func (e *Extension) retryNotification(w http.ResponseWriter, r *http.Request) {
-	if e.notificationStore == nil || e.artifactNotifier == nil {
-		e.handleError(w, errNotImplemented("notification not configured"))
+func (h *adminHandlers) retryNotification(w http.ResponseWriter, r *http.Request) {
+	if h.notificationStore == nil || h.artifactNotifier == nil {
+		h.handleError(w, errNotImplemented("notification not configured"))
 		return
 	}
 
 	id := chi.URLParam(r, "id")
 	if id == "" {
-		e.handleError(w, errBadRequest("id is required"))
+		h.handleError(w, errBadRequest("id is required"))
 		return
 	}
 
-	record, err := e.notificationStore.Get(r.Context(), id)
+	record, err := h.notificationStore.Get(r.Context(), id)
 	if err != nil {
-		e.handleError(w, errInternal("failed to get notification"))
+		h.handleError(w, errInternal("failed to get notification"))
 		return
 	}
 	if record == nil {
-		e.handleError(w, errNotFound("notification not found"))
+		h.handleError(w, errNotFound("notification not found"))
 		return
 	}
 
 	if record.Status == notification.StatusSent {
-		e.writeJSON(w, http.StatusOK, successResponse("notification already sent"))
+		h.writeJSON(w, http.StatusOK, successResponse("notification already sent"))
 		return
 	}
 
 	// Mark as retrying
 	record.Status = notification.StatusRetrying
 	record.AttemptCount++
-	_ = e.notificationStore.Update(r.Context(), record)
+	_ = h.notificationStore.Update(r.Context(), record)
 
 	// Retry the notification
 	n := &notification.ArtifactNotification{
@@ -120,7 +120,7 @@ func (e *Extension) retryNotification(w http.ResponseWriter, r *http.Request) {
 		ArtifactRef: record.ArtifactRef,
 	}
 
-	result := e.artifactNotifier.Notify(r.Context(), n)
+	result := h.artifactNotifier.Notify(r.Context(), n)
 
 	if result.Success {
 		record.Status = notification.StatusSent
@@ -130,14 +130,14 @@ func (e *Extension) retryNotification(w http.ResponseWriter, r *http.Request) {
 		record.LastError = result.ErrorMessage
 	}
 
-	if err := e.notificationStore.Update(r.Context(), record); err != nil {
-		e.logger.Warn("Failed to update notification record after retry",
+	if err := h.notificationStore.Update(r.Context(), record); err != nil {
+		h.logger.Warn("Failed to update notification record after retry",
 			zap.String("id", id),
 			zap.Error(err),
 		)
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"success":    result.Success,
 		"id":         id,
 		"status":     string(record.Status),
@@ -148,15 +148,15 @@ func (e *Extension) retryNotification(w http.ResponseWriter, r *http.Request) {
 // retryAllFailedNotifications handles POST /api/v2/notifications/retry-all
 //
 // Retries all failed notifications (up to a limit).
-func (e *Extension) retryAllFailedNotifications(w http.ResponseWriter, r *http.Request) {
-	if e.notificationStore == nil || e.artifactNotifier == nil {
-		e.handleError(w, errNotImplemented("notification not configured"))
+func (h *adminHandlers) retryAllFailedNotifications(w http.ResponseWriter, r *http.Request) {
+	if h.notificationStore == nil || h.artifactNotifier == nil {
+		h.handleError(w, errNotImplemented("notification not configured"))
 		return
 	}
 
-	records, err := e.notificationStore.ListByStatus(r.Context(), notification.StatusFailed, 100)
+	records, err := h.notificationStore.ListByStatus(r.Context(), notification.StatusFailed, 100)
 	if err != nil {
-		e.handleError(w, errInternal("failed to list failed notifications"))
+		h.handleError(w, errInternal("failed to list failed notifications"))
 		return
 	}
 
@@ -164,7 +164,7 @@ func (e *Extension) retryAllFailedNotifications(w http.ResponseWriter, r *http.R
 	for _, record := range records {
 		record.Status = notification.StatusRetrying
 		record.AttemptCount++
-		_ = e.notificationStore.Update(r.Context(), record)
+		_ = h.notificationStore.Update(r.Context(), record)
 
 		n := &notification.ArtifactNotification{
 			TaskID:      record.TaskID,
@@ -174,7 +174,7 @@ func (e *Extension) retryAllFailedNotifications(w http.ResponseWriter, r *http.R
 			ArtifactRef: record.ArtifactRef,
 		}
 
-		result := e.artifactNotifier.Notify(r.Context(), n)
+		result := h.artifactNotifier.Notify(r.Context(), n)
 		if result.Success {
 			record.Status = notification.StatusSent
 			record.LastError = ""
@@ -185,10 +185,10 @@ func (e *Extension) retryAllFailedNotifications(w http.ResponseWriter, r *http.R
 			failed++
 		}
 
-		_ = e.notificationStore.Update(r.Context(), record)
+		_ = h.notificationStore.Update(r.Context(), record)
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"total":     len(records),
 		"succeeded": succeeded,
 		"failed":    failed,

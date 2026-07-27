@@ -28,8 +28,12 @@ func (e *Extension) newRouter() http.Handler {
 		r.Use(NewCORSMiddleware(e.config.CORS))
 	}
 
+	// Admin API handlers (apps/services/instances/tasks/instrumentation/
+	// notifications/artifact/arthas/retention) — dependency-injected, see admin_deps.go.
+	admin := newAdminHandlers(e)
+
 	// Health check (no auth required)
-	r.Get("/health", e.handleHealth)
+	r.Get("/health", admin.handleHealth)
 
 	// ============================================================================
 	// Internal proxy routes for distributed Arthas tunnel (no admin auth)
@@ -82,7 +86,7 @@ func (e *Extension) newRouter() http.Handler {
 	// External services call back without admin credentials, so this must be
 	// registered OUTSIDE the authMiddleware scope.
 	// ============================================================================
-	r.Post("/api/v2/callback/analysis", e.handleAnalysisCallback)
+	r.Post("/api/v2/callback/analysis", admin.handleAnalysisCallback)
 
 	// API v2 routes (admin API is v2-only)
 	r.Route("/api/v2", func(r chi.Router) {
@@ -94,106 +98,106 @@ func (e *Extension) newRouter() http.Handler {
 		// ============================================================================
 		// Auth - WebSocket Token (for secure WS connections)
 		// ============================================================================
-		r.Post("/auth/ws-token", e.generateWSToken)
+		r.Post("/auth/ws-token", admin.generateWSToken)
 
 		// ============================================================================
 		// App Management (App = AppGroup, 1:1 with Token)
 		// ============================================================================
 		r.Route("/apps", func(r chi.Router) {
-			r.Get("/", e.listApps)
-			r.Post("/", e.createApp)
+			r.Get("/", admin.listApps)
+			r.Post("/", admin.createApp)
 
 			r.Route("/{appID}", func(r chi.Router) {
-				r.Get("/", e.getApp)
-				r.Put("/", e.updateApp)
-				r.Delete("/", e.deleteApp)
-				r.Post("/token", e.regenerateAppToken)
-				r.Put("/token", e.setAppToken)
+				r.Get("/", admin.getApp)
+				r.Put("/", admin.updateApp)
+				r.Delete("/", admin.deleteApp)
+				r.Post("/token", admin.regenerateAppToken)
+				r.Put("/token", admin.setAppToken)
 
 				// Config management (Simplified: Service-level only)
 				r.Route("/config", func(r chi.Router) {
 					// Service level
-					r.Get("/services/{serviceName}", e.getAppServiceConfigV2)
-					r.Put("/services/{serviceName}", e.setAppServiceConfigV2)
-					r.Delete("/services/{serviceName}", e.deleteAppServiceConfigV2)
+					r.Get("/services/{serviceName}", admin.getAppServiceConfigV2)
+					r.Put("/services/{serviceName}", admin.setAppServiceConfigV2)
+					r.Delete("/services/{serviceName}", admin.deleteAppServiceConfigV2)
 				})
 
 				// Retention management (per-app data lifecycle policy)
-				r.Get("/retention", e.handleAppRetention)
-				r.Put("/retention/{signal}", e.handleSetAppRetention)
-				r.Delete("/retention/{signal}", e.handleDeleteAppRetention)
+				r.Get("/retention", admin.handleAppRetention)
+				r.Put("/retention/{signal}", admin.handleSetAppRetention)
+				r.Delete("/retention/{signal}", admin.handleDeleteAppRetention)
 
 				// Services under app
-				r.Get("/services", e.listAppServices)
-				r.Get("/services/{serviceName}", e.getService)
-				r.Put("/services/{serviceName}", e.updateServiceMetadata)
-				r.Delete("/services/{serviceName}", e.deleteService)
-				r.Get("/services/{serviceName}/instances", e.listServiceInstances)
+				r.Get("/services", admin.listAppServices)
+				r.Get("/services/{serviceName}", admin.getService)
+				r.Put("/services/{serviceName}", admin.updateServiceMetadata)
+				r.Delete("/services/{serviceName}", admin.deleteService)
+				r.Get("/services/{serviceName}/instances", admin.listServiceInstances)
 
 				// Instances under app
-				r.Get("/instances", e.listAppInstances)
-				r.Get("/instances/{instanceID}", e.getAppInstance)
-				r.Post("/instances/{instanceID}/kick", e.kickAppInstance)
+				r.Get("/instances", admin.listAppInstances)
+				r.Get("/instances/{instanceID}", admin.getAppInstance)
+				r.Post("/instances/{instanceID}/kick", admin.kickAppInstance)
 			})
 		})
 
 		// ============================================================================
 		// Global Service View
 		// ============================================================================
-		r.Get("/services", e.listAllServices)
+		r.Get("/services", admin.listAllServices)
 
 		// ============================================================================
 		// Global Instance View (for operations/dashboard)
 		// ============================================================================
-		r.Get("/instances", e.listAllInstances)
-		r.Get("/instances/stats", e.getInstanceStats)
-		r.Get("/instances/{instanceID}", e.getInstance)
-		r.Post("/instances/{instanceID}/kick", e.kickInstance)
+		r.Get("/instances", admin.listAllInstances)
+		r.Get("/instances/stats", admin.getInstanceStats)
+		r.Get("/instances/{instanceID}", admin.getInstance)
+		r.Post("/instances/{instanceID}/kick", admin.kickInstance)
 
 		// ============================================================================
 		// Task Management (global, cross-app) - model JSON
 		// ============================================================================
 		r.Route("/tasks", func(r chi.Router) {
-			r.Get("/", e.listTasksV2)
-			r.Post("/", e.createTaskV2)
-			r.Post("/batch", e.batchTaskActionV2)
-			r.Get("/{taskID}", e.getTaskV2)
-			r.Delete("/{taskID}", e.cancelTaskV2)
+			r.Get("/", admin.listTasksV2)
+			r.Post("/", admin.createTaskV2)
+			r.Post("/batch", admin.batchTaskActionV2)
+			r.Get("/{taskID}", admin.getTaskV2)
+			r.Delete("/{taskID}", admin.cancelTaskV2)
 
 			// Artifact download (profiling data, heap dumps, etc.)
-			r.Get("/{taskID}/artifact", e.handleGetTaskArtifact)
-			r.Get("/{taskID}/artifact/meta", e.handleGetTaskArtifactMeta)
+			r.Get("/{taskID}/artifact", admin.handleGetTaskArtifact)
+			r.Get("/{taskID}/artifact/meta", admin.handleGetTaskArtifactMeta)
 		})
 
 		// ============================================================================
 		// Dynamic Instrumentation Workbench
 		// ============================================================================
 		r.Route("/instrumentation", func(r chi.Router) {
-			r.Get("/rules", e.listInstrumentationRules)
-			r.Post("/rules", e.createInstrumentationRule)
-			r.Get("/rules/{ruleID}", e.getInstrumentationRule)
-			r.Put("/rules/{ruleID}", e.updateInstrumentationRule)
-			r.Post("/rules/{ruleID}/pause", e.pauseInstrumentationRule)
-			r.Post("/rules/{ruleID}/resume", e.resumeInstrumentationRule)
-			r.Delete("/rules/{ruleID}", e.deleteInstrumentationRule)
-			r.Get("/rules/{ruleID}/targets", e.listInstrumentationTargets)
-			r.Get("/rules/{ruleID}/runtime-snapshot", e.getInstrumentationRuntimeSnapshot)
-			r.Post("/rules/{ruleID}/runtime-snapshot/refresh", e.refreshInstrumentationRuntimeSnapshot)
+			r.Get("/rules", admin.listInstrumentationRules)
+			r.Post("/rules", admin.createInstrumentationRule)
+			r.Get("/rules/{ruleID}", admin.getInstrumentationRule)
+			r.Put("/rules/{ruleID}", admin.updateInstrumentationRule)
+			r.Post("/rules/{ruleID}/pause", admin.pauseInstrumentationRule)
+			r.Post("/rules/{ruleID}/resume", admin.resumeInstrumentationRule)
+			r.Delete("/rules/{ruleID}", admin.deleteInstrumentationRule)
+			r.Get("/rules/{ruleID}/targets", admin.listInstrumentationTargets)
+			r.Get("/rules/{ruleID}/runtime-snapshot", admin.getInstrumentationRuntimeSnapshot)
+			r.Post("/rules/{ruleID}/runtime-snapshot/refresh", admin.refreshInstrumentationRuntimeSnapshot)
 		})
 
 		// ============================================================================
 		// Dashboard
 		// ============================================================================
-		r.Get("/dashboard/overview", e.getDashboardOverview)
+		r.Get("/dashboard/overview", admin.getDashboardOverview)
 
 		// ============================================================================
 		// Notification Management (monitoring & retry)
 		// ============================================================================
 		r.Route("/notifications", func(r chi.Router) {
-			r.Get("/", e.listNotifications)
-			r.Post("/retry-all", e.retryAllFailedNotifications)
-			r.Get("/{id}", e.getNotification)
-			r.Post("/{id}/retry", e.retryNotification)
+			r.Get("/", admin.listNotifications)
+			r.Post("/retry-all", admin.retryAllFailedNotifications)
+			r.Get("/{id}", admin.getNotification)
+			r.Post("/{id}/retry", admin.retryNotification)
 		})
 
 		// ============================================================================
@@ -409,7 +413,7 @@ func (e *Extension) newRouter() http.Handler {
 		if e.arthasTunnel != nil {
 			r.Route("/arthas", func(r chi.Router) {
 				// WebSocket endpoint for browser terminal (uses WS token auth)
-				r.Get("/ws", e.handleArthasWebSocket)
+				r.Get("/ws", admin.handleArthasWebSocket)
 			})
 		}
 	})

@@ -87,13 +87,20 @@ func (e *Extension) writeError(w http.ResponseWriter, status int, message string
 	writeErrorResp(e.logger, w, status, message)
 }
 
+// handleErrorResp handles APIError or generic error and writes the appropriate
+// response. Shared single implementation used by *Extension.handleError and
+// *adminHandlers.handleError.
+func handleErrorResp(logger *zap.Logger, w http.ResponseWriter, err error) {
+	if apiErr, ok := err.(*APIError); ok {
+		writeErrorResp(logger, w, apiErr.Status, apiErr.Message)
+	} else {
+		writeErrorResp(logger, w, http.StatusInternalServerError, err.Error())
+	}
+}
+
 // handleError handles APIError or generic error and writes appropriate response.
 func (e *Extension) handleError(w http.ResponseWriter, err error) {
-	if apiErr, ok := err.(*APIError); ok {
-		e.writeError(w, apiErr.Status, apiErr.Message)
-	} else {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
-	}
+	handleErrorResp(e.logger, w, err)
 }
 
 // ============================================================================

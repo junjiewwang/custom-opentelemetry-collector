@@ -22,43 +22,43 @@ type retentionPolicyResponse struct {
 
 // handleAppRetention returns per-app retention + platform defaults.
 // GET /api/v2/apps/{appID}/retention
-func (e *Extension) handleAppRetention(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) handleAppRetention(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 	if appID == "" {
-		e.writeError(w, http.StatusBadRequest, "appID is required")
+		h.writeError(w, http.StatusBadRequest, "appID is required")
 		return
 	}
-	if e.retentionProvider == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "retention provider not available")
+	if h.retentionProvider == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "retention provider not available")
 		return
 	}
 
-	policy, err := e.retentionProvider.GetRetention(r.Context(), appID)
+	policy, err := h.retentionProvider.GetRetention(r.Context(), appID)
 	if err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	result := buildRetentionResponse(policy)
-	e.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 // handleSetAppRetention sets per-app retention for a signal.
 // PUT /api/v2/apps/{appID}/retention/{signal}
-func (e *Extension) handleSetAppRetention(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) handleSetAppRetention(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 	signalStr := chi.URLParam(r, "signal")
 	if appID == "" || signalStr == "" {
-		e.writeError(w, http.StatusBadRequest, "appID and signal are required")
+		h.writeError(w, http.StatusBadRequest, "appID and signal are required")
 		return
 	}
 	signal, ok := parseSignalType(signalStr)
 	if !ok {
-		e.writeError(w, http.StatusBadRequest, "signal must be trace, metric, or log")
+		h.writeError(w, http.StatusBadRequest, "signal must be trace, metric, or log")
 		return
 	}
-	if e.retentionProvider == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "retention provider not available")
+	if h.retentionProvider == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "retention provider not available")
 		return
 	}
 
@@ -66,48 +66,48 @@ func (e *Extension) handleSetAppRetention(w http.ResponseWriter, r *http.Request
 		Duration string `json:"duration"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		e.writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		h.writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 	dur, err := time.ParseDuration(req.Duration)
 	if err != nil {
-		e.writeError(w, http.StatusBadRequest, "invalid duration: "+err.Error())
+		h.writeError(w, http.StatusBadRequest, "invalid duration: "+err.Error())
 		return
 	}
 
-	if err := e.retentionProvider.SetRetention(r.Context(), appID, signal, dur); err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+	if err := h.retentionProvider.SetRetention(r.Context(), appID, signal, dur); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, successResponse("retention updated"))
+	h.writeJSON(w, http.StatusOK, successResponse("retention updated"))
 }
 
 // handleDeleteAppRetention removes per-app retention override.
 // DELETE /api/v2/apps/{appID}/retention/{signal}
-func (e *Extension) handleDeleteAppRetention(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) handleDeleteAppRetention(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 	signalStr := chi.URLParam(r, "signal")
 	if appID == "" || signalStr == "" {
-		e.writeError(w, http.StatusBadRequest, "appID and signal are required")
+		h.writeError(w, http.StatusBadRequest, "appID and signal are required")
 		return
 	}
 	signal, ok := parseSignalType(signalStr)
 	if !ok {
-		e.writeError(w, http.StatusBadRequest, "signal must be trace, metric, or log")
+		h.writeError(w, http.StatusBadRequest, "signal must be trace, metric, or log")
 		return
 	}
-	if e.retentionProvider == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "retention provider not available")
-		return
-	}
-
-	if err := e.retentionProvider.DeleteRetention(r.Context(), appID, signal); err != nil {
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+	if h.retentionProvider == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "retention provider not available")
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, successResponse("retention reset to platform default"))
+	if err := h.retentionProvider.DeleteRetention(r.Context(), appID, signal); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, successResponse("retention reset to platform default"))
 }
 
 // buildRetentionResponse converts a RetentionPolicy to the API response format.
@@ -158,7 +158,7 @@ func parseSignalType(s string) (appmanager.SignalType, bool) {
 
 // platformDefaultFor returns the platform-level default retention for a signal.
 // These values should be kept in sync with the platform config.
-// TODO: Make these configurable, e.g., from ConfigManager or via AppRetentionProvider.
+// TODO: Make these configurable, h.g., from ConfigManager or via AppRetentionProvider.
 func platformDefaultFor(signal appmanager.SignalType) time.Duration {
 	switch signal {
 	case appmanager.SignalTrace:

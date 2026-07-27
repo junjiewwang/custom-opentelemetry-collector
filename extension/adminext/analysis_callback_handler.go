@@ -20,7 +20,7 @@ import (
 // Matches perf-analysis callback format: {task_id, mode, status, view_url, error, summary, metadata}
 type analysisCallbackRequest struct {
 	TaskID   string `json:"task_id"`
-	Mode     string `json:"mode"`              // "{profiler}-{event}", e.g., "async-profiler-cpu"
+	Mode     string `json:"mode"`              // "{profiler}-{event}", h.g., "async-profiler-cpu"
 	Status   string `json:"status"`            // "completed", "failed", etc.
 	ViewURL  string `json:"view_url"`          // URL to view analysis results
 	ErrorMsg string `json:"error,omitempty"`
@@ -38,23 +38,23 @@ type analysisCallbackSummary struct {
 //
 // Called by perf-analysis when artifact analysis completes.
 // Merges analysis results into the TaskResult's ResultJSON field.
-func (e *Extension) handleAnalysisCallback(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) handleAnalysisCallback(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[analysisCallbackRequest](r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
 	if req.TaskID == "" {
-		e.handleError(w, errBadRequest("task_id is required"))
+		h.handleError(w, errBadRequest("task_id is required"))
 		return
 	}
 	if req.Status == "" {
-		e.handleError(w, errBadRequest("status is required"))
+		h.handleError(w, errBadRequest("status is required"))
 		return
 	}
 
-	e.logger.Info("Received analysis callback",
+	h.logger.Info("Received analysis callback",
 		zap.String("task_id", req.TaskID),
 		zap.String("mode", req.Mode),
 		zap.String("status", req.Status),
@@ -62,22 +62,22 @@ func (e *Extension) handleAnalysisCallback(w http.ResponseWriter, r *http.Reques
 	)
 
 	// Retrieve existing TaskResult
-	if e.taskMgr == nil {
-		e.handleError(w, errInternal("task manager not available"))
+	if h.taskMgr == nil {
+		h.handleError(w, errInternal("task manager not available"))
 		return
 	}
 
-	result, found, err := e.taskMgr.GetTaskResult(r.Context(), req.TaskID)
+	result, found, err := h.taskMgr.GetTaskResult(r.Context(), req.TaskID)
 	if err != nil {
-		e.logger.Error("Failed to get task result for analysis callback",
+		h.logger.Error("Failed to get task result for analysis callback",
 			zap.String("task_id", req.TaskID),
 			zap.Error(err),
 		)
-		e.handleError(w, errInternal("failed to get task result"))
+		h.handleError(w, errInternal("failed to get task result"))
 		return
 	}
 	if !found || result == nil {
-		e.handleError(w, errNotFound("task result not found: "+req.TaskID))
+		h.handleError(w, errNotFound("task result not found: "+req.TaskID))
 		return
 	}
 
@@ -109,33 +109,33 @@ func (e *Extension) handleAnalysisCallback(w http.ResponseWriter, r *http.Reques
 
 	merged, err := json.Marshal(resultMap)
 	if err != nil {
-		e.logger.Error("Failed to marshal merged result JSON",
+		h.logger.Error("Failed to marshal merged result JSON",
 			zap.String("task_id", req.TaskID),
 			zap.Error(err),
 		)
-		e.handleError(w, errInternal("failed to merge analysis result"))
+		h.handleError(w, errInternal("failed to merge analysis result"))
 		return
 	}
 
 	result.ResultJSON = merged
 
-	if err := e.taskMgr.ReportTaskResult(r.Context(), result); err != nil {
-		e.logger.Error("Failed to update task result with analysis data",
+	if err := h.taskMgr.ReportTaskResult(r.Context(), result); err != nil {
+		h.logger.Error("Failed to update task result with analysis data",
 			zap.String("task_id", req.TaskID),
 			zap.Error(err),
 		)
-		e.handleError(w, errInternal("failed to update task result"))
+		h.handleError(w, errInternal("failed to update task result"))
 		return
 	}
 
 	// Update notification record status if store is available
-	if e.notificationStore != nil {
-		record, err := e.notificationStore.GetByTaskID(r.Context(), req.TaskID)
+	if h.notificationStore != nil {
+		record, err := h.notificationStore.GetByTaskID(r.Context(), req.TaskID)
 		if err == nil && record != nil {
 			record.Status = notification.StatusCallbackReceived
 			record.LastError = ""
-			if err := e.notificationStore.Update(r.Context(), record); err != nil {
-				e.logger.Warn("Failed to update notification record on callback",
+			if err := h.notificationStore.Update(r.Context(), record); err != nil {
+				h.logger.Warn("Failed to update notification record on callback",
 					zap.String("task_id", req.TaskID),
 					zap.Error(err),
 				)
@@ -143,12 +143,12 @@ func (e *Extension) handleAnalysisCallback(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	e.logger.Info("Analysis callback processed successfully",
+	h.logger.Info("Analysis callback processed successfully",
 		zap.String("task_id", req.TaskID),
 		zap.String("status", req.Status),
 	)
 
-	e.writeJSON(w, http.StatusOK, successResponse("analysis callback processed", map[string]any{
+	h.writeJSON(w, http.StatusOK, successResponse("analysis callback processed", map[string]any{
 		"task_id": req.TaskID,
 	}))
 }

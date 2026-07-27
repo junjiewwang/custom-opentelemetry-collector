@@ -31,8 +31,8 @@ type instanceResponse struct {
 }
 
 // withTunnel enriches AgentInfo slice with tunnel connection status.
-func (e *Extension) withTunnel(instances []*agentregistry.AgentInfo) []instanceResponse {
-	tunnelIDs := e.getTunnelAgentIDs()
+func (h *adminHandlers) withTunnel(instances []*agentregistry.AgentInfo) []instanceResponse {
+	tunnelIDs := h.getTunnelAgentIDs()
 	result := make([]instanceResponse, len(instances))
 	for i, inst := range instances {
 		ir := instanceResponse{AgentInfo: inst}
@@ -50,18 +50,18 @@ func (e *Extension) withTunnel(instances []*agentregistry.AgentInfo) []instanceR
 // Health Check
 // ============================================================================
 
-func (e *Extension) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	e.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+func (h *adminHandlers) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ============================================================================
 // App Management
 // ============================================================================
 
-func (e *Extension) listApps(w http.ResponseWriter, r *http.Request) {
-	apps, err := e.tokenMgr.ListApps(r.Context())
+func (h *adminHandlers) listApps(w http.ResponseWriter, r *http.Request) {
+	apps, err := h.tokenMgr.ListApps(r.Context())
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
@@ -80,8 +80,8 @@ func (e *Extension) listApps(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]appWithStats, 0, len(apps))
 	for _, app := range apps {
-		instances, _ := e.agentReg.GetAgentsByToken(r.Context(), app.Token)
-		services, _ := e.agentReg.GetServicesByApp(r.Context(), app.ID)
+		instances, _ := h.agentReg.GetAgentsByToken(r.Context(), app.Token)
+		services, _ := h.agentReg.GetServicesByApp(r.Context(), app.ID)
 		result = append(result, appWithStats{
 			ID:           app.ID,
 			Name:         app.Name,
@@ -96,56 +96,56 @@ func (e *Extension) listApps(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	e.writeJSON(w, http.StatusOK, listResponse("apps", result, len(result)))
+	h.writeJSON(w, http.StatusOK, listResponse("apps", result, len(result)))
 }
 
-func (e *Extension) createApp(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) createApp(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[struct {
 		Name        string            `json:"name"`
 		Description string            `json:"description"`
 		Metadata    map[string]string `json:"metadata"`
 	}](r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
 	if req.Name == "" {
-		e.handleError(w, errBadRequest("name is required"))
+		h.handleError(w, errBadRequest("name is required"))
 		return
 	}
 
-	app, err := e.tokenMgr.CreateApp(r.Context(), &appmanager.CreateAppRequest{
+	app, err := h.tokenMgr.CreateApp(r.Context(), &appmanager.CreateAppRequest{
 		Name:        req.Name,
 		Description: req.Description,
 		Metadata:    req.Metadata,
 	})
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
-	e.logger.Info("App created via API", zap.String("id", app.ID), zap.String("name", app.Name))
-	e.writeJSON(w, http.StatusCreated, app)
+	h.logger.Info("App created via API", zap.String("id", app.ID), zap.String("name", app.Name))
+	h.writeJSON(w, http.StatusCreated, app)
 }
 
-func (e *Extension) getApp(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) getApp(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
-	app, err := e.tokenMgr.GetApp(r.Context(), appID)
+	app, err := h.tokenMgr.GetApp(r.Context(), appID)
 	if err != nil {
-		e.handleError(w, errNotFound(err.Error()))
+		h.handleError(w, errNotFound(err.Error()))
 		return
 	}
 
 	// Enrich with instance count
-	instances, _ := e.agentReg.GetAgentsByToken(r.Context(), app.Token)
+	instances, _ := h.agentReg.GetAgentsByToken(r.Context(), app.Token)
 	app.AgentCount = len(instances)
 
-	e.writeJSON(w, http.StatusOK, app)
+	h.writeJSON(w, http.StatusOK, app)
 }
 
-func (e *Extension) updateApp(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) updateApp(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
 	req, err := decodeJSON[struct {
@@ -155,102 +155,102 @@ func (e *Extension) updateApp(w http.ResponseWriter, r *http.Request) {
 		Status      string            `json:"status"`
 	}](r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
-	app, err := e.tokenMgr.UpdateApp(r.Context(), appID, &appmanager.UpdateAppRequest{
+	app, err := h.tokenMgr.UpdateApp(r.Context(), appID, &appmanager.UpdateAppRequest{
 		Name:        req.Name,
 		Description: req.Description,
 		Metadata:    req.Metadata,
 		Status:      req.Status,
 	})
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, app)
+	h.writeJSON(w, http.StatusOK, app)
 }
 
-func (e *Extension) deleteApp(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) deleteApp(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
-	if err := e.tokenMgr.DeleteApp(r.Context(), appID); err != nil {
-		e.handleError(w, err)
+	if err := h.tokenMgr.DeleteApp(r.Context(), appID); err != nil {
+		h.handleError(w, err)
 		return
 	}
 
-	e.logger.Info("App deleted via API", zap.String("id", appID))
-	e.writeJSON(w, http.StatusOK, map[string]string{"message": "app deleted"})
+	h.logger.Info("App deleted via API", zap.String("id", appID))
+	h.writeJSON(w, http.StatusOK, map[string]string{"message": "app deleted"})
 }
 
-func (e *Extension) regenerateAppToken(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) regenerateAppToken(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
-	app, err := e.tokenMgr.RegenerateToken(r.Context(), appID)
+	app, err := h.tokenMgr.RegenerateToken(r.Context(), appID)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
-	e.logger.Info("Token regenerated via API", zap.String("app_id", appID))
-	e.writeJSON(w, http.StatusOK, app)
+	h.logger.Info("Token regenerated via API", zap.String("app_id", appID))
+	h.writeJSON(w, http.StatusOK, app)
 }
 
-func (e *Extension) setAppToken(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) setAppToken(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
 	req, err := decodeJSON[appmanager.SetTokenRequest](r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
-	app, err := e.tokenMgr.SetToken(r.Context(), appID, req)
+	app, err := h.tokenMgr.SetToken(r.Context(), appID, req)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
-	e.logger.Info("Token set via API", zap.String("app_id", appID))
-	e.writeJSON(w, http.StatusOK, app)
+	h.logger.Info("Token set via API", zap.String("app_id", appID))
+	h.writeJSON(w, http.StatusOK, app)
 }
 
 // ============================================================================
 // Config Management (Simplified: Service-level only)
 // ============================================================================
 
-func (e *Extension) getAppWithOnDemandCheck(r *http.Request) (*appmanager.AppInfo, error) {
-	if e.onDemandConfigMgr == nil {
+func (h *adminHandlers) getAppWithOnDemandCheck(r *http.Request) (*appmanager.AppInfo, error) {
+	if h.onDemandConfigMgr == nil {
 		return nil, errNotImplemented("on-demand config manager not enabled")
 	}
 
 	appID := chi.URLParam(r, "appID")
-	app, err := e.tokenMgr.GetApp(r.Context(), appID)
+	app, err := h.tokenMgr.GetApp(r.Context(), appID)
 	if err != nil {
 		return nil, errNotFound("app not found: " + err.Error())
 	}
 	return app, nil
 }
 
-func (e *Extension) getAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
-	app, err := e.getAppWithOnDemandCheck(r)
+func (h *adminHandlers) getAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
+	app, err := h.getAppWithOnDemandCheck(r)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
 	serviceName := chi.URLParam(r, "serviceName")
 
-	cfg, err := e.onDemandConfigMgr.GetServiceConfig(r.Context(), app.ID, serviceName)
+	cfg, err := h.onDemandConfigMgr.GetServiceConfig(r.Context(), app.ID, serviceName)
 	if err != nil {
 		// "config not found" is a normal condition for first-time setup.
 		// Return a template + reference so the UI can guide users to publish one.
 		if errors.Is(err, configmanager.ErrConfigNotFound) {
 			cfg = nil
 		} else {
-			e.handleError(w, err)
+			h.handleError(w, err)
 			return
 		}
 	}
@@ -281,59 +281,59 @@ func (e *Extension) getAppServiceConfigV2(w http.ResponseWriter, r *http.Request
 		ExtensionConfigJSON: `{"example_key": "example_value"}`,
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"config":    cfg,
 		"reference": reference,
 	})
 }
 
-func (e *Extension) setAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
-	app, err := e.getAppWithOnDemandCheck(r)
+func (h *adminHandlers) setAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
+	app, err := h.getAppWithOnDemandCheck(r)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
 	serviceName := chi.URLParam(r, "serviceName")
 	cfg, err := decodeJSON[model.AgentConfig](r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
-	if err := e.onDemandConfigMgr.SetServiceConfig(r.Context(), app.ID, serviceName, cfg); err != nil {
-		e.handleError(w, err)
+	if err := h.onDemandConfigMgr.SetServiceConfig(r.Context(), app.ID, serviceName, cfg); err != nil {
+		h.handleError(w, err)
 		return
 	}
-	e.writeJSON(w, http.StatusOK, successResponse("config updated", map[string]any{"service_name": serviceName}))
+	h.writeJSON(w, http.StatusOK, successResponse("config updated", map[string]any{"service_name": serviceName}))
 }
 
-func (e *Extension) deleteAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
-	app, err := e.getAppWithOnDemandCheck(r)
+func (h *adminHandlers) deleteAppServiceConfigV2(w http.ResponseWriter, r *http.Request) {
+	app, err := h.getAppWithOnDemandCheck(r)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
 	serviceName := chi.URLParam(r, "serviceName")
 
-	if err := e.onDemandConfigMgr.DeleteServiceConfig(r.Context(), app.ID, serviceName); err != nil {
-		e.handleError(w, err)
+	if err := h.onDemandConfigMgr.DeleteServiceConfig(r.Context(), app.ID, serviceName); err != nil {
+		h.handleError(w, err)
 		return
 	}
-	e.writeJSON(w, http.StatusOK, map[string]string{"message": "config deleted"})
+	h.writeJSON(w, http.StatusOK, map[string]string{"message": "config deleted"})
 }
 
 // ============================================================================
 // App Services & Instances
 // ============================================================================
 
-func (e *Extension) listAppServices(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) listAppServices(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
 	// Validate app exists
-	if _, err := e.tokenMgr.GetApp(r.Context(), appID); err != nil {
-		e.handleError(w, errNotFound("app not found: "+err.Error()))
+	if _, err := h.tokenMgr.GetApp(r.Context(), appID); err != nil {
+		h.handleError(w, errNotFound("app not found: "+err.Error()))
 		return
 	}
 
@@ -342,84 +342,84 @@ func (e *Extension) listAppServices(w http.ResponseWriter, r *http.Request) {
 		NamePattern:    r.URL.Query().Get("name"),
 		IncludeRuntime: true,
 	}
-	services, err := e.serviceMgr.ListServicesByApp(r.Context(), appID, query)
+	services, err := h.serviceMgr.ListServicesByApp(r.Context(), appID, query)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
 	// Enrich with runtime stats from AgentRegistry
-	e.enrichServicesRuntime(r, services)
+	h.enrichServicesRuntime(r, services)
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"app_id":   appID,
 		"services": services,
 		"total":    len(services),
 	})
 }
 
-func (e *Extension) getService(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) getService(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 	serviceName := chi.URLParam(r, "serviceName")
 
-	svc, err := e.serviceMgr.GetService(r.Context(), appID, serviceName)
+	svc, err := h.serviceMgr.GetService(r.Context(), appID, serviceName)
 	if err != nil {
-		e.handleError(w, errNotFound("service not found: "+err.Error()))
+		h.handleError(w, errNotFound("service not found: "+err.Error()))
 		return
 	}
 
 	// Enrich with runtime stats
-	e.enrichServicesRuntime(r, []*servicemanager.ServiceInfo{svc})
+	h.enrichServicesRuntime(r, []*servicemanager.ServiceInfo{svc})
 
-	e.writeJSON(w, http.StatusOK, svc)
+	h.writeJSON(w, http.StatusOK, svc)
 }
 
-func (e *Extension) updateServiceMetadata(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) updateServiceMetadata(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 	serviceName := chi.URLParam(r, "serviceName")
 
 	req, err := decodeJSON[servicemanager.UpdateServiceRequest](r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
-	svc, err := e.serviceMgr.UpdateServiceMetadata(r.Context(), appID, serviceName, req)
+	svc, err := h.serviceMgr.UpdateServiceMetadata(r.Context(), appID, serviceName, req)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, svc)
+	h.writeJSON(w, http.StatusOK, svc)
 }
 
-func (e *Extension) deleteService(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) deleteService(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 	serviceName := chi.URLParam(r, "serviceName")
 
 	// Precondition: instance_count == 0
-	instances, err := e.agentReg.GetInstancesByService(r.Context(), appID, serviceName)
+	instances, err := h.agentReg.GetInstancesByService(r.Context(), appID, serviceName)
 	if err != nil {
-		e.handleError(w, errInternal("failed to check instance count: "+err.Error()))
+		h.handleError(w, errInternal("failed to check instance count: "+err.Error()))
 		return
 	}
 	if len(instances) > 0 {
-		e.handleError(w, errConflict(
+		h.handleError(w, errConflict(
 			fmt.Sprintf("cannot delete service with %d active instance(s); remove all instances first", len(instances)),
 		))
 		return
 	}
 
-	if err := e.serviceMgr.DeleteService(r.Context(), appID, serviceName); err != nil {
-		e.handleError(w, err)
+	if err := h.serviceMgr.DeleteService(r.Context(), appID, serviceName); err != nil {
+		h.handleError(w, err)
 		return
 	}
 
-	e.logger.Info("Service deleted via API",
+	h.logger.Info("Service deleted via API",
 		zap.String("app_id", appID),
 		zap.String("service_name", serviceName),
 	)
-	e.writeJSON(w, http.StatusOK, successResponse("service deleted", map[string]any{
+	h.writeJSON(w, http.StatusOK, successResponse("service deleted", map[string]any{
 		"app_id":       appID,
 		"service_name": serviceName,
 	}))
@@ -427,9 +427,9 @@ func (e *Extension) deleteService(w http.ResponseWriter, r *http.Request) {
 
 // enrichServicesRuntime populates runtime aggregated fields (InstanceCount, OnlineCount)
 // on the given ServiceInfo slice by querying AgentRegistry.
-func (e *Extension) enrichServicesRuntime(r *http.Request, services []*servicemanager.ServiceInfo) {
+func (h *adminHandlers) enrichServicesRuntime(r *http.Request, services []*servicemanager.ServiceInfo) {
 	for _, svc := range services {
-		instances, err := e.agentReg.GetInstancesByService(r.Context(), svc.AppID, svc.ServiceName)
+		instances, err := h.agentReg.GetInstancesByService(r.Context(), svc.AppID, svc.ServiceName)
 		if err != nil {
 			continue
 		}
@@ -444,23 +444,23 @@ func (e *Extension) enrichServicesRuntime(r *http.Request, services []*servicema
 	}
 }
 
-func (e *Extension) listServiceInstances(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) listServiceInstances(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 	serviceName := chi.URLParam(r, "serviceName")
 
-	app, err := e.tokenMgr.GetApp(r.Context(), appID)
+	app, err := h.tokenMgr.GetApp(r.Context(), appID)
 	if err != nil {
-		e.handleError(w, errNotFound("app not found: "+err.Error()))
+		h.handleError(w, errNotFound("app not found: "+err.Error()))
 		return
 	}
 
-	instances, err := e.agentReg.GetInstancesByService(r.Context(), app.ID, serviceName)
+	instances, err := h.agentReg.GetInstancesByService(r.Context(), app.ID, serviceName)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"app_id":       appID,
 		"service_name": serviceName,
 		"instances":    instances,
@@ -468,73 +468,73 @@ func (e *Extension) listServiceInstances(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (e *Extension) listAppInstances(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) listAppInstances(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appID")
 
-	app, err := e.tokenMgr.GetApp(r.Context(), appID)
+	app, err := h.tokenMgr.GetApp(r.Context(), appID)
 	if err != nil {
-		e.handleError(w, errNotFound("app not found: "+err.Error()))
+		h.handleError(w, errNotFound("app not found: "+err.Error()))
 		return
 	}
 
-	instances, err := e.agentReg.GetAgentsByToken(r.Context(), app.Token)
+	instances, err := h.agentReg.GetAgentsByToken(r.Context(), app.Token)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"app_id":    appID,
-		"instances": e.withTunnel(instances),
+		"instances": h.withTunnel(instances),
 		"total":     len(instances),
 	})
 }
 
-func (e *Extension) getAppInstance(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) getAppInstance(w http.ResponseWriter, r *http.Request) {
 	instanceID := chi.URLParam(r, "instanceID")
 
-	instance, err := e.agentReg.GetAgent(r.Context(), instanceID)
+	instance, err := h.agentReg.GetAgent(r.Context(), instanceID)
 	if err != nil {
-		e.handleError(w, errNotFound(err.Error()))
+		h.handleError(w, errNotFound(err.Error()))
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, instance)
+	h.writeJSON(w, http.StatusOK, instance)
 }
 
-func (e *Extension) kickAppInstance(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) kickAppInstance(w http.ResponseWriter, r *http.Request) {
 	instanceID := chi.URLParam(r, "instanceID")
 
-	if err := e.agentReg.Unregister(r.Context(), instanceID); err != nil {
-		e.handleError(w, err)
+	if err := h.agentReg.Unregister(r.Context(), instanceID); err != nil {
+		h.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, successResponse("instance kicked", map[string]any{"instance_id": instanceID}))
+	h.writeJSON(w, http.StatusOK, successResponse("instance kicked", map[string]any{"instance_id": instanceID}))
 }
 
 // ============================================================================
 // Global Service View
 // ============================================================================
 
-func (e *Extension) listAllServices(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) listAllServices(w http.ResponseWriter, r *http.Request) {
 	query := servicemanager.ListServicesQuery{
 		NamePattern:    r.URL.Query().Get("name"),
 		IncludeRuntime: true,
 	}
 
-	services, err := e.serviceMgr.ListAllServices(r.Context(), query)
+	services, err := h.serviceMgr.ListAllServices(r.Context(), query)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
 	// Enrich with runtime stats from AgentRegistry
-	e.enrichServicesRuntime(r, services)
+	h.enrichServicesRuntime(r, services)
 
 	// Build appID→appName map for display enrichment
 	appNameMap := make(map[string]string)
-	if apps, err := e.tokenMgr.ListApps(r.Context()); err == nil {
+	if apps, err := h.tokenMgr.ListApps(r.Context()); err == nil {
 		for _, app := range apps {
 			appNameMap[app.ID] = app.Name
 		}
@@ -554,14 +554,14 @@ func (e *Extension) listAllServices(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	e.writeJSON(w, http.StatusOK, listResponse("services", result, len(result)))
+	h.writeJSON(w, http.StatusOK, listResponse("services", result, len(result)))
 }
 
 // ============================================================================
 // Global Instance View
 // ============================================================================
 
-func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) listAllInstances(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	appID := r.URL.Query().Get("app_id")
 	serviceName := r.URL.Query().Get("service_name")
@@ -571,7 +571,7 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 	// Parse and validate sort parameters (whitelist validation)
 	sortOpts, err := agentregistry.ParseSortOptions(sortBy, sortOrder)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
@@ -579,43 +579,43 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 
 	if appID != "" && serviceName != "" {
 		// Filter by specific app + service (most specific)
-		app, err := e.tokenMgr.GetApp(r.Context(), appID)
+		app, err := h.tokenMgr.GetApp(r.Context(), appID)
 		if err != nil {
-			e.handleError(w, errNotFound("app not found: "+err.Error()))
+			h.handleError(w, errNotFound("app not found: "+err.Error()))
 			return
 		}
-		instances, err = e.agentReg.GetInstancesByService(r.Context(), app.ID, serviceName)
+		instances, err = h.agentReg.GetInstancesByService(r.Context(), app.ID, serviceName)
 		if err != nil {
-			e.handleError(w, err)
+			h.handleError(w, err)
 			return
 		}
 	} else if appID != "" {
 		// Filter by specific app
-		app, err := e.tokenMgr.GetApp(r.Context(), appID)
+		app, err := h.tokenMgr.GetApp(r.Context(), appID)
 		if err != nil {
-			e.handleError(w, errNotFound("app not found: "+err.Error()))
+			h.handleError(w, errNotFound("app not found: "+err.Error()))
 			return
 		}
-		instances, err = e.agentReg.GetAgentsByToken(r.Context(), app.Token)
+		instances, err = h.agentReg.GetAgentsByToken(r.Context(), app.Token)
 		if err != nil {
-			e.handleError(w, err)
+			h.handleError(w, err)
 			return
 		}
 	} else {
 		// Fetch base set based on status parameter
 		switch status {
 		case "all":
-			instances, err = e.agentReg.GetAllAgents(r.Context())
+			instances, err = h.agentReg.GetAllAgents(r.Context())
 		case "online", "":
-			instances, err = e.agentReg.GetOnlineAgents(r.Context())
+			instances, err = h.agentReg.GetOnlineAgents(r.Context())
 		case "offline":
-			instances, err = e.agentReg.GetAllAgents(r.Context())
+			instances, err = h.agentReg.GetAllAgents(r.Context())
 		default:
-			e.handleError(w, errBadRequest("invalid status filter: "+status+", valid values: all, online, offline"))
+			h.handleError(w, errBadRequest("invalid status filter: "+status+", valid values: all, online, offline"))
 			return
 		}
 		if err != nil {
-			e.handleError(w, err)
+			h.handleError(w, err)
 			return
 		}
 	}
@@ -638,40 +638,40 @@ func (e *Extension) listAllInstances(w http.ResponseWriter, r *http.Request) {
 	// Sort instances after filtering
 	agentregistry.SortAgents(instances, sortOpts)
 
-	e.writeJSON(w, http.StatusOK, listResponse("instances", e.withTunnel(instances), len(instances)))
+	h.writeJSON(w, http.StatusOK, listResponse("instances", h.withTunnel(instances), len(instances)))
 }
 
-func (e *Extension) getInstanceStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := e.agentReg.GetAgentStats(r.Context())
+func (h *adminHandlers) getInstanceStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.agentReg.GetAgentStats(r.Context())
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, stats)
+	h.writeJSON(w, http.StatusOK, stats)
 }
 
-func (e *Extension) getInstance(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) getInstance(w http.ResponseWriter, r *http.Request) {
 	instanceID := chi.URLParam(r, "instanceID")
 
-	instance, err := e.agentReg.GetAgent(r.Context(), instanceID)
+	instance, err := h.agentReg.GetAgent(r.Context(), instanceID)
 	if err != nil {
-		e.handleError(w, errNotFound(err.Error()))
+		h.handleError(w, errNotFound(err.Error()))
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, instance)
+	h.writeJSON(w, http.StatusOK, instance)
 }
 
-func (e *Extension) kickInstance(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) kickInstance(w http.ResponseWriter, r *http.Request) {
 	instanceID := chi.URLParam(r, "instanceID")
 
-	if err := e.agentReg.Unregister(r.Context(), instanceID); err != nil {
-		e.handleError(w, err)
+	if err := h.agentReg.Unregister(r.Context(), instanceID); err != nil {
+		h.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, successResponse("instance kicked", map[string]any{"instance_id": instanceID}))
+	h.writeJSON(w, http.StatusOK, successResponse("instance kicked", map[string]any{"instance_id": instanceID}))
 }
 
 // ============================================================================
@@ -707,22 +707,22 @@ func toTaskInfoV2(info *taskmanager.TaskInfo) *taskInfoV2 {
 	}
 }
 
-func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) listTasksV2(w http.ResponseWriter, r *http.Request) {
 	query, err := parseListTasksQuery(r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
-	page, err := e.taskMgr.ListTasks(r.Context(), query)
+	page, err := h.taskMgr.ListTasks(r.Context(), query)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 
 	// Build appID→appName map for display enrichment
 	appNameMap := make(map[string]string)
-	if apps, err := e.tokenMgr.ListApps(r.Context()); err == nil {
+	if apps, err := h.tokenMgr.ListApps(r.Context()); err == nil {
 		for _, app := range apps {
 			appNameMap[app.ID] = app.Name
 		}
@@ -746,7 +746,7 @@ func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
 			if agentID == "" || agentMetaMap[agentID] != (agentMeta{}) {
 				continue
 			}
-			if agent, err := e.agentReg.GetAgent(r.Context(), agentID); err == nil && agent != nil {
+			if agent, err := h.agentReg.GetAgent(r.Context(), agentID); err == nil && agent != nil {
 				state := ""
 				if agent.Status != nil {
 					state = string(agent.Status.State)
@@ -760,7 +760,7 @@ func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// No filter: load all agents (original behavior)
-		if agents, err := e.agentReg.GetAllAgents(r.Context()); err == nil {
+		if agents, err := h.agentReg.GetAllAgents(r.Context()); err == nil {
 			for _, agent := range agents {
 				state := ""
 				if agent.Status != nil {
@@ -803,7 +803,7 @@ func (e *Extension) listTasksV2(w http.ResponseWriter, r *http.Request) {
 		out = append(out, info)
 	}
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"tasks":       out,
 		"total":       len(out),
 		"next_cursor": page.NextCursor,
@@ -874,14 +874,14 @@ func parseTaskStatus(raw string) (model.TaskStatus, bool, error) {
 	}
 }
 
-func (e *Extension) createTaskV2(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) createTaskV2(w http.ResponseWriter, r *http.Request) {
 	task, err := decodeJSON[model.Task](r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 	if task.TypeName == "" {
-		e.handleError(w, errBadRequest("task_type_name is required"))
+		h.handleError(w, errBadRequest("task_type_name is required"))
 		return
 	}
 	if task.ID == "" {
@@ -891,25 +891,25 @@ func (e *Extension) createTaskV2(w http.ResponseWriter, r *http.Request) {
 	if len(task.ParametersJSON) > 0 {
 		var m map[string]any
 		if err := json.Unmarshal(task.ParametersJSON, &m); err != nil {
-			e.handleError(w, errBadRequest("parameters_json must be a JSON object"))
+			h.handleError(w, errBadRequest("parameters_json must be a JSON object"))
 			return
 		}
 		if m == nil {
-			e.handleError(w, errBadRequest("parameters_json must be a JSON object"))
+			h.handleError(w, errBadRequest("parameters_json must be a JSON object"))
 			return
 		}
 	}
 
 	if task.TargetAgentID != "" {
-		agent, err := e.agentReg.GetAgent(r.Context(), task.TargetAgentID)
+		agent, err := h.agentReg.GetAgent(r.Context(), task.TargetAgentID)
 		if err != nil || agent == nil {
-			e.handleError(w, errNotFound("agent not found: "+task.TargetAgentID))
+			h.handleError(w, errNotFound("agent not found: "+task.TargetAgentID))
 			return
 		}
 
 		// Reject task submission if agent is not online
 		if agent.Status == nil || agent.Status.State != agentregistry.AgentStateOnline {
-			e.handleError(w, errBadRequest("agent is not online, cannot submit task"))
+			h.handleError(w, errBadRequest("agent is not online, cannot submit task"))
 			return
 		}
 
@@ -919,72 +919,72 @@ func (e *Extension) createTaskV2(w http.ResponseWriter, r *http.Request) {
 			ServiceName: agent.ServiceName,
 		}
 
-		if err := e.taskMgr.SubmitTaskForAgent(r.Context(), agentMeta, task); err != nil {
-			e.handleError(w, err)
+		if err := h.taskMgr.SubmitTaskForAgent(r.Context(), agentMeta, task); err != nil {
+			h.handleError(w, err)
 			return
 		}
 	} else {
-		if err := e.taskMgr.SubmitTask(r.Context(), task); err != nil {
-			e.handleError(w, err)
+		if err := h.taskMgr.SubmitTask(r.Context(), task); err != nil {
+			h.handleError(w, err)
 			return
 		}
 	}
 
-	e.writeJSON(w, http.StatusOK, successResponse("task submitted", map[string]any{"task_id": task.ID}))
+	h.writeJSON(w, http.StatusOK, successResponse("task submitted", map[string]any{"task_id": task.ID}))
 }
 
-func (e *Extension) getTaskV2(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) getTaskV2(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 
-	info, err := e.taskMgr.GetTaskStatus(r.Context(), taskID)
+	info, err := h.taskMgr.GetTaskStatus(r.Context(), taskID)
 	if err == nil && info != nil {
 		// Always fetch the latest result from the result store.
-		// Callbacks (e.g., analysis_callback) may update the result independently
+		// Callbacks (h.g., analysis_callback) may update the result independently
 		// after the task has reached a terminal state, so info.Result can be stale.
-		result, found, err := e.taskMgr.GetTaskResult(r.Context(), taskID)
+		result, found, err := h.taskMgr.GetTaskResult(r.Context(), taskID)
 		if err != nil {
-			e.handleError(w, err)
+			h.handleError(w, err)
 			return
 		}
 		if found {
 			info.Result = result
 		}
 
-		e.writeJSON(w, http.StatusOK, toTaskInfoV2(info))
+		h.writeJSON(w, http.StatusOK, toTaskInfoV2(info))
 		return
 	}
 
-	result, found, err := e.taskMgr.GetTaskResult(r.Context(), taskID)
+	result, found, err := h.taskMgr.GetTaskResult(r.Context(), taskID)
 	if err != nil {
-		e.handleError(w, err)
+		h.handleError(w, err)
 		return
 	}
 	if found {
-		e.writeJSON(w, http.StatusOK, result)
+		h.writeJSON(w, http.StatusOK, result)
 		return
 	}
 
-	e.handleError(w, errNotFound("task not found"))
+	h.handleError(w, errNotFound("task not found"))
 }
 
-func (e *Extension) cancelTaskV2(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) cancelTaskV2(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 
-	if err := e.taskMgr.CancelTask(r.Context(), taskID); err != nil {
-		e.handleError(w, err)
+	if err := h.taskMgr.CancelTask(r.Context(), taskID); err != nil {
+		h.handleError(w, err)
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, successResponse("task cancelled", map[string]any{"task_id": taskID}))
+	h.writeJSON(w, http.StatusOK, successResponse("task cancelled", map[string]any{"task_id": taskID}))
 }
 
-func (e *Extension) batchTaskActionV2(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) batchTaskActionV2(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[struct {
 		Action  string   `json:"action"`
 		TaskIDs []string `json:"task_ids"`
 	}](r)
 	if err != nil {
-		e.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, errBadRequest(err.Error()))
 		return
 	}
 
@@ -992,19 +992,19 @@ func (e *Extension) batchTaskActionV2(w http.ResponseWriter, r *http.Request) {
 	case "cancel":
 		var cancelled, failed []string
 		for _, taskID := range req.TaskIDs {
-			if err := e.taskMgr.CancelTask(r.Context(), taskID); err != nil {
+			if err := h.taskMgr.CancelTask(r.Context(), taskID); err != nil {
 				failed = append(failed, taskID)
 			} else {
 				cancelled = append(cancelled, taskID)
 			}
 		}
-		e.writeJSON(w, http.StatusOK, map[string]any{
+		h.writeJSON(w, http.StatusOK, map[string]any{
 			"success":   len(failed) == 0,
 			"cancelled": cancelled,
 			"failed":    failed,
 		})
 	default:
-		e.handleError(w, errBadRequest("invalid action: "+req.Action))
+		h.handleError(w, errBadRequest("invalid action: "+req.Action))
 	}
 }
 
@@ -1012,21 +1012,21 @@ func (e *Extension) batchTaskActionV2(w http.ResponseWriter, r *http.Request) {
 // Dashboard
 // ============================================================================
 
-func (e *Extension) getDashboardOverview(w http.ResponseWriter, r *http.Request) {
+func (h *adminHandlers) getDashboardOverview(w http.ResponseWriter, r *http.Request) {
 	// Get cached instance stats (CachingRegistry, 5s TTL, O(1) with cache hit)
-	instanceStats, err := e.agentReg.GetAgentStats(r.Context())
+	instanceStats, err := h.agentReg.GetAgentStats(r.Context())
 	if err != nil {
 		instanceStats = &agentregistry.AgentStats{}
 	}
 
 	// Get app count (single Redis HGetAll, efficient)
-	apps, _ := e.tokenMgr.ListApps(r.Context())
+	apps, _ := h.tokenMgr.ListApps(r.Context())
 
 	// pending/running task counts are omitted here; the /tasks page provides
 	// full task visibility. These queries (GetGlobalPendingTasks via ListTasks)
 	// require O(n) Redis SCAN+GET and hurt dashboard performance.
 
-	e.writeJSON(w, http.StatusOK, map[string]any{
+	h.writeJSON(w, http.StatusOK, map[string]any{
 		"apps": map[string]any{
 			"total": len(apps),
 		},
