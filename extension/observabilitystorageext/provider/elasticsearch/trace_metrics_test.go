@@ -271,10 +271,11 @@ func TestMetricsAggField_StatusMessage(t *testing.T) {
 func TestMetricsAggField_StatusCode(t *testing.T) {
 	resolver := &AttributeResolver{}
 
-	// by(status) → status.code.keyword (for terms agg on text field).
+	// by(status) → status.code (keyword field, aggregatable as-is; no .keyword
+	// sub-field exists, so appending .keyword would silently return empty buckets).
 	field := metricsAggField(resolver, "status")
-	assert.Equal(t, FieldStatus+".code.keyword", field,
-		"status should aggregate on status.code.keyword")
+	assert.Equal(t, FieldStatus+".code", field,
+		"status should aggregate on the bare status.code keyword field")
 }
 
 func TestMetricsAggField_StatusMessageWithDot(t *testing.T) {

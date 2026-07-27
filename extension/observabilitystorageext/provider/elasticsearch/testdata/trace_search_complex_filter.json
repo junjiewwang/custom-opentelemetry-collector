@@ -34,8 +34,11 @@
         }
       },
       {
-        "term": {
-          "status.code": "error"
+        "terms": {
+          "status.code": [
+            "Error",
+            "error"
+          ]
         }
       },
       {

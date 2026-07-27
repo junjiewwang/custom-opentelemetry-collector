@@ -89,9 +89,9 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 		must = append(must, map[string]any{"term": map[string]any{FieldKind: capitalizeFirst(query.SpanKind)}})
 	}
 	if query.Status != "" {
-		// ES stores status.code values as-is (lowercase from OTel enum String()).
-		// No capitalizeFirst needed — verified with ES: 277K lowercase "error" docs.
-		must = append(must, map[string]any{"term": map[string]any{FieldStatus + ".code": query.Status}})
+		// status.code is text (legacy) in some indices and keyword (current) in
+		// others — match both casings. See statusTermsClause.
+		must = append(must, statusTermsClause(query.Status))
 	}
 	if query.IsRoot {
 		// Root span: parentSpanId field is absent (omitempty) for new data,
@@ -255,8 +255,8 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 // is used.
 //
 // This covers all cases uniformly:
-//   - intrinsic keyword: kind, name, spanId → no suffix
-//   - intrinsic text: status.code, status.message → gets .keyword
+//   - intrinsic keyword: kind, name, spanId, status.code → no suffix
+//   - intrinsic text: status.message → gets .keyword
 //   - resource keyword: resource.host.name → no suffix
 //   - resource text: resource.app_id, resource.service.instance.id → gets .keyword
 //   - custom attributes: attributes.http.method, attributes.db.system → gets .keyword

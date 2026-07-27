@@ -39,6 +39,10 @@ var aggregatableFields = map[string]map[string]bool{
 		FieldKind: true, FieldName: true, FieldSpanID: true, FieldTraceID: true,
 		FieldParentSpanID: true, FieldServiceName: true,
 		FieldStartTimeUnixNano: true, FieldEndTimeUnixNano: true, FieldDurationNano: true,
+		// status.code is mapped as keyword (not text) in the trace template, so it
+		// is aggregatable as-is — adding .keyword would target a nonexistent
+		// sub-field and silently return empty buckets.
+		FieldStatus + ".code": true,
 
 		// Dynamic numeric/bool attributes — typed by ES at runtime (no .keyword
 		// sub-field exists, so .keyword must NOT be added).

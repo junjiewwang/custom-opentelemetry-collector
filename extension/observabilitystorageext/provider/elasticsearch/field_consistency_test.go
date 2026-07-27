@@ -281,6 +281,7 @@ func TestAggregatableFields_MatchTemplates(t *testing.T) {
 			verifiable: []string{
 				FieldKind, FieldName, FieldSpanID, FieldTraceID, FieldParentSpanID,
 				FieldServiceName, FieldStartTimeUnixNano, FieldEndTimeUnixNano, FieldDurationNano,
+				FieldStatus + ".code",
 				FieldResource + ".service.name",
 				FieldResource + ".host.name",
 				FieldResource + ".service.namespace",

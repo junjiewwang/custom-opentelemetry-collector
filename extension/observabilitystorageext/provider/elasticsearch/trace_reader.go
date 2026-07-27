@@ -499,11 +499,10 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 		qb.Term(FieldKind, capitalizeFirst(tq.SpanKind))
 	}
 	if tq.Status != "" {
-		// ES stores status.code values as-is from OTel enum String():
-		// STATUS_CODE_ERROR -> "STATUS_CODE_ERROR", STATUS_CODE_OK -> "STATUS_CODE_OK".
-		// But actual data in ES is lowercase due to historical write behavior.
-		// Use ToUpper for API consistency while matching ES data.
-		qb.Term(FieldStatus+".code", tq.Status)
+		// status.code is text (legacy indices, analyzed to lowercase) in some
+		// indices and keyword (current template, stored capitalized) in others.
+		// Match both casings via a terms clause — see statusTermsClause.
+		qb.Raw(statusTermsClause(tq.Status))
 	}
 	if tq.IsRoot {
 		// Root span: parentSpanId field is absent (omitempty) for new data,
@@ -716,6 +715,22 @@ func capitalizeFirst(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+// statusTermsClause builds a terms query for status.code that matches BOTH the
+// legacy text mapping and the current keyword mapping.
+//
+// The trace index template changed status.code from text (with a .keyword
+// sub-field) to plain keyword. Old indices analyze the stored "Error" value
+// down to the lowercase token "error"; new (keyword) indices store the
+// capitalized short form "Error" exactly. A single-casing term therefore
+// matches only one mapping and silently misses the other. Matching both the
+// canonical (capitalized) form and its lowercase covers indices of either age
+// during the transition. canon is derived via the shared metric-label
+// normalizer so any TraceQL input (error, ERROR, STATUS_CODE_ERROR, 2) works.
+func statusTermsClause(value string) map[string]any {
+	canon := normalizeStatusCodeForStorage(value) // "Error" / "Ok" / "Unset"
+	return esq.TermsQ(FieldStatus+".code", []string{canon, strings.ToLower(canon)})
+}
+
 // ═══════════════════════════════════════════════════
 // Attribute-Resolved Tag Helpers
 // ═══════════════════════════════════════════════════
@@ -738,6 +753,11 @@ var attrResolver = &AttributeResolver{}
 // does have a .keyword sub-field, but status-message filters want tokenized
 // substring matching, so "match" is the deliberate choice.)
 func resolveTagTermClauses(key, value string) []map[string]any {
+	// status.code spans both text (legacy) and keyword (current) mappings —
+	// match both casings via a terms clause instead of a single-casing term.
+	if attrResolver.Resolve(key).ESField == FieldStatus+".code" {
+		return []map[string]any{statusTermsClause(value)}
+	}
 	fields, val := resolveTagESFields(key, value)
 	clauses := make([]map[string]any, 0, len(fields))
 	for _, f := range fields {
@@ -777,12 +797,12 @@ func resolveTagESFields(key, value string) (fields []string, val string) {
 	esField := resolved.ESField
 
 	// Transform value for fields stored with capitalized first letter.
+	// (status.code is handled upstream in resolveTagTermClauses via
+	// statusTermsClause — it matches both legacy text and keyword mappings.)
 	val = value
 	switch esField {
 	case FieldKind:
 		val = capitalizeFirst(value)
-	case FieldStatus + ".code":
-		val = value // ES stores lowercase; no transform needed
 	}
 
 	// Scoped keys: use precise resolver mapping.

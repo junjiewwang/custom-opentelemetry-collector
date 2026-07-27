@@ -18,16 +18,16 @@ func TestMetricsAggField_AllIntrinsics(t *testing.T) {
 		note  string
 	}{
 		// ── Text fields → must have .keyword suffix ──
-		{label: "status", want: "status.code.keyword",
-			note: "status resolves to status.code (text) → needs .keyword"},
-		{label: "statusCode", want: "status.code.keyword",
-			note: "Grafana Tempo canonical form"},
 		{label: "status.message", want: "status.message.keyword",
 			note: "explicit dotted form"},
 		{label: "statusMessage", want: "status.message.keyword",
 			note: "Grafana Tempo canonical form"},
 
 		// ── Keyword fields → no .keyword suffix needed ──
+		{label: "status", want: "status.code",
+			note: "status resolves to status.code (keyword in trace template) → no .keyword"},
+		{label: "statusCode", want: "status.code",
+			note: "Grafana Tempo canonical form → status.code keyword"},
 		{label: "kind", want: "kind",
 			note: "span.kind is explicit keyword in ES template"},
 		{label: "name", want: "name",
@@ -93,6 +93,8 @@ func TestMetricsAggField_NoUnexpectedKeyword(t *testing.T) {
 	knownNonTextFields := map[string]string{
 		"kind":                  "kind",
 		"name":                  "name",
+		"status":                "status.code",
+		"statusCode":            "status.code",
 		"rootName":              "name",
 		"rootServiceName":       "serviceName",
 		"span:id":               "spanId",

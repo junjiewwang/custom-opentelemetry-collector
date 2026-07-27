@@ -222,75 +222,93 @@ func TestIntegration_ESMapping_TextFieldsHaveKeyword(t *testing.T) {
 	}
 }
 
-// TestIntegration_ESMapping_StatusCodeIsText verifies that status.code is
-// a text field with .keyword — the root cause of the capitalizeFirst bug.
-func TestIntegration_ESMapping_StatusCodeIsText(t *testing.T) {
+// TestIntegration_ESMapping_StatusCodeKeywordExists verifies that current
+// trace indices map status.code as keyword (the current template). Legacy
+// indices (before the template change) map it as text with a .keyword
+// sub-field; both coexist during the transition, which is why status filter
+// queries must match both casings (see statusTermsClause).
+func TestIntegration_ESMapping_StatusCodeKeywordExists(t *testing.T) {
 	client := esPing(t)
 	indices := client.esIndices(t, "otel-traces-*")
 	require.NotEmpty(t, indices)
 
-	resp, err := client.getMapping(indices[0], "status.code")
-	require.NoError(t, err)
-
-	fieldMapping := extractFieldMapping(t, resp, "status.code")
-	fieldType, _ := fieldMapping["type"].(string)
-
-	assert.Equal(t, "text", fieldType,
-		"status.code must be 'text' type — capitalizeFirst assumes this. "+
-			"If this fails because it changed to keyword, update capitalizeFirst logic.")
-	assert.True(t, fieldHasKeyword(fieldMapping),
-		"status.code must have .keyword sub-field for aggregation")
+	// Find at least one keyword-mapped index (current template).
+	keywordIdx := ""
+	for _, idx := range indices {
+		resp, err := client.getMapping(idx, "status.code")
+		require.NoError(t, err)
+		fm := extractFieldMapping(t, resp, "status.code")
+		if fm == nil {
+			continue
+		}
+		if ft, _ := fm["type"].(string); ft == "keyword" {
+			keywordIdx = idx
+			break
+		}
+	}
+	require.NotEmpty(t, keywordIdx,
+		"expected at least one trace index with status.code mapped as keyword "+
+			"(current template); if all are text, the template change has not rolled out")
+	t.Logf("keyword-mapped status.code index: %s", keywordIdx)
 }
 
 // ── Query Result Validation Tests ───────────────────────────────────────
 
-// TestIntegration_ESQuery_StatusLowercaseHasResults validates that the
-// lowercase "error" value matches documents — the capitalizeFirst bug
-// would be caught by this test.
-func TestIntegration_ESQuery_StatusLowercaseHasResults(t *testing.T) {
+// TestIntegration_ESQuery_StatusDualCasingMatchesAll verifies that a terms
+// query with both casings matches the union of the legacy text mapping
+// (lowercase analyzed token) and the current keyword mapping (capitalized
+// stored value). A single-casing term matches only one mapping, so
+// statusTermsClause must emit both — this test would fail if it emitted one.
+func TestIntegration_ESQuery_StatusDualCasingMatchesAll(t *testing.T) {
 	client := esPing(t)
 
-	bodyLower := `{"query":{"term":{"status.code":"error"}}}`
-	bodyUpper := `{"query":{"term":{"status.code":"Error"}}}`
-
-	countLower, err := client.count("otel-traces-*", bodyLower)
+	countLower, err := client.count("otel-traces-*", `{"query":{"term":{"status.code":"error"}}}`)
+	require.NoError(t, err)
+	countUpper, err := client.count("otel-traces-*", `{"query":{"term":{"status.code":"Error"}}}`)
+	require.NoError(t, err)
+	countBoth, err := client.count("otel-traces-*", `{"query":{"terms":{"status.code":["error","Error"]}}}`)
 	require.NoError(t, err)
 
-	countUpper, err := client.count("otel-traces-*", bodyUpper)
-	require.NoError(t, err)
+	t.Logf("status.code='error': %d | 'Error': %d | ['error','Error']: %d",
+		countLower, countUpper, countBoth)
 
-	t.Logf("status.code='error' (lower): %d docs", countLower)
-	t.Logf("status.code='Error' (upper): %d docs", countUpper)
-
-	assert.Greater(t, countLower, int64(0),
-		"lowercase 'error' must match documents — if 0, capitalizeFirst fix is wrong")
-	assert.Greater(t, countLower, countUpper,
-		"lowercase should match >= uppercase — capitalizeFirst('error')='Error' would miss data")
+	assert.Greater(t, countBoth, int64(0), "dual-casing terms must match error spans")
+	assert.Equal(t, countLower+countUpper, countBoth,
+		"dual-casing must match the disjoint union of both single casings "+
+			"(text indices contribute 'error', keyword indices contribute 'Error')")
 }
 
-// TestIntegration_ESQuery_AggregationOnStatusRequiresKeyword verifies that
-// terms aggregation on status.code (text) fails and status.code.keyword works.
-func TestIntegration_ESQuery_AggregationOnStatusRequiresKeyword(t *testing.T) {
+// TestIntegration_ESQuery_AggregationOnStatusBareField verifies that terms
+// aggregation on status.code returns buckets on keyword-mapped (current)
+// indices. by(status) aggregates on the bare field (no .keyword suffix); a
+// .keyword sub-field does not exist on keyword indices.
+func TestIntegration_ESQuery_AggregationOnStatusBareField(t *testing.T) {
 	client := esPing(t)
+	indices := client.esIndices(t, "otel-traces-*")
+	require.NotEmpty(t, indices)
 
-	// Aggregation on text field → should fail
-	bodyNoKeyword := `{"size":0,"aggs":{"test":{"terms":{"field":"status.code","size":3}}}}`
-	resp, err := client.search("otel-traces-*", bodyNoKeyword)
-	if err != nil {
-		t.Logf("text field aggregation failed (expected): %v", err)
-	} else {
-		// Some ES versions return empty aggregations silently
-		aggs, _ := resp["aggregations"].(map[string]any)
-		t.Logf("text field agg returned: %v", aggs)
+	// Find a keyword-mapped index and aggregate on the bare status.code field.
+	for _, idx := range indices {
+		resp, err := client.getMapping(idx, "status.code")
+		require.NoError(t, err)
+		fm := extractFieldMapping(t, resp, "status.code")
+		if fm == nil {
+			continue
+		}
+		if ft, _ := fm["type"].(string); ft != "keyword" {
+			continue
+		}
+		body := `{"size":0,"aggs":{"test":{"terms":{"field":"status.code","size":3}}}}`
+		sresp, err := client.search(idx, body)
+		require.NoError(t, err, "aggregation on status.code must not fail on keyword index %s", idx)
+		aggs, _ := sresp["aggregations"].(map[string]any)
+		testAgg, _ := aggs["test"].(map[string]any)
+		buckets, _ := testAgg["buckets"].([]any)
+		require.NotEmpty(t, buckets, "status.code aggregation must return buckets on keyword index %s", idx)
+		t.Logf("index %s: status.code aggregation returned %d buckets", idx, len(buckets))
+		return
 	}
-
-	// Aggregation on .keyword → should work
-	bodyWithKeyword := `{"size":0,"aggs":{"test":{"terms":{"field":"status.code.keyword","size":3}}}}`
-	resp2, err := client.search("otel-traces-*", bodyWithKeyword)
-	require.NoError(t, err, "aggregation on status.code.keyword must not fail")
-	require.NotNil(t, resp2["aggregations"],
-		"aggregation on status.code.keyword must return results")
-	t.Log("status.code.keyword aggregation: OK")
+	t.Skip("no keyword-mapped status.code index found to aggregate on")
 }
 
 // TestIntegration_ESQuery_KindCapitalizedHasResults validates the SpanKind
@@ -522,5 +540,3 @@ func fieldHasKeyword(fieldMapping map[string]any) bool {
 	}
 	return false
 }
-
-
