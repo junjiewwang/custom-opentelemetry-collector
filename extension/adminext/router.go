@@ -321,30 +321,31 @@ func (e *Extension) newRouter() http.Handler {
 	//   Auth: Basic Auth (same as admin API)
 	// Tempo API — trace endpoints (require storageTraceReader) and metrics (require storageMetricReader).
 	if e.storageTraceReader != nil || e.storageMetricReader != nil {
+		tempo := newTempoHandlers(e)
 		r.Route("/tempo", func(r chi.Router) {
 			if e.storageTraceReader != nil {
 			// V1 endpoints
-			r.Get("/api/echo", e.handleTempoEcho)
-			r.Get("/api/status/buildinfo", e.handleTempoBuildInfo)
-			r.Get("/api/traces/{traceID}", e.handleTempoGetTrace)
-				r.Get("/api/search", e.handleTempoSearch)
-				r.Get("/api/search/tags", e.handleTempoSearchTags)
-				r.Get("/api/search/tag/{tagName}/values", e.handleTempoSearchTagValues)
+			r.Get("/api/echo", tempo.handleTempoEcho)
+			r.Get("/api/status/buildinfo", tempo.handleTempoBuildInfo)
+			r.Get("/api/traces/{traceID}", tempo.handleTempoGetTrace)
+				r.Get("/api/search", tempo.handleTempoSearch)
+				r.Get("/api/search/tags", tempo.handleTempoSearchTags)
+				r.Get("/api/search/tag/{tagName}/values", tempo.handleTempoSearchTagValues)
 
 			// V2 endpoints (Grafana 12+ calls these by default)
 			// Both GET and POST: Grafana may use POST for long TraceQL queries.
-			r.Get("/api/v2/traces/{traceID}", e.handleTempoV2GetTrace)
-			r.Post("/api/v2/traces/{traceID}", e.handleTempoV2GetTrace)
-			r.Get("/api/v2/search", e.handleTempoV2Search)
-			r.Post("/api/v2/search", e.handleTempoV2Search)
-			r.Get("/api/v2/search/tags", e.handleTempoV2SearchTags)
-			r.Get("/api/v2/search/tag/{tagName}/values", e.handleTempoV2SearchTagValues)
+			r.Get("/api/v2/traces/{traceID}", tempo.handleTempoV2GetTrace)
+			r.Post("/api/v2/traces/{traceID}", tempo.handleTempoV2GetTrace)
+			r.Get("/api/v2/search", tempo.handleTempoV2Search)
+			r.Post("/api/v2/search", tempo.handleTempoV2Search)
+			r.Get("/api/v2/search/tags", tempo.handleTempoV2SearchTags)
+			r.Get("/api/v2/search/tag/{tagName}/values", tempo.handleTempoV2SearchTagValues)
 			}
 			// TraceQL metrics (/api/metrics/query_range) requires either:
 			// - storageTraceReader (primary: real-time aggregation from raw spans)
 			// - storageMetricReader (fallback: pre-aggregated spanmetrics)
 			if e.storageTraceReader != nil || e.storageMetricReader != nil {
-				r.Get("/api/metrics/query_range", e.handleTempoMetricsQueryRange)
+				r.Get("/api/metrics/query_range", tempo.handleTempoMetricsQueryRange)
 			}
 		})
 

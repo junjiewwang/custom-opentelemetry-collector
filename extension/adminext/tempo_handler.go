@@ -265,8 +265,8 @@ var emptyMetrics = tempoSearchMetrics{InspectedBytes: "0"}
 // ── Handler: /api/echo ─────────────────────────────
 
 // handleTempoEcho handles GET /api/echo (health check).
-func (e *Extension) handleTempoEcho(w http.ResponseWriter, _ *http.Request) {
-	e.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+func (h *tempoHandlers) handleTempoEcho(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ── Handler: /api/status/buildinfo ─────────────────
@@ -274,8 +274,8 @@ func (e *Extension) handleTempoEcho(w http.ResponseWriter, _ *http.Request) {
 // handleTempoBuildInfo handles GET /api/status/buildinfo.
 // Grafana 12+ probes this endpoint to detect backend capabilities.
 // Returning a proper response helps Grafana correctly determine API version support.
-func (e *Extension) handleTempoBuildInfo(w http.ResponseWriter, _ *http.Request) {
-	e.writeJSON(w, http.StatusOK, map[string]string{
+func (h *tempoHandlers) handleTempoBuildInfo(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, map[string]string{
 		"version":   "customcol-1.0.0",
 		"branch":    "main",
 		"revision":  "unknown",
@@ -286,79 +286,79 @@ func (e *Extension) handleTempoBuildInfo(w http.ResponseWriter, _ *http.Request)
 // ── Handler: /api/traces/{traceID} ─────────────────
 
 // handleTempoGetTrace handles GET /api/traces/{traceID}.
-func (e *Extension) handleTempoGetTrace(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *tempoHandlers) handleTempoGetTrace(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
 	traceID := chi.URLParam(r, "traceID")
 	if traceID == "" {
-		e.writeError(w, http.StatusBadRequest, "traceID parameter is required")
+		h.writeError(w, http.StatusBadRequest, "traceID parameter is required")
 		return
 	}
 
-	trace, err := e.storageTraceReader.GetTrace(r.Context(), traceID)
+	trace, err := h.traceReader.GetTrace(r.Context(), traceID)
 	if err != nil {
-		e.logger.Error("tempo get trace failed", zap.String("traceID", traceID), zap.Error(err))
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.logger.Error("tempo get trace failed", zap.String("traceID", traceID), zap.Error(err))
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if trace == nil || len(trace.Spans) == 0 {
-		e.writeError(w, http.StatusNotFound, "trace not found")
+		h.writeError(w, http.StatusNotFound, "trace not found")
 		return
 	}
 
 	tt := convertToTempoTrace(trace)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	e.writeJSON(w, http.StatusOK, tt)
+	h.writeJSON(w, http.StatusOK, tt)
 }
 
 // handleTempoV2GetTrace handles GET /api/v2/traces/{traceID}.
 // Returns OTLP protobuf binary (Grafana 12+ expects protobuf for V2 endpoints).
-func (e *Extension) handleTempoV2GetTrace(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *tempoHandlers) handleTempoV2GetTrace(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
 	traceID := chi.URLParam(r, "traceID")
 	if traceID == "" {
-		e.writeError(w, http.StatusBadRequest, "traceID parameter is required")
+		h.writeError(w, http.StatusBadRequest, "traceID parameter is required")
 		return
 	}
 
-	trace, err := e.storageTraceReader.GetTrace(r.Context(), traceID)
+	trace, err := h.traceReader.GetTrace(r.Context(), traceID)
 	if err != nil {
-		e.logger.Error("tempo v2 get trace failed", zap.String("traceID", traceID), zap.Error(err))
+		h.logger.Error("tempo v2 get trace failed", zap.String("traceID", traceID), zap.Error(err))
 		SpanFromContext(r.Context()).SetAttributes(attribute.String("tempo.v2.error", "get_trace_failed"))
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if trace == nil || len(trace.Spans) == 0 {
 		SpanFromContext(r.Context()).SetAttributes(attribute.String("tempo.v2.error", "trace_not_found"))
-		e.writeError(w, http.StatusNotFound, "trace not found")
+		h.writeError(w, http.StatusNotFound, "trace not found")
 		return
 	}
 
 	pbBytes, err := convertTraceToProtobuf(trace)
 	if err != nil {
-		e.logger.Error("tempo v2 protobuf conversion failed",
+		h.logger.Error("tempo v2 protobuf conversion failed",
 			zap.String("traceID", traceID),
 			zap.Int("spans", len(trace.Spans)),
 			zap.Error(err),
 		)
-		e.writeError(w, http.StatusInternalServerError, "failed to encode trace as protobuf")
+		h.writeError(w, http.StatusInternalServerError, "failed to encode trace as protobuf")
 		return
 	}
 
 	// Safety: proto.Marshal can return 0 bytes for an empty TracesData.
 	if len(pbBytes) == 0 {
-		e.logger.Error("tempo v2 protobuf produced empty body",
+		h.logger.Error("tempo v2 protobuf produced empty body",
 			zap.String("traceID", traceID),
 			zap.Int("spans", len(trace.Spans)),
 		)
-		e.writeError(w, http.StatusInternalServerError, "trace data could not be encoded (empty protobuf body)")
+		h.writeError(w, http.StatusInternalServerError, "trace data could not be encoded (empty protobuf body)")
 		return
 	}
 
@@ -388,7 +388,7 @@ func (e *Extension) handleTempoV2GetTrace(w http.ResponseWriter, r *http.Request
 	)
 	if err != nil {
 		SpanFromContext(r.Context()).SetAttributes(attribute.String("tempo.v2.write_error", err.Error()))
-		e.logger.Error("tempo v2 write protobuf body failed",
+		h.logger.Error("tempo v2 write protobuf body failed",
 			zap.String("traceID", traceID),
 			zap.Int("bytesExpected", len(responseBytes)),
 			zap.Error(err),
@@ -491,9 +491,9 @@ func publicSpanToTempoSpan(s observabilitystorageext.Span) tempoSpan {
 
 // handleTempoSearch handles GET /api/search.
 // Uses SearchTraceSummaries for lightweight single-query search (no bulk span fetch).
-func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *tempoHandlers) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
@@ -501,7 +501,7 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 
 	plan, query, err := parseTempoSearchParams(r)
 	if err != nil {
-		e.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -515,7 +515,7 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 	// When the query contains a metrics pipeline stage (rate/quantile_over_time/etc.),
 	// execute as an ES aggregation query and return time-series data.
 	if plan != nil && plan.HasMetrics && plan.MetricsStage != nil {
-		e.executeTempoMetricsQuery(w, r, plan, query)
+		h.executeTempoMetricsQuery(w, r, plan, query)
 		return
 	}
 
@@ -528,10 +528,10 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Lightweight search — returns only root info + first spss spans per trace.
-	result, err := e.storageTraceReader.SearchTraceSummaries(r.Context(), query, spss)
+	result, err := h.traceReader.SearchTraceSummaries(r.Context(), query, spss)
 	if err != nil {
-		e.logger.Error("tempo search failed", zap.String("query", rawQuery), zap.Error(err))
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.logger.Error("tempo search failed", zap.String("query", rawQuery), zap.Error(err))
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -539,8 +539,8 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 	// 1. ES broad search (already done above)
 	// 2. Per-trace structural matching (fetch full traces, verify structure)
 	if plan != nil && plan.HasStructural && plan.FullAST != nil {
-		verified := e.structuralPostFilter(r.Context(), result.Summaries, plan, query.Limit)
-		e.logger.Debug("tempo structural search completed",
+		verified := h.structuralPostFilter(r.Context(), result.Summaries, plan, query.Limit)
+		h.logger.Debug("tempo structural search completed",
 			zap.String("query", rawQuery),
 			zap.Int("candidates", len(result.Summaries)),
 			zap.Int("verified", len(verified)),
@@ -558,7 +558,7 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 				InspectedBytes:  "0",
 			},
 		}
-		e.writeJSON(w, http.StatusOK, resp)
+		h.writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -577,8 +577,8 @@ func (e *Extension) handleTempoSearch(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	e.writeJSON(w, http.StatusOK, resp)
-	e.logger.Debug("tempo search completed",
+	h.writeJSON(w, http.StatusOK, resp)
+	h.logger.Debug("tempo search completed",
 		zap.String("query", rawQuery),
 		zap.Int("returned", len(searchTraces)),
 		zap.Int64("total", result.Total),
@@ -614,7 +614,7 @@ type nestedSetInfo struct {
 // without overloading the storage backend.
 const structuralPostFilterConcurrency = 10
 
-func (e *Extension) structuralPostFilter(
+func (h *tempoHandlers) structuralPostFilter(
 	ctx context.Context,
 	candidates []observabilitystorageext.TraceSummary,
 	plan *traceql.ExecutionPlan,
@@ -628,7 +628,7 @@ func (e *Extension) structuralPostFilter(
 	evalCount := len(candidates)
 	if evalCount > maxStructuralTraces {
 		evalCount = maxStructuralTraces
-		e.logger.Debug("structural search: capping evaluation",
+		h.logger.Debug("structural search: capping evaluation",
 			zap.Int("candidates", len(candidates)),
 			zap.Int("max", maxStructuralTraces),
 		)
@@ -649,9 +649,9 @@ func (e *Extension) structuralPostFilter(
 	for i := 0; i < evalCount; i++ {
 		s := candidates[i]
 		g.Go(func() error {
-			trace, err := e.storageTraceReader.GetTrace(gctx, s.TraceID)
+			trace, err := h.traceReader.GetTrace(gctx, s.TraceID)
 			if err != nil {
-				e.logger.Debug("structural search: skip trace fetch error",
+				h.logger.Debug("structural search: skip trace fetch error",
 					zap.String("traceID", s.TraceID), zap.Error(err))
 				return nil
 			}
@@ -810,9 +810,9 @@ func parseInt64(s string) (int64, error) {
 // handleTempoV2Search handles GET /api/v2/search.
 // Returns OTLP protobuf binary containing full trace data for matching traces.
 // Grafana 12+ expects protobuf for all V2 endpoints including search.
-func (e *Extension) handleTempoV2Search(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *tempoHandlers) handleTempoV2Search(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
@@ -820,16 +820,16 @@ func (e *Extension) handleTempoV2Search(w http.ResponseWriter, r *http.Request) 
 
 	_, query, err := parseTempoSearchParams(r)
 	if err != nil {
-		e.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Lightweight search first.
-	result, err := e.storageTraceReader.SearchTraceSummaries(r.Context(), query, 3)
+	result, err := h.traceReader.SearchTraceSummaries(r.Context(), query, 3)
 	if err != nil {
-		e.logger.Error("tempo v2 search failed", zap.String("query", rawQuery), zap.Error(err))
+		h.logger.Error("tempo v2 search failed", zap.String("query", rawQuery), zap.Error(err))
 		SpanFromContext(r.Context()).SetAttributes(attribute.String("tempo.v2.error", "search_failed"))
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -844,9 +844,9 @@ func (e *Extension) handleTempoV2Search(w http.ResponseWriter, r *http.Request) 
 
 	var allTraces []*observabilitystorageext.Trace
 	for _, s := range result.Summaries {
-		trace, err := e.storageTraceReader.GetTrace(r.Context(), s.TraceID)
+		trace, err := h.traceReader.GetTrace(r.Context(), s.TraceID)
 		if err != nil {
-			e.logger.Debug("tempo v2 search: skip trace fetch error",
+			h.logger.Debug("tempo v2 search: skip trace fetch error",
 				zap.String("traceID", s.TraceID), zap.Error(err))
 			continue
 		}
@@ -857,12 +857,12 @@ func (e *Extension) handleTempoV2Search(w http.ResponseWriter, r *http.Request) 
 
 	pbBytes, err := mergeTracesToProtobuf(allTraces)
 	if err != nil {
-		e.logger.Error("tempo v2 search protobuf conversion failed",
+		h.logger.Error("tempo v2 search protobuf conversion failed",
 			zap.String("query", rawQuery),
 			zap.Int("tracesFetched", len(allTraces)),
 			zap.Error(err),
 		)
-		e.writeError(w, http.StatusInternalServerError, "failed to encode search results as protobuf")
+		h.writeError(w, http.StatusInternalServerError, "failed to encode search results as protobuf")
 		return
 	}
 
@@ -884,7 +884,7 @@ func (e *Extension) handleTempoV2Search(w http.ResponseWriter, r *http.Request) 
 	)
 	if err != nil {
 		SpanFromContext(r.Context()).SetAttributes(attribute.String("tempo.v2.search_write_error", err.Error()))
-		e.logger.Error("tempo v2 search write protobuf body failed",
+		h.logger.Error("tempo v2 search write protobuf body failed",
 			zap.String("query", rawQuery),
 			zap.Int("bytesExpected", len(pbBytes)),
 			zap.Error(err),
@@ -1097,9 +1097,9 @@ func needsNestedSet(selectFields []string) bool {
 // ── Handler: /api/search/tags ──────────────────────
 
 // handleTempoSearchTags handles GET /api/search/tags.
-func (e *Extension) handleTempoSearchTags(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *tempoHandlers) handleTempoSearchTags(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
@@ -1116,9 +1116,9 @@ func (e *Extension) handleTempoSearchTags(w http.ResponseWriter, r *http.Request
 
 	// Try to fetch services from backend for additional tag discovery.
 	timeRange := parseTimeRange(r)
-	services, err := e.storageTraceReader.GetServices(r.Context(), timeRange)
+	services, err := h.traceReader.GetServices(r.Context(), timeRange)
 	if err != nil {
-		e.logger.Debug("tempo tags: could not fetch services", zap.Error(err))
+		h.logger.Debug("tempo tags: could not fetch services", zap.Error(err))
 	}
 
 	resp := tempoTagNamesResponse{
@@ -1128,44 +1128,44 @@ func (e *Extension) handleTempoSearchTags(w http.ResponseWriter, r *http.Request
 	// Add operations as hints for tag discovery (optional).
 	_ = services
 
-	e.writeJSON(w, http.StatusOK, resp)
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // ── Handler: /api/search/tag/{tagName}/values ───────
 
 // handleTempoSearchTagValues handles GET /api/search/tag/{tagName}/values.
-func (e *Extension) handleTempoSearchTagValues(w http.ResponseWriter, r *http.Request) {
-	if e.storageTraceReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
+func (h *tempoHandlers) handleTempoSearchTagValues(w http.ResponseWriter, r *http.Request) {
+	if h.traceReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Trace reader not available")
 		return
 	}
 
 	tagName := chi.URLParam(r, "tagName")
 	if tagName == "" {
-		e.writeError(w, http.StatusBadRequest, "tagName parameter is required")
+		h.writeError(w, http.StatusBadRequest, "tagName parameter is required")
 		return
 	}
 
-	values, err := e.resolveTagValues(r, tagName)
+	values, err := h.resolveTagValues(r, tagName)
 	if err != nil {
-		e.logger.Error("tempo tag values fetch failed", zap.String("tag", tagName), zap.Error(err))
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.logger.Error("tempo tag values fetch failed", zap.String("tag", tagName), zap.Error(err))
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, tempoTagValuesResponse{
+	h.writeJSON(w, http.StatusOK, tempoTagValuesResponse{
 		TagValues: values,
 		Metrics:   emptyMetrics,
 	})
 }
 
 // resolveTagValues returns distinct values for a given tag name.
-func (e *Extension) resolveTagValues(r *http.Request, tagName string) ([]string, error) {
+func (h *tempoHandlers) resolveTagValues(r *http.Request, tagName string) ([]string, error) {
 	timeRange := parseTimeRange(r)
 
 	switch tagName {
 	case "service.name":
-		services, err := e.storageTraceReader.GetServices(r.Context(), timeRange)
+		services, err := h.traceReader.GetServices(r.Context(), timeRange)
 		if err != nil {
 			return nil, fmt.Errorf("get services: %w", err)
 		}
@@ -1183,7 +1183,7 @@ func (e *Extension) resolveTagValues(r *http.Request, tagName string) ([]string,
 
 	case TempoIntrinsicName:
 		// For "name" tag, try fetching operations from all services.
-		return e.fetchAllOperations(r.Context(), timeRange)
+		return h.fetchAllOperations(r.Context(), timeRange)
 
 	default:
 		// For intrinsic tags, return empty (Grafana will handle gracefully).
@@ -1198,17 +1198,17 @@ func (e *Extension) resolveTagValues(r *http.Request, tagName string) ([]string,
 }
 
 // fetchAllOperations gathers operation names across all services in the time range.
-func (e *Extension) fetchAllOperations(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
-	services, err := e.storageTraceReader.GetServices(ctx, timeRange)
+func (h *tempoHandlers) fetchAllOperations(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
+	services, err := h.traceReader.GetServices(ctx, timeRange)
 	if err != nil {
 		return nil, fmt.Errorf("get services: %w", err)
 	}
 
 	seen := make(map[string]struct{})
 	for _, svc := range services {
-		ops, err := e.storageTraceReader.GetOperations(ctx, svc.Name, timeRange)
+		ops, err := h.traceReader.GetOperations(ctx, svc.Name, timeRange)
 		if err != nil {
-			e.logger.Debug("tempo tags: could not fetch operations", zap.String("service", svc.Name), zap.Error(err))
+			h.logger.Debug("tempo tags: could not fetch operations", zap.String("service", svc.Name), zap.Error(err))
 			continue
 		}
 		for _, op := range ops {
@@ -1227,7 +1227,7 @@ func (e *Extension) fetchAllOperations(ctx context.Context, timeRange observabil
 
 // handleTempoV2SearchTags handles GET /api/v2/search/tags.
 // Returns tags grouped by scope: resource, span, intrinsic.
-func (e *Extension) handleTempoV2SearchTags(w http.ResponseWriter, r *http.Request) {
+func (h *tempoHandlers) handleTempoV2SearchTags(w http.ResponseWriter, r *http.Request) {
 	timeRange := parseTimeRange(r)
 
 	resp := tempoV2TagNamesResponse{
@@ -1242,7 +1242,7 @@ func (e *Extension) handleTempoV2SearchTags(w http.ResponseWriter, r *http.Reque
 	})
 
 	// Resource scope: try backend tag discovery first, fall back to common keys.
-	resourceKeys := e.fetchTempoTagKeys(r.Context(), timeRange, TempoScopeResource)
+	resourceKeys := h.fetchTempoTagKeys(r.Context(), timeRange, TempoScopeResource)
 	if len(resourceKeys) == 0 {
 		resourceKeys = TempoCommonResourceAttributeKeys
 	}
@@ -1252,7 +1252,7 @@ func (e *Extension) handleTempoV2SearchTags(w http.ResponseWriter, r *http.Reque
 	})
 
 	// Span scope: try backend tag discovery first, fall back to common keys.
-	spanKeys := e.fetchTempoTagKeys(r.Context(), timeRange, TempoScopeSpan)
+	spanKeys := h.fetchTempoTagKeys(r.Context(), timeRange, TempoScopeSpan)
 	if len(spanKeys) == 0 {
 		spanKeys = TempoCommonSpanAttributeKeys
 	}
@@ -1261,18 +1261,18 @@ func (e *Extension) handleTempoV2SearchTags(w http.ResponseWriter, r *http.Reque
 		Tags: spanKeys,
 	})
 
-	e.writeJSON(w, http.StatusOK, resp)
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // fetchTempoTagKeys queries the backend for attribute keys in the given scope.
 // Returns nil on error (caller will use fallback keys).
-func (e *Extension) fetchTempoTagKeys(ctx context.Context, timeRange observabilitystorageext.TimeRange, scope string) []string {
-	if e.storageTraceReader == nil {
+func (h *tempoHandlers) fetchTempoTagKeys(ctx context.Context, timeRange observabilitystorageext.TimeRange, scope string) []string {
+	if h.traceReader == nil {
 		return nil
 	}
-	keys, err := e.storageTraceReader.GetTagKeys(ctx, timeRange, scope)
+	keys, err := h.traceReader.GetTagKeys(ctx, timeRange, scope)
 	if err != nil {
-		e.logger.Debug("tempo v2 tags: could not fetch tag keys from backend",
+		h.logger.Debug("tempo v2 tags: could not fetch tag keys from backend",
 			zap.String("scope", scope), zap.Error(err))
 		return nil
 	}
@@ -1298,10 +1298,10 @@ func parseScopedTagName(tagName string) (scope, key string) {
 // handleTempoV2SearchTagValues handles GET /api/v2/search/tag/{tagName}/values.
 // Returns values with type annotations (string, int, float, keyword).
 // Supports optional `q` parameter to filter the scope (e.g. q={resource.service.name="my-svc"}).
-func (e *Extension) handleTempoV2SearchTagValues(w http.ResponseWriter, r *http.Request) {
+func (h *tempoHandlers) handleTempoV2SearchTagValues(w http.ResponseWriter, r *http.Request) {
 	tagName := chi.URLParam(r, "tagName")
 	if tagName == "" {
-		e.writeError(w, http.StatusBadRequest, "tagName parameter is required")
+		h.writeError(w, http.StatusBadRequest, "tagName parameter is required")
 		return
 	}
 
@@ -1314,10 +1314,10 @@ func (e *Extension) handleTempoV2SearchTagValues(w http.ResponseWriter, r *http.
 	// First try V1-style resolution (fast path: services, static lists).
 	// Only use fast path if no filter is specified (filters require backend query).
 	if len(filterTags) == 0 {
-		values, err := e.resolveTagValues(r, tagKey)
+		values, err := h.resolveTagValues(r, tagKey)
 		if err != nil {
-			e.logger.Error("tempo v2 tag values failed", zap.String("tag", tagName), zap.Error(err))
-			e.writeError(w, http.StatusInternalServerError, err.Error())
+			h.logger.Error("tempo v2 tag values failed", zap.String("tag", tagName), zap.Error(err))
+			h.writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -1327,7 +1327,7 @@ func (e *Extension) handleTempoV2SearchTagValues(w http.ResponseWriter, r *http.
 			for i, v := range values {
 				tv[i] = tempoV2TagValue{Type: "string", Value: v}
 			}
-			e.writeJSON(w, http.StatusOK, tempoV2TagValuesResponse{
+			h.writeJSON(w, http.StatusOK, tempoV2TagValuesResponse{
 				TagValues: tv,
 				Metrics:   emptyMetrics,
 			})
@@ -1338,8 +1338,8 @@ func (e *Extension) handleTempoV2SearchTagValues(w http.ResponseWriter, r *http.
 	// Handle intrinsic tags with filter support.
 	// Intrinsic fields (e.g. "name") are stored at top-level ES fields, not under attributes/resource.
 	// The generic fetchTempoTagValues would incorrectly query "attributes.name" which doesn't exist.
-	if tv := e.resolveIntrinsicTagValuesWithFilter(r, tagKey, filterTags); tv != nil {
-		e.writeJSON(w, http.StatusOK, tempoV2TagValuesResponse{
+	if tv := h.resolveIntrinsicTagValuesWithFilter(r, tagKey, filterTags); tv != nil {
+		h.writeJSON(w, http.StatusOK, tempoV2TagValuesResponse{
 			TagValues: tv,
 			Metrics:   emptyMetrics,
 		})
@@ -1347,8 +1347,8 @@ func (e *Extension) handleTempoV2SearchTagValues(w http.ResponseWriter, r *http.
 	}
 
 	// Try backend tag value discovery for span/resource attributes.
-	tv := e.fetchTempoTagValues(r, tagKey, scope, filterTags)
-	e.writeJSON(w, http.StatusOK, tempoV2TagValuesResponse{
+	tv := h.fetchTempoTagValues(r, tagKey, scope, filterTags)
+	h.writeJSON(w, http.StatusOK, tempoV2TagValuesResponse{
 		TagValues: tv,
 		Metrics:   emptyMetrics,
 	})
@@ -1364,7 +1364,7 @@ func (e *Extension) handleTempoV2SearchTagValues(w http.ResponseWriter, r *http.
 //   - "kind", "status": returns static value lists (filter doesn't affect possible values)
 //
 // Returns nil if the tagKey is not an intrinsic field (caller should proceed with generic path).
-func (e *Extension) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey string, filterTags map[string]string) []tempoV2TagValue {
+func (h *tempoHandlers) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey string, filterTags map[string]string) []tempoV2TagValue {
 	switch tagKey {
 	case TempoIntrinsicName:
 		// "name" is the span name / operation name, stored in ES top-level field "name".
@@ -1376,9 +1376,9 @@ func (e *Extension) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey 
 
 		if svcName, ok := filterTags["service.name"]; ok && svcName != "" {
 			// Fetch operations for the specific service.
-			ops, opErr := e.storageTraceReader.GetOperations(r.Context(), svcName, timeRange)
+			ops, opErr := h.traceReader.GetOperations(r.Context(), svcName, timeRange)
 			if opErr != nil {
-				e.logger.Debug("tempo v2 tag values: get operations for service failed",
+				h.logger.Debug("tempo v2 tag values: get operations for service failed",
 					zap.String("service", svcName), zap.Error(opErr))
 				return nil
 			}
@@ -1388,9 +1388,9 @@ func (e *Extension) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey 
 			}
 		} else {
 			// No service filter — fetch operations across all services.
-			values, err = e.fetchAllOperations(r.Context(), timeRange)
+			values, err = h.fetchAllOperations(r.Context(), timeRange)
 			if err != nil {
-				e.logger.Debug("tempo v2 tag values: fetch all operations failed", zap.Error(err))
+				h.logger.Debug("tempo v2 tag values: fetch all operations failed", zap.Error(err))
 				return nil
 			}
 		}
@@ -1422,12 +1422,12 @@ func (e *Extension) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey 
 	// Derived from root spans: queries the root spans (parentSpanId absent)
 	// for distinct name / serviceName values via terms aggregation.
 	case TempoIntrinsicRootName:
-		return e.fetchRootSpanTagValues(r, func(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
-			return e.storageTraceReader.ListRootSpanNames(ctx, timeRange, "")
+		return h.fetchRootSpanTagValues(r, func(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
+			return h.traceReader.ListRootSpanNames(ctx, timeRange, "")
 		})
 	case TempoIntrinsicRootServiceName:
-		return e.fetchRootSpanTagValues(r, func(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
-			return e.storageTraceReader.ListRootSpanServices(ctx, timeRange, "")
+		return h.fetchRootSpanTagValues(r, func(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
+			return h.traceReader.ListRootSpanServices(ctx, timeRange, "")
 		})
 
 	// ── Intrinsic tag: statusMessage ──
@@ -1447,8 +1447,8 @@ func (e *Extension) resolveIntrinsicTagValuesWithFilter(r *http.Request, tagKey 
 // If scope is specified (non-empty), queries only that scope; otherwise tries
 // span first, then resource, returning the first non-empty result.
 // filterTags narrows the aggregation scope (e.g. only spans from a specific service).
-func (e *Extension) fetchTempoTagValues(r *http.Request, tagKey string, scope string, filterTags map[string]string) []tempoV2TagValue {
-	if e.storageTraceReader == nil {
+func (h *tempoHandlers) fetchTempoTagValues(r *http.Request, tagKey string, scope string, filterTags map[string]string) []tempoV2TagValue {
+	if h.traceReader == nil {
 		return nil
 	}
 
@@ -1461,9 +1461,9 @@ func (e *Extension) fetchTempoTagValues(r *http.Request, tagKey string, scope st
 	}
 
 	for _, s := range scopes {
-		values, err := e.storageTraceReader.GetTagValues(r.Context(), tagKey, timeRange, s, filterTags)
+		values, err := h.traceReader.GetTagValues(r.Context(), tagKey, timeRange, s, filterTags)
 		if err != nil {
-			e.logger.Debug("tempo v2 tag values: backend lookup failed",
+			h.logger.Debug("tempo v2 tag values: backend lookup failed",
 				zap.String("tag", tagKey), zap.String("scope", s), zap.Error(err))
 			continue
 		}
@@ -1494,14 +1494,14 @@ func parseTagValuesFilter(r *http.Request) map[string]string {
 // fetchRootSpanTagValues is a helper that calls the given fetcher with the request's
 // time range and converts the results to tempoV2TagValue slice. Used by
 // resolveIntrinsicTagValuesWithFilter for rootName and rootServiceName.
-func (e *Extension) fetchRootSpanTagValues(
+func (h *tempoHandlers) fetchRootSpanTagValues(
 	r *http.Request,
 	fetchFn func(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error),
 ) []tempoV2TagValue {
 	timeRange := parseTempoTagValuesTimeRange(r)
 	values, err := fetchFn(r.Context(), timeRange)
 	if err != nil {
-		e.logger.Debug("tempo v2 tag values: root span tag values query failed", zap.Error(err))
+		h.logger.Debug("tempo v2 tag values: root span tag values query failed", zap.Error(err))
 		return nil
 	}
 	if len(values) == 0 {
@@ -1518,10 +1518,10 @@ func (e *Extension) fetchRootSpanTagValues(
 
 // executeTempoMetricsQuery runs a TraceQL metrics query (rate/quantile_over_time/etc.)
 // using ES aggregations and returns time-series data.
-func (e *Extension) executeTempoMetricsQuery(w http.ResponseWriter, r *http.Request, plan *traceql.ExecutionPlan, query observabilitystorageext.TraceQuery) {
+func (h *tempoHandlers) executeTempoMetricsQuery(w http.ResponseWriter, r *http.Request, plan *traceql.ExecutionPlan, query observabilitystorageext.TraceQuery) {
 	ms := plan.MetricsStage
 	if ms == nil {
-		e.writeError(w, http.StatusBadRequest, "missing metrics stage in execution plan")
+		h.writeError(w, http.StatusBadRequest, "missing metrics stage in execution plan")
 		return
 	}
 
@@ -1553,14 +1553,14 @@ func (e *Extension) executeTempoMetricsQuery(w http.ResponseWriter, r *http.Requ
 		Sample:        ms.Sample,
 	}
 
-	result, err := e.storageTraceReader.QueryTraceMetrics(r.Context(), metricsQuery)
+	result, err := h.traceReader.QueryTraceMetrics(r.Context(), metricsQuery)
 	if err != nil {
-		e.logger.Error("tempo metrics query failed", zap.String("function", string(ms.Function)), zap.Error(err))
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.logger.Error("tempo metrics query failed", zap.String("function", string(ms.Function)), zap.Error(err))
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	e.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 // parseTempoMetricsStep extracts the step interval from the request.
@@ -1587,10 +1587,10 @@ func parseTempoMetricsStep(r *http.Request, timeRange observabilitystorageext.Ti
 //     to aggregate directly from raw spans. This always works if traces exist.
 //  2. Fallback: Use pre-aggregated spanmetrics via MetricReader.QueryRange.
 //     Only used when AST parsing fails AND MetricReader is available.
-func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request) {
+func (h *tempoHandlers) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request) {
 	rawQ := r.FormValue("q")
 	if rawQ == "" {
-		e.writeError(w, http.StatusBadRequest, "parameter 'q' is required")
+		h.writeError(w, http.StatusBadRequest, "parameter 'q' is required")
 		return
 	}
 
@@ -1601,7 +1601,7 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 	// ── Primary path: AST parser + TraceReader real-time aggregation ──
 	// This handles all TraceQL intrinsics (nestedSetParent<0, status, duration, etc.)
 	// correctly via the unified planner.
-	if e.storageTraceReader != nil {
+	if h.traceReader != nil {
 		ast, err := traceql.Parse(rawQ)
 		if err == nil && ast != nil {
 			plan := traceql.Plan(ast)
@@ -1613,7 +1613,7 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 			//      - != value: TagsNot
 			//      - =~ regex: TagsRegex
 			if plan != nil && plan.MetricsStage != nil {
-				e.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
+				h.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
 				return
 			}
 			needsPrimary := plan != nil && (plan.RootName != "" ||
@@ -1629,7 +1629,7 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 						ByLabels: parsed.GroupBy,
 					}
 					plan.HasMetrics = true
-					e.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
+					h.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
 					return
 				}
 			}
@@ -1637,16 +1637,16 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 	}
 
 	// ── Fallback path: pre-aggregated spanmetrics via MetricReader ──
-	if e.storageMetricReader == nil {
-		e.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
+	if h.metricReader == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
 		return
 	}
 
 	// Parse using legacy parser for MetricReader path.
 	parsed, err := parseTraceQLMetricsQuery(rawQ)
 	if err != nil {
-		e.logger.Warn("tempo metrics: invalid query", zap.String("q", rawQ), zap.Error(err))
-		e.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid TraceQL metrics query: %v", err))
+		h.logger.Warn("tempo metrics: invalid query", zap.String("q", rawQ), zap.Error(err))
+		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid TraceQL metrics query: %v", err))
 		return
 	}
 
@@ -1665,7 +1665,7 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 		Fill:        "null",
 	}
 
-	e.logger.Debug("tempo metrics: executing via MetricReader (fallback)",
+	h.logger.Debug("tempo metrics: executing via MetricReader (fallback)",
 		zap.String("metric", metricName),
 		zap.String("function", parsed.Function),
 		zap.Float64("param", parsed.FuncParam),
@@ -1675,10 +1675,10 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 		zap.Int("or_groups", len(parsed.TagsOr)),
 	)
 
-	result, err := e.storageMetricReader.QueryRange(r.Context(), query)
+	result, err := h.metricReader.QueryRange(r.Context(), query)
 	if err != nil {
-		e.logger.Error("tempo metrics: query failed", zap.Error(err))
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.logger.Error("tempo metrics: query failed", zap.Error(err))
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -1696,12 +1696,12 @@ func (e *Extension) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.
 
 	// Convert to Tempo metrics format.
 	resp := convertMetricRangeToTempoMetrics(result)
-	e.writeJSON(w, http.StatusOK, resp)
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // executeTempoMetricsQueryRange runs a TraceQL metrics query via TraceReader
 // and writes the response in Tempo /api/metrics/query_range format.
-func (e *Extension) executeTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request, plan *traceql.ExecutionPlan, timeRange observabilitystorageext.TimeRange, step time.Duration) {
+func (h *tempoHandlers) executeTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request, plan *traceql.ExecutionPlan, timeRange observabilitystorageext.TimeRange, step time.Duration) {
 	ms := plan.MetricsStage
 
 	metricsQuery := observabilitystorageext.TraceMetricsQuery{
@@ -1728,17 +1728,17 @@ func (e *Extension) executeTempoMetricsQueryRange(w http.ResponseWriter, r *http
 		Sample:        ms.Sample,
 	}
 
-	result, err := e.storageTraceReader.QueryTraceMetrics(r.Context(), metricsQuery)
+	result, err := h.traceReader.QueryTraceMetrics(r.Context(), metricsQuery)
 	if err != nil {
-		e.logger.Error("tempo metrics query_range failed",
+		h.logger.Error("tempo metrics query_range failed",
 			zap.String("function", string(ms.Function)), zap.Error(err))
-		e.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	// Convert TraceMetricsResult to Tempo metrics response format.
 	resp := convertTraceMetricsToTempoResponse(result)
-	e.writeJSON(w, http.StatusOK, resp)
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // convertTraceMetricsToTempoResponse converts a TraceMetricsResult (from TraceReader

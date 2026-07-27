@@ -59,19 +59,32 @@ func decodeJSON[T any](r *http.Request) (*T, error) {
 	return &v, nil
 }
 
-// writeJSON writes a JSON response with the given status code.
-func (e *Extension) writeJSON(w http.ResponseWriter, status int, data any) {
+// writeJSONResp writes a JSON response with the given status code. It is the
+// single implementation shared by *Extension.writeJSON and *tempoHandlers.writeJSON
+// (and any future handler group) so response writing does not depend on the
+// *Extension god-object.
+func writeJSONResp(logger *zap.Logger, w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		e.logger.Error("Failed to encode JSON response", zap.Error(err))
+		logger.Error("Failed to encode JSON response", zap.Error(err))
 	}
+}
+
+// writeErrorResp writes an error response.
+func writeErrorResp(logger *zap.Logger, w http.ResponseWriter, status int, message string) {
+	writeJSONResp(logger, w, status, map[string]string{"error": message})
+}
+
+// writeJSON writes a JSON response with the given status code.
+func (e *Extension) writeJSON(w http.ResponseWriter, status int, data any) {
+	writeJSONResp(e.logger, w, status, data)
 }
 
 // writeError writes an error response.
 func (e *Extension) writeError(w http.ResponseWriter, status int, message string) {
-	e.writeJSON(w, status, map[string]string{"error": message})
+	writeErrorResp(e.logger, w, status, message)
 }
 
 // handleError handles APIError or generic error and writes appropriate response.
