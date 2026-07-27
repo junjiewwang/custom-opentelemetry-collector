@@ -297,17 +297,18 @@ func (e *Extension) newRouter() http.Handler {
 	//   Access: Server (proxy)
 	//   Auth: Basic Auth (same as admin API)
 	if e.storageMetricReader != nil {
+		prom := newPromHandlers(e)
 		r.Route("/prometheus/api/v1", func(r chi.Router) {
-			r.Get("/query", e.handlePromQuery)
-			r.Post("/query", e.handlePromQuery)
-			r.Get("/query_range", e.handlePromQueryRange)
-			r.Post("/query_range", e.handlePromQueryRange)
-			r.Get("/labels", e.handlePromLabels)
-			r.Post("/labels", e.handlePromLabels)
-			r.Get("/label/{labelName}/values", e.handlePromLabelValues)
-			r.Get("/series", e.handlePromSeries)
-			r.Post("/series", e.handlePromSeries)
-			r.Get("/metadata", e.handlePromMetadata)
+			r.Get("/query", prom.handlePromQuery)
+			r.Post("/query", prom.handlePromQuery)
+			r.Get("/query_range", prom.handlePromQueryRange)
+			r.Post("/query_range", prom.handlePromQueryRange)
+			r.Get("/labels", prom.handlePromLabels)
+			r.Post("/labels", prom.handlePromLabels)
+			r.Get("/label/{labelName}/values", prom.handlePromLabelValues)
+			r.Get("/series", prom.handlePromSeries)
+			r.Post("/series", prom.handlePromSeries)
+			r.Get("/metadata", prom.handlePromMetadata)
 		})
 	}
 

@@ -467,7 +467,7 @@ func TestIntegrationConcurrentVsSingle(t *testing.T) {
 			require.NoError(t, err, "single QueryFlat failed")
 
 			// ── Concurrent query path ──
-			concurrentResult, err := ext.concurrentQueryFlat(ctx, flatQuery, logger)
+			concurrentResult, err := newPromHandlers(ext).concurrentQueryFlat(ctx, flatQuery, logger)
 			require.NoError(t, err, "concurrent QueryFlat failed")
 
 			// ── Compare results ──
@@ -529,7 +529,7 @@ func TestIntegrationConcurrentVsSingle_WithLabels(t *testing.T) {
 	singleResult, err := reader.QueryFlat(ctx, flatQuery)
 	require.NoError(t, err, "single QueryFlat failed")
 
-	concurrentResult, err := ext.concurrentQueryFlat(ctx, flatQuery, logger)
+	concurrentResult, err := newPromHandlers(ext).concurrentQueryFlat(ctx, flatQuery, logger)
 	require.NoError(t, err, "concurrent QueryFlat failed")
 
 	compareFlatResults(t, singleResult, concurrentResult)
@@ -585,7 +585,7 @@ func TestIntegrationConcurrentVsSingle_NoSplittable(t *testing.T) {
 	singleResult, err := reader.QueryFlat(ctx, flatQuery)
 	require.NoError(t, err, "single QueryFlat failed")
 
-	concurrentResult, err := ext.concurrentQueryFlat(ctx, flatQuery, logger)
+	concurrentResult, err := newPromHandlers(ext).concurrentQueryFlat(ctx, flatQuery, logger)
 	require.NoError(t, err, "concurrent QueryFlat failed")
 
 	compareFlatResults(t, singleResult, concurrentResult)
@@ -619,6 +619,6 @@ func TestIntegrationConcurrent_ErrorHandling(t *testing.T) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := ext.concurrentQueryFlat(cancelCtx, flatQuery, logger)
+	_, err := newPromHandlers(ext).concurrentQueryFlat(cancelCtx, flatQuery, logger)
 	assert.Error(t, err, "expected error with cancelled context")
 }

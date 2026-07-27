@@ -231,7 +231,7 @@ func BenchmarkIntegration_ConcurrentQuery(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := ext.concurrentQueryFlat(ctx, flatQuery, ext.logger)
+		_, err := newPromHandlers(ext).concurrentQueryFlat(ctx, flatQuery, ext.logger)
 		if err != nil {
 			b.Fatalf("concurrent QueryFlat failed: %v", err)
 		}
@@ -260,7 +260,7 @@ func BenchmarkIntegration_SingleVsConcurrent(b *testing.B) {
 
 	b.Run("Concurrent", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			_, err := ext.concurrentQueryFlat(ctx, flatQuery, ext.logger)
+			_, err := newPromHandlers(ext).concurrentQueryFlat(ctx, flatQuery, ext.logger)
 			if err != nil {
 				b.Fatalf("concurrent QueryFlat failed: %v", err)
 			}
@@ -397,7 +397,7 @@ func BenchmarkIntegration_ConcurrentScaling(b *testing.B) {
 
 		b.Run(fmt.Sprintf("Concurrent_%dterms", numTerms), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				_, err := ext.concurrentQueryFlat(ctx, flatQuery, logger)
+				_, err := newPromHandlers(ext).concurrentQueryFlat(ctx, flatQuery, logger)
 				if err != nil {
 					b.Fatalf("concurrent QueryFlat failed: %v", err)
 				}

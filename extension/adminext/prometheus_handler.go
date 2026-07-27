@@ -104,15 +104,15 @@ type promqlExpr struct {
 // ── Handler: query ─────────────────────────────────
 
 // handlePromQuery handles GET/POST /api/v1/query.
-func (e *Extension) handlePromQuery(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writePromError(w, "service_unavailable", "metric reader not available")
+func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writePromError(w, "service_unavailable", "metric reader not available")
 		return
 	}
 
-	queryStr := e.getQueryParam(r, "query")
+	queryStr := h.getQueryParam(r, "query")
 	if queryStr == "" {
-		e.writePromError(w, "bad_data", "parameter 'query' is required")
+		h.writePromError(w, "bad_data", "parameter 'query' is required")
 		return
 	}
 
@@ -129,7 +129,7 @@ func (e *Extension) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 
 	expr, err := parsePromQL(queryStr)
 	if err != nil {
-		e.writePromError(w, "bad_data", err.Error())
+		h.writePromError(w, "bad_data", err.Error())
 		return
 	}
 
@@ -145,47 +145,47 @@ func (e *Extension) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 		attribute.Bool(SpanAttrPromQLIsBottomK, expr.IsBottomK),
 	)
 
-	result := e.dispatchInstantQuery(r, expr, evalTime, expr.Labels, expr.LabelMatch)
+	result := h.dispatchInstantQuery(r, expr, evalTime, expr.Labels, expr.LabelMatch)
 	if result == nil {
 		result = &promQueryData{ResultType: ResultTypeVector, Result: []promVectorSample{}}
 	}
-	e.writePromSuccess(w, result)
+	h.writePromSuccess(w, result)
 }
 
 // ── Handler: query_range ───────────────────────────
 
 // handlePromQueryRange handles GET/POST /api/v1/query_range.
-func (e *Extension) handlePromQueryRange(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writePromError(w, "service_unavailable", "metric reader not available")
+func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writePromError(w, "service_unavailable", "metric reader not available")
 		return
 	}
 
-	queryStr := e.getQueryParam(r, "query")
+	queryStr := h.getQueryParam(r, "query")
 	if queryStr == "" {
-		e.writePromError(w, "bad_data", "parameter 'query' is required")
+		h.writePromError(w, "bad_data", "parameter 'query' is required")
 		return
 	}
 
 	start, err := parsePrometheusTime(r.FormValue("start"))
 	if err != nil {
-		e.writePromError(w, "bad_data", "invalid 'start' parameter: "+err.Error())
+		h.writePromError(w, "bad_data", "invalid 'start' parameter: "+err.Error())
 		return
 	}
 	end, err := parsePrometheusTime(r.FormValue("end"))
 	if err != nil {
-		e.writePromError(w, "bad_data", "invalid 'end' parameter: "+err.Error())
+		h.writePromError(w, "bad_data", "invalid 'end' parameter: "+err.Error())
 		return
 	}
 	step, err := parsePrometheusDuration(r.FormValue("step"))
 	if err != nil {
-		e.writePromError(w, "bad_data", "invalid 'step' parameter: "+err.Error())
+		h.writePromError(w, "bad_data", "invalid 'step' parameter: "+err.Error())
 		return
 	}
 
 	expr, err := parsePromQL(queryStr)
 	if err != nil {
-		e.writePromError(w, "bad_data", err.Error())
+		h.writePromError(w, "bad_data", err.Error())
 		return
 	}
 
@@ -201,11 +201,11 @@ func (e *Extension) handlePromQueryRange(w http.ResponseWriter, r *http.Request)
 		attribute.Bool(SpanAttrPromQLIsBottomK, expr.IsBottomK),
 	)
 
-	result := e.dispatchRangeQuery(r, expr, start, end, step, expr.Labels, expr.LabelMatch)
+	result := h.dispatchRangeQuery(r, expr, start, end, step, expr.Labels, expr.LabelMatch)
 	if result == nil {
 		result = &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}}
 	}
-	e.writePromSuccess(w, result)
+	h.writePromSuccess(w, result)
 }
 
 // extractMetricNameFromMatch extracts the __name__ label from Prometheus match[]
@@ -317,9 +317,9 @@ func extractMetricNamesFromMatch(matches []string) []string {
 // ── Handler: labels ────────────────────────────────
 
 // handlePromLabels handles GET/POST /api/v1/labels.
-func (e *Extension) handlePromLabels(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writePromError(w, "service_unavailable", "metric reader not available")
+func (h *promHandlers) handlePromLabels(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writePromError(w, "service_unavailable", "metric reader not available")
 		return
 	}
 
@@ -342,9 +342,9 @@ func (e *Extension) handlePromLabels(w http.ResponseWriter, r *http.Request) {
 		if len(metricNames) > 0 {
 			labelSet := make(map[string]struct{})
 			for _, mn := range metricNames {
-				n, err := e.storageMetricReader.ListLabelNames(r.Context(), tr, mn)
+				n, err := h.metricReader.ListLabelNames(r.Context(), tr, mn)
 				if err != nil {
-					e.logger.Debug("list label names skipped",
+					h.logger.Debug("list label names skipped",
 						zap.String("metric", mn), zap.Error(err))
 					continue
 				}
@@ -358,17 +358,17 @@ func (e *Extension) handlePromLabels(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// No match filter → list ALL labels across ALL metrics.
 			var err error
-			names, err = e.storageMetricReader.ListLabelNames(r.Context(), tr, "")
+			names, err = h.metricReader.ListLabelNames(r.Context(), tr, "")
 			if err != nil {
-				e.writePromError(w, "execution", err.Error())
+				h.writePromError(w, "execution", err.Error())
 				return
 			}
 		}
 	} else {
 		var err error
-		names, err = e.storageMetricReader.ListLabelNames(r.Context(), tr, metricName)
+		names, err = h.metricReader.ListLabelNames(r.Context(), tr, metricName)
 		if err != nil {
-			e.writePromError(w, "execution", err.Error())
+			h.writePromError(w, "execution", err.Error())
 			return
 		}
 	}
@@ -392,21 +392,21 @@ func (e *Extension) handlePromLabels(w http.ResponseWriter, r *http.Request) {
 		names[i] = translateLabelToPromQL(n)
 	}
 
-	e.writePromSuccessLabelList(w, names)
+	h.writePromSuccessLabelList(w, names)
 }
 
 // ── Handler: label values ──────────────────────────
 
 // handlePromLabelValues handles GET /api/v1/label/{labelName}/values.
-func (e *Extension) handlePromLabelValues(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writePromError(w, "service_unavailable", "metric reader not available")
+func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writePromError(w, "service_unavailable", "metric reader not available")
 		return
 	}
 
 	labelName := decodePrometheusLabelName(chi.URLParam(r, "labelName"))
 	if labelName == "" {
-		e.writePromError(w, "bad_data", "parameter 'labelName' is required")
+		h.writePromError(w, "bad_data", "parameter 'labelName' is required")
 		return
 	}
 
@@ -419,12 +419,12 @@ func (e *Extension) handlePromLabelValues(w http.ResponseWriter, r *http.Request
 		if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
 			tr.End = end
 		}
-		names, err := e.storageMetricReader.ListMetricNames(r.Context(), tr)
+		names, err := h.metricReader.ListMetricNames(r.Context(), tr)
 		if err != nil {
-			e.writePromError(w, "execution", err.Error())
+			h.writePromError(w, "execution", err.Error())
 			return
 		}
-		e.writePromSuccessLabelList(w, names)
+		h.writePromSuccessLabelList(w, names)
 		return
 	}
 
@@ -443,28 +443,28 @@ func (e *Extension) handlePromLabelValues(w http.ResponseWriter, r *http.Request
 		esLabelName = labelName
 	}
 
-	values, err := e.storageMetricReader.ListLabelValues(r.Context(), esLabelName, tr)
+	values, err := h.metricReader.ListLabelValues(r.Context(), esLabelName, tr)
 	if err != nil {
-		e.writePromError(w, "execution", err.Error())
+		h.writePromError(w, "execution", err.Error())
 		return
 	}
 
-	e.writePromSuccessLabelList(w, values)
+	h.writePromSuccessLabelList(w, values)
 }
 
 // ── Handler: series ────────────────────────────────
 
 // handlePromSeries handles GET/POST /api/v1/series.
-func (e *Extension) handlePromSeries(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writePromError(w, "service_unavailable", "metric reader not available")
+func (h *promHandlers) handlePromSeries(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writePromError(w, "service_unavailable", "metric reader not available")
 		return
 	}
 
 	// Parse match[] parameters
 	matchParams := r.Form["match[]"]
 	if len(matchParams) == 0 {
-		e.writePromError(w, "bad_data", "parameter 'match[]' is required")
+		h.writePromError(w, "bad_data", "parameter 'match[]' is required")
 		return
 	}
 
@@ -492,7 +492,7 @@ func (e *Extension) handlePromSeries(w http.ResponseWriter, r *http.Request) {
 			query.Time = time.Now()
 		}
 
-		result, err := e.storageMetricReader.Query(r.Context(), query)
+		result, err := h.metricReader.Query(r.Context(), query)
 		if err != nil {
 			continue
 		}
@@ -505,15 +505,15 @@ func (e *Extension) handlePromSeries(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	e.writePromSuccess(w, allSeries)
+	h.writePromSuccess(w, allSeries)
 }
 
 // ── Handler: metadata ──────────────────────────────
 
 // handlePromMetadata handles GET /api/v1/metadata.
-func (e *Extension) handlePromMetadata(w http.ResponseWriter, r *http.Request) {
-	if e.storageMetricReader == nil {
-		e.writePromError(w, "service_unavailable", "metric reader not available")
+func (h *promHandlers) handlePromMetadata(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writePromError(w, "service_unavailable", "metric reader not available")
 		return
 	}
 
@@ -525,9 +525,9 @@ func (e *Extension) handlePromMetadata(w http.ResponseWriter, r *http.Request) {
 		tr.End = end
 	}
 
-	names, err := e.storageMetricReader.ListMetricNames(r.Context(), tr)
+	names, err := h.metricReader.ListMetricNames(r.Context(), tr)
 	if err != nil {
-		e.writePromError(w, "execution", err.Error())
+		h.writePromError(w, "execution", err.Error())
 		return
 	}
 
@@ -539,22 +539,22 @@ func (e *Extension) handlePromMetadata(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	e.writePromSuccess(w, metadata)
+	h.writePromSuccess(w, metadata)
 }
 
 // ── Query dispatch ─────────────────────────────────
 
 // dispatchLabelExplore handles PromQL "group by" label exploration queries.
 // Uses ES terms aggregation to return unique label value combinations.
-func (e *Extension) dispatchLabelExplore(r *http.Request, expr *promqlExpr) *promQueryData {
+func (h *promHandlers) dispatchLabelExplore(r *http.Request, expr *promqlExpr) *promQueryData {
 	query := observabilitystorageext.LabelCombinationsQuery{
 		MetricName: expr.MetricName,
 		LabelKeys:  expr.GroupBy,
 	}
 
-	result, err := e.storageMetricReader.ListLabelCombinations(r.Context(), query)
+	result, err := h.metricReader.ListLabelCombinations(r.Context(), query)
 	if err != nil {
-		e.logger.Error("label explore failed", zap.Error(err))
+		h.logger.Error("label explore failed", zap.Error(err))
 		return nil
 	}
 
@@ -577,13 +577,13 @@ func (e *Extension) dispatchLabelExplore(r *http.Request, expr *promqlExpr) *pro
 }
 
 // dispatchInstantQuery routes to the appropriate backend call based on the parsed expression.
-func (e *Extension) dispatchInstantQuery(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) *promQueryData {
+func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) *promQueryData {
 	span := trace.SpanFromContext(r.Context())
 
 	// Label exploration: "group by" without aggregation or rate function.
 	// Example: group by (client, connection_type, server) (traces_service_graph_request_total)
 	if len(expr.GroupBy) > 0 && expr.Aggregation == "" && expr.Function == "" {
-		return e.dispatchLabelExplore(r, expr)
+		return h.dispatchLabelExplore(r, expr)
 	}
 
 	// ── Data fetching ─────────────────────────────────────
@@ -593,7 +593,7 @@ func (e *Extension) dispatchInstantQuery(r *http.Request, expr *promqlExpr, eval
 	if expr.Function != "" && expr.RangeDuration > 0 {
 		// rate/increase/irate path: QueryFlat → group → compute rate.
 		// histogram_quantile is handled inside execRateInstant.
-		vectors = e.execRateInstant(r, expr, evalTime, labels, labelMatch)
+		vectors = h.execRateInstant(r, expr, evalTime, labels, labelMatch)
 		if vectors == nil {
 			vectors = []promVectorSample{}
 		}
@@ -611,11 +611,11 @@ func (e *Extension) dispatchInstantQuery(r *http.Request, expr *promqlExpr, eval
 			attribute.StringSlice("es.labels", flattenLabels(query.Labels)),
 		)
 
-		result, err := e.storageMetricReader.Query(r.Context(), query)
+		result, err := h.metricReader.Query(r.Context(), query)
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String(SpanAttrErrorType, "query"))
-			e.logger.Error("prom instant query failed", zap.Error(err))
+			h.logger.Error("prom instant query failed", zap.Error(err))
 			return nil
 		}
 
@@ -679,14 +679,14 @@ func (e *Extension) dispatchInstantQuery(r *http.Request, expr *promqlExpr, eval
 }
 
 // dispatchRangeQuery routes to the appropriate backend call based on the parsed expression.
-func (e *Extension) dispatchRangeQuery(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
 	span := trace.SpanFromContext(r.Context())
 
 	if expr.Function != "" && expr.RangeDuration > 0 {
 		// histogram_quantile + _bucket range query
 		if expr.HistogramSub == "bucket" && !math.IsNaN(expr.Quantile) {
 			defer span.SetAttributes(attribute.Int("promql.series_count", 0))
-			result := e.execHistogramQuantileRange(r, expr, start, end, step, labels, labelMatch)
+			result := h.execHistogramQuantileRange(r, expr, start, end, step, labels, labelMatch)
 			if result == nil {
 				return &promQueryData{ResultType: "matrix", Result: []promMatrixSample{}}
 			}
@@ -694,7 +694,7 @@ func (e *Extension) dispatchRangeQuery(r *http.Request, expr *promqlExpr, start,
 		}
 		// rate/increase/irate path: use QueryRaw to get original samples
 		defer span.SetAttributes(attribute.Int("promql.series_count", 0))
-		result := e.execRateRange(r, expr, start, end, step, labels, labelMatch)
+		result := h.execRateRange(r, expr, start, end, step, labels, labelMatch)
 		if result == nil {
 			return &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}}
 		}
@@ -720,11 +720,11 @@ func (e *Extension) dispatchRangeQuery(r *http.Request, expr *promqlExpr, start,
 		attribute.StringSlice(SpanAttrESGroupByFull, query.GroupBy),
 	)
 
-	result, err := e.storageMetricReader.QueryRange(r.Context(), query)
+	result, err := h.metricReader.QueryRange(r.Context(), query)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String(SpanAttrErrorType, "query_range"))
-		e.logger.Error("prom range query failed", zap.Error(err))
+		h.logger.Error("prom range query failed", zap.Error(err))
 		return nil
 	}
 
@@ -771,7 +771,7 @@ func flattenLabels(labels map[string]string) []string {
 // execRateRange handles rate/increase/irate range queries.
 // Uses QueryFlat (flat ES search, no top_hits limit) instead of QueryRaw
 // to avoid ES max_inner_result_window constraint on long time windows.
-func (e *Extension) execRateRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
 	// Extend time range back by the range duration for lookback.
 	lookbackStart := start.Add(-expr.RangeDuration)
 
@@ -782,16 +782,16 @@ func (e *Extension) execRateRange(r *http.Request, expr *promqlExpr, start, end 
 		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
-	flatResult, err := e.concurrentQueryFlat(r.Context(), flatQuery, e.logger)
+	flatResult, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
-		e.logger.Error("prom query_flat failed", zap.Error(err))
+		h.logger.Error("prom query_flat failed", zap.Error(err))
 		return nil
 	}
 	if flatResult == nil || len(flatResult.Samples) == 0 {
 		return nil
 	}
 
-	e.checkFlatTruncation(flatResult)
+	h.checkFlatTruncation(flatResult)
 
 	// Group samples by labels in Go (replaces ES-side composite aggregation).
 	sampleGroups := groupMetricSamplesByLabels(flatResult.Samples)
@@ -813,7 +813,7 @@ func (e *Extension) execRateRange(r *http.Request, expr *promqlExpr, start, end 
 			m[translateLabelToPromQL(k)] = v
 		}
 
-		values := e.computeRate(sg.Samples, start, end, step, expr)
+		values := h.computeRate(sg.Samples, start, end, step, expr)
 		matrix = append(matrix, promMatrixSample{
 			Metric: m,
 			Values: values,
@@ -832,10 +832,10 @@ func (e *Extension) execRateRange(r *http.Request, expr *promqlExpr, start, end 
 }
 
 // execRateInstant handles rate/increase/irate instant queries.
-func (e *Extension) execRateInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) []promVectorSample {
+func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) []promVectorSample {
 	// histogram_quantile + _bucket → aggregate bucket_counts and compute quantile.
 	if expr.HistogramSub == HistogramSubBucket && !math.IsNaN(expr.Quantile) {
-		return e.execHistogramQuantileInstant(r, expr, evalTime, labels, labelMatch)
+		return h.execHistogramQuantileInstant(r, expr, evalTime, labels, labelMatch)
 	}
 
 	// For instant query, look back from evalTime by the range duration.
@@ -850,16 +850,16 @@ func (e *Extension) execRateInstant(r *http.Request, expr *promqlExpr, evalTime 
 		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 	}
 
-	flatResult, err := e.concurrentQueryFlat(r.Context(), flatQuery, e.logger)
+	flatResult, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
-		e.logger.Error("prom query_flat failed", zap.Error(err))
+		h.logger.Error("prom query_flat failed", zap.Error(err))
 		return nil
 	}
 	if flatResult == nil || len(flatResult.Samples) == 0 {
 		return nil
 	}
 
-	e.checkFlatTruncation(flatResult)
+	h.checkFlatTruncation(flatResult)
 
 	// Group samples by labels in Go (replaces ES-side composite+painless aggregation).
 	sampleGroups := groupMetricSamplesByLabels(flatResult.Samples)
@@ -898,7 +898,7 @@ func (e *Extension) execRateInstant(r *http.Request, expr *promqlExpr, evalTime 
 // execHistogramQuantileInstant handles histogram_quantile(θ, rate(_bucket[...]))
 // by querying ES histogram documents via QueryFlat, grouping by labels in Go,
 // aggregating bucket_counts across time, and computing quantiles via linear interpolation.
-func (e *Extension) execHistogramQuantileInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) []promVectorSample {
+func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) []promVectorSample {
 	lookbackStart := evalTime.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
@@ -908,16 +908,16 @@ func (e *Extension) execHistogramQuantileInstant(r *http.Request, expr *promqlEx
 		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 	}
 
-	result, err := e.concurrentQueryFlat(r.Context(), flatQuery, e.logger)
+	result, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
-		e.logger.Error("histogram_quantile query_flat failed", zap.Error(err))
+		h.logger.Error("histogram_quantile query_flat failed", zap.Error(err))
 		return nil
 	}
 	if result == nil || len(result.Samples) == 0 {
 		return nil
 	}
 
-	e.checkFlatTruncation(result)
+	h.checkFlatTruncation(result)
 
 	// Group samples by labels in Go (replaces ES-side composite+painless script).
 	groups := groupSamplesByLabels(result.Samples)
@@ -982,7 +982,7 @@ func (e *Extension) execHistogramQuantileInstant(r *http.Request, expr *promqlEx
 
 // execHistogramQuantileRange handles histogram_quantile(θ, rate(_bucket[...]))
 // range queries by computing quantile at each step from a sliding window.
-func (e *Extension) execHistogramQuantileRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
@@ -992,16 +992,16 @@ func (e *Extension) execHistogramQuantileRange(r *http.Request, expr *promqlExpr
 		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
-	result, err := e.concurrentQueryFlat(r.Context(), flatQuery, e.logger)
+	result, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
-		e.logger.Error("histogram_quantile range query_flat failed", zap.Error(err))
+		h.logger.Error("histogram_quantile range query_flat failed", zap.Error(err))
 		return nil
 	}
 	if result == nil || len(result.Samples) == 0 {
 		return nil
 	}
 
-	e.checkFlatTruncation(result)
+	h.checkFlatTruncation(result)
 
 	// Group samples by labels in Go (replaces ES-side composite+painless script).
 	groups := groupSamplesByLabels(result.Samples)
@@ -1106,9 +1106,9 @@ func groupMetricSamplesByLabels(samples []observabilitystorageext.MetricSample) 
 
 // checkFlatTruncation logs a warning if QueryFlat returned fewer documents
 // than matched in ES (indicating data was truncated by MaxDocs limit).
-func (e *Extension) checkFlatTruncation(result *observabilitystorageext.MetricFlatResult) {
+func (h *promHandlers) checkFlatTruncation(result *observabilitystorageext.MetricFlatResult) {
 	if result.Total > int64(len(result.Samples)) {
-		e.logger.Warn("QueryFlat data truncated by MaxDocs limit",
+		h.logger.Warn("QueryFlat data truncated by MaxDocs limit",
 			zap.Int64("total_matching_in_es", result.Total),
 			zap.Int("returned", len(result.Samples)),
 		)
@@ -1116,7 +1116,7 @@ func (e *Extension) checkFlatTruncation(result *observabilitystorageext.MetricFl
 }
 
 // computeRate computes rate/increase/irate at each step point.
-func (e *Extension) computeRate(samples []observabilitystorageext.MetricSample, start, end time.Time, step time.Duration, expr *promqlExpr) [][]any {
+func (h *promHandlers) computeRate(samples []observabilitystorageext.MetricSample, start, end time.Time, step time.Duration, expr *promqlExpr) [][]any {
 	startMs := start.UnixMilli()
 	endMs := end.UnixMilli()
 	stepMs := step.Milliseconds()
@@ -2011,7 +2011,7 @@ func parseLabelList(s string) []string {
 
 // ── Response writers ────────────────────────────────
 
-func (e *Extension) writePromSuccess(w http.ResponseWriter, data any) {
+func (h *promHandlers) writePromSuccess(w http.ResponseWriter, data any) {
 	resp := promResponse{
 		Status: "success",
 		Data:   data,
@@ -2021,7 +2021,7 @@ func (e *Extension) writePromSuccess(w http.ResponseWriter, data any) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (e *Extension) writePromSuccessLabelList(w http.ResponseWriter, values []string) {
+func (h *promHandlers) writePromSuccessLabelList(w http.ResponseWriter, values []string) {
 	if values == nil {
 		values = []string{}
 	}
@@ -2034,7 +2034,7 @@ func (e *Extension) writePromSuccessLabelList(w http.ResponseWriter, values []st
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (e *Extension) writePromError(w http.ResponseWriter, errorType, message string) {
+func (h *promHandlers) writePromError(w http.ResponseWriter, errorType, message string) {
 	resp := promResponse{
 		Status:    "error",
 		ErrorType: errorType,
@@ -2098,7 +2098,7 @@ func parsePrometheusDuration(s string) (time.Duration, error) {
 // ── Utility helpers ────────────────────────────────
 
 // getQueryParam gets a query parameter from either query string or form body.
-func (e *Extension) getQueryParam(r *http.Request, key string) string {
+func (h *promHandlers) getQueryParam(r *http.Request, key string) string {
 	if err := r.ParseForm(); err != nil {
 		return ""
 	}

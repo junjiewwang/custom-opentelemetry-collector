@@ -133,7 +133,7 @@ type concurrentFlatResult struct {
 // If no splittable pattern is found, falls back to a single QueryFlat call.
 // This preserves correctness: the merged result is identical to a single query with
 // the original terms filter.
-func (e *Extension) concurrentQueryFlat(
+func (h *promHandlers) concurrentQueryFlat(
 	ctx context.Context,
 	flatQuery observabilitystorageext.MetricFlatQuery,
 	logger *zap.Logger,
@@ -144,13 +144,13 @@ func (e *Extension) concurrentQueryFlat(
 	candidate := findSplitCandidate(flatQuery.LabelMatch, cfg.MinTermsForSplit)
 	if candidate == nil {
 		// No splittable pattern — fall back to single query.
-		return e.storageMetricReader.QueryFlat(ctx, flatQuery)
+		return h.metricReader.QueryFlat(ctx, flatQuery)
 	}
 
 	numTerms := len(candidate.Values)
 	if numTerms > cfg.MaxConcurrency {
 		// Too many terms — fall back to single query to avoid goroutine explosion.
-		return e.storageMetricReader.QueryFlat(ctx, flatQuery)
+		return h.metricReader.QueryFlat(ctx, flatQuery)
 	}
 
 	logger.Debug("concurrent QueryFlat: splitting regex into parallel queries",
@@ -189,7 +189,7 @@ func (e *Extension) concurrentQueryFlat(
 				MaxDocs:     flatQuery.MaxDocs,
 			}
 
-			result, err := e.storageMetricReader.QueryFlat(ctx, subQuery)
+			result, err := h.metricReader.QueryFlat(ctx, subQuery)
 			if err != nil {
 				results[idx] = subResult{err: err}
 				return
