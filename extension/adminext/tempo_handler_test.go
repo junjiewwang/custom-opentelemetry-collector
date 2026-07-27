@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
@@ -473,7 +474,7 @@ func TestParseTempoSearchParams_IntrinsicFields(t *testing.T) {
 			params.Set("end", "1783935616")
 			req, _ := http.NewRequest("GET", "/api/search?"+params.Encode(), nil)
 
-			_, query, err := parseTempoSearchParams(req)
+			_, query, err := parseTempoSearchParams(req, zap.NewNop())
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.wantServiceName, query.ServiceName, "ServiceName mismatch")
@@ -532,7 +533,7 @@ func TestParseTempoSearchParams_DurationFilter(t *testing.T) {
 			params.Set("end", "1783935616")
 			req, _ := http.NewRequest("GET", "/api/search?"+params.Encode(), nil)
 
-			_, query, err := parseTempoSearchParams(req)
+			_, query, err := parseTempoSearchParams(req, zap.NewNop())
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.wantMinDuration, query.MinDuration, "MinDuration mismatch")
@@ -1147,7 +1148,7 @@ func TestParseTempoSearchParams_StructuralQueryRelaxesConditions(t *testing.T) {
 	params.Set("spss", "20")
 	req, _ := http.NewRequest("GET", "/api/search?"+params.Encode(), nil)
 
-	plan, query, err := parseTempoSearchParams(req)
+	plan, query, err := parseTempoSearchParams(req, zap.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, plan)
 

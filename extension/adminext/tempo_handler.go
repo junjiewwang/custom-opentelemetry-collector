@@ -492,7 +492,7 @@ func (h *tempoHandlers) handleTempoSearch(w http.ResponseWriter, r *http.Request
 
 	rawQuery := r.URL.RawQuery
 
-	plan, query, err := parseTempoSearchParams(r)
+	plan, query, err := parseTempoSearchParams(r, h.logger)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -811,7 +811,7 @@ func (h *tempoHandlers) handleTempoV2Search(w http.ResponseWriter, r *http.Reque
 
 	rawQuery := r.URL.RawQuery
 
-	_, query, err := parseTempoSearchParams(r)
+	_, query, err := parseTempoSearchParams(r, h.logger)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -2512,7 +2512,11 @@ func anyToTempoValue(v any) tempoAnyValue {
 // parseTempoSearchParams extracts Tempo search parameters from the request.
 // Tempo uses tags=service.name%3Dmy-svc, start/end in Unix seconds.
 // Returns the ExecutionPlan for structural queries (may be nil for simple queries).
-func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabilitystorageext.TraceQuery, error) {
+//
+// The logger is used to record when the unified AST parser fails and the
+// legacy fallback is invoked — this is the observability seam that tells us
+// when it is safe to delete the legacy parser.
+func parseTempoSearchParams(r *http.Request, logger *zap.Logger) (*traceql.ExecutionPlan, observabilitystorageext.TraceQuery, error) {
 	q := r.URL.Query()
 	query := observabilitystorageext.TraceQuery{
 		TimeRange: parseTempoTimeRange(r),
@@ -2594,6 +2598,14 @@ func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabil
 			}
 		} else if err != nil {
 			// Graceful degradation: if AST parser fails, fall back to legacy parser.
+			// Logged (not silent) so we can measure the production fallback trigger
+			// rate and decide when it is safe to remove the legacy parser.
+			if logger != nil {
+				logger.Warn("traceql AST parse failed, falling back to legacy parser",
+					zap.String("q", traceQL),
+					zap.Error(err),
+				)
+			}
 			andTags, orTags := parseTraceQLOrFilter(traceQL)
 			if andTags != nil {
 				for k, v := range andTags {
