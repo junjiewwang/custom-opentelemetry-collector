@@ -380,7 +380,7 @@ func TestParseTagValuesFilter(t *testing.T) {
 		{
 			name:   "multiple AND filters",
 			queryQ: `{resource.service.name="my-svc" && span.http.method="GET"}`,
-			want:   map[string]string{"service.name": "my-svc", "http.method": "GET"},
+			want:   map[string]string{"service.name": "my-svc", "span.http.method": "GET"},
 		},
 		{
 			name:   "empty q parameter",
@@ -402,7 +402,7 @@ func TestParseTagValuesFilter(t *testing.T) {
 				params.Set("q", tt.queryQ)
 			}
 			req, _ := http.NewRequest("GET", "/api/v2/search/tag/name/values?"+params.Encode(), nil)
-			got := parseTagValuesFilter(req)
+			got := parseTagValuesFilter(req, zap.NewNop())
 			if tt.want == nil {
 				assert.Empty(t, got)
 			} else {

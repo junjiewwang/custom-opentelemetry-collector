@@ -1302,7 +1302,7 @@ func (h *tempoHandlers) handleTempoV2SearchTagValues(w http.ResponseWriter, r *h
 	scope, tagKey := parseScopedTagName(tagName)
 
 	// Parse optional q parameter for filtering (e.g. {resource.service.name="tapm-api"}).
-	filterTags := parseTagValuesFilter(r)
+	filterTags := parseTagValuesFilter(r, h.logger)
 
 	// First try V1-style resolution (fast path: services, static lists).
 	// Only use fast path if no filter is specified (filters require backend query).
@@ -1472,16 +1472,62 @@ func (h *tempoHandlers) fetchTempoTagValues(r *http.Request, tagKey string, scop
 	return nil
 }
 
+// planToTagFilter collects all "=" (equality) conditions from an ExecutionPlan
+// into a flat tag filter map: key → value. Intrinsics (service.name/name/kind/
+// status) are projected to their unscoped Tempo tag names (so
+// resolveIntrinsicTagValuesWithFilter, which reads filterTags["service.name"],
+// keeps working); custom attributes keep their plan key (scoped, e.g.
+// "span.http.method" — more precise than the legacy unscoped form, and the
+// storage reader resolves either form).
+//
+// Non-"=" conditions (!=, =~, != nil) are intentionally excluded — the
+// tag-values filter only supports equality narrowing, matching the legacy
+// parser's behavior.
+//
+// Pure function: plan → map. Returns nil when there is nothing to filter on.
+func planToTagFilter(plan *traceql.ExecutionPlan) map[string]string {
+	if plan == nil {
+		return nil
+	}
+	var m map[string]string
+	add := func(k, v string) {
+		if v == "" {
+			return
+		}
+		if m == nil {
+			m = make(map[string]string)
+		}
+		m[k] = v
+	}
+	add("service.name", plan.ServiceName)
+	add("name", plan.OperationName)
+	add("kind", plan.SpanKind)
+	add("status", plan.Status)
+	for k, v := range plan.Tags {
+		add(k, v)
+	}
+	return m
+}
+
 // parseTagValuesFilter parses the optional `q` parameter in tag values requests.
 // Grafana sends: q={resource.service.name="tapm-api"} to filter tag values by service.
-// Returns the parsed AND conditions as a map (OR conditions not supported for tag value filtering).
-func parseTagValuesFilter(r *http.Request) map[string]string {
+// Returns the "=" AND conditions as a map (OR/regex/exists conditions are not
+// supported for tag-value filtering). Uses the unified AST parser; a parse
+// failure is logged and yields no filter (nil).
+func parseTagValuesFilter(r *http.Request, logger *zap.Logger) map[string]string {
 	rawQ := r.FormValue("q")
 	if rawQ == "" {
 		return nil
 	}
-	andTags, _ := parseTraceQLOrFilter(rawQ)
-	return andTags
+	ast, err := traceql.Parse(rawQ)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("tempo tag-values: failed to parse q filter, ignoring",
+				zap.String("q", rawQ), zap.Error(err))
+		}
+		return nil
+	}
+	return planToTagFilter(traceql.Plan(ast))
 }
 
 // fetchRootSpanTagValues is a helper that calls the given fetcher with the request's
