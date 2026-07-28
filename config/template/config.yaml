@@ -885,14 +885,37 @@ service:
     logs:
       level: info
       development: false  # Set to false to disable stack traces in warn logs
+      # Self-monitoring: export the collector's own logs back into the logs
+      # pipeline → observability_storage → ES. Mirrors telemetry.traces.processors.
+      # The self-monitoring token (resource.token below) lets these records pass
+      # the tokenauth processor on the logs pipeline.
+      processors:
+        - batch:
+            exporter:
+              otlp:
+                protocol: http/protobuf
+                endpoint: http://localhost:4318
     metrics:
       level: detailed
       readers:
-        - pull:
+        # Pull endpoint for scrapers (Prometheus/Grafana) — keep for ad-hoc inspection.
+        # - pull:
+        #     exporter:
+        #       prometheus:
+        #         host: 0.0.0.0
+        #         port: 8888
+        # Self-monitoring: push collector internal metrics (otelcol_*) into the
+        # metrics pipeline → observability_storage → ES. The periodic reader
+        # exports every interval (ms). resource.token below covers tokenauth.
+        # NOTE: otelcol_* metrics are high-cardinality (per receiver/exporter);
+        # if ES load/storage is a concern, lower metrics.level to "basic" or add
+        # metric views to filter.
+        - periodic:
             exporter:
-              prometheus:
-                host: 0.0.0.0
-                port: 8888
+              otlp:
+                protocol: http/protobuf
+                endpoint: http://localhost:4318
+            interval: 60000  # ms (60s)
     # Collector internal traces (OTel spans for adminext HTTP handlers, etc.).
     # Uses seed_apps (see controlplane config) for the "collector-self" built-in token,
     # so internal spans pass tokenauth and get stored to ES via the normal traces pipeline.
@@ -913,6 +936,7 @@ service:
                 protocol: http/protobuf
                 endpoint: http://localhost:4318
     resource:
-      # Inject the self-monitoring token so tokenauth processor allows these spans.
-      # Must match the seed_apps token in the controlplane config.
+      # Inject the self-monitoring token so tokenauth processor allows self-telemetry
+      # (traces AND metrics AND logs) on all three pipelines. Must match the
+      # seed_apps token in the controlplane config.
       token: collector-self-monitoring-token
