@@ -138,6 +138,46 @@ func (e *Evaluator) Evaluate(lq *LogQLQuery) *observabilitystorageext.LogQuery {
 		}
 	}
 
+	// PipelineLabelFilter → push to ES query (same as stream selector matchers).
+	// Without this, pipeline label filters like | trace_id="ID" are only applied
+	// as post-filters in filterLogsByPipeline (log path only). The metric path
+	// (SearchLogMetric) does NOT call filterLogsByPipeline, so the filter is
+	// silently skipped — causing metric queries to return unfiltered results.
+	// By pushing to ES query here, both log and metric paths apply the filter
+	// consistently at the ES level.
+	for _, stage := range lq.Pipeline {
+		if stage.Type != PipelineLabelFilter || stage.LabelFilter == nil {
+			continue
+		}
+		// Skip label filters that were already translated from label_format + contains.
+		if containsLabelNames != nil && containsLabelNames[stage.LabelFilter.Name] {
+			continue
+		}
+		m := stage.LabelFilter
+		switch m.Type {
+		case MatchEqual:
+			if q.Labels == nil {
+				q.Labels = make(map[string]string)
+			}
+			q.Labels[m.Name] = m.Value
+		case MatchNotEqual:
+			if q.LabelNot == nil {
+				q.LabelNot = make(map[string]string)
+			}
+			q.LabelNot[m.Name] = m.Value
+		case MatchRegex:
+			if q.LabelMatch == nil {
+				q.LabelMatch = make(map[string]string)
+			}
+			q.LabelMatch[m.Name] = m.Value
+		case MatchNotRegex:
+			if q.LabelNotMatch == nil {
+				q.LabelNotMatch = make(map[string]string)
+			}
+			q.LabelNotMatch[m.Name] = m.Value
+		}
+	}
+
 	return q
 }
 

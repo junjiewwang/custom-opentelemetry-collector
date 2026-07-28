@@ -307,3 +307,51 @@ func TestExtractContainsValue(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluate_PipelineLabelFilter verifies that PipelineLabelFilter stages
+// (e.g. | trace_id="ID") are pushed to the ES query (q.Labels), not just
+// left for post-filtering. This ensures both log and metric paths apply
+// the filter consistently.
+func TestEvaluate_PipelineLabelFilter(t *testing.T) {
+	lq := &LogQLQuery{
+		StreamSelector: StreamSelector{
+			Matchers: []LabelMatcher{{Name: "service_name", Type: MatchEqual, Value: "svc"}},
+		},
+		Pipeline: []PipelineStage{
+			{Type: PipelineLabelFilter, LabelFilter: &LabelMatcher{
+				Name: "trace_id", Type: MatchEqual, Value: "abc123",
+			}},
+		},
+	}
+	ev := &Evaluator{}
+	result := ev.Evaluate(lq)
+	assert.Equal(t, "svc", result.Labels["service_name"])
+	assert.Equal(t, "abc123", result.Labels["trace_id"], "PipelineLabelFilter should be pushed to q.Labels")
+}
+
+// TestEvaluate_PipelineLabelFilterSkipsContainsTranslated verifies that
+// PipelineLabelFilter for a label that was translated from label_format +
+// contains is NOT also pushed to q.Labels (would be redundant).
+func TestEvaluate_PipelineLabelFilterSkipsContainsTranslated(t *testing.T) {
+	lq := &LogQLQuery{
+		StreamSelector: StreamSelector{
+			Matchers: []LabelMatcher{{Name: "service_name", Type: MatchEqual, Value: "svc"}},
+		},
+		Pipeline: []PipelineStage{
+			{Type: PipelineLabelFormat, LabelFormat: &LabelMatcher{
+				Name:  "found",
+				Value: `{{ contains "ID" __line__ }}`,
+			}},
+			{Type: PipelineLabelFilter, LabelFilter: &LabelMatcher{
+				Name: "found", Type: MatchEqual, Value: "true",
+			}},
+		},
+	}
+	ev := &Evaluator{}
+	result := ev.Evaluate(lq)
+	// "found" should NOT be in Labels (it was translated to body match_phrase)
+	_, hasFound := result.Labels["found"]
+	assert.False(t, hasFound, "found label should be skipped (translated to match_phrase)")
+	// But the body query should contain the match_phrase
+	assert.Contains(t, result.Query, `"ID"`)
+}
