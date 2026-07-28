@@ -115,6 +115,11 @@ func (a *pgTraceReaderAdapter) ListRootSpanServices(ctx context.Context, timeRan
 	return nil, nil
 }
 
+func (a *pgTraceReaderAdapter) QueryTraceDurations(ctx context.Context, traceIDs []string, query TraceQuery) (map[string]int64, error) {
+	// PG provider: not yet implemented.
+	return nil, nil
+}
+
 func (a *pgTraceReaderAdapter) QueryTraceMetrics(ctx context.Context, query TraceMetricsQuery) (*TraceMetricsResult, error) {
 	// PG provider: trace metrics not yet implemented.
 	return nil, fmt.Errorf("QueryTraceMetrics not implemented for PostgreSQL provider")

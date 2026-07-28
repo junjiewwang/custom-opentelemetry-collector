@@ -1507,3 +1507,32 @@ func TestParse_NonMetricsQueryHasNoMetricsStage(t *testing.T) {
 	plan := Plan(ast)
 	assert.Nil(t, plan.MetricsStage)
 }
+
+// TestPlan_TraceDuration verifies that traceDuration conditions are extracted
+// into TraceMinDuration/TraceMaxDuration (not MinDuration/MaxDuration), and
+// that span-level duration and trace-level traceDuration don't cross-contaminate.
+func TestPlan_TraceDuration(t *testing.T) {
+	tests := []struct {
+		q                  string
+		minDur             time.Duration
+		maxDur             time.Duration
+		traceMinDur        time.Duration
+		traceMaxDur        time.Duration
+	}{
+		{`{traceDuration>1.2s}`, 0, 0, 1200 * time.Millisecond, 0},
+		{`{duration>1.2s}`, 1200 * time.Millisecond, 0, 0, 0},
+		{`{traceDuration<500ms}`, 0, 0, 0, 500 * time.Millisecond},
+		{`{traceDuration>1s && duration<100ms}`, 0, 100 * time.Millisecond, 1 * time.Second, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.q, func(t *testing.T) {
+			ast, err := Parse(tt.q)
+			require.NoError(t, err)
+			p := Plan(ast)
+			assert.Equal(t, tt.minDur, p.MinDuration, "span MinDuration")
+			assert.Equal(t, tt.maxDur, p.MaxDuration, "span MaxDuration")
+			assert.Equal(t, tt.traceMinDur, p.TraceMinDuration, "trace TraceMinDuration")
+			assert.Equal(t, tt.traceMaxDur, p.TraceMaxDuration, "trace TraceMaxDuration")
+		})
+	}
+}

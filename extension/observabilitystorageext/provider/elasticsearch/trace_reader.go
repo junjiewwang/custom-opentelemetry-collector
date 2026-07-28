@@ -185,6 +185,79 @@ func (r *TraceReader) SearchTraceSummaries(ctx context.Context, query TraceQuery
 	return r.parseTraceSummaryResult(resp, query.Offset, limit)
 }
 
+// QueryTraceDurations computes the wall-clock duration (max(endTime) -
+// min(startTime) across all spans) for each trace in traceIDs.
+// Returns a map of traceID → duration in nanoseconds.
+func (r *TraceReader) QueryTraceDurations(ctx context.Context, traceIDs []string, query TraceQuery) (map[string]int64, error) {
+	if len(traceIDs) == 0 {
+		return nil, nil
+	}
+
+	aggSize := len(traceIDs)
+	if aggSize > MaxResultWindow {
+		aggSize = MaxResultWindow
+	}
+
+	searchReq := &SearchRequest{
+		Query: esq.NewBuilder().
+			Raw(esq.TimeRangeFilter(FieldStartTimeUnixNano, query.TimeRange)).
+			Raw(esq.TermsQ(FieldTraceID, traceIDs)).
+			Build(),
+		Size: 0,
+		Aggregations: map[string]any{
+			"traces": map[string]any{
+				"terms": map[string]any{
+					"field": FieldTraceID,
+					"size":  aggSize,
+				},
+				"aggs": map[string]any{
+					"min_start": map[string]any{
+						"min": map[string]any{"field": FieldStartTimeUnixNano},
+					},
+					"max_end": map[string]any{
+						"max": map[string]any{"field": FieldEndTimeUnixNano},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("trace duration query failed: %w", err)
+	}
+
+	raw, ok := resp.Aggregations["traces"]
+	if !ok {
+		return nil, nil
+	}
+
+	var agg struct {
+		Buckets []struct {
+			Key     string `json:"key"`
+			MinStart struct {
+				Value float64 `json:"value"`
+			} `json:"min_start"`
+			MaxEnd struct {
+				Value float64 `json:"value"`
+			} `json:"max_end"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(raw, &agg); err != nil {
+		return nil, fmt.Errorf("parse trace duration agg: %w", err)
+	}
+
+	durations := make(map[string]int64, len(agg.Buckets))
+	for _, b := range agg.Buckets {
+		// min/max return nil (0 in Go float64) when no docs match; skip those.
+		if b.MinStart.Value == 0 || b.MaxEnd.Value == 0 {
+			continue
+		}
+		durations[b.Key] = int64(b.MaxEnd.Value) - int64(b.MinStart.Value)
+	}
+	return durations, nil
+}
+
 // parseTraceSummaryResult extracts TraceSummary entries from the aggregation response.
 func (r *TraceReader) parseTraceSummaryResult(resp *SearchResponse, offset, limit int) (*TraceSummaryResult, error) {
 	raw, ok := resp.Aggregations["traces"]

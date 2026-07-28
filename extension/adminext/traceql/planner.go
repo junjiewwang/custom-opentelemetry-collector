@@ -46,9 +46,15 @@ type ExecutionPlan struct {
 	// IsRoot indicates the query filters for root spans (nestedSetParent<0 or parentSpanId="").
 	IsRoot bool
 
-	// MinDuration / MaxDuration extracted from duration conditions.
+	// MinDuration / MaxDuration extracted from span-level duration conditions.
 	MinDuration time.Duration
 	MaxDuration time.Duration
+
+	// TraceMinDuration / TraceMaxDuration extracted from traceDuration (or
+	// trace-scoped duration) conditions. These are trace-level filters that
+	// require a post-filter step (compute max(endTime)-min(startTime) per trace).
+	TraceMinDuration time.Duration
+	TraceMaxDuration time.Duration
 
 	// EventTags are conditions scoped to the event scope (e.g., event:name = "exception").
 	// These require ES nested queries on the events field.
@@ -567,8 +573,23 @@ func (p *ExecutionPlan) extractCondition(cond Condition) {
 			}
 		}
 
-	// ── Intrinsic: duration (span or trace scope) ──
-	case key == IntrinsicDuration && (cond.Scope == "" || cond.Scope == "trace"):
+	// ── Intrinsic: traceDuration (trace-level duration) ──
+	// traceDuration = max(endTimeUnixNano) - min(startTimeUnixNano) across all
+	// spans in a trace. Requires a post-filter step (two-step ES aggregation).
+	// Also handles trace-scoped duration (trace:duration) which is equivalent.
+	case key == IntrinsicTraceDuration && (cond.Scope == "" || cond.Scope == "trace"),
+		key == IntrinsicDuration && cond.Scope == "trace":
+		if d, ok := cond.Value.(time.Duration); ok {
+			switch cond.Operator {
+			case ">", ">=":
+				p.TraceMinDuration = d
+			case "<", "<=":
+				p.TraceMaxDuration = d
+			}
+		}
+
+	// ── Intrinsic: duration (span-level, unscoped only) ──
+	case key == IntrinsicDuration && cond.Scope == "":
 		if d, ok := cond.Value.(time.Duration); ok {
 			switch cond.Operator {
 			case ">", ">=":

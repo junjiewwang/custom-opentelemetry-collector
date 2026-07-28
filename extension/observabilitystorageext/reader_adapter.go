@@ -235,6 +235,14 @@ func (a *traceReaderAdapter) ListRootSpanServices(ctx context.Context, timeRange
 	return a.inner.ListRootSpanServices(ctx, elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}, appID)
 }
 
+func (a *traceReaderAdapter) QueryTraceDurations(ctx context.Context, traceIDs []string, query TraceQuery) (map[string]int64, error) {
+	q := storedmodel.TraceQuery{
+		AppID:     query.AppID,
+		TimeRange: storedmodel.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+	}
+	return a.inner.QueryTraceDurations(ctx, traceIDs, q)
+}
+
 func (a *traceReaderAdapter) QueryTraceMetrics(ctx context.Context, query TraceMetricsQuery) (*TraceMetricsResult, error) {
 	esQuery := elasticsearch.TraceMetricsQuery{
 		AppID:         query.AppID,

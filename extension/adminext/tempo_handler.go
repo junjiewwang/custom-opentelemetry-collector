@@ -509,12 +509,28 @@ func (h *tempoHandlers) handleTempoSearch(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// traceDuration post-filter: over-fetch to compensate for post-filtering.
+	originalLimit := query.Limit
+	hasTraceDurationFilter := plan != nil && (plan.TraceMinDuration > 0 || plan.TraceMaxDuration > 0)
+	if hasTraceDurationFilter {
+		query.Limit *= traceDurationOverfetchFactor
+	}
+
 	// Lightweight search — returns only root info + first spss spans per trace.
 	result, err := h.traceReader.SearchTraceSummaries(r.Context(), query, spss)
 	if err != nil {
 		h.logger.Error("tempo search failed", zap.String("query", rawQuery), zap.Error(err))
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// Apply traceDuration post-filter (before structural, to reduce its work).
+	if hasTraceDurationFilter {
+		result.Summaries = h.filterByTraceDuration(r.Context(), result.Summaries, plan, query)
+		if len(result.Summaries) > originalLimit {
+			result.Summaries = result.Summaries[:originalLimit]
+		}
+		query.Limit = originalLimit // restore for structural post-filter
 	}
 
 	// If the query has structural operators, do two-phase evaluation:
@@ -565,6 +581,58 @@ func (h *tempoHandlers) handleTempoSearch(w http.ResponseWriter, r *http.Request
 		zap.Int("returned", len(searchTraces)),
 		zap.Int64("total", result.Total),
 	)
+}
+
+// traceDurationOverfetchFactor controls how many extra candidate traces to
+// fetch when a traceDuration post-filter is active. Post-filtering reduces
+// the result set, so we over-fetch to compensate.
+const traceDurationOverfetchFactor = 5
+
+// filterByTraceDuration post-filters candidate trace summaries by their actual
+// wall-clock duration (max(endTime) - min(startTime) across all spans). This is
+// a two-step process: the ES search (Step 1) finds candidates by span-level
+// filters; this method (Step 2) queries ES for per-trace min/max times, computes
+// the real trace duration, and filters. On error, returns candidates unfiltered
+// (robustness — never block the search on a post-filter failure).
+func (h *tempoHandlers) filterByTraceDuration(ctx context.Context, summaries []observabilitystorageext.TraceSummary, plan *traceql.ExecutionPlan, query observabilitystorageext.TraceQuery) []observabilitystorageext.TraceSummary {
+	if len(summaries) == 0 {
+		return summaries
+	}
+
+	traceIDs := make([]string, 0, len(summaries))
+	for _, s := range summaries {
+		traceIDs = append(traceIDs, s.TraceID)
+	}
+
+	durations, err := h.traceReader.QueryTraceDurations(ctx, traceIDs, query)
+	if err != nil {
+		h.logger.Warn("traceDuration filter failed, returning unfiltered", zap.Error(err))
+		return summaries
+	}
+
+	filtered := make([]observabilitystorageext.TraceSummary, 0, len(summaries))
+	for _, s := range summaries {
+		dur, ok := durations[s.TraceID]
+		if !ok {
+			// Trace not in duration map (no spans in range?) — keep it.
+			filtered = append(filtered, s)
+			continue
+		}
+		if plan.TraceMinDuration > 0 && dur < int64(plan.TraceMinDuration) {
+			continue
+		}
+		if plan.TraceMaxDuration > 0 && dur > int64(plan.TraceMaxDuration) {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+
+	h.logger.Debug("traceDuration post-filter applied",
+		zap.Int("candidates", len(summaries)),
+		zap.Int("filtered", len(filtered)),
+	)
+
+	return filtered
 }
 
 // structuralPostFilter performs two-phase evaluation for queries with structural operators.

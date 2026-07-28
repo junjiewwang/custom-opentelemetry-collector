@@ -160,6 +160,13 @@ type TraceReader interface {
 	// ListRootSpanServices returns distinct root span service names for the given time range.
 	// Used for the Tempo tag values endpoint for trace:rootService.
 	ListRootSpanServices(ctx context.Context, timeRange TimeRange, appID string) ([]string, error)
+
+	// QueryTraceDurations computes the wall-clock duration (max(endTime) -
+	// min(startTime) across all spans) for each trace in traceIDs.
+	// Returns a map of traceID → duration in nanoseconds. Traces with no spans
+	// in the query's time range are omitted from the map.
+	// Used by the traceDuration post-filter in the Tempo search path.
+	QueryTraceDurations(ctx context.Context, traceIDs []string, query TraceQuery) (map[string]int64, error)
 }
 
 // SpanReader queries trace spans from storage in the canonical StoredSpan format.
