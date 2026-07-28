@@ -296,7 +296,7 @@ func (l *Lexer) readNumber(pos int) (Token, error) {
 
 func (l *Lexer) readIdent(pos int) (Token, error) {
 	start := l.pos
-	for l.pos < len(l.input) && (isIdentChar(rune(l.input[l.pos])) || l.input[l.pos] == '.') {
+	for l.pos < len(l.input) && (isIdentChar(rune(l.input[l.pos])) || l.input[l.pos] == '.' || l.input[l.pos] == ':') {
 		l.pos++
 	}
 	literal := l.input[start:l.pos]
