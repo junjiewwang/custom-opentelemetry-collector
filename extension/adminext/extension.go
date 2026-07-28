@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 
-	"go.opentelemetry.io/collector/custom/extension/adminext/observability"
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
@@ -70,11 +69,7 @@ type Extension struct {
 	// WebSocket token manager for secure WS authentication
 	wsTokenMgr WSTokenManager
 
-	// Observability query interfaces (Trace + Metric) — Legacy proxy mode
-	traceReader  observability.TraceReader
-	metricReader observability.MetricReader
-
-	// Observability storage extension — New unified mode (structured responses)
+	// Observability storage extension — unified mode (structured responses)
 	observabilityStorage *observabilitystorageext.ObservabilityStorage
 	storageTraceReader   observabilitystorageext.TraceReader
 	storageMetricReader  observabilitystorageext.MetricReader
@@ -540,19 +535,9 @@ func (e *Extension) initObservability(host component.Host) error {
 		return fmt.Errorf("observability storage extension %q not found", e.config.Observability.StorageExtension)
 	}
 
-	// Fallback: legacy proxy mode (Jaeger + Prometheus)
-	if e.config.Observability.Jaeger.Endpoint != "" {
-		e.traceReader = observability.NewJaegerTraceReader(e.logger, e.config.Observability.Jaeger.Endpoint)
-		e.logger.Info("Trace reader initialized (Jaeger legacy proxy)",
-			zap.String("endpoint", e.config.Observability.Jaeger.Endpoint),
-		)
-	}
-	if e.config.Observability.Prometheus.Endpoint != "" {
-		e.metricReader = observability.NewPrometheusMetricReader(e.logger, e.config.Observability.Prometheus.Endpoint)
-		e.logger.Info("Metric reader initialized (Prometheus legacy proxy)",
-			zap.String("endpoint", e.config.Observability.Prometheus.Endpoint),
-		)
-	}
+	// No storage_extension configured — observability query API stays disabled.
+	// (The legacy Jaeger/Prometheus proxy mode has been removed; the unified
+	// observability_storage extension is the only supported backend.)
 	return nil
 }
 

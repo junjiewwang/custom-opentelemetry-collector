@@ -15,36 +15,13 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
-// ObservabilityConfig defines the configuration for observability query backends.
-// When StorageExtension is set, the new unified storage Reader interfaces are used
-// (structured JSON responses). Otherwise, falls back to legacy Jaeger/Prometheus proxying.
+// ObservabilityConfig defines the configuration for the observability query API.
+// The unified observability_storage extension is the only supported backend
+// (structured JSON responses via TraceReader/MetricReader/LogReader/StorageAdmin).
 type ObservabilityConfig struct {
-	// StorageExtension is the name of the observability_storage extension to use for Reader interfaces.
+	// StorageExtension is the name of the observability_storage extension to use.
 	// When set, TraceReader/MetricReader/LogReader are obtained from this extension.
-	// This is the recommended approach (replaces legacy Jaeger/Prometheus proxy mode).
 	StorageExtension string `mapstructure:"storage_extension"`
-
-	// Jaeger query backend configuration (legacy proxy mode).
-	// Only used when StorageExtension is not set.
-	Jaeger JaegerQueryConfig `mapstructure:"jaeger"`
-
-	// Prometheus query backend configuration (legacy proxy mode).
-	// Only used when StorageExtension is not set.
-	Prometheus PrometheusQueryConfig `mapstructure:"prometheus"`
-}
-
-// JaegerQueryConfig defines Jaeger query API endpoint.
-type JaegerQueryConfig struct {
-	// Endpoint is the Jaeger Query HTTP API base URL.
-	// Example: "http://jaeger-query:16686"
-	Endpoint string `mapstructure:"endpoint"`
-}
-
-// PrometheusQueryConfig defines Prometheus query API endpoint.
-type PrometheusQueryConfig struct {
-	// Endpoint is the Prometheus HTTP API base URL.
-	// Example: "http://prometheus:9090"
-	Endpoint string `mapstructure:"endpoint"`
 }
 
 // Config defines the configuration for the admin extension.

@@ -203,12 +203,11 @@ func (e *Extension) newRouter() http.Handler {
 		// ============================================================================
 		// Observability Query API (Trace + Metric + Log + Admin)
 		//
-		// Two modes:
-		//   1. Storage Extension mode (preferred): structured JSON responses from ES Reader
-		//   2. Legacy Proxy mode: raw proxying to Jaeger/Prometheus (backward compatible)
+		// One mode: Storage Extension mode — structured JSON responses from the
+		// observability_storage Reader. The legacy Jaeger/Prometheus proxy mode
+		// has been removed.
 		// ============================================================================
 		obsV2 := newObsV2Handlers(e)
-		obsLegacy := newObsLegacyHandlers(e)
 		r.Route("/observability", func(r chi.Router) {
 			// --- Trace 查询 ---
 			if e.storageTraceReader != nil {
@@ -220,15 +219,6 @@ func (e *Extension) newRouter() http.Handler {
 					r.Get("/{traceID}", obsV2.handleGetTraceV2)
 				})
 				r.Get("/dependencies", obsV2.handleGetDependenciesV2)
-			} else if e.traceReader != nil {
-				// Legacy mode: raw proxy to Jaeger
-				r.Route("/traces", func(r chi.Router) {
-					r.Get("/", obsLegacy.handleSearchTraces)
-					r.Get("/services", obsLegacy.handleGetTraceServices)
-					r.Get("/services/{service}/operations", obsLegacy.handleGetTraceOperations)
-					r.Get("/{traceID}", obsLegacy.handleGetTrace)
-				})
-				r.Get("/dependencies", obsLegacy.handleGetDependencies)
 			}
 
 			// --- Metric 查询 ---
@@ -240,16 +230,6 @@ func (e *Extension) newRouter() http.Handler {
 					r.Get("/names", obsV2.handleMetricNamesV2)
 					r.Get("/labels", obsV2.handleMetricLabelsV2)
 					r.Get("/labels/{labelName}/values", obsV2.handleMetricLabelValuesV2)
-				})
-			} else if e.metricReader != nil {
-				// Legacy mode: raw proxy to Prometheus
-				r.Route("/metrics", func(r chi.Router) {
-					r.Get("/query", obsLegacy.handleMetricQuery)
-					r.Get("/query_range", obsLegacy.handleMetricQueryRange)
-					r.Get("/labels", obsLegacy.handleMetricLabels)
-					r.Get("/labels/{labelName}/values", obsLegacy.handleMetricLabelValues)
-					r.Get("/series", obsLegacy.handleMetricSeries)
-					r.Get("/metadata", obsLegacy.handleMetricMetadata)
 				})
 			}
 

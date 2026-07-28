@@ -441,14 +441,9 @@ extensions:
     #      Set jaeger/prometheus endpoints to proxy raw responses
     # When storage_extension is set, jaeger/prometheus endpoints are ignored.
     observability:
-      # Preferred: use unified storage extension for all observability queries
+      # Unified storage extension is the only supported observability backend.
       storage_extension: "observability_storage"
-      # Legacy proxy endpoints (only used when storage_extension is empty)
-      jaeger:
-        endpoint: "[[ .Service.jaeger_query.url ]]"
-      prometheus:
-        endpoint: "[[ .Service.prometheus_server.query_url ]]"
-    
+
     # NOTE: The following component configs are only used when controlplane_extension is NOT set.
     # When controlplane_extension is set, these are ignored and components are reused from controlplane.
     #

@@ -25,15 +25,3 @@ func TestObsV2Handler_NoAdmin(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Storage admin not available")
 }
-
-// TestObsLegacyHandler_NoTraceReader proves obsLegacyHandlers is dependency-injected.
-func TestObsLegacyHandler_NoTraceReader(t *testing.T) {
-	h := &obsLegacyHandlers{logger: zap.NewNop()} // traceReader == nil
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/observability/traces", nil)
-	rr := httptest.NewRecorder()
-	h.handleSearchTraces(rr, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
-	assert.Contains(t, rr.Body.String(), "Trace query backend not configured")
-}
