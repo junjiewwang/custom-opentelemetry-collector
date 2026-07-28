@@ -1465,3 +1465,45 @@ func TestMatchSpanFilter_StatusMessageRegex(t *testing.T) {
 	assert.False(t, MatchSpanFilter(sf, &SpanData{SpanID: "3", StatusMessage: "ok"}))
 }
 
+
+// TestParse_MetricsStage covers all supported TraceQL metrics functions
+// (rate, count_over_time, quantile_over_time, histogram_over_time) producing a
+// MetricsStage with the correct Function/ByLabels/Percentiles/Field.
+func TestParse_MetricsStage(t *testing.T) {
+	tests := []struct {
+		q           string
+		fn          MetricsFunc
+		byLabels    []string
+		percentiles []float64
+		field       string
+	}{
+		{`{status="error"} | rate()`, MetricsRate, nil, nil, ""},
+		{`{status="error"} | rate() by (span.http.status_code)`, MetricsRate, []string{"span.http.status_code"}, nil, ""},
+		{`{status="error"} | count_over_time()`, MetricsCountOverTime, nil, nil, ""},
+		{`{status="error"} | count_over_time() by (rootServiceName)`, MetricsCountOverTime, []string{"rootServiceName"}, nil, ""},
+		{`{resource.service.name="x"} | quantile_over_time(duration, 0.95)`, MetricsQuantileOverTime, nil, []float64{0.95}, "duration"},
+		{`{resource.service.name="x"} | histogram_over_time(duration)`, MetricsHistogramOverTime, nil, nil, "duration"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.q, func(t *testing.T) {
+			ast, err := Parse(tt.q)
+			assert.NoError(t, err)
+			plan := Plan(ast)
+			require.NotNil(t, plan.MetricsStage, "MetricsStage must be set for a metrics query")
+			ms := plan.MetricsStage
+			assert.Equal(t, tt.fn, ms.Function)
+			assert.Equal(t, tt.byLabels, ms.ByLabels)
+			assert.Equal(t, tt.percentiles, ms.Percentiles)
+			assert.Equal(t, tt.field, ms.Field)
+		})
+	}
+}
+
+// TestParse_NonMetricsQueryHasNoMetricsStage verifies that a query without a
+// metrics pipeline stage yields no MetricsStage (so the metrics endpoint can 400).
+func TestParse_NonMetricsQueryHasNoMetricsStage(t *testing.T) {
+	ast, err := Parse(`{status="error"}`)
+	assert.NoError(t, err)
+	plan := Plan(ast)
+	assert.Nil(t, plan.MetricsStage)
+}

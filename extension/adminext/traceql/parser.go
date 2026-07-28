@@ -336,7 +336,7 @@ func (p *Parser) parsePipelineStage() (PipelineStage, error) {
 		return p.parseSelectStage()
 	case TokenCount:
 		return p.parseCountStage()
-	case TokenRate, TokenQuantileOverTime, TokenHistogramOverTime:
+	case TokenRate, TokenCountOverTime, TokenQuantileOverTime, TokenHistogramOverTime:
 		return p.parseMetricsStage()
 	}
 	// Unknown stage — skip tokens until next | or EOF as graceful degradation.
@@ -429,12 +429,14 @@ func (p *Parser) parseMetricsStage() (*MetricsStage, error) {
 	switch tok.Type {
 	case TokenRate:
 		fn = MetricsRate
+	case TokenCountOverTime:
+		fn = MetricsCountOverTime
 	case TokenQuantileOverTime:
 		fn = MetricsQuantileOverTime
 	case TokenHistogramOverTime:
 		fn = MetricsHistogramOverTime
 	default:
-		return nil, fmt.Errorf("expected rate/quantile_over_time/histogram_over_time at position %d", tok.Pos)
+		return nil, fmt.Errorf("expected rate/count_over_time/quantile_over_time/histogram_over_time at position %d", tok.Pos)
 	}
 	p.advance() // consume function name
 

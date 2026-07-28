@@ -218,17 +218,6 @@ type tempoMetricSample struct {
 	Value       float64 `json:"value"`
 }
 
-// ── TraceQL Metrics Query Parsed ────────────────────
-
-// traceqlMetricsQuery holds parsed TraceQL metrics query components.
-type traceqlMetricsQuery struct {
-	Tags       map[string]string // filter conditions
-	TagsOr     [][]map[string]string // OR filter groups (||), outer groups ANDed
-	Function   string            // rate, count_over_time, quantile_over_time, etc.
-	FuncParam  float64           // function parameter (e.g. quantile 0.95)
-	GroupBy    []string          // by(labels)
-}
-
 // ── Static Data ────────────────────────────────────
 
 // intrinsic tags that Grafana Tempo expects.
@@ -1621,11 +1610,9 @@ func parseTempoMetricsStep(r *http.Request, timeRange observabilitystorageext.Ti
 // ── Handler: /api/metrics/query_range (TraceQL Metrics) ──
 
 // handleTempoMetricsQueryRange handles GET /api/metrics/query_range.
-// Two execution paths:
-//  1. Primary (real-time): Parse TraceQL via AST, use TraceReader.QueryTraceMetrics
-//     to aggregate directly from raw spans. This always works if traces exist.
-//  2. Fallback: Use pre-aggregated spanmetrics via MetricReader.QueryRange.
-//     Only used when AST parsing fails AND MetricReader is available.
+// TraceQL is parsed once via the unified AST parser; the resulting MetricsStage
+// is dispatched to the TraceReader (real-time aggregation from raw spans) when
+// available, otherwise to the MetricReader (pre-aggregated spanmetrics).
 func (h *tempoHandlers) handleTempoMetricsQueryRange(w http.ResponseWriter, r *http.Request) {
 	rawQ := r.FormValue("q")
 	if rawQ == "" {
@@ -1637,62 +1624,54 @@ func (h *tempoHandlers) handleTempoMetricsQueryRange(w http.ResponseWriter, r *h
 	timeRange := parseTempoTimeRange(r)
 	step := parseTempoMetricsStep(r, timeRange)
 
-	// ── Primary path: AST parser + TraceReader real-time aggregation ──
-	// This handles all TraceQL intrinsics (nestedSetParent<0, status, duration, etc.)
-	// correctly via the unified planner.
-	if h.traceReader != nil {
-		ast, err := traceql.Parse(rawQ)
-		if err == nil && ast != nil {
-			plan := traceql.Plan(ast)
-			// Use the primary (AST+plan) path whenever:
-			//   1. The query has a metrics pipeline stage, OR
-			//   2. The query uses conditions not handled by the legacy parser:
-			//      - Intrinsics: rootName/rootServiceName
-			//      - != nil: TagsExists
-			//      - != value: TagsNot
-			//      - =~ regex: TagsRegex
-			if plan != nil && plan.MetricsStage != nil {
-				h.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
-				return
-			}
-			needsPrimary := plan != nil && (plan.RootName != "" ||
-				plan.RootService != "" ||
-				len(plan.TagsExists) > 0 ||
-				len(plan.TagsNot) > 0 ||
-				len(plan.TagsRegex) > 0)
-			if needsPrimary {
-				parsed, perr := parseTraceQLMetricsQuery(rawQ)
-				if perr == nil && parsed.Function != "" {
-					plan.MetricsStage = &traceql.MetricsStage{
-						Function: traceql.MetricsFunc(parsed.Function),
-						ByLabels: parsed.GroupBy,
-					}
-					plan.HasMetrics = true
-					h.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
-					return
-				}
-			}
-		}
-	}
-
-	// ── Fallback path: pre-aggregated spanmetrics via MetricReader ──
-	if h.metricReader == nil {
-		h.writeError(w, http.StatusServiceUnavailable, "Metric reader not available")
-		return
-	}
-
-	// Parse using legacy parser for MetricReader path.
-	parsed, err := parseTraceQLMetricsQuery(rawQ)
+	ast, err := traceql.Parse(rawQ)
 	if err != nil {
 		h.logger.Warn("tempo metrics: invalid query", zap.String("q", rawQ), zap.Error(err))
 		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid TraceQL metrics query: %v", err))
 		return
 	}
+	plan := traceql.Plan(ast)
+	if plan == nil || plan.MetricsStage == nil {
+		h.writeError(w, http.StatusBadRequest,
+			"not a TraceQL metrics query: missing rate()/count_over_time()/quantile_over_time()/histogram_over_time()")
+		return
+	}
 
-	// Build MetricRangeQuery from parsed TraceQL.
-	labels := translateTraceQLLabels(parsed.Tags)
-	metricName := translateTraceQLMetric(parsed.Function)
-	aggregation := selectMetricsAggregation(parsed.Function, parsed.FuncParam)
+	// Prefer real-time aggregation from raw spans (TraceReader); fall back to
+	// pre-aggregated spanmetrics (MetricReader) when only that is available.
+	if h.traceReader != nil {
+		h.executeTempoMetricsQueryRange(w, r, plan, timeRange, step)
+		return
+	}
+	if h.metricReader != nil {
+		h.executeTempoMetricsViaMetricReader(w, r, plan, timeRange, step)
+		return
+	}
+	h.writeError(w, http.StatusServiceUnavailable, "no metrics reader available")
+}
+
+// metricsFuncParam returns the numeric parameter of a metrics function (the
+// quantile for quantile_over_time); 0 for functions without a parameter.
+func metricsFuncParam(ms *traceql.MetricsStage) float64 {
+	if len(ms.Percentiles) > 0 {
+		return ms.Percentiles[0]
+	}
+	return 0
+}
+
+// executeTempoMetricsViaMetricReader runs a TraceQL metrics query against
+// pre-aggregated spanmetrics via the MetricReader and writes the response in
+// Tempo /api/metrics/query_range format. planToTagFilter supplies the equality
+// filter labels (intrinsics + custom attrs) the same way the legacy parser did.
+func (h *tempoHandlers) executeTempoMetricsViaMetricReader(w http.ResponseWriter, r *http.Request, plan *traceql.ExecutionPlan, timeRange observabilitystorageext.TimeRange, step time.Duration) {
+	ms := plan.MetricsStage
+	funcStr := string(ms.Function)
+	param := metricsFuncParam(ms)
+
+	// Build MetricRangeQuery from the plan.
+	labels := translateTraceQLLabels(planToTagFilter(plan))
+	metricName := translateTraceQLMetric(funcStr)
+	aggregation := selectMetricsAggregation(funcStr, param)
 
 	query := observabilitystorageext.MetricRangeQuery{
 		MetricName:  metricName,
@@ -1700,18 +1679,17 @@ func (h *tempoHandlers) handleTempoMetricsQueryRange(w http.ResponseWriter, r *h
 		TimeRange:   timeRange,
 		Step:        step,
 		Aggregation: aggregation,
-		GroupBy:     parsed.GroupBy,
+		GroupBy:     ms.ByLabels,
 		Fill:        "null",
 	}
 
-	h.logger.Debug("tempo metrics: executing via MetricReader (fallback)",
+	h.logger.Debug("tempo metrics: executing via MetricReader",
 		zap.String("metric", metricName),
-		zap.String("function", parsed.Function),
-		zap.Float64("param", parsed.FuncParam),
+		zap.String("function", funcStr),
+		zap.Float64("param", param),
 		zap.String("aggregation", aggregation),
-		zap.Strings("groupBy", parsed.GroupBy),
+		zap.Strings("groupBy", query.GroupBy),
 		zap.Any("labels", labels),
-		zap.Int("or_groups", len(parsed.TagsOr)),
 	)
 
 	result, err := h.metricReader.QueryRange(r.Context(), query)
@@ -1724,7 +1702,7 @@ func (h *tempoHandlers) handleTempoMetricsQueryRange(w http.ResponseWriter, r *h
 	// Normalize duration units to seconds (Tempo protocol standard).
 	// MetricReader returns duration values in milliseconds; unitconv handles the conversion.
 	// For non-duration functions (rate, count_over_time), sourceUnit is DurationUnitNone → no-op.
-	sourceUnit := unitconv.SourceUnitForMetricReader(parsed.Function, "duration")
+	sourceUnit := unitconv.SourceUnitForMetricReader(funcStr, "duration")
 	if sourceUnit != unitconv.DurationUnitNone {
 		for i := range result.Data {
 			for j := range result.Data[i].Values {
@@ -1814,84 +1792,6 @@ func convertTraceMetricsToTempoResponse(result *observabilitystorageext.TraceMet
 	}
 }
 
-// ── TraceQL Metrics Parser ────────────────────────────
-// Parses: {key=value && ...} | function() by(k1, k2)
-
-// parseTraceQLMetricsQuery parses a TraceQL metrics query into components.
-// Format: {filter} | rate() by(label1, label2)
-// Supports pipe-split filtering, || OR conditions, quantile function params.
-func parseTraceQLMetricsQuery(raw string) (*traceqlMetricsQuery, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, fmt.Errorf("empty query")
-	}
-
-	parsed := &traceqlMetricsQuery{}
-
-	// Split by | to separate filter and pipeline stages.
-	parts := strings.Split(raw, "|")
-	if len(parts) < 1 {
-		return nil, fmt.Errorf("expected filter { ... }")
-	}
-
-	// Part 1: filter { ... } — supports && (AND) and || (OR).
-	filterStr := strings.TrimSpace(parts[0])
-	parsed.Tags, parsed.TagsOr = parseTraceQLOrFilter(filterStr)
-
-	// Part 2+: pipeline stages (function, by)
-	for i := 1; i < len(parts); i++ {
-		stage := strings.TrimSpace(parts[i])
-
-		// Parse function with optional parameter: rate(), quantile_over_time(0.95), etc.
-		if fn, param, ok := parseTraceQLMetricsFuncWithParam(stage); ok {
-			parsed.Function = fn
-			parsed.FuncParam = param
-			continue
-		}
-
-		// Parse by(labels)
-		if gb := parseTraceQLMetricsGroupBy(stage); len(gb) > 0 {
-			parsed.GroupBy = gb
-			continue
-		}
-	}
-
-	if parsed.Function == "" {
-		parsed.Function = "rate" // Tempo default
-	}
-
-	return parsed, nil
-}
-
-// parseTraceQLMetricsFuncWithParam extracts function name and optional parameter.
-// e.g. "quantile_over_time(0.95)" → fn="quantile_over_time", param=0.95, ok=true
-// e.g. "rate()" → fn="rate", param=0, ok=true
-func parseTraceQLMetricsFuncWithParam(stage string) (string, float64, bool) {
-	fns := []string{"quantile_over_time", "histogram_over_time", "rate", "count_over_time", "sum", "avg", "max", "min"}
-	for _, fn := range fns {
-		prefix := fn + "("
-		if !strings.HasPrefix(stage, prefix) {
-			continue
-		}
-		// Extract content inside parentheses.
-		inner := stage[len(prefix):]
-		end := strings.Index(inner, ")")
-		if end < 0 {
-			return fn, 0, true // no closing paren, just function name
-		}
-		argStr := strings.TrimSpace(inner[:end])
-		if argStr == "" {
-			return fn, 0, true
-		}
-		// Try to parse as float (e.g. 0.95 for quantile).
-		if p, err := strconv.ParseFloat(argStr, 64); err == nil {
-			return fn, p, true
-		}
-		return fn, 0, true
-	}
-	return "", 0, false
-}
-
 // parseTraceQLOrFilter parses a filter with || (OR) conditions.
 // Returns AND conditions in `tags`, and each OR group as a TagsOr group.
 // e.g. {key1=val1 || key2=val2 && key3=val3}
@@ -1900,11 +1800,11 @@ func parseTraceQLMetricsFuncWithParam(stage string) (string, float64, bool) {
 // Also handles parenthesized OR groups from Grafana:
 // {(span.kind="internal" || span.kind="client" || span.kind="server")}
 //
-// NOTE: The Tempo trace search path now uses the unified AST parser (traceql.Parse
-// → traceql.Plan) for all queries. This legacy parser is retained for:
-//   1. Graceful degradation when the AST parser fails on malformed input
-//   2. The metrics query path (parseTraceQLMetricsQuery) which calls this directly
-//   3. The tag values filter path (parseTagValuesFilter)
+// NOTE: The Tempo trace search path uses the unified AST parser (traceql.Parse
+// → traceql.Plan) for all queries. This legacy parser is now retained ONLY as
+// graceful-degradation fallback in parseTempoSearchParams when the AST parser
+// fails on malformed input (step 3 of the legacy-parser removal will delete it
+// once fallback trigger rate is confirmed ~0 in production).
 func parseTraceQLOrFilter(raw string) (map[string]string, [][]map[string]string) {
 	// Strip outer { ... }
 	raw = strings.TrimSpace(raw)
@@ -2008,43 +1908,6 @@ func parseAndConditions(raw string) map[string]string {
 	wrapped := "{" + raw + "}"
 	tags, _ := parseTraceQL(wrapped)
 	return tags
-}
-
-// parseTraceQLMetricsFunction extracts function name from a stage like "rate()".
-// Deprecated: use parseTraceQLMetricsFuncWithParam for parameterized functions.
-func parseTraceQLMetricsFunction(stage string) string {
-	for _, fn := range []string{"rate", "count_over_time", "sum", "avg", "max", "min", "quantile_over_time", "histogram_over_time"} {
-		if strings.HasPrefix(stage, fn+"(") {
-			return fn
-		}
-	}
-	return ""
-}
-
-// parseTraceQLMetricsGroupBy extracts labels from "by(key1, key2)".
-func parseTraceQLMetricsGroupBy(stage string) []string {
-	const prefix = "by("
-	if !strings.HasPrefix(stage, prefix) {
-		return nil
-	}
-	end := strings.Index(stage, ")")
-	if end < 0 {
-		return nil
-	}
-	inner := stage[len(prefix):end]
-	if strings.TrimSpace(inner) == "" {
-		return nil
-	}
-
-	var labels []string
-	for _, s := range strings.Split(inner, ",") {
-		// Strip scope prefixes (resource., span.)
-		key := stripTraceQLScopePrefix(strings.TrimSpace(s))
-		if key != "" {
-			labels = append(labels, key)
-		}
-	}
-	return labels
 }
 
 // ── TraceQL → Metric Translation ─────────────────────

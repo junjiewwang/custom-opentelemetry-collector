@@ -17,42 +17,43 @@ import (
 type TokenType int
 
 const (
-	TokenEOF          TokenType = iota
-	TokenLBrace                 // {
-	TokenRBrace                 // }
-	TokenLParen                 // (
-	TokenRParen                 // )
-	TokenPipe                   // |
-	TokenOr                     // ||
-	TokenAnd                    // &&
-	TokenAncestor               // &>>
-	TokenDescendant             // >>
-	TokenChild                  // >
-	TokenSibling                // ~
-	TokenNotChild               // !>
-	TokenNotDescendant          // !>>
-	TokenEq                     // =
-	TokenNeq                    // !=
-	TokenRegex                  // =~
-	TokenNotRegex               // !~
-	TokenLt                     // <
-	TokenGt                     // >  (reused from TokenChild in different context)
-	TokenLte                    // <=
-	TokenGte                    // >=
-	TokenIdent                  // identifiers: service.name, kind, status, etc.
-	TokenString                 // "quoted string"
-	TokenNumber                 // 123, 3.14, 100ms, 1s, 500us
-	TokenTrue                   // true
-	TokenFalse                  // false
-	TokenSelect                 // select
-	TokenCount                  // count
-	TokenBy                     // by
-	TokenWith                   // with
-	TokenRate                   // rate
-	TokenQuantileOverTime       // quantile_over_time
-	TokenHistogramOverTime      // histogram_over_time
-	TokenComma                  // ,
-	TokenDot                    // . (leading dot for unscoped attributes)
+	TokenEOF               TokenType = iota
+	TokenLBrace                      // {
+	TokenRBrace                      // }
+	TokenLParen                      // (
+	TokenRParen                      // )
+	TokenPipe                        // |
+	TokenOr                          // ||
+	TokenAnd                         // &&
+	TokenAncestor                    // &>>
+	TokenDescendant                  // >>
+	TokenChild                       // >
+	TokenSibling                     // ~
+	TokenNotChild                    // !>
+	TokenNotDescendant               // !>>
+	TokenEq                          // =
+	TokenNeq                         // !=
+	TokenRegex                       // =~
+	TokenNotRegex                    // !~
+	TokenLt                          // <
+	TokenGt                          // >  (reused from TokenChild in different context)
+	TokenLte                         // <=
+	TokenGte                         // >=
+	TokenIdent                       // identifiers: service.name, kind, status, etc.
+	TokenString                      // "quoted string"
+	TokenNumber                      // 123, 3.14, 100ms, 1s, 500us
+	TokenTrue                        // true
+	TokenFalse                       // false
+	TokenSelect                      // select
+	TokenCount                       // count
+	TokenBy                          // by
+	TokenWith                        // with
+	TokenRate                        // rate
+	TokenCountOverTime               // count_over_time
+	TokenQuantileOverTime            // quantile_over_time
+	TokenHistogramOverTime           // histogram_over_time
+	TokenComma                       // ,
+	TokenDot                         // . (leading dot for unscoped attributes)
 )
 
 // Token represents a single lexer token.
@@ -316,6 +317,8 @@ func (l *Lexer) readIdent(pos int) (Token, error) {
 		return Token{Type: TokenWith, Literal: literal, Pos: pos}, nil
 	case "rate":
 		return Token{Type: TokenRate, Literal: literal, Pos: pos}, nil
+	case "count_over_time":
+		return Token{Type: TokenCountOverTime, Literal: literal, Pos: pos}, nil
 	case "quantile_over_time":
 		return Token{Type: TokenQuantileOverTime, Literal: literal, Pos: pos}, nil
 	case "histogram_over_time":

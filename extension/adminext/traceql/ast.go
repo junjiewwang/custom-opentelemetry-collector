@@ -18,14 +18,14 @@ import (
 type NodeType int
 
 const (
-	NodeSpanFilter        NodeType = iota // { conditions }
-	NodeStructural                        // &>>, >>, >, ~, !>, !>>
-	NodePipeline                          // |
-	NodeSelect                            // select(fields...)
-	NodeMetrics                           // rate(), quantile_over_time(), histogram_over_time()
-	NodeOr                                // ||
-	NodeAnd                               // &&  (implicit inside span filter)
-	NodeComparison                        // key op value
+	NodeSpanFilter NodeType = iota // { conditions }
+	NodeStructural                 // &>>, >>, >, ~, !>, !>>
+	NodePipeline                   // |
+	NodeSelect                     // select(fields...)
+	NodeMetrics                    // rate(), quantile_over_time(), histogram_over_time()
+	NodeOr                         // ||
+	NodeAnd                        // &&  (implicit inside span filter)
+	NodeComparison                 // key op value
 )
 
 // ═══════════════════════════════════════════════════
@@ -191,8 +191,9 @@ func (cs *CountStage) String() string {
 type MetricsFunc string
 
 const (
-	MetricsRate             MetricsFunc = "rate"
-	MetricsQuantileOverTime MetricsFunc = "quantile_over_time"
+	MetricsRate              MetricsFunc = "rate"
+	MetricsCountOverTime     MetricsFunc = "count_over_time"
+	MetricsQuantileOverTime  MetricsFunc = "quantile_over_time"
 	MetricsHistogramOverTime MetricsFunc = "histogram_over_time"
 )
 
@@ -261,18 +262,18 @@ func (t *TrueExpr) String() string { return "true" }
 
 // Intrinsic field keys shared across the traceql package.
 const (
-	IntrinsicName              = "name"
-	IntrinsicStatus            = "status"
-	IntrinsicStatusMessage     = "status.message"
-	IntrinsicKind              = "kind"
-	IntrinsicDuration          = "duration"
-	IntrinsicNestedSetParent   = "nestedSetParent"
-	IntrinsicNestedSetLeft     = "nestedSetLeft"
-	IntrinsicNestedSetRight    = "nestedSetRight"
-	IntrinsicParentID         = "parentID"
-	IntrinsicRootName          = "rootName"
-	IntrinsicRootServiceName   = "rootServiceName"
-	IntrinsicTraceDuration     = "traceDuration"
+	IntrinsicName            = "name"
+	IntrinsicStatus          = "status"
+	IntrinsicStatusMessage   = "status.message"
+	IntrinsicKind            = "kind"
+	IntrinsicDuration        = "duration"
+	IntrinsicNestedSetParent = "nestedSetParent"
+	IntrinsicNestedSetLeft   = "nestedSetLeft"
+	IntrinsicNestedSetRight  = "nestedSetRight"
+	IntrinsicParentID        = "parentID"
+	IntrinsicRootName        = "rootName"
+	IntrinsicRootServiceName = "rootServiceName"
+	IntrinsicTraceDuration   = "traceDuration"
 )
 
 // SpanKind values used in TraceQL.
