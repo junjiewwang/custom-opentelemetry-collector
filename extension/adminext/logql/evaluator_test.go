@@ -6,6 +6,8 @@ package logql
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestEvaluate_RegexFilterGoesToRegexFields(t *testing.T) {
@@ -194,4 +196,89 @@ func TestEvaluate_LabelsMapping(t *testing.T) {
 		t.Errorf("LabelNotMatch: expected host=test.*, got %v", result.LabelNotMatch)
 	}
 
+}
+
+// TestEvaluate_LabelFormatContainsTranslation verifies that label_format with
+// {{ contains "VALUE" __line__ }} template is translated to a FilterContains
+// line filter (ES match_phrase) in the output LogQuery.Query.
+func TestEvaluate_LabelFormatContainsTranslation(t *testing.T) {
+	tests := []struct {
+		name       string
+		pipeline   []PipelineStage
+		wantQuery  string
+		wantEmpty  bool
+	}{
+		{
+			name: "contains template → match_phrase",
+			pipeline: []PipelineStage{
+				{Type: PipelineLabelFormat, LabelFormat: &LabelMatcher{
+					Name: "log_line_contains_trace_id",
+					Value: `{{ contains "1895de2b356e8bc281505bb48d142396" __line__ }}`,
+				}},
+			},
+			wantQuery: `"1895de2b356e8bc281505bb48d142396"`,
+		},
+		{
+			name: "non-template label_format → not translated",
+			pipeline: []PipelineStage{
+				{Type: PipelineLabelFormat, LabelFormat: &LabelMatcher{
+					Name: "renamed", Value: "original",
+				}},
+			},
+			wantEmpty: true,
+		},
+		{
+			name: "contains template with extra spaces",
+			pipeline: []PipelineStage{
+				{Type: PipelineLabelFormat, LabelFormat: &LabelMatcher{
+					Name: "found",
+					Value: `{{ contains  "abc123"  __line__  }}`,
+				}},
+			},
+			wantQuery: `"abc123"`,
+		},
+		{
+			name: "empty pipeline",
+			pipeline: nil,
+			wantEmpty: true,
+		},
+	}
+
+	ev := &Evaluator{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lq := &LogQLQuery{
+				StreamSelector: StreamSelector{
+					Matchers: []LabelMatcher{{Name: "service_name", Type: MatchEqual, Value: "test"}},
+				},
+				Pipeline: tt.pipeline,
+			}
+			result := ev.Evaluate(lq)
+			if tt.wantEmpty {
+				assert.Empty(t, result.Query)
+			} else {
+				assert.Contains(t, result.Query, tt.wantQuery)
+			}
+		})
+	}
+}
+
+// TestExtractContainsValue tests the template pattern extraction.
+func TestExtractContainsValue(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{`{{ contains "abc123" __line__ }}`, "abc123"},
+		{`{{ contains  "abc123"  __line__  }}`, "abc123"},   // extra spaces
+		{`{{contains "abc123" __line__}}`, "abc123"},         // no spaces
+		{`not a template`, ""},
+		{`{{ upper "abc" }}`, ""},
+		{``, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, ExtractContainsValue(tt.input))
+		})
+	}
 }

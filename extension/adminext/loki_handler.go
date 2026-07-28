@@ -257,10 +257,27 @@ type lokiLabelsResponse struct {
 // filterLogsByPipeline applies pipeline label filters to filter out non-matching
 // log entries. Pipeline label filters like | detected_level="WARN" check the
 // log record's labels against the filter.
+//
+// label_format stages with {{ contains "VALUE" __line__ }} templates are
+// skipped here — the evaluator has already translated them to ES match_phrase
+// line filters. Their corresponding PipelineLabelFilter (e.g. X="true") is
+// also skipped to avoid re-filtering logs that ES already matched.
 func filterLogsByPipeline(logs []observabilitystorageext.LogRecord, pipeline []logql.PipelineStage) []observabilitystorageext.LogRecord {
 	if len(pipeline) == 0 {
 		return logs
 	}
+
+	// Collect label names that were set via label_format + contains template.
+	// These have already been translated to ES match_phrase by the evaluator.
+	containsLabels := map[string]bool{}
+	for _, stage := range pipeline {
+		if stage.Type == logql.PipelineLabelFormat && stage.LabelFormat != nil {
+			if logql.ExtractContainsValue(stage.LabelFormat.Value) != "" {
+				containsLabels[stage.LabelFormat.Name] = true
+			}
+		}
+	}
+
 	filtered := make([]observabilitystorageext.LogRecord, 0, len(logs))
 	for _, rec := range logs {
 		keep := true
@@ -277,6 +294,10 @@ func filterLogsByPipeline(logs []observabilitystorageext.LogRecord, pipeline []l
 		}
 		for _, stage := range pipeline {
 			if stage.Type == logql.PipelineLabelFilter && stage.LabelFilter != nil {
+				// Skip label filters for labels translated from label_format + contains.
+				if containsLabels[stage.LabelFilter.Name] {
+					continue
+				}
 				if !logql.MatchPipelineLabelFilter(stage.LabelFilter, labels) {
 					keep = false
 					break
