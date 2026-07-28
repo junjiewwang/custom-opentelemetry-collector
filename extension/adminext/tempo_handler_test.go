@@ -260,110 +260,6 @@ func extractField1Bytes(t *testing.T, data []byte) []byte {
 	return nil
 }
 
-// TestParseTraceQLOrFilter verifies that TraceQL OR conditions are correctly parsed,
-// including Grafana's parenthesized format: {(cond1 || cond2 || cond3)}.
-// OR results are now wrapped in a single outer group (TagsOr is [][]map[string]string).
-func TestParseTraceQLOrFilter(t *testing.T) {
-	tests := []struct {
-		name            string
-		input           string
-		wantAnd         map[string]string
-		wantOrGroupCount int            // number of outer OR groups
-		wantOrBranchCount int           // number of branches in the first (only) group
-		wantOrTags      []map[string]string // expected OR branches
-	}{
-		{
-			name:            "Grafana OR with parentheses — span.kind variants",
-			input:           `{(span.span.kind="internal" || span.span.kind="client" || span.span.kind="server" || span.span.kind="producer" || span.span.kind="consumer")}`,
-			wantAnd:         nil,
-			wantOrGroupCount: 1,
-			wantOrBranchCount: 5,
-			wantOrTags: []map[string]string{
-				{"span.kind": "internal"},
-				{"span.kind": "client"},
-				{"span.kind": "server"},
-				{"span.kind": "producer"},
-				{"span.kind": "consumer"},
-			},
-		},
-		{
-			name:            "OR without parentheses",
-			input:           `{span.span.kind="internal" || span.span.kind="client"}`,
-			wantAnd:         nil,
-			wantOrGroupCount: 1,
-			wantOrBranchCount: 2,
-			wantOrTags: []map[string]string{
-				{"span.kind": "internal"},
-				{"span.kind": "client"},
-			},
-		},
-		{
-			name:            "Simple AND query (no OR)",
-			input:           `{span.http.method="GET" && resource.service.name="my-svc"}`,
-			wantAnd:         map[string]string{"http.method": "GET", "service.name": "my-svc"},
-			wantOrGroupCount: 0,
-		},
-		{
-			name:            "Empty query",
-			input:           `{}`,
-			wantAnd:         nil,
-			wantOrGroupCount: 0,
-		},
-		{
-			name:            "Single condition",
-			input:           `{span.http.method="GET"}`,
-			wantAnd:         map[string]string{"http.method": "GET"},
-			wantOrGroupCount: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			andTags, orTags := parseTraceQLOrFilter(tt.input)
-
-			if tt.wantAnd == nil {
-				assert.Empty(t, andTags)
-			} else {
-				assert.Equal(t, tt.wantAnd, andTags)
-			}
-
-			// orTags is now [][]map[string]string
-			assert.Len(t, orTags, tt.wantOrGroupCount, "outer group count")
-			if tt.wantOrGroupCount > 0 {
-				firstGroup := orTags[0]
-				assert.Len(t, firstGroup, tt.wantOrBranchCount, "branch count in group 0")
-				if tt.wantOrTags != nil {
-					for i, wantMap := range tt.wantOrTags {
-						assert.Equal(t, wantMap, firstGroup[i], "branch[%d] mismatch", i)
-					}
-				}
-			}
-		})
-	}
-}
-
-// TestStripOuterParens verifies edge cases of parenthesis stripping.
-func TestStripOuterParens(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"(a || b)", "a || b"},
-		{"(a) || (b)", "(a) || (b)"},       // Not fully wrapped — no strip
-		{"a || b", "a || b"},               // No parens — no strip
-		{"((a || b))", "(a || b)"},          // Only strips one layer
-		{"()", ""},                          // Empty parens
-		{"(a && b) || (c && d)", "(a && b) || (c && d)"}, // Not fully wrapped
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := stripOuterParens(tt.input)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
 // TestParseTagValuesFilter verifies that the q parameter in tag values requests
 // is correctly parsed into filter conditions.
 func TestParseTagValuesFilter(t *testing.T) {
@@ -474,7 +370,7 @@ func TestParseTempoSearchParams_IntrinsicFields(t *testing.T) {
 			params.Set("end", "1783935616")
 			req, _ := http.NewRequest("GET", "/api/search?"+params.Encode(), nil)
 
-			_, query, err := parseTempoSearchParams(req, zap.NewNop())
+			_, query, err := parseTempoSearchParams(req)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.wantServiceName, query.ServiceName, "ServiceName mismatch")
@@ -533,7 +429,7 @@ func TestParseTempoSearchParams_DurationFilter(t *testing.T) {
 			params.Set("end", "1783935616")
 			req, _ := http.NewRequest("GET", "/api/search?"+params.Encode(), nil)
 
-			_, query, err := parseTempoSearchParams(req, zap.NewNop())
+			_, query, err := parseTempoSearchParams(req)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.wantMinDuration, query.MinDuration, "MinDuration mismatch")
@@ -1148,7 +1044,7 @@ func TestParseTempoSearchParams_StructuralQueryRelaxesConditions(t *testing.T) {
 	params.Set("spss", "20")
 	req, _ := http.NewRequest("GET", "/api/search?"+params.Encode(), nil)
 
-	plan, query, err := parseTempoSearchParams(req, zap.NewNop())
+	plan, query, err := parseTempoSearchParams(req)
 	require.NoError(t, err)
 	require.NotNil(t, plan)
 
@@ -1162,4 +1058,32 @@ func TestParseTempoSearchParams_StructuralQueryRelaxesConditions(t *testing.T) {
 
 	// IsRoot should still be applied (helps narrow candidates).
 	assert.True(t, query.IsRoot, "IsRoot should be preserved for candidate filtering")
+}
+
+// TestParseTempoSearchParams_InvalidQuery verifies the fail-closed behavior:
+// invalid TraceQL (e.g. top-level || without parens, which the AST parser
+// rejects) returns an error instead of silently salvaging via the legacy
+// parser (which has been removed). The handler maps this to HTTP 400.
+func TestParseTempoSearchParams_InvalidQuery(t *testing.T) {
+	tests := []struct {
+		name    string
+		q       string
+		wantErr bool
+	}{
+		{"valid", `{status="error"}`, false},
+		{"empty selector match-all", `{}`, false},
+		{"top-level OR without parens (invalid)", `{a=1 || b=2}`, true},
+		{"unbalanced brace", `{status="error"`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", "/api/search?q="+url.QueryEscape(tt.q), nil)
+			_, _, err := parseTempoSearchParams(req)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

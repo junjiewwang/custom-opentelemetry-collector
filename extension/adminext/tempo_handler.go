@@ -481,7 +481,7 @@ func (h *tempoHandlers) handleTempoSearch(w http.ResponseWriter, r *http.Request
 
 	rawQuery := r.URL.RawQuery
 
-	plan, query, err := parseTempoSearchParams(r, h.logger)
+	plan, query, err := parseTempoSearchParams(r)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -800,7 +800,7 @@ func (h *tempoHandlers) handleTempoV2Search(w http.ResponseWriter, r *http.Reque
 
 	rawQuery := r.URL.RawQuery
 
-	_, query, err := parseTempoSearchParams(r, h.logger)
+	_, query, err := parseTempoSearchParams(r)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1792,124 +1792,6 @@ func convertTraceMetricsToTempoResponse(result *observabilitystorageext.TraceMet
 	}
 }
 
-// parseTraceQLOrFilter parses a filter with || (OR) conditions.
-// Returns AND conditions in `tags`, and each OR group as a TagsOr group.
-// e.g. {key1=val1 || key2=val2 && key3=val3}
-//   → tags: {"key3": "val3"}, tagsOr: [[{"key1": "val1"}, {"key2": "val2"}]]
-//
-// Also handles parenthesized OR groups from Grafana:
-// {(span.kind="internal" || span.kind="client" || span.kind="server")}
-//
-// NOTE: The Tempo trace search path uses the unified AST parser (traceql.Parse
-// → traceql.Plan) for all queries. This legacy parser is now retained ONLY as
-// graceful-degradation fallback in parseTempoSearchParams when the AST parser
-// fails on malformed input (step 3 of the legacy-parser removal will delete it
-// once fallback trigger rate is confirmed ~0 in production).
-func parseTraceQLOrFilter(raw string) (map[string]string, [][]map[string]string) {
-	// Strip outer { ... }
-	raw = strings.TrimSpace(raw)
-	if !strings.HasPrefix(raw, "{") || !strings.HasSuffix(raw, "}") {
-		return nil, nil
-	}
-	inner := strings.TrimSpace(raw[1 : len(raw)-1])
-	if inner == "" {
-		return nil, nil
-	}
-
-	// Strip outer parentheses if the entire inner content is wrapped in ( ... ).
-	// This handles Grafana's format: {(cond1 || cond2 || cond3)}
-	inner = stripOuterParens(inner)
-
-	// Split by || (OR) at the top level (not inside nested structures).
-	orParts := splitTopLevelOr(inner)
-
-	if len(orParts) <= 1 {
-		// No || found — use standard AND parsing.
-		tags, _ := parseTraceQL(raw)
-		return tags, nil
-	}
-
-	// Found || — each group may have && conditions.
-	// Wrap all OR branches in a single outer group (legacy parser groups all || as one should block).
-	var tagsOr []map[string]string
-	for _, part := range orParts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		groupTags := parseAndConditions(part)
-		if len(groupTags) > 0 {
-			tagsOr = append(tagsOr, groupTags)
-		}
-	}
-
-	if len(tagsOr) == 0 {
-		return nil, nil
-	}
-	return nil, [][]map[string]string{tagsOr}
-}
-
-// stripOuterParens removes a single layer of balanced outer parentheses.
-// e.g. "(a || b || c)" → "a || b || c"
-// If the string is not fully wrapped or has unbalanced parens, returns as-is.
-func stripOuterParens(s string) string {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "(") || !strings.HasSuffix(s, ")") {
-		return s
-	}
-	// Verify the opening '(' matches the closing ')' at the end
-	// (not just any intermediate ')').
-	depth := 0
-	for i, c := range s {
-		if c == '(' {
-			depth++
-		} else if c == ')' {
-			depth--
-		}
-		// If depth drops to 0 before the last char, parens are not outer-wrapping.
-		if depth == 0 && i < len(s)-1 {
-			return s
-		}
-	}
-	return strings.TrimSpace(s[1 : len(s)-1])
-}
-
-// splitTopLevelOr splits a TraceQL condition string by || that are at the top level
-// (not inside function parentheses).
-func splitTopLevelOr(s string) []string {
-	var parts []string
-	var current []byte
-	depth := 0
-
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '(' {
-			depth++
-		} else if c == ')' {
-			depth--
-		}
-
-		if depth == 0 && i+1 < len(s) && s[i] == '|' && s[i+1] == '|' {
-			parts = append(parts, strings.TrimSpace(string(current)))
-			current = nil
-			i++ // skip second |
-			continue
-		}
-		current = append(current, c)
-	}
-	if len(current) > 0 {
-		parts = append(parts, strings.TrimSpace(string(current)))
-	}
-	return parts
-}
-
-// parseAndConditions parses a set of &&-joined conditions into a tags map.
-func parseAndConditions(raw string) map[string]string {
-	wrapped := "{" + raw + "}"
-	tags, _ := parseTraceQL(wrapped)
-	return tags
-}
-
 // ── TraceQL → Metric Translation ─────────────────────
 
 // translateTraceQLLabels maps TraceQL filter keys (e.g. "status") to
@@ -2422,10 +2304,10 @@ func anyToTempoValue(v any) tempoAnyValue {
 // Tempo uses tags=service.name%3Dmy-svc, start/end in Unix seconds.
 // Returns the ExecutionPlan for structural queries (may be nil for simple queries).
 //
-// The logger is used to record when the unified AST parser fails and the
-// legacy fallback is invoked — this is the observability seam that tells us
-// when it is safe to delete the legacy parser.
-func parseTempoSearchParams(r *http.Request, logger *zap.Logger) (*traceql.ExecutionPlan, observabilitystorageext.TraceQuery, error) {
+// TraceQL is parsed via the unified AST parser (traceql.Parse + Plan). A parse
+// error is returned (→ 400) — invalid TraceQL is rejected rather than silently
+// salvaged. An empty selector ("{}") yields no filter (match-all).
+func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabilitystorageext.TraceQuery, error) {
 	q := r.URL.Query()
 	query := observabilitystorageext.TraceQuery{
 		TimeRange: parseTempoTimeRange(r),
@@ -2445,7 +2327,10 @@ func parseTempoSearchParams(r *http.Request, logger *zap.Logger) (*traceql.Execu
 	// and intrinsic fields (duration, kind, status, name, etc.).
 	if traceQL := q.Get("q"); traceQL != "" {
 		ast, err := traceql.Parse(traceQL)
-		if err == nil && ast != nil {
+		if err != nil {
+			return nil, query, fmt.Errorf("invalid TraceQL query: %w", err)
+		}
+		if ast != nil {
 			plan = traceql.Plan(ast)
 			// Apply extracted conditions to query.
 			for k, v := range plan.Tags {
@@ -2504,25 +2389,6 @@ func parseTempoSearchParams(r *http.Request, logger *zap.Logger) (*traceql.Execu
 			}
 			if len(plan.TagsRegex) > 0 {
 				query.TagsRegex = plan.TagsRegex
-			}
-		} else if err != nil {
-			// Graceful degradation: if AST parser fails, fall back to legacy parser.
-			// Logged (not silent) so we can measure the production fallback trigger
-			// rate and decide when it is safe to remove the legacy parser.
-			if logger != nil {
-				logger.Warn("traceql AST parse failed, falling back to legacy parser",
-					zap.String("q", traceQL),
-					zap.Error(err),
-				)
-			}
-			andTags, orTags := parseTraceQLOrFilter(traceQL)
-			if andTags != nil {
-				for k, v := range andTags {
-					query.Tags[k] = v
-				}
-			}
-			if len(orTags) > 0 {
-				query.TagsOr = orTags
 			}
 		}
 	}
@@ -2665,141 +2531,3 @@ func nanoToMs(s string) int64 {
 }
 
 // ── TraceQL Parser ─────────────────────────────────
-// Parses Tempo TraceQL query syntax into tag filters.
-// Supported operators: = (exact), != (not equal), =~ (regex)
-// Supported syntax: { .key = "value" } or { key1 = "v1" && key2 = "v2" }
-
-// traceqlToken represents a single TraceQL condition: key=value.
-type traceqlToken struct {
-	key      string
-	value    string
-	operator string // "=", "!=", "=~"
-}
-
-// parseTraceQL parses a TraceQL query string into a tags map.
-// Supported: { .key = "value" }, { .k1 = "v1" && .k2 = "v2" }, { status = error }
-func parseTraceQL(raw string) (map[string]string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "{}" {
-		return nil, nil
-	}
-
-	// Strip outer { ... }
-	if !strings.HasPrefix(raw, "{") || !strings.HasSuffix(raw, "}") {
-		return nil, fmt.Errorf("TraceQL query must be wrapped in { }")
-	}
-	inner := strings.TrimSpace(raw[1 : len(raw)-1])
-	if inner == "" {
-		return nil, nil
-	}
-
-	tokens := splitTraceQLConditions(inner)
-	tags := make(map[string]string)
-	for _, tok := range tokens {
-		t, ok := parseTraceQLToken(tok)
-		if !ok {
-			continue
-		}
-		// For Sprint 3, only = operator maps to tag exact match.
-		// != and =~ are parsed but treated as no-match for simplicity.
-		if t.operator == "=" {
-			tags[t.key] = t.value
-		}
-	}
-
-	if len(tags) == 0 {
-		return nil, nil
-	}
-	return tags, nil
-}
-
-// splitTraceQLConditions splits inner TraceQL content by && (AND).
-// Handles quoted strings to avoid splitting inside values.
-func splitTraceQLConditions(inner string) []string {
-	var parts []string
-	var current []byte
-	inQuote := false
-	quoteChar := byte(0)
-
-	for i := 0; i < len(inner); i++ {
-		c := inner[i]
-		if c == '"' || c == '\'' {
-			if !inQuote {
-				inQuote = true
-				quoteChar = c
-			} else if c == quoteChar {
-				inQuote = false
-			}
-		}
-
-		if !inQuote && i+1 < len(inner) && inner[i] == '&' && inner[i+1] == '&' {
-			parts = append(parts, strings.TrimSpace(string(current)))
-			current = nil
-			i++ // skip second &
-			continue
-		}
-		current = append(current, c)
-	}
-	if len(current) > 0 {
-		parts = append(parts, strings.TrimSpace(string(current)))
-	}
-	return parts
-}
-
-// parseTraceQLToken parses a single TraceQL condition like .key = "value".
-func parseTraceQLToken(tok string) (traceqlToken, bool) {
-	tok = strings.TrimSpace(tok)
-	if tok == "" {
-		return traceqlToken{}, false
-	}
-
-	// Strip scope prefix: .key, resource.key, span.key → key
-	// Our tag search already covers both attributes.{k} and resource.{k}.
-	keyStart := 0
-	if tok[0] == '.' {
-		keyStart = 1
-	} else {
-		// Check for explicit scope prefixes: "resource." or "span."
-		for _, prefix := range []string{"resource.", "span."} {
-			if strings.HasPrefix(tok, prefix) {
-				keyStart = len(prefix)
-				break
-			}
-		}
-	}
-
-	// Find operator: =~, !=, or =
-	op, opPos := detectTraceQLOperator(tok)
-	if op == "" || opPos < 0 {
-		return traceqlToken{}, false
-	}
-
-	key := strings.TrimSpace(tok[keyStart:opPos])
-	valPart := strings.TrimSpace(tok[opPos+len(op):])
-
-	if key == "" {
-		return traceqlToken{}, false
-	}
-
-	// Unquote value if needed.
-	value, err := strconv.Unquote(valPart)
-	if err != nil {
-		// Unquoted value (e.g., number, or unquoted string like "error").
-		value = valPart
-	}
-
-	return traceqlToken{key: key, value: value, operator: op}, true
-}
-
-// detectTraceQLOperator finds the operator (=~, !=, <=, >=, <, >, =) in a condition string.
-func detectTraceQLOperator(s string) (string, int) {
-	// Order matters: check multi-char operators first, then single-char.
-	operators := []string{"=~", "!=", "<=", ">=", "<", ">", "="}
-	for _, op := range operators {
-		if idx := strings.Index(s, op); idx > 0 {
-			return op, idx
-		}
-	}
-	return "", -1
-}
-
