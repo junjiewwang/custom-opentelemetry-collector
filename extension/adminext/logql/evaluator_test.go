@@ -200,23 +200,45 @@ func TestEvaluate_LabelsMapping(t *testing.T) {
 
 // TestEvaluate_LabelFormatContainsTranslation verifies that label_format with
 // {{ contains "VALUE" __line__ }} template is translated to a FilterContains
-// line filter (ES match_phrase) in the output LogQuery.Query.
+// line filter (ES match_phrase) in the output LogQuery.Query — but ONLY when
+// the same branch also has a PipelineLabelFilter for that label (matching the
+// Grafana trace-to-logs pattern: | label_format X=... | X="true").
+// Without the corresponding label filter, the label_format is a shared-prefix
+// artifact from OR splitting and must NOT add a body constraint.
 func TestEvaluate_LabelFormatContainsTranslation(t *testing.T) {
 	tests := []struct {
-		name       string
-		pipeline   []PipelineStage
-		wantQuery  string
-		wantEmpty  bool
+		name      string
+		pipeline  []PipelineStage
+		wantQuery string
+		wantEmpty bool
 	}{
 		{
-			name: "contains template → match_phrase",
+			name: "contains template + label filter → match_phrase",
 			pipeline: []PipelineStage{
 				{Type: PipelineLabelFormat, LabelFormat: &LabelMatcher{
-					Name: "log_line_contains_trace_id",
+					Name:  "log_line_contains_trace_id",
 					Value: `{{ contains "1895de2b356e8bc281505bb48d142396" __line__ }}`,
+				}},
+				{Type: PipelineLabelFilter, LabelFilter: &LabelMatcher{
+					Name: "log_line_contains_trace_id", Type: MatchEqual, Value: "true",
 				}},
 			},
 			wantQuery: `"1895de2b356e8bc281505bb48d142396"`,
+		},
+		{
+			name: "contains template WITHOUT label filter (OR branch artifact) → not translated",
+			pipeline: []PipelineStage{
+				{Type: PipelineLabelFormat, LabelFormat: &LabelMatcher{
+					Name:  "log_line_contains_trace_id",
+					Value: `{{ contains "1895de2b356e8bc281505bb48d142396" __line__ }}`,
+				}},
+				// NO PipelineLabelFilter for log_line_contains_trace_id — this is
+				// the OR branch that filters by trace_id instead.
+				{Type: PipelineLabelFilter, LabelFilter: &LabelMatcher{
+					Name: "trace_id", Type: MatchEqual, Value: "1895de2b356e8bc281505bb48d142396",
+				}},
+			},
+			wantEmpty: true,
 		},
 		{
 			name: "non-template label_format → not translated",
@@ -228,18 +250,21 @@ func TestEvaluate_LabelFormatContainsTranslation(t *testing.T) {
 			wantEmpty: true,
 		},
 		{
-			name: "contains template with extra spaces",
+			name: "contains template with extra spaces + label filter",
 			pipeline: []PipelineStage{
 				{Type: PipelineLabelFormat, LabelFormat: &LabelMatcher{
-					Name: "found",
+					Name:  "found",
 					Value: `{{ contains  "abc123"  __line__  }}`,
+				}},
+				{Type: PipelineLabelFilter, LabelFilter: &LabelMatcher{
+					Name: "found", Type: MatchEqual, Value: "true",
 				}},
 			},
 			wantQuery: `"abc123"`,
 		},
 		{
-			name: "empty pipeline",
-			pipeline: nil,
+			name:      "empty pipeline",
+			pipeline:  nil,
 			wantEmpty: true,
 		},
 	}

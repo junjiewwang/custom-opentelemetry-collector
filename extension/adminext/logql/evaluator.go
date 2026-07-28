@@ -101,10 +101,29 @@ func (e *Evaluator) Evaluate(lq *LogQLQuery) *observabilitystorageext.LogQuery {
 	// and far more efficient than Go-side template evaluation. The subsequent
 	// PipelineLabelFilter for the same label is skipped (the line filter already
 	// ensures the condition).
+	//
+	// IMPORTANT: only translate when the SAME branch also has a PipelineLabelFilter
+	// for that label name. In Grafana's OR-branched queries, the label_format stage
+	// is in the shared prefix of both branches, but only the branch with X="true"
+	// actually needs the body search. The other branch (e.g. trace_id="ID") must NOT
+	// get the body match_phrase — it would incorrectly filter out logs that match by
+	// trace_id label but don't contain the ID in their body text.
+	labelFilterNames := map[string]bool{}
+	for _, stage := range lq.Pipeline {
+		if stage.Type == PipelineLabelFilter && stage.LabelFilter != nil {
+			labelFilterNames[stage.LabelFilter.Name] = true
+		}
+	}
 	var containsLabelNames map[string]bool
 	for _, stage := range lq.Pipeline {
 		if stage.Type == PipelineLabelFormat && stage.LabelFormat != nil {
 			if value := ExtractContainsValue(stage.LabelFormat.Value); value != "" {
+				// Only translate if this branch also filters on the label_format's label.
+				// Otherwise the label_format is a shared-prefix artifact from OR splitting
+				// and should not add a body constraint to this branch.
+				if !labelFilterNames[stage.LabelFormat.Name] {
+					continue
+				}
 				pattern := escapeLokiPattern(value)
 				if q.Query == "" {
 					q.Query = `"` + pattern + `"`
