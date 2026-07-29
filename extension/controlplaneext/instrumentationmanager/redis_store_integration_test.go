@@ -86,7 +86,7 @@ func newTestRedisRuleStore(t *testing.T) (*RedisRuleStore, *redis.Client, string
 	t.Helper()
 	client := newTestRedisRuleClient(t)
 	prefix := fmt.Sprintf("otel:test:instrumentation:%s", sanitizeRuleStoreKeyPart(t.Name()))
-	store := NewRedisRuleStore(zap.NewNop(), client, prefix)
+	store := NewRedisRuleStore(zap.NewNop(), NewRedisCmd(client), prefix)
 	require.NoError(t, store.Start(context.Background()))
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -147,7 +147,7 @@ func TestRedisRuleStore_PersistsAcrossRestartAndMultiInstance(t *testing.T) {
 	require.NoError(t, storeA.SaveRule(ctx, rule, true))
 	require.NoError(t, storeA.SaveTargetStatuses(ctx, rule.ID, newTestTargets(rule.ID)))
 
-	storeB := NewRedisRuleStore(zap.NewNop(), client, prefix)
+	storeB := NewRedisRuleStore(zap.NewNop(), NewRedisCmd(client), prefix)
 	require.NoError(t, storeB.Start(ctx))
 	defer func() { _ = storeB.Close() }()
 
@@ -172,7 +172,7 @@ func TestRedisRuleStore_PersistsAcrossRestartAndMultiInstance(t *testing.T) {
 	assert.Equal(t, "updated by second instance", reloadedRule.Description)
 
 	require.NoError(t, storeA.Close())
-	storeRestarted := NewRedisRuleStore(zap.NewNop(), client, prefix)
+	storeRestarted := NewRedisRuleStore(zap.NewNop(), NewRedisCmd(client), prefix)
 	require.NoError(t, storeRestarted.Start(ctx))
 	defer func() { _ = storeRestarted.Close() }()
 
@@ -195,7 +195,7 @@ func TestRedisRuleStore_StartupValidationCleansInvalidData(t *testing.T) {
 	require.NoError(t, client.Set(ctx, fmt.Sprintf(keyTargetsJSON, prefix, "broken-rule"), "[]", 0).Err())
 	require.NoError(t, client.Set(ctx, fmt.Sprintf(keyTargetsJSON, prefix, "orphan-rule"), "[]", 0).Err())
 
-	store := NewRedisRuleStore(zap.NewNop(), client, prefix)
+	store := NewRedisRuleStore(zap.NewNop(), NewRedisCmd(client), prefix)
 	require.NoError(t, store.Start(ctx))
 	defer func() { _ = store.Close() }()
 

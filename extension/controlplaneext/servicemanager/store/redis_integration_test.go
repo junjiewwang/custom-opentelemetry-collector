@@ -77,7 +77,7 @@ func newTestRedisServiceStore(t *testing.T) *RedisServiceStore {
 	client := newTestRedisServiceClient(t)
 	store := NewRedisServiceStore(
 		zap.NewNop(),
-		client,
+		NewRedisCmd(client),
 		fmt.Sprintf("otel:test:%s", sanitizeServiceKeyPart(t.Name())),
 	)
 	require.NoError(t, store.Start(context.Background()))

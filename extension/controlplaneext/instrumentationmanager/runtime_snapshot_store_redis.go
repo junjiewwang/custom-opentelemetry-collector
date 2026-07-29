@@ -31,7 +31,7 @@ type runtimeSnapshotDirtyEvent struct {
 
 type redisRuntimeSnapshotStore struct {
 	logger             *zap.Logger
-	client             redis.UniversalClient
+	client             instrRedisCmd
 	keyPrefix          string
 	instanceID         string
 	sharedSyncInterval time.Duration
@@ -45,7 +45,7 @@ type redisRuntimeSnapshotStore struct {
 
 var _ RuntimeSnapshotStore = (*redisRuntimeSnapshotStore)(nil)
 
-func newRedisRuntimeSnapshotStore(logger *zap.Logger, client redis.UniversalClient, keyPrefix, instanceID string, sharedSyncInterval time.Duration) *redisRuntimeSnapshotStore {
+func newRedisRuntimeSnapshotStore(logger *zap.Logger, client instrRedisCmd, keyPrefix, instanceID string, sharedSyncInterval time.Duration) *redisRuntimeSnapshotStore {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -82,7 +82,7 @@ func (s *redisRuntimeSnapshotStore) dirtyChannel() string {
 	return fmt.Sprintf(keyRuntimeSnapshotDirtyChannel, s.keyPrefix)
 }
 
-func (s *redisRuntimeSnapshotStore) getClient() (redis.UniversalClient, error) {
+func (s *redisRuntimeSnapshotStore) getClient() (instrRedisCmd, error) {
 	if s.client == nil {
 		return nil, errors.New("redis client not initialized")
 	}
@@ -117,7 +117,7 @@ func (s *redisRuntimeSnapshotStore) Start(ctx context.Context) error {
 	if sub, ok := msg.(*redis.Subscription); !ok || sub.Kind != "subscribe" {
 		s.logger.Warn("Unexpected runtime snapshot pubsub confirmation", zap.Any("message", msg))
 	}
-	
+
 	s.pubsub = pubsub
 	go s.handleDirtyEvents()
 	return nil

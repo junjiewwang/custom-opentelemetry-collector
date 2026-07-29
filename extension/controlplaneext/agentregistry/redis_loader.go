@@ -14,12 +14,12 @@ import (
 // It encapsulates the Pipeline-based batch read logic for reuse across
 // GetAllAgents, GetOnlineAgents, GetInstancesByService, etc.
 type RedisLoader struct {
-	client RedisCmd
+	client agentRedisCmd
 	keys   *KeyBuilder
 }
 
 // NewRedisLoader creates a new RedisLoader.
-func NewRedisLoader(client RedisCmd, keys *KeyBuilder) *RedisLoader {
+func NewRedisLoader(client agentRedisCmd, keys *KeyBuilder) *RedisLoader {
 	return &RedisLoader{
 		client: client,
 		keys:   keys,

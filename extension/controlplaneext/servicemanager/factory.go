@@ -29,7 +29,7 @@ func NewServiceManager(logger *zap.Logger, config Config, redisClient RedisClien
 		if redisClient == nil {
 			return nil, errors.New("redis client is required for redis service manager")
 		}
-		serviceStore = store.NewRedisServiceStore(logger.Named("store"), redisClient, config.KeyPrefix)
+		serviceStore = store.NewRedisServiceStore(logger.Named("store"), store.NewRedisCmd(redisClient.(*redis.Client)), config.KeyPrefix)
 
 	default:
 		return nil, errors.New("unsupported service manager type: " + config.Type)

@@ -24,7 +24,7 @@ func NewTokenManager(logger *zap.Logger, config Config, redisClient redis.Univer
 		if redisClient == nil {
 			return nil, errors.New("redis client is required for redis token manager")
 		}
-		repo = NewRedisAppRepository(redisClient, config.KeyPrefix)
+		repo = NewRedisAppRepository(NewRedisCmd(redisClient.(*redis.Client)), config.KeyPrefix)
 
 	default:
 		return nil, errors.New("unknown token manager type: " + config.Type)

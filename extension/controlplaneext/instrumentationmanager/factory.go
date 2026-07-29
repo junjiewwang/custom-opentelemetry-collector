@@ -40,10 +40,11 @@ func NewInstrumentationManager(logger *zap.Logger, config Config, redisClient Re
 		if redisClient == nil {
 			return nil, errors.New("redis client is required when instrumentation manager type is redis")
 		}
-		store := NewRedisRuleStore(logger.Named("instrumentation.store"), redisClient, config.KeyPrefix)
+		cmd := NewRedisCmd(redisClient.(*redis.Client))
+		store := NewRedisRuleStore(logger.Named("instrumentation.store"), cmd, config.KeyPrefix)
 		runtimeSnapshots := newRedisRuntimeSnapshotStore(
 			logger.Named("instrumentation.runtime_snapshot"),
-			redisClient,
+			cmd,
 			config.KeyPrefix,
 			instanceID,
 			runtimeSnapshotSharedSyncIntervalFromConfig(config),

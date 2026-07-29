@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -22,7 +23,7 @@ import (
 
 func newTestRedisRuntimeSnapshotStore(t *testing.T, client RedisClient, prefix, instanceID string, sharedSyncInterval time.Duration) *redisRuntimeSnapshotStore {
 	t.Helper()
-	store := newRedisRuntimeSnapshotStore(zap.NewNop(), client, prefix, instanceID, sharedSyncInterval)
+	store := newRedisRuntimeSnapshotStore(zap.NewNop(), NewRedisCmd(client.(*redis.Client)), prefix, instanceID, sharedSyncInterval)
 	require.NoError(t, store.Start(context.Background()))
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -310,7 +311,7 @@ func TestInstrumentationService_GetRuleRuntimeSnapshot_UsesSingleDistributedRefr
 		sharedRuleStore,
 		agentReg,
 		taskMgr,
-		newRedisRuntimeSnapshotStore(zap.NewNop(), client, prefix, "instance-a", 50*time.Millisecond),
+		newRedisRuntimeSnapshotStore(zap.NewNop(), NewRedisCmd(client), prefix, "instance-a", 50*time.Millisecond),
 		"instance-a",
 	)
 	svcB := newInstrumentationServiceWithRuntimeSnapshotStore(
@@ -319,7 +320,7 @@ func TestInstrumentationService_GetRuleRuntimeSnapshot_UsesSingleDistributedRefr
 		sharedRuleStore,
 		agentReg,
 		taskMgr,
-		newRedisRuntimeSnapshotStore(zap.NewNop(), client, prefix, "instance-b", 50*time.Millisecond),
+		newRedisRuntimeSnapshotStore(zap.NewNop(), NewRedisCmd(client), prefix, "instance-b", 50*time.Millisecond),
 		"instance-b",
 	)
 	require.NoError(t, svcA.Start(ctx))
@@ -328,11 +329,11 @@ func TestInstrumentationService_GetRuleRuntimeSnapshot_UsesSingleDistributedRefr
 	defer func() { _ = svcB.Close() }()
 
 	var (
-		wg       sync.WaitGroup
-		errMu    sync.Mutex
-		errs     []error
+		wg        sync.WaitGroup
+		errMu     sync.Mutex
+		errs      []error
 		snapshots = make([]*RuleRuntimeSnapshot, 0, 2)
-		snapMu   sync.Mutex
+		snapMu    sync.Mutex
 	)
 	call := func(svc *InstrumentationService) {
 		defer wg.Done()

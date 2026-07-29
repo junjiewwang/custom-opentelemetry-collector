@@ -49,7 +49,7 @@ return {1, ARGV[3]}
 // Uses Hash-per-app storage with a global ID index, both maintained atomically via Lua scripts.
 type RedisServiceStore struct {
 	logger    *zap.Logger
-	client    redis.UniversalClient
+	client    storeRedisCmd
 	keyPrefix string
 
 	mu      sync.RWMutex
@@ -57,7 +57,7 @@ type RedisServiceStore struct {
 }
 
 // NewRedisServiceStore creates a new Redis-based service store.
-func NewRedisServiceStore(logger *zap.Logger, client redis.UniversalClient, keyPrefix string) *RedisServiceStore {
+func NewRedisServiceStore(logger *zap.Logger, client storeRedisCmd, keyPrefix string) *RedisServiceStore {
 	if keyPrefix == "" {
 		keyPrefix = "otel:services"
 	}
@@ -81,7 +81,7 @@ func (s *RedisServiceStore) idIndexKey() string {
 	return fmt.Sprintf(keyServiceIndex, s.keyPrefix)
 }
 
-func (s *RedisServiceStore) getClient() (redis.UniversalClient, error) {
+func (s *RedisServiceStore) getClient() (storeRedisCmd, error) {
 	s.mu.RLock()
 	client := s.client
 	s.mu.RUnlock()

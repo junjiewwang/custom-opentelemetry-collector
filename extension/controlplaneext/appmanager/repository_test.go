@@ -357,6 +357,6 @@ func newTestRedisClient(t *testing.T) redis.UniversalClient {
 
 func TestRedisAppRepository(t *testing.T) {
 	contractTest(t, func(t *testing.T) AppRepository {
-		return NewRedisAppRepository(newTestRedisClient(t), "otel:test")
+		return NewRedisAppRepository(NewRedisCmd(newTestRedisClient(t).(*redis.Client)), "otel:test")
 	})
 }

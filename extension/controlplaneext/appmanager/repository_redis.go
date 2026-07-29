@@ -16,16 +16,17 @@ import (
 // Pure data access — no business logic.
 //
 // Storage layout:
-//   {prefix}:apps   → Hash: appID → AppInfo JSON
-//   {prefix}:tokens → Hash: token → appID
+//
+//	{prefix}:apps   → Hash: appID → AppInfo JSON
+//	{prefix}:tokens → Hash: token → appID
 type RedisAppRepository struct {
-	client    redis.UniversalClient
+	client    appRedisCmd
 	appsKey   string
 	tokensKey string
 }
 
 // NewRedisAppRepository creates a new Redis-backed AppRepository.
-func NewRedisAppRepository(client redis.UniversalClient, keyPrefix string) *RedisAppRepository {
+func NewRedisAppRepository(client appRedisCmd, keyPrefix string) *RedisAppRepository {
 	if keyPrefix == "" {
 		keyPrefix = "otel:apps"
 	}

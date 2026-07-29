@@ -31,14 +31,14 @@ const (
 // target refresh stays atomic at the rule level.
 type RedisRuleStore struct {
 	logger    *zap.Logger
-	client    redis.UniversalClient
+	client    instrRedisCmd
 	keyPrefix string
 	started   atomic.Bool
 }
 
 var _ RuleStore = (*RedisRuleStore)(nil)
 
-func NewRedisRuleStore(logger *zap.Logger, client redis.UniversalClient, keyPrefix string) *RedisRuleStore {
+func NewRedisRuleStore(logger *zap.Logger, client instrRedisCmd, keyPrefix string) *RedisRuleStore {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -68,7 +68,7 @@ func (s *RedisRuleStore) targetsKeyPrefix() string {
 	return fmt.Sprintf(keyTargetsJSON, s.keyPrefix, "")
 }
 
-func (s *RedisRuleStore) getClient() (redis.UniversalClient, error) {
+func (s *RedisRuleStore) getClient() (instrRedisCmd, error) {
 	if s.client == nil {
 		return nil, errors.New("redis client not initialized")
 	}
