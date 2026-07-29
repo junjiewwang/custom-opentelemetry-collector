@@ -34,14 +34,14 @@ type RedisAgentRegistry struct {
 	statsHelper  *StatsHelper
 
 	mu       sync.RWMutex
-	client   redis.UniversalClient
+	client   RedisCmd
 	started  bool
 	stopChan chan struct{}
 	wg       sync.WaitGroup
 }
 
 // NewRedisAgentRegistry creates a new Redis-based agent registry.
-func NewRedisAgentRegistry(logger *zap.Logger, config Config, client redis.UniversalClient) (*RedisAgentRegistry, error) {
+func NewRedisAgentRegistry(logger *zap.Logger, config Config, client RedisCmd) (*RedisAgentRegistry, error) {
 	keyPrefix := config.KeyPrefix
 	if keyPrefix == "" {
 		keyPrefix = "otel:agents"
@@ -530,13 +530,13 @@ func (r *RedisAgentRegistry) Close() error {
 
 // Helper methods
 
-func (r *RedisAgentRegistry) getClient() redis.UniversalClient {
+func (r *RedisAgentRegistry) getClient() RedisCmd {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.client
 }
 
-func (r *RedisAgentRegistry) upsertAgent(ctx context.Context, client redis.UniversalClient, agent *AgentInfo, now int64, isNew bool) error {
+func (r *RedisAgentRegistry) upsertAgent(ctx context.Context, client RedisCmd, agent *AgentInfo, now int64, isNew bool) error {
 	agentData, err := json.Marshal(agent)
 	if err != nil {
 		return err
@@ -612,7 +612,7 @@ func (r *RedisAgentRegistry) upsertAgent(ctx context.Context, client redis.Unive
 	return nil
 }
 
-func (r *RedisAgentRegistry) cleanupEmptyIndexes(ctx context.Context, client redis.UniversalClient, appID, serviceName string) {
+func (r *RedisAgentRegistry) cleanupEmptyIndexes(ctx context.Context, client RedisCmd, appID, serviceName string) {
 	appIDB64 := r.keys.Encode(appID)
 	serviceNameB64 := r.keys.Encode(serviceName)
 
@@ -648,7 +648,7 @@ func (r *RedisAgentRegistry) cleanupEmptyIndexes(ctx context.Context, client red
 }
 
 // markAgentOffline marks an agent as offline and updates its status in the instance info.
-func (r *RedisAgentRegistry) markAgentOffline(ctx context.Context, client redis.UniversalClient, fullPath string, agentIDMap map[string]string, now int64) {
+func (r *RedisAgentRegistry) markAgentOffline(ctx context.Context, client RedisCmd, fullPath string, agentIDMap map[string]string, now int64) {
 	appIDEsc, serviceNameEsc, instanceKey, err := r.keys.ParseFullKeyPath(fullPath)
 	if err != nil {
 		// Failed to parse - might be old format data, remove it directly

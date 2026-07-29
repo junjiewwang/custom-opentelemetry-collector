@@ -14,12 +14,12 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/instrumentationmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/taskengine"
 )
@@ -173,7 +173,7 @@ func (f *ComponentFactory) CreateAgentRegistry(cfg agentregistry.Config) (agentr
 			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
 		}
 		var createErr error
-		registry, createErr = agentregistry.NewRedisAgentRegistry(f.logger, cfg, client)
+		registry, createErr = agentregistry.NewRedisAgentRegistry(f.logger, cfg, agentregistry.NewRedisCmd(client.(*redis.Client)))
 		if createErr != nil {
 			return nil, createErr
 		}
