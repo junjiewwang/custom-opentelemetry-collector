@@ -135,7 +135,8 @@ type OnDemandConfigManager interface {
 
 // Config holds the configuration for ConfigManager.
 type Config struct {
-	// Type specifies the backend type: "memory", "nacos", "multi_agent_nacos", or "on_demand"
+	// Type specifies the backend type: "memory", "on_demand".
+	// "nacos" and "multi_agent_nacos" are deprecated and redirect to "on_demand".
 	Type string `mapstructure:"type"`
 
 	// NacosName is the name of the Nacos connection from storage extension

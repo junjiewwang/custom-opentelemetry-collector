@@ -17,15 +17,11 @@ func NewConfigManager(logger *zap.Logger, config Config, nacosClient config_clie
 	case "memory":
 		return NewMemoryConfigManager(logger), nil
 
-	case "nacos":
-		if nacosClient == nil {
-			return nil, fmt.Errorf("nacos client is required for nacos config manager")
-		}
-		return NewNacosConfigManager(logger, config, nacosClient)
-
-	case "multi_agent_nacos":
-		// Deprecated: multi_agent_nacos is deprecated, redirect to on_demand
-		logger.Warn("multi_agent_nacos config type is deprecated, using on_demand instead")
+	case "nacos", "multi_agent_nacos":
+		// Deprecated: the legacy "nacos" (single-config NacosConfigManager) and
+		// "multi_agent_nacos" backends have been removed; both transparently
+		// redirect to on_demand.
+		logger.Warn(config.Type + " config type is deprecated, using on_demand instead")
 		fallthrough
 
 	case "on_demand":
