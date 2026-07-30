@@ -89,6 +89,13 @@ type AgentConfigEntry struct {
 	LoadError  error
 	IsWatching bool
 	IsDefault  bool // True if this is the default config for the appID
+
+	// mu guards the mutable fields above (Config, LoadedAt, LastAccess,
+	// Version, IsWatching) against concurrent access from the background
+	// cleanup loop, config reads, and the Nacos change callback. Entries are
+	// always stored and accessed as *AgentConfigEntry, so the mutex is never
+	// copied.
+	mu sync.Mutex
 }
 
 // OnDemandCacheStats holds cache statistics.
@@ -103,20 +110,37 @@ type OnDemandCacheStats struct {
 
 // NacosOnDemandConfigManager implements OnDemandConfigManager using Nacos.
 // Uses model.AgentConfig as the canonical type.
+//
+// Watch lifecycle (the "on-demand" design):
+//   - RegisterAgent → adds agent to serviceWatchers + setupWatch (idempotent)
+//   - UnregisterAgent → removes agent from serviceWatchers; if last watcher for a service,
+//     cancels the Nacos watch and cleans the cache entry
+//   - cleanupExpiredEntries → only cleans entries with zero watchers
+//   - GetConfigForAgent → re-establishes watch if it was cleaned up
 type NacosOnDemandConfigManager struct {
 	logger *zap.Logger
 	config OnDemandConfig
 	client config_client.IConfigClient
 
-	// configCache stores configs by "token:agentId" key.
+	// configCache stores service-level configs by "appID:serviceName" key.
 	configCache sync.Map // map[string]*AgentConfigEntry
 
 	// registeredAgents tracks which agents are registered.
-	// Key: token, Value: map[agentID]bool
+	// Key: appID, Value: *sync.Map (agentID → true)
 	registeredAgents sync.Map
 
+	// serviceWatchers tracks which agents are watching each service config.
+	// Key: "appID:serviceName", Value: *sync.Map (agentID → true)
+	// When the inner map becomes empty, the watch is cancelled.
+	serviceWatchers sync.Map
+
+	// agentServices tracks which services each agent is watching (reverse index
+	// of serviceWatchers). Key: "appID:agentID", Value: *sync.Map (serviceName → true)
+	// Enables O(1) cleanup of all service watchers when an agent unregisters.
+	agentServices sync.Map
+
 	// agentSubscribers stores callbacks for agent config changes.
-	// Key: "token:agentId", Value: []AgentConfigChangeCallback
+	// Key: "appID:agentID", Value: []AgentConfigChangeCallback
 	agentSubscribers sync.Map
 
 	// Subscribers for ConfigManager interface.
@@ -214,7 +238,9 @@ func (m *NacosOnDemandConfigManager) runCleanupLoop() {
 	}
 }
 
-// cleanupExpiredEntries removes expired cache entries for unregistered agents.
+// cleanupExpiredEntries removes expired cache entries that have no active watchers.
+// Entries with active watchers (agents still registered for that service) are
+// kept alive by refreshing their LastAccess.
 func (m *NacosOnDemandConfigManager) cleanupExpiredEntries() {
 	now := time.Now()
 	expireThreshold := now.Add(-m.config.CacheExpiration)
@@ -222,19 +248,35 @@ func (m *NacosOnDemandConfigManager) cleanupExpiredEntries() {
 	var cleaned int
 	m.configCache.Range(func(key, value interface{}) bool {
 		entry := value.(*AgentConfigEntry)
+		cacheKey := key.(string)
 
-		// Skip if agent is still registered
-		if m.isAgentRegistered(entry.AppID, entry.AgentID) {
-			return true
+		// Skip if any agent is still watching this service
+		if watchers, ok := m.serviceWatchers.Load(cacheKey); ok {
+			hasWatcher := false
+			watchers.(*sync.Map).Range(func(_, _ interface{}) bool {
+				hasWatcher = true
+				return false
+			})
+			if hasWatcher {
+				// Refresh LastAccess so active entries never expire
+				entry.mu.Lock()
+				entry.LastAccess = now
+				entry.mu.Unlock()
+				return true
+			}
 		}
 
-		// Remove if expired
-		if entry.LastAccess.Before(expireThreshold) {
-			// Cancel watch if active
-			if entry.IsWatching {
+		// No active watchers → remove if expired
+		entry.mu.Lock()
+		expired := entry.LastAccess.Before(expireThreshold)
+		watching := entry.IsWatching
+		entry.mu.Unlock()
+		if expired {
+			if watching {
 				m.cancelWatch(entry.AppID, entry.AgentID)
 			}
 			m.configCache.Delete(key)
+			m.serviceWatchers.Delete(cacheKey)
 			cleaned++
 		}
 
@@ -271,6 +313,58 @@ func (m *NacosOnDemandConfigManager) serviceDataID(serviceName string) string {
 	return serviceName
 }
 
+// addServiceWatcher records that an agent is watching a service config.
+// Updates both the forward index (serviceWatchers) and reverse index (agentServices).
+func (m *NacosOnDemandConfigManager) addServiceWatcher(appID, agentID, serviceName string) {
+	watchKey := m.cacheKey(appID, serviceName)
+	watchers, _ := m.serviceWatchers.LoadOrStore(watchKey, &sync.Map{})
+	watchers.(*sync.Map).Store(agentID, true)
+
+	agentKey := m.cacheKey(appID, agentID)
+	svcs, _ := m.agentServices.LoadOrStore(agentKey, &sync.Map{})
+	svcs.(*sync.Map).Store(serviceName, true)
+}
+
+// removeAgentFromAllServices removes an agent from all service watcher sets.
+// For each service where this was the last watcher, cancels the Nacos watch
+// and cleans up the cache entry.
+func (m *NacosOnDemandConfigManager) removeAgentFromAllServices(appID, agentID string) {
+	agentKey := m.cacheKey(appID, agentID)
+	svcs, ok := m.agentServices.Load(agentKey)
+	if !ok {
+		return
+	}
+
+	svcMap := svcs.(*sync.Map)
+	var toCleanup []string
+
+	svcMap.Range(func(svc, _ interface{}) bool {
+		serviceName := svc.(string)
+		watchKey := m.cacheKey(appID, serviceName)
+
+		// Remove this agent from the service's watcher set
+		if watchers, ok := m.serviceWatchers.Load(watchKey); ok {
+			wMap := watchers.(*sync.Map)
+			wMap.Delete(agentID)
+
+			// Check if any watchers remain
+			hasMore := false
+			wMap.Range(func(_, _ interface{}) bool { hasMore = true; return false })
+
+			if !hasMore {
+				// Last watcher for this service → cancel watch + clean cache
+				m.cancelWatch(appID, serviceName)
+				m.configCache.Delete(watchKey)
+				m.serviceWatchers.Delete(watchKey)
+				toCleanup = append(toCleanup, watchKey)
+			}
+		}
+		return true
+	})
+
+	m.agentServices.Delete(agentKey)
+}
+
 // RegisterAgent registers an agent and starts watching its config.
 func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, appID, agentID, serviceName string) (*model.AgentConfig, error) {
 	if appID == "" || agentID == "" {
@@ -298,9 +392,11 @@ func (m *NacosOnDemandConfigManager) RegisterAgent(ctx context.Context, appID, a
 		)
 	}
 
-	// Setup watch for service-level config only
-	if svcID := m.serviceDataID(serviceName); svcID != "" {
-		m.setupWatch(appID, svcID)
+	// Track this agent as a watcher of the service config and setup watch.
+	// The watch is shared across all agents for the same (appID, serviceName).
+	if serviceName != "" {
+		m.addServiceWatcher(appID, agentID, serviceName)
+		m.setupWatch(appID, serviceName)
 	}
 
 	return config, nil
@@ -337,9 +433,9 @@ func (m *NacosOnDemandConfigManager) UnregisterAgent(ctx context.Context, appID,
 	// Remove subscribers
 	m.agentSubscribers.Delete(m.cacheKey(appID, agentID))
 
-	// Note: We don't watch individual agents anymore, and we don't watch default config.
-	// Service-level watches are shared and kept active as long as any agent for that service is online.
-	// Cleanup of service watches is handled by cache expiration if no one accesses them.
+	// Remove agent from all service watcher sets and release watches
+	// for services that have no remaining watchers.
+	m.removeAgentFromAllServices(appID, agentID)
 
 	return nil
 }
@@ -360,10 +456,13 @@ func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, appI
 	svcKey := m.cacheKey(appID, svcID)
 	if entry, ok := m.configCache.Load(svcKey); ok {
 		e := entry.(*AgentConfigEntry)
+		e.mu.Lock()
 		e.LastAccess = time.Now()
+		cfg := e.Config
+		e.mu.Unlock()
 		m.cacheHits.Add(1)
-		if e.Config != nil {
-			return e.Config, nil
+		if cfg != nil {
+			return cfg, nil
 		}
 	}
 
@@ -372,6 +471,8 @@ func (m *NacosOnDemandConfigManager) GetConfigForAgent(ctx context.Context, appI
 	// 2. Try service-specific config from Nacos
 	config, err := m.loadConfig(ctx, appID, svcID)
 	if err == nil && config != nil {
+		// Ensure watch is active (may have been cleaned up by expiration)
+		m.setupWatch(appID, serviceName)
 		return config, nil
 	}
 
@@ -674,7 +775,10 @@ func (m *NacosOnDemandConfigManager) setupWatch(appID, dataID string) {
 	// Check if already watching
 	if entry, ok := m.configCache.Load(key); ok {
 		e := entry.(*AgentConfigEntry)
-		if e.IsWatching {
+		e.mu.Lock()
+		watching := e.IsWatching
+		e.mu.Unlock()
+		if watching {
 			return
 		}
 	}
@@ -699,7 +803,9 @@ func (m *NacosOnDemandConfigManager) setupWatch(appID, dataID string) {
 	// Mark as watching
 	if entry, ok := m.configCache.Load(key); ok {
 		e := entry.(*AgentConfigEntry)
+		e.mu.Lock()
 		e.IsWatching = true
+		e.mu.Unlock()
 	} else {
 		// Create placeholder entry
 		m.configCache.Store(key, &AgentConfigEntry{
@@ -724,10 +830,15 @@ func (m *NacosOnDemandConfigManager) cancelWatch(appID, dataID string) {
 	// Check if watching
 	if entry, ok := m.configCache.Load(key); ok {
 		e := entry.(*AgentConfigEntry)
-		if !e.IsWatching {
+		e.mu.Lock()
+		watching := e.IsWatching
+		if watching {
+			e.IsWatching = false
+		}
+		e.mu.Unlock()
+		if !watching {
 			return
 		}
-		e.IsWatching = false
 	}
 
 	err := m.client.CancelListenConfig(vo.ConfigParam{
@@ -763,7 +874,9 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(appID, dataID, data stri
 	var oldConfig *model.AgentConfig
 	if entry, ok := m.configCache.Load(key); ok {
 		e := entry.(*AgentConfigEntry)
+		e.mu.Lock()
 		oldConfig = e.Config
+		e.mu.Unlock()
 	}
 
 	// Parse new config
@@ -775,8 +888,10 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(appID, dataID, data stri
 		// Remove from cache but keep watching flag
 		if entry, ok := m.configCache.Load(key); ok {
 			e := entry.(*AgentConfigEntry)
+			e.mu.Lock()
 			e.Config = nil
 			e.LastAccess = time.Now()
+			e.mu.Unlock()
 		}
 	} else {
 		var config model.AgentConfig
@@ -799,10 +914,12 @@ func (m *NacosOnDemandConfigManager) handleConfigChange(appID, dataID, data stri
 		// Update cache
 		if entry, ok := m.configCache.Load(key); ok {
 			e := entry.(*AgentConfigEntry)
+			e.mu.Lock()
 			e.Config = newConfig
 			e.Version = config.Version
 			e.LastAccess = time.Now()
 			e.LoadedAt = time.Now()
+			e.mu.Unlock()
 		} else {
 			m.configCache.Store(key, &AgentConfigEntry{
 				Config:     newConfig,
@@ -973,7 +1090,10 @@ func (m *NacosOnDemandConfigManager) GetCacheStats() *OnDemandCacheStats {
 	m.configCache.Range(func(_, value interface{}) bool {
 		stats.TotalCachedConfigs++
 		entry := value.(*AgentConfigEntry)
-		if entry.IsWatching {
+		entry.mu.Lock()
+		watching := entry.IsWatching
+		entry.mu.Unlock()
+		if watching {
 			stats.TotalWatching++
 		}
 		return true
@@ -1006,8 +1126,11 @@ func (m *NacosOnDemandConfigManager) GetConfig(ctx context.Context) (*model.Agen
 
 	m.configCache.Range(func(_, value interface{}) bool {
 		entry := value.(*AgentConfigEntry)
-		if entry.Config != nil {
-			firstConfig = entry.Config
+		entry.mu.Lock()
+		cfg := entry.Config
+		entry.mu.Unlock()
+		if cfg != nil {
+			firstConfig = cfg
 			return false
 		}
 		return true
@@ -1050,7 +1173,10 @@ func (m *NacosOnDemandConfigManager) StopWatch() error {
 	// Cancel all watches
 	m.configCache.Range(func(key, value interface{}) bool {
 		entry := value.(*AgentConfigEntry)
-		if entry.IsWatching {
+		entry.mu.Lock()
+		watching := entry.IsWatching
+		entry.mu.Unlock()
+		if watching {
 			m.cancelWatch(entry.AppID, entry.AgentID)
 		}
 		return true
