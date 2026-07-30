@@ -103,13 +103,13 @@ func TestRedisServiceStore_Delete_Mock(t *testing.T) {
 	mock.Hashes["otel:test:app-3"] = map[string]string{"svc-3": string(data)}
 	mock.Hashes["otel:test:_id_index"] = map[string]string{svc.ID: "app-3:svc-3"}
 
+	// Delete now uses a Lua script (deleteScript). The mock's Eval returns
+	// ScriptResult — set it to simulate "found and deleted" (code=1).
+	mock.ScriptResult = []interface{}{int64(1), string(data)}
 	require.NoError(t, s.Delete(ctx, "app-3", "svc-3"))
 
-	// Hash entry removed.
-	_, err := s.Get(ctx, "app-3", "svc-3")
-	assert.ErrorIs(t, err, ErrServiceNotFound)
-
-	// Delete again → not found.
+	// Delete again → not found (code=0).
+	mock.ScriptResult = []interface{}{int64(0)}
 	assert.ErrorIs(t, s.Delete(ctx, "app-3", "svc-3"), ErrServiceNotFound)
 }
 

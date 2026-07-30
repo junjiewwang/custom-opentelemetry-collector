@@ -45,6 +45,36 @@ redis.call('HSET', KEYS[2], ARGV[2], ARGV[4])
 return {1, ARGV[3]}
 `)
 
+// deleteScript atomically deletes a service record if it exists.
+// KEYS[1] = app hash key
+// KEYS[2] = ID index key
+// ARGV[1] = serviceName (hash field)
+// Returns:
+//
+//	1 = deleted (returns deleted JSON as second value)
+//	0 = not found
+//
+// This fixes the read-then-delete race in the old implementation where two
+// concurrent goroutines could both see the service exist (HGet), then both
+// proceed to delete (TxPipeline HDel). The Lua script makes the check-and-
+// delete atomic in Redis.
+var deleteScript = redis.NewScript(`
+local data = redis.call('HGET', KEYS[1], ARGV[1])
+if not data then
+    return {0}
+end
+
+redis.call('HDEL', KEYS[1], ARGV[1])
+
+-- Parse serviceID from JSON to clean up ID index
+local id = cjson.decode(data)['id']
+if id and id ~= '' then
+    redis.call('HDEL', KEYS[2], id)
+end
+
+return {1, data}
+`)
+
 // RedisServiceStore implements ServiceStore using Redis as backend.
 // Uses Hash-per-app storage with a global ID index, both maintained atomically via Lua scripts.
 type RedisServiceStore struct {
@@ -239,29 +269,32 @@ func (s *RedisServiceStore) Delete(ctx context.Context, appID, serviceName strin
 		return err
 	}
 
-	// Step 1: Get the existing record to find the serviceID for index cleanup
-	data, err := client.HGet(ctx, s.appKey(appID), serviceName).Result()
-	if err == redis.Nil {
+	// Atomic check-and-delete via Lua script. The old implementation did
+	// HGet (check) then TxPipeline HDel (delete) in two steps, allowing a
+	// race where two concurrent goroutines both saw the service exist and
+	// both proceeded to delete. The Lua script makes this atomic in Redis.
+	result, err := deleteScript.Run(ctx, client,
+		[]string{s.appKey(appID), s.idIndexKey()},
+		serviceName,
+	).Slice()
+	if err != nil {
+		return fmt.Errorf("execute delete script: %w", err)
+	}
+
+	if len(result) < 1 {
+		return fmt.Errorf("unexpected script result length: %d", len(result))
+	}
+
+	code, ok := result[0].(int64)
+	if !ok {
+		return fmt.Errorf("unexpected script result code type: %T", result[0])
+	}
+
+	if code == 0 {
 		return ServiceNotFound(appID, serviceName)
 	}
-	if err != nil {
-		return fmt.Errorf("get service for delete: %w", err)
-	}
 
-	var info ServiceInfo
-	if err := json.Unmarshal([]byte(data), &info); err != nil {
-		return fmt.Errorf("unmarshal service info for delete: %w", err)
-	}
-
-	// Step 2: Atomic delete of both record and ID index
-	pipe := client.TxPipeline()
-	pipe.HDel(ctx, s.appKey(appID), serviceName)
-	if info.ID != "" {
-		pipe.HDel(ctx, s.idIndexKey(), info.ID)
-	}
-
-	_, err = pipe.Exec(ctx)
-	return err
+	return nil
 }
 
 // ===== List Operations =====
