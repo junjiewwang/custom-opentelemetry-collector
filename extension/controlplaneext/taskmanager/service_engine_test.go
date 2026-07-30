@@ -6,6 +6,7 @@ package taskmanager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -33,6 +34,10 @@ type mockEngine struct {
 	reportCalled int
 	started      bool
 	stopped      bool
+
+	// Optional error injection for failure-path tests.
+	listErr    error
+	getTaskErr error
 }
 
 func newMockEngine() *mockEngine {
@@ -104,6 +109,9 @@ func (m *mockEngine) Report(_ context.Context, result *taskengine.TaskResult) er
 }
 
 func (m *mockEngine) GetTask(_ context.Context, taskID string) (*taskengine.Task, error) {
+	if m.getTaskErr != nil {
+		return nil, m.getTaskErr
+	}
 	return m.tasks[taskID], nil
 }
 
@@ -116,6 +124,9 @@ func (m *mockEngine) GetProgress(_ context.Context, _ taskengine.TaskType, _ str
 }
 
 func (m *mockEngine) ListTasks(_ context.Context, query taskengine.ListQuery) (*taskengine.ListPage, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	var matched []*taskengine.Task
 	for _, t := range m.tasks {
 		if query.Status != "" && t.Status != query.Status {
@@ -598,4 +609,141 @@ func TestNewTaskManagerWithEngine_NilEngine(t *testing.T) {
 	_, err := NewTaskManagerWithEngine(logger, DefaultConfig(), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "engine is required")
+}
+
+// ── WithServiceStore / GetEngine ───────────────────────────────────────
+
+func TestWithServiceStore_InjectsStore(t *testing.T) {
+	engine := newMockEngine()
+	store := taskengine.NewMemoryStore()
+
+	svc := NewTaskServiceEngine(engine, zaptest.NewLogger(t), DefaultConfig(), WithServiceStore(store))
+
+	// WithServiceStore should propagate to both the service and its reaper,
+	// enabling the optimized path (breaker + backoff initialized).
+	assert.NotNil(t, svc.store)
+	require.NotNil(t, svc.reaper)
+	assert.NotNil(t, svc.reaper.store, "store must reach the reaper to enable scanOptimized")
+	assert.NotNil(t, svc.reaper.breaker)
+}
+
+func TestTaskServiceEngine_GetEngine(t *testing.T) {
+	engine := newMockEngine()
+	svc := newTestFacade(engine)
+
+	// GetEngine returns the underlying engine for components needing direct
+	// access (e.g. the longpoll handler).
+	got := svc.GetEngine()
+	assert.NotNil(t, got)
+	// Identity check: the returned engine is the one we passed in.
+	assert.Same(t, engine, got)
+}
+
+// ── GetGlobalPendingTasks ──────────────────────────────────────────────
+
+func TestGetGlobalPendingTasks_OnlyBroadcast(t *testing.T) {
+	engine := newMockEngine()
+	svc := newTestFacade(engine)
+
+	// A broadcast (global) task and a direct (agent-targeted) task.
+	require.NoError(t, svc.SubmitTask(context.Background(), &model.Task{
+		ID: "broadcast-1", TypeName: "arthas_attach",
+	}))
+	require.NoError(t, svc.SubmitTaskForAgent(context.Background(),
+		&AgentMeta{AgentID: "agent-x"}, &model.Task{
+			ID: "direct-1", TypeName: "arthas_attach",
+		}))
+
+	tasks, err := svc.GetGlobalPendingTasks(context.Background())
+	require.NoError(t, err)
+
+	// Only the broadcast task belongs to the global pending set.
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "broadcast-1", tasks[0].ID)
+}
+
+func TestGetGlobalPendingTasks_Empty(t *testing.T) {
+	svc := newTestFacade(newMockEngine())
+
+	tasks, err := svc.GetGlobalPendingTasks(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, tasks)
+}
+
+func TestGetGlobalPendingTasks_ListError(t *testing.T) {
+	engine := newMockEngine()
+	engine.listErr = errors.New("store down")
+	svc := newTestFacade(engine)
+
+	tasks, err := svc.GetGlobalPendingTasks(context.Background())
+	require.Error(t, err)
+	assert.Nil(t, tasks)
+	assert.Contains(t, err.Error(), "engine list tasks")
+}
+
+// ── SetTaskRunning ─────────────────────────────────────────────────────
+
+func TestSetTaskRunning_PendingTask_Claims(t *testing.T) {
+	engine := newMockEngine()
+	svc := newTestFacade(engine)
+
+	// Submit a broadcast task (starts Pending), then set it running.
+	require.NoError(t, svc.SubmitTask(context.Background(), &model.Task{
+		ID: "t-run", TypeName: "arthas_attach",
+	}))
+
+	require.NoError(t, svc.SetTaskRunning(context.Background(), "t-run", "agent-1"))
+	// SetTaskRunning on a Pending task issues an engine Claim.
+	assert.Equal(t, 1, engine.claimCalled)
+}
+
+func TestSetTaskRunning_AlreadyRunningBySameAgent_Noop(t *testing.T) {
+	engine := newMockEngine()
+	svc := newTestFacade(engine)
+
+	require.NoError(t, svc.SubmitTask(context.Background(), &model.Task{
+		ID: "t-run2", TypeName: "arthas_attach",
+	}))
+	// First set running — claims it.
+	require.NoError(t, svc.SetTaskRunning(context.Background(), "t-run2", "agent-1"))
+	claimsBefore := engine.claimCalled
+
+	// Second call by the same agent on the now-running task is a no-op:
+	// no additional Claim.
+	require.NoError(t, svc.SetTaskRunning(context.Background(), "t-run2", "agent-1"))
+	assert.Equal(t, claimsBefore, engine.claimCalled, "no extra claim when already running by same agent")
+}
+
+func TestSetTaskRunning_NotFound(t *testing.T) {
+	svc := newTestFacade(newMockEngine())
+
+	err := svc.SetTaskRunning(context.Background(), "no-such-task", "agent-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "task not found")
+}
+
+func TestSetTaskRunning_TerminalState_Rejected(t *testing.T) {
+	engine := newMockEngine()
+	svc := newTestFacade(engine)
+
+	// Seed a task already in a terminal state directly in the mock engine.
+	engine.tasks["t-done"] = &taskengine.Task{
+		ID:        "t-done",
+		Status:    taskengine.StatusSuccess,
+		ClaimedBy: "agent-other",
+	}
+
+	err := svc.SetTaskRunning(context.Background(), "t-done", "agent-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "terminal state")
+}
+
+func TestSetTaskRunning_GetTaskError(t *testing.T) {
+	engine := newMockEngine()
+	engine.getTaskErr = errors.New("store unavailable")
+	svc := newTestFacade(engine)
+
+	err := svc.SetTaskRunning(context.Background(), "t-x", "agent-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "engine get task")
 }
