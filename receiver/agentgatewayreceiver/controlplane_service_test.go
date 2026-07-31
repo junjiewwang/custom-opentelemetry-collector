@@ -16,6 +16,8 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver/longpoll"
 	controlplanev1 "go.opentelemetry.io/collector/custom/proto/controlplane/v1"
 )
@@ -390,4 +392,234 @@ func TestDataFormatForContentType(t *testing.T) {
 	assert.Equal(t, "protobuf", dataFormatForContentType(pbContentType))
 	assert.Equal(t, "json", dataFormatForContentType("application/json"))
 	assert.Equal(t, "json", dataFormatForContentType(""))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// controlPlaneService — ReportTaskResult / ReportStatus / UploadChunkedResult
+//
+// These exercise the controlPlane (ControlPlaneV2) dependency. ControlPlane is
+// a 20-method interface; fakeCP embeds it and overrides only the 3 methods the
+// service calls, so we don't hand-implement the other 17.
+// ═══════════════════════════════════════════════════════════════════════
+
+type fakeCP struct {
+	controlplaneext.ControlPlane // embeds interface; unoverridden methods panic if called
+
+	reportTaskResultErr     error
+	uploadChunkResp         *model.ChunkUploadResponse
+	uploadChunkErr          error
+	registerOrHeartbeatErr  error
+
+	reportTaskResultCalled  bool
+	uploadChunkCalled       bool
+	registerOrHeartbeatCalled bool
+	lastReportedTaskResult  *model.TaskResult
+	lastUploadedChunk       *model.ChunkUpload
+	lastHeartbeatAgent      *agentregistry.AgentInfo
+}
+
+func (f *fakeCP) ReportTaskResult(_ context.Context, tr *model.TaskResult) error {
+	f.reportTaskResultCalled = true
+	f.lastReportedTaskResult = tr
+	return f.reportTaskResultErr
+}
+
+func (f *fakeCP) UploadChunk(_ context.Context, req *model.ChunkUpload) (*model.ChunkUploadResponse, error) {
+	f.uploadChunkCalled = true
+	f.lastUploadedChunk = req
+	return f.uploadChunkResp, f.uploadChunkErr
+}
+
+func (f *fakeCP) RegisterOrHeartbeatAgent(_ context.Context, ai *agentregistry.AgentInfo) error {
+	f.registerOrHeartbeatCalled = true
+	f.lastHeartbeatAgent = ai
+	return f.registerOrHeartbeatErr
+}
+
+func newSvcWithCP(cp controlplaneext.ControlPlane) *controlPlaneService {
+	return newControlPlaneService(zap.NewNop(), cp, nil)
+}
+
+// ── ReportTaskResult ───────────────────────────────────────────────────
+
+func TestService_ReportTaskResult_NoControlPlane_Unavailable(t *testing.T) {
+	svc := newControlPlaneService(zap.NewNop(), nil, nil)
+	resp := svc.ReportTaskResult(context.Background(), &controlplanev1.TaskResultRequest{})
+	assert.Equal(t, controlplanev1.ResponseStatus_CODE_UNAVAILABLE, resp.Status.Code)
+	assert.False(t, resp.Acknowledged)
+}
+
+func TestService_ReportTaskResult_MissingTaskID_Invalid(t *testing.T) {
+	svc := newSvcWithCP(&fakeCP{})
+	// result nil → invalid
+	resp := svc.ReportTaskResult(context.Background(), &controlplanev1.TaskResultRequest{})
+	assert.Equal(t, controlplanev1.ResponseStatus_CODE_INVALID_ARGUMENT, resp.Status.Code)
+
+	// result present but empty task_id → invalid
+	resp = svc.ReportTaskResult(context.Background(), &controlplanev1.TaskResultRequest{
+		Result: &controlplanev1.TaskResult{},
+	})
+	assert.Equal(t, controlplanev1.ResponseStatus_CODE_INVALID_ARGUMENT, resp.Status.Code)
+}
+
+func TestService_ReportTaskResult_OK_Acknowledged(t *testing.T) {
+	fp := &fakeCP{}
+	svc := newSvcWithCP(fp)
+
+	resp := svc.ReportTaskResult(context.Background(), &controlplanev1.TaskResultRequest{
+		AgentId: "agent-1",
+		Result: &controlplanev1.TaskResult{
+			TaskId:        "task-1",
+			Status:        controlplanev1.TaskStatus_TASK_STATUS_SUCCESS,
+			CompletedAtMillis: 12345,
+		},
+	})
+	assert.Equal(t, controlplanev1.ResponseStatus_CODE_OK, resp.Status.Code)
+	assert.True(t, resp.Acknowledged)
+
+	// Verify the proto→model conversion reached the control plane with the
+	// right taskID and agentID propagated from the request envelope.
+	assert.True(t, fp.reportTaskResultCalled)
+	require.NotNil(t, fp.lastReportedTaskResult)
+	assert.Equal(t, "task-1", fp.lastReportedTaskResult.TaskID)
+	assert.Equal(t, "agent-1", fp.lastReportedTaskResult.AgentID)
+	assert.Equal(t, int64(12345), fp.lastReportedTaskResult.CompletedAtMillis)
+}
+
+func TestService_ReportTaskResult_FillsCompletedAtWhenZero(t *testing.T) {
+	fp := &fakeCP{}
+	svc := newSvcWithCP(fp)
+	svc.ReportTaskResult(context.Background(), &controlplanev1.TaskResultRequest{
+		Result: &controlplanev1.TaskResult{TaskId: "t", Status: controlplanev1.TaskStatus_TASK_STATUS_SUCCESS},
+	})
+	require.NotNil(t, fp.lastReportedTaskResult)
+	assert.NotZero(t, fp.lastReportedTaskResult.CompletedAtMillis, "zero CompletedAtMillis must be stamped with now")
+}
+
+func TestService_ReportTaskResult_ControlPlaneError_Classified(t *testing.T) {
+	svc := newSvcWithCP(&fakeCP{reportTaskResultErr: errors.New("task not found")})
+	resp := svc.ReportTaskResult(context.Background(), &controlplanev1.TaskResultRequest{
+		Result: &controlplanev1.TaskResult{TaskId: "t", Status: controlplanev1.TaskStatus_TASK_STATUS_SUCCESS},
+	})
+	assert.False(t, resp.Acknowledged)
+	assert.Contains(t, resp.Status.Message, "not found")
+}
+
+// ── ReportStatus ───────────────────────────────────────────────────────
+
+func TestService_ReportStatus_NoControlPlane_Unavailable(t *testing.T) {
+	svc := newControlPlaneService(zap.NewNop(), nil, nil)
+	resp := svc.ReportStatus(context.Background(), &controlplanev1.StatusRequest{})
+	assert.Equal(t, controlplanev1.ResponseStatus_CODE_UNAVAILABLE, resp.Status.Code)
+}
+
+func TestService_ReportStatus_OK_HeartbeatsAgent(t *testing.T) {
+	fp := &fakeCP{}
+	svc := newSvcWithFP(fp)
+
+	resp := svc.ReportStatus(context.Background(), &controlplanev1.StatusRequest{
+		AgentIdentity: &controlplanev1.AgentIdentity{
+			AgentId:     "agent-1",
+			ServiceName: "svc",
+			HostName:    "host-1",
+		},
+	})
+	assert.Equal(t, controlplanev1.ResponseStatus_CODE_OK, resp.Status.Code)
+	assert.NotZero(t, resp.ServerTimeMillis)
+
+	assert.True(t, fp.registerOrHeartbeatCalled)
+	require.NotNil(t, fp.lastHeartbeatAgent)
+	assert.Equal(t, "agent-1", fp.lastHeartbeatAgent.AgentID)
+	assert.Equal(t, "svc", fp.lastHeartbeatAgent.ServiceName)
+	assert.Equal(t, "host-1", fp.lastHeartbeatAgent.Hostname)
+}
+
+func TestService_ReportStatus_NoAgentID_StillOK_NoHeartbeat(t *testing.T) {
+	fp := &fakeCP{}
+	svc := newSvcWithFP(fp)
+	// No AgentIdentity → no agentID → no heartbeat call, but still OK.
+	resp := svc.ReportStatus(context.Background(), &controlplanev1.StatusRequest{})
+	assert.Equal(t, controlplanev1.ResponseStatus_CODE_OK, resp.Status.Code)
+	assert.False(t, fp.registerOrHeartbeatCalled)
+}
+
+func TestService_ReportStatus_HeartbeatError_StillOK(t *testing.T) {
+	// RegisterOrHeartbeatAgent failure is swallowed (logged); status stays OK.
+	fp := &fakeCP{registerOrHeartbeatErr: errors.New("registry down")}
+	svc := newSvcWithFP(fp)
+	resp := svc.ReportStatus(context.Background(), &controlplanev1.StatusRequest{
+		AgentIdentity: &controlplanev1.AgentIdentity{AgentId: "a1"},
+	})
+	assert.Equal(t, controlplanev1.ResponseStatus_CODE_OK, resp.Status.Code)
+	assert.True(t, fp.registerOrHeartbeatCalled)
+}
+
+// ── UploadChunkedResult ────────────────────────────────────────────────
+
+func TestService_UploadChunkedResult_NoControlPlane_Failed(t *testing.T) {
+	svc := newControlPlaneService(zap.NewNop(), nil, nil)
+	resp := svc.UploadChunkedResult(context.Background(), &controlplanev1.ChunkedTaskResult{})
+	assert.Equal(t, controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED, resp.Status)
+}
+
+func TestService_UploadChunkedResult_NilRequest_Failed(t *testing.T) {
+	// ChunkUploadFromProto(nil) → nil → "invalid chunk request".
+	svc := newSvcWithCP(&fakeCP{})
+	resp := svc.UploadChunkedResult(context.Background(), nil)
+	assert.Equal(t, controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED, resp.Status)
+}
+
+func TestService_UploadChunkedResult_ControlPlaneError_Failed(t *testing.T) {
+	svc := newSvcWithCP(&fakeCP{uploadChunkErr: errors.New("redis unavailable")})
+	resp := svc.UploadChunkedResult(context.Background(), &controlplanev1.ChunkedTaskResult{TaskId: "t"})
+	assert.Equal(t, controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED, resp.Status)
+	assert.Contains(t, resp.ErrorMessage, "unavailable")
+}
+
+func TestService_UploadChunkedResult_NilResponse_Failed(t *testing.T) {
+	svc := newSvcWithCP(&fakeCP{uploadChunkResp: nil})
+	resp := svc.UploadChunkedResult(context.Background(), &controlplanev1.ChunkedTaskResult{TaskId: "t"})
+	assert.Equal(t, controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_FAILED, resp.Status)
+}
+
+func TestService_UploadChunkedResult_OK_EchoesMissingFields(t *testing.T) {
+	fp := &fakeCP{uploadChunkResp: &model.ChunkUploadResponse{
+		Status: model.ChunkUploadStatusChunkReceived,
+		// UploadID and ReceivedChunkIndex left zero → service must fill from request.
+	}}
+	svc := newSvcWithCP(fp)
+
+	resp := svc.UploadChunkedResult(context.Background(), &controlplanev1.ChunkedTaskResult{
+		TaskId:     "task-1",
+		UploadId:   "up-1",
+		ChunkIndex: 7,
+	})
+	assert.Equal(t, controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_CHUNK_RECEIVED, resp.Status)
+	assert.True(t, fp.uploadChunkCalled)
+
+	// Empty UploadID echoed from req.UploadId (or TaskId fallback); zero index echoed from req.ChunkIndex.
+	assert.Equal(t, "up-1", resp.UploadId, "empty UploadID must be filled from request")
+	assert.Equal(t, int32(7), resp.ReceivedChunkIndex, "zero ReceivedChunkIndex must echo req.ChunkIndex")
+}
+
+func TestService_UploadChunkedResult_OK_PreservesResponseFields(t *testing.T) {
+	fp := &fakeCP{uploadChunkResp: &model.ChunkUploadResponse{
+		UploadID:           "kept-up",
+		ReceivedChunkIndex: 9,
+		Status:             model.ChunkUploadStatusUploadComplete,
+	}}
+	svc := newSvcWithCP(fp)
+	resp := svc.UploadChunkedResult(context.Background(), &controlplanev1.ChunkedTaskResult{
+		TaskId: "task-1", UploadId: "ignored", ChunkIndex: 1,
+	})
+	// Non-empty response fields are preserved (not overwritten by request).
+	assert.Equal(t, "kept-up", resp.UploadId)
+	assert.Equal(t, int32(9), resp.ReceivedChunkIndex)
+	assert.Equal(t, controlplanev1.ChunkUploadStatus_CHUNK_UPLOAD_STATUS_UPLOAD_COMPLETE, resp.Status)
+}
+
+// newSvcWithFP wires a fakeCP-backed service. (Named separately from newSvcWithCP
+// to keep the ReportStatus tests readable; both are equivalent.)
+func newSvcWithFP(fp *fakeCP) *controlPlaneService {
+	return newControlPlaneService(zap.NewNop(), fp, nil)
 }
