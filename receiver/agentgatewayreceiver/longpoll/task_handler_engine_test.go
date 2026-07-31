@@ -5,6 +5,7 @@ package longpoll
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +20,13 @@ import (
 // Mock TaskClaimEngine for testing
 // ═══════════════════════════════════════════════════
 
+// mockTaskClaimEngine is a thread-safe mock. Its fields are mutated from
+// multiple goroutines in NotifyTaskSubmitted-style tests (the test goroutine
+// arms pendingTasks while a Poll goroutine reads them), so every accessor
+// holds mu. Without this, `go test -race` flags concurrent reads/writes of
+// pendingTasks and claimIndex.
 type mockTaskClaimEngine struct {
+	mu           sync.Mutex
 	pendingTasks []*model.Task
 	claimIndex   int
 	cancelledIDs map[string]bool
@@ -32,10 +39,17 @@ func newMockTaskClaimEngine() *mockTaskClaimEngine {
 }
 
 func (m *mockTaskClaimEngine) GetPendingTasks(_ context.Context, _ string) ([]*model.Task, error) {
-	return m.pendingTasks, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Return a copy so callers can't race on the underlying slice.
+	out := make([]*model.Task, len(m.pendingTasks))
+	copy(out, m.pendingTasks)
+	return out, nil
 }
 
 func (m *mockTaskClaimEngine) ClaimTaskForAgent(_ context.Context, _ string) (*model.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.claimIndex >= len(m.pendingTasks) {
 		return nil, nil
 	}
@@ -45,7 +59,18 @@ func (m *mockTaskClaimEngine) ClaimTaskForAgent(_ context.Context, _ string) (*m
 }
 
 func (m *mockTaskClaimEngine) IsTaskCancelled(_ context.Context, taskID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.cancelledIDs[taskID], nil
+}
+
+// setPendingTasks replaces the pending task list and resets the claim index.
+// Used by tests to arm the mock from the test goroutine while a Poll runs.
+func (m *mockTaskClaimEngine) setPendingTasks(tasks []*model.Task) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingTasks = tasks
+	m.claimIndex = 0
 }
 
 // ═══════════════════════════════════════════════════
@@ -91,10 +116,10 @@ func TestTaskPollHandlerEngine_CheckImmediate_NoTasks(t *testing.T) {
 func TestTaskPollHandlerEngine_CheckImmediate_WithTasks(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	engine := newMockTaskClaimEngine()
-	engine.pendingTasks = []*model.Task{
+	engine.setPendingTasks([]*model.Task{
 		{ID: "task-1", TypeName: "arthas_attach"},
 		{ID: "task-2", TypeName: "arthas_detach"},
-	}
+	})
 
 	handler := NewTaskPollHandlerEngine(logger, engine)
 	require.NoError(t, handler.Start(context.Background()))
@@ -134,9 +159,9 @@ func TestTaskPollHandlerEngine_Poll_Timeout(t *testing.T) {
 func TestTaskPollHandlerEngine_Poll_ImmediateTask(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	engine := newMockTaskClaimEngine()
-	engine.pendingTasks = []*model.Task{
+	engine.setPendingTasks([]*model.Task{
 		{ID: "task-imm", TypeName: "arthas_attach"},
-	}
+	})
 
 	handler := NewTaskPollHandlerEngine(logger, engine)
 	require.NoError(t, handler.Start(context.Background()))
@@ -164,9 +189,9 @@ func TestTaskPollHandlerEngine_NotifyTaskSubmitted(t *testing.T) {
 	defer handler.Stop()
 
 	// Add a pending task that will be claimed when notified
-	engine.pendingTasks = []*model.Task{
+	engine.setPendingTasks([]*model.Task{
 		{ID: "task-notify", TypeName: "arthas_attach"},
-	}
+	})
 
 	// Start a poll in a goroutine
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -174,9 +199,9 @@ func TestTaskPollHandlerEngine_NotifyTaskSubmitted(t *testing.T) {
 
 	resultCh := make(chan *HandlerResult, 1)
 	go func() {
-		// Reset claim index for the first poll's CheckImmediate
-		engine.claimIndex = 0
-		engine.pendingTasks = nil // No tasks initially
+		// Reset claim index for the first poll's CheckImmediate.
+		// No tasks initially (the waiter registers and blocks).
+		engine.setPendingTasks(nil)
 
 		result, _ := handler.Poll(ctx, &PollRequest{AgentID: "agent-notify"})
 		resultCh <- result
@@ -186,10 +211,9 @@ func TestTaskPollHandlerEngine_NotifyTaskSubmitted(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Now add the task and notify
-	engine.pendingTasks = []*model.Task{
+	engine.setPendingTasks([]*model.Task{
 		{ID: "task-notify", TypeName: "arthas_attach"},
-	}
-	engine.claimIndex = 0
+	})
 	handler.NotifyTaskSubmitted("task-notify", "agent-notify")
 
 	// Wait for result
