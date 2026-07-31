@@ -22,13 +22,23 @@ import (
 // It is transport-agnostic: HTTP and gRPC adapters call into this service.
 // Token/app_id is injected into context by HTTP middleware or gRPC auth wrapper.
 
+// poller is the narrow interface controlPlaneService depends on from the
+// longpoll package (Interface Segregation + Dependency Inversion). It exposes
+// only the two poll methods the service actually calls, so tests can inject a
+// fake poller without constructing a real *longpoll.Manager. *longpoll.Manager
+// satisfies this interface; production wiring is unchanged.
+type poller interface {
+	Poll(ctx context.Context, req *longpoll.PollRequest, types ...longpoll.LongPollType) (*longpoll.CombinedPollResponse, error)
+	PollSingle(ctx context.Context, req *longpoll.PollRequest, pollType longpoll.LongPollType) (*longpoll.PollResponse, error)
+}
+
 type controlPlaneService struct {
 	logger          *zap.Logger
 	controlPlane    controlplaneext.ControlPlaneV2
-	longPollManager *longpoll.Manager
+	longPollManager poller
 }
 
-func newControlPlaneService(logger *zap.Logger, cp controlplaneext.ControlPlaneV2, lpm *longpoll.Manager) *controlPlaneService {
+func newControlPlaneService(logger *zap.Logger, cp controlplaneext.ControlPlaneV2, lpm poller) *controlPlaneService {
 	return &controlPlaneService{logger: logger, controlPlane: cp, longPollManager: lpm}
 }
 
