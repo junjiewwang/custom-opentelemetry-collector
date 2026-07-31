@@ -546,25 +546,41 @@ func TestEngineAdapter_IsTaskCancelled(t *testing.T) {
 
 // fakeConfigMgr embeds OnDemandConfigManager (18 methods) and overrides only
 // the 3 configCache calls (GetServiceConfig/WatchServiceConfig/UnwatchServiceConfig).
+// Its fields are guarded by mu because WatchServiceConfig is called from a
+// Poll goroutine while the test goroutine reads watchCb to fire the callback.
 type fakeConfigMgr struct {
 	configmanager.OnDemandConfigManager
+	mu sync.Mutex
 
-	getCfg   *model.AgentConfig
-	getErr   error
-	watchCb  configmanager.AgentConfigChangeCallback
-	watched  bool
+	getCfg    *model.AgentConfig
+	getErr    error
+	watchCb   configmanager.AgentConfigChangeCallback
+	watched   bool
 	unwatched bool
 }
 
 func (f *fakeConfigMgr) GetServiceConfig(_ context.Context, _, _ string) (*model.AgentConfig, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.getCfg, f.getErr
 }
 func (f *fakeConfigMgr) WatchServiceConfig(_, _ string, cb configmanager.AgentConfigChangeCallback) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.watchCb = cb
 	f.watched = true
 }
 func (f *fakeConfigMgr) UnwatchServiceConfig(_, _ string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.unwatched = true
+}
+
+// getWatchCb returns the registered callback under lock, for tests that fire it.
+func (f *fakeConfigMgr) getWatchCb() configmanager.AgentConfigChangeCallback {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.watchCb
 }
 
 func TestNewConfigCache_GetSet(t *testing.T) {
@@ -646,11 +662,12 @@ func TestConfigCache_EnsureWatching_CallbackUpdatesConfig(t *testing.T) {
 	mgr := &fakeConfigMgr{}
 	c := newConfigCache("app-1", "svc", mgr, zap.NewNop())
 	c.EnsureWatching()
-	require.NotNil(t, mgr.watchCb)
+	cb := mgr.getWatchCb()
+	require.NotNil(t, cb)
 
 	// Simulate a config change from the backend.
 	newCfg := &model.AgentConfig{Version: "v2"}
-	mgr.watchCb(&configmanager.AgentConfigChangeEvent{NewConfig: newCfg})
+	cb(&configmanager.AgentConfigChangeEvent{NewConfig: newCfg})
 	assert.Equal(t, "v2", c.Get().Version, "watch callback must update cached config")
 }
 
@@ -665,4 +682,271 @@ func TestConfigCache_Unwatch(t *testing.T) {
 	// Unwatch when not watching (or no mgr) is a no-op.
 	c.Unwatch()
 	assert.False(t, c.IsWatching())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// config_handler.go — ConfigPollHandler business logic
+// ═══════════════════════════════════════════════════════════════════════
+
+// fakeMetadataProvider is a ServerMetadataProvider returning fixed metadata.
+type fakeMetadataProvider struct {
+	name string
+	meta map[string]string
+}
+
+func (p *fakeMetadataProvider) Name() string { return p.name }
+func (p *fakeMetadataProvider) ProvideMetadata(_ context.Context, _ *PollRequest) map[string]string {
+	return p.meta
+}
+
+func newHandlerWithMgr(mgr configmanager.OnDemandConfigManager) *ConfigPollHandler {
+	return NewConfigPollHandler(zap.NewNop(), mgr)
+}
+
+func TestConfigPollHandler_TypeAndLifecycle(t *testing.T) {
+	h := newHandlerWithMgr(&fakeConfigMgr{})
+	assert.Equal(t, LongPollTypeConfig, h.GetType())
+	assert.False(t, h.ShouldContinue(), "not running before Start")
+
+	require.NoError(t, h.Start(context.Background()))
+	assert.True(t, h.ShouldContinue())
+	// Start is idempotent.
+	require.NoError(t, h.Start(context.Background()))
+
+	require.NoError(t, h.Stop())
+	assert.False(t, h.ShouldContinue())
+	// Stop is idempotent.
+	require.NoError(t, h.Stop())
+}
+
+func TestConfigPollHandler_NilConfigMgr_PollErrors(t *testing.T) {
+	h := NewConfigPollHandler(zap.NewNop(), nil)
+	_, err := h.Poll(context.Background(), &PollRequest{AgentID: "a1", ServiceName: "svc"})
+	require.Error(t, err)
+}
+
+func TestConfigPollHandler_CheckImmediate_FirstLoadReturnsChange(t *testing.T) {
+	// No cached config → proactive Nacos load returns a config → version differs
+	// from the client's (empty) → HasChanges.
+	mgr := &fakeConfigMgr{getCfg: &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}}
+	h := newHandlerWithMgr(mgr)
+	require.NoError(t, h.Start(context.Background()))
+	defer h.Stop()
+
+	hasChanges, result, err := h.CheckImmediate(context.Background(), &PollRequest{
+		AgentID: "a1", AppID: "app-1", ServiceName: "svc",
+	})
+	require.NoError(t, err)
+	assert.True(t, hasChanges)
+	require.NotNil(t, result)
+	assert.True(t, result.HasChanges)
+	assert.Equal(t, "v1", result.Response.ConfigVersion)
+}
+
+func TestConfigPollHandler_CheckImmediate_NoChangeWhenVersionsMatch(t *testing.T) {
+	// Prime the cache with a config, then ask with matching version AND etag
+	// (etag non-empty so CheckImmediate skips the proactive reload) → no change.
+	mgr := &fakeConfigMgr{getCfg: &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}}
+	h := newHandlerWithMgr(mgr)
+	require.NoError(t, h.Start(context.Background()))
+	defer h.Stop()
+
+	// First call loads v1 into the cache (client version differs → change).
+	_, _, _ = h.CheckImmediate(context.Background(), &PollRequest{
+		AgentID: "a1", ServiceName: "svc", CurrentConfigVersion: "v0",
+	})
+
+	// Read the cached etag (computed by the cache) and report a matching
+	// version+etag → no immediate change.
+	cached := h.getOrCreateServiceState("", "svc").config.Get()
+	require.NotNil(t, cached)
+
+	hasChanges, _, err := h.CheckImmediate(context.Background(), &PollRequest{
+		AgentID: "a1", ServiceName: "svc",
+		CurrentConfigVersion: cached.Version,
+		CurrentConfigEtag:    cached.Etag,
+	})
+	require.NoError(t, err)
+	assert.False(t, hasChanges, "matching version+etag must report no change")
+}
+
+func TestConfigPollHandler_CheckImmediate_SkeletonWhenNoConfig(t *testing.T) {
+	// configMgr returns nil (not found) and cache empty → skeleton version "0".
+	// Client reports version "0" → no change; client reports anything else → change.
+	mgr := &fakeConfigMgr{getCfg: nil, getErr: configmanager.ErrConfigNotFound}
+	h := newHandlerWithMgr(mgr)
+	require.NoError(t, h.Start(context.Background()))
+	defer h.Stop()
+
+	// Client has skeleton "0" → no change.
+	hasChanges, _, err := h.CheckImmediate(context.Background(), &PollRequest{
+		AgentID: "a1", ServiceName: "svc", CurrentConfigVersion: "0",
+	})
+	require.NoError(t, err)
+	assert.False(t, hasChanges)
+
+	// Client has stale version → change to skeleton.
+	hasChanges, result, err := h.CheckImmediate(context.Background(), &PollRequest{
+		AgentID: "a1", ServiceName: "svc", CurrentConfigVersion: "stale",
+	})
+	require.NoError(t, err)
+	assert.True(t, hasChanges)
+	assert.Equal(t, "0", result.Response.ConfigVersion)
+}
+
+func TestConfigPollHandler_RegisterMetadataProvider_Injects(t *testing.T) {
+	mgr := &fakeConfigMgr{getCfg: &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}}
+	h := newHandlerWithMgr(mgr)
+	h.RegisterMetadataProvider(&fakeMetadataProvider{name: "p1", meta: map[string]string{"region": "us"}})
+	require.NoError(t, h.Start(context.Background()))
+	defer h.Stop()
+
+	_, result, err := h.CheckImmediate(context.Background(), &PollRequest{
+		AgentID: "a1", ServiceName: "svc",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Response.Config.ServerMetadata)
+	assert.Equal(t, "us", result.Response.Config.ServerMetadata["region"])
+}
+
+func TestConfigPollHandler_Poll_ImmediateChange(t *testing.T) {
+	mgr := &fakeConfigMgr{getCfg: &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}}
+	h := newHandlerWithMgr(mgr)
+	require.NoError(t, h.Start(context.Background()))
+	defer h.Stop()
+
+	// Short timeout; immediate change returns before the wait.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := h.Poll(ctx, &PollRequest{AgentID: "a1", ServiceName: "svc"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.HasChanges)
+}
+
+func TestConfigPollHandler_Poll_TimeoutNoChange(t *testing.T) {
+	// configMgr returns a config; client already has matching version → no immediate
+	// change → registers waiter → ctx times out → no-change result.
+	cfg := &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}
+	mgr := &fakeConfigMgr{getCfg: cfg}
+	h := newHandlerWithMgr(mgr)
+	require.NoError(t, h.Start(context.Background()))
+	defer h.Stop()
+
+	// First poll loads the config into cache.
+	_, _, _ = h.CheckImmediate(context.Background(), &PollRequest{AgentID: "a1", ServiceName: "svc"})
+	cached := h.getOrCreateServiceState("", "svc").config.Get()
+	require.NotNil(t, cached)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	result, err := h.Poll(ctx, &PollRequest{
+		AgentID: "a1", ServiceName: "svc",
+		CurrentConfigVersion: cached.Version, CurrentConfigEtag: cached.Etag,
+	})
+	require.NoError(t, err)
+	// Matching version+etag → no immediate change → waiter blocks → ctx timeout
+	// → no-change result.
+	if result != nil {
+		assert.False(t, result.HasChanges)
+	}
+}
+
+func TestConfigPollHandler_Poll_NotifiedOnConfigChange(t *testing.T) {
+	// Start a blocking Poll, then fire the watch callback → waiter notified.
+	mgr := &fakeConfigMgr{getCfg: &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}}
+	h := newHandlerWithMgr(mgr)
+	require.NoError(t, h.Start(context.Background()))
+	defer h.Stop()
+
+	// Prime the cache so the first CheckImmediate loads v1.
+	_, _, _ = h.CheckImmediate(context.Background(), &PollRequest{AgentID: "a1", ServiceName: "svc"})
+
+	// Read back the cached config's version+etag so the blocking Poll sees NO
+	// immediate change (matching version AND etag) and actually registers a waiter.
+	cached := h.getOrCreateServiceState("", "svc").config.Get()
+	require.NotNil(t, cached)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	type res struct {
+		r   *HandlerResult
+		err error
+	}
+	resCh := make(chan res, 1)
+	go func() {
+		r, err := h.Poll(ctx, &PollRequest{
+			AgentID: "a1", ServiceName: "svc",
+			CurrentConfigVersion: cached.Version,
+			CurrentConfigEtag:    cached.Etag,
+		})
+		resCh <- res{r, err}
+	}()
+
+	// Wait for the waiter to register, then fire the watch callback.
+	time.Sleep(150 * time.Millisecond)
+	cb := mgr.getWatchCb()
+	require.NotNil(t, cb, "Poll must have started watching")
+	cb(&configmanager.AgentConfigChangeEvent{
+		NewConfig: &model.AgentConfig{Version: "v2", Sampler: &model.SamplerConfig{Ratio: 0.5}},
+	})
+
+	select {
+	case got := <-resCh:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.r)
+		assert.True(t, got.r.HasChanges, "waiter must be notified of the change")
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter was not notified of config change")
+	}
+}
+
+func TestConfigPollHandler_GetWaiterAndWatchCount(t *testing.T) {
+	mgr := &fakeConfigMgr{getCfg: &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}}
+	h := newHandlerWithMgr(mgr)
+	require.NoError(t, h.Start(context.Background()))
+	defer h.Stop()
+
+	// Prime cache + start watching.
+	_, _, _ = h.CheckImmediate(context.Background(), &PollRequest{AgentID: "a1", ServiceName: "svc"})
+	h.getOrCreateServiceState("app-1", "svc").config.EnsureWatching()
+
+	assert.Equal(t, 0, h.GetWaiterCount(), "no waiters yet")
+	assert.GreaterOrEqual(t, h.GetWatchCount(), 1, "at least one watch active")
+
+	// Register a waiter directly to exercise GetWaiterCount.
+	state := h.getOrCreateServiceState("app-1", "svc")
+	wctx, wcancel := context.WithCancel(context.Background())
+	w := &ConfigWaiter{
+		agentID:    "a1",
+		appID:      "app-1",
+		serviceName: "svc",
+		resultChan: make(chan *HandlerResult, 1),
+		ctx:        wctx,
+		cancel:     wcancel,
+	}
+	state.waiters.Register("a1", w)
+	assert.Equal(t, 1, h.GetWaiterCount())
+	state.waiters.Deregister("a1", w)
+	wcancel()
+}
+
+func TestConfigPollHandler_StopCancelsWaiters(t *testing.T) {
+	mgr := &fakeConfigMgr{getCfg: &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}}
+	h := newHandlerWithMgr(mgr)
+	require.NoError(t, h.Start(context.Background()))
+
+	// Register a waiter directly.
+	state := h.getOrCreateServiceState("app-1", "svc")
+	wctx, wcancel := context.WithCancel(context.Background())
+	w := &ConfigWaiter{
+		agentID: "a1", resultChan: make(chan *HandlerResult, 1), ctx: wctx, cancel: wcancel,
+	}
+	state.waiters.Register("a1", w)
+
+	// Stop must cancel the waiter's context.
+	require.NoError(t, h.Stop())
+	assert.Equal(t, context.Canceled, wctx.Err(), "Stop must cancel waiter contexts")
 }
