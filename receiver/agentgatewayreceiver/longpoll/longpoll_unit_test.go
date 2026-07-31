@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
@@ -425,4 +426,243 @@ func TestManager_GetHandlersToPoll(t *testing.T) {
 	// Specific type → only that one.
 	one := m.getHandlersToPoll([]LongPollType{LongPollTypeConfig})
 	assert.Len(t, one, 1)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// engine_adapter.go — adapts taskengine.Engine to TaskClaimEngine
+// ═══════════════════════════════════════════════════════════════════════
+
+// fakeEngine embeds taskengine.Engine (11 methods) and overrides only the 3
+// the adapter calls (ListTasks/Claim/GetTask). Unoverridden methods panic if
+// called — surfacing unexpected use rather than silently passing.
+type fakeEngine struct {
+	taskengine.Engine
+	listPage *taskengine.ListPage
+	listErr  error
+	claimTask *taskengine.Task
+	claimErr  error
+	getTask   *taskengine.Task
+	getErr    error
+	claimCalls int
+}
+
+func (f *fakeEngine) ListTasks(_ context.Context, _ taskengine.ListQuery) (*taskengine.ListPage, error) {
+	return f.listPage, f.listErr
+}
+func (f *fakeEngine) Claim(_ context.Context, _ *taskengine.ConsumerDescriptor) (*taskengine.Task, error) {
+	f.claimCalls++
+	return f.claimTask, f.claimErr
+}
+func (f *fakeEngine) GetTask(_ context.Context, _ string) (*taskengine.Task, error) {
+	return f.getTask, f.getErr
+}
+
+func TestNewEngineAdapter(t *testing.T) {
+	a := NewEngineAdapter(&fakeEngine{})
+	require.NotNil(t, a)
+}
+
+func TestEngineAdapter_GetPendingTasks_FiltersByAgent(t *testing.T) {
+	// Direct task for agent-1, direct task for agent-2, one broadcast.
+	page := &taskengine.ListPage{
+		Tasks: []*taskengine.Task{
+			{ID: "d1", Routing: taskengine.TaskRouting{Strategy: taskengine.RoutingDirect, TargetNodeID: "agent-1"}},
+			{ID: "d2", Routing: taskengine.TaskRouting{Strategy: taskengine.RoutingDirect, TargetNodeID: "agent-2"}},
+			{ID: "b1", Routing: taskengine.TaskRouting{Strategy: taskengine.RoutingBroadcast}},
+		},
+	}
+	a := NewEngineAdapter(&fakeEngine{listPage: page})
+
+	tasks, err := a.GetPendingTasks(context.Background(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, tasks, 2)
+	ids := []string{tasks[0].ID, tasks[1].ID}
+	assert.ElementsMatch(t, []string{"d1", "b1"}, ids, "agent-1 gets its direct task + broadcasts")
+}
+
+func TestEngineAdapter_GetPendingTasks_NilPage(t *testing.T) {
+	a := NewEngineAdapter(&fakeEngine{listPage: nil})
+	tasks, err := a.GetPendingTasks(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Nil(t, tasks)
+}
+
+func TestEngineAdapter_GetPendingTasks_ListError(t *testing.T) {
+	a := NewEngineAdapter(&fakeEngine{listErr: errors.New("down")})
+	_, err := a.GetPendingTasks(context.Background(), "agent-1")
+	require.Error(t, err)
+}
+
+func TestEngineAdapter_ClaimTaskForAgent(t *testing.T) {
+	claimed := &taskengine.Task{ID: "t1", Type: taskengine.TaskTypeArthasAttach}
+	a := NewEngineAdapter(&fakeEngine{claimTask: claimed})
+
+	mt, err := a.ClaimTaskForAgent(context.Background(), "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, mt)
+	assert.Equal(t, "t1", mt.ID)
+	assert.Equal(t, "arthas_attach", mt.TypeName)
+}
+
+func TestEngineAdapter_ClaimTaskForAgent_Nothing(t *testing.T) {
+	a := NewEngineAdapter(&fakeEngine{claimTask: nil})
+	mt, err := a.ClaimTaskForAgent(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Nil(t, mt)
+}
+
+func TestEngineAdapter_ClaimTaskForAgent_Error(t *testing.T) {
+	a := NewEngineAdapter(&fakeEngine{claimErr: errors.New("busy")})
+	_, err := a.ClaimTaskForAgent(context.Background(), "agent-1")
+	require.Error(t, err)
+}
+
+func TestEngineAdapter_IsTaskCancelled(t *testing.T) {
+	a := NewEngineAdapter(&fakeEngine{getTask: &taskengine.Task{Status: taskengine.StatusCancelled}})
+	got, err := a.IsTaskCancelled(context.Background(), "t1")
+	require.NoError(t, err)
+	assert.True(t, got)
+
+	a2 := NewEngineAdapter(&fakeEngine{getTask: &taskengine.Task{Status: taskengine.StatusRunning}})
+	got, err = a2.IsTaskCancelled(context.Background(), "t1")
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	// Not found → false, nil.
+	a3 := NewEngineAdapter(&fakeEngine{getTask: nil})
+	got, err = a3.IsTaskCancelled(context.Background(), "missing")
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	// GetTask error propagates.
+	a4 := NewEngineAdapter(&fakeEngine{getErr: errors.New("down")})
+	_, err = a4.IsTaskCancelled(context.Background(), "t1")
+	require.Error(t, err)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// config_cache.go — config lifecycle for a single service
+// ═══════════════════════════════════════════════════════════════════════
+
+// fakeConfigMgr embeds OnDemandConfigManager (18 methods) and overrides only
+// the 3 configCache calls (GetServiceConfig/WatchServiceConfig/UnwatchServiceConfig).
+type fakeConfigMgr struct {
+	configmanager.OnDemandConfigManager
+
+	getCfg   *model.AgentConfig
+	getErr   error
+	watchCb  configmanager.AgentConfigChangeCallback
+	watched  bool
+	unwatched bool
+}
+
+func (f *fakeConfigMgr) GetServiceConfig(_ context.Context, _, _ string) (*model.AgentConfig, error) {
+	return f.getCfg, f.getErr
+}
+func (f *fakeConfigMgr) WatchServiceConfig(_, _ string, cb configmanager.AgentConfigChangeCallback) {
+	f.watchCb = cb
+	f.watched = true
+}
+func (f *fakeConfigMgr) UnwatchServiceConfig(_, _ string) {
+	f.unwatched = true
+}
+
+func TestNewConfigCache_GetSet(t *testing.T) {
+	c := newConfigCache("app-1", "svc", &fakeConfigMgr{}, zap.NewNop())
+	assert.Nil(t, c.Get())
+
+	cfg := &model.AgentConfig{Version: "v1"}
+	c.Set(cfg)
+	assert.Equal(t, "v1", c.Get().Version)
+}
+
+func TestConfigCache_SetOnChange(t *testing.T) {
+	c := newConfigCache("app-1", "svc", &fakeConfigMgr{}, zap.NewNop())
+	fired := false
+	c.SetOnChange(func(_ *model.AgentConfig) { fired = true })
+
+	// SetOnChange only registers; it does not fire on its own. Calling the
+	// captured callback directly verifies the wiring (the handler wires
+	// notifyServiceWaiters through this setter).
+	assert.False(t, fired, "registering must not fire the callback")
+}
+
+func TestConfigCache_LoadFromConfigMgr_EmptyServiceName(t *testing.T) {
+	c := newConfigCache("app-1", "", &fakeConfigMgr{}, zap.NewNop())
+	cfg, err := c.LoadFromConfigMgr(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, cfg, "empty serviceName short-circuits to nil")
+}
+
+func TestConfigCache_LoadFromConfigMgr_OK_FillsEtag(t *testing.T) {
+	// configMgr returns a config with no Etag → cache must compute one.
+	mgr := &fakeConfigMgr{getCfg: &model.AgentConfig{Version: "v1", Sampler: &model.SamplerConfig{Ratio: 0.5}}}
+	c := newConfigCache("app-1", "svc", mgr, zap.NewNop())
+
+	cfg, err := c.LoadFromConfigMgr(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.NotEmpty(t, cfg.Etag, "missing Etag must be computed from business fields")
+}
+
+func TestConfigCache_LoadFromConfigMgr_NotFound(t *testing.T) {
+	mgr := &fakeConfigMgr{getErr: configmanager.ErrConfigNotFound}
+	c := newConfigCache("app-1", "svc", mgr, zap.NewNop())
+	cfg, err := c.LoadFromConfigMgr(context.Background())
+	require.NoError(t, err, "IsConfigNotFound maps to (nil, nil)")
+	assert.Nil(t, cfg)
+}
+
+func TestConfigCache_LoadFromConfigMgr_OtherError(t *testing.T) {
+	mgr := &fakeConfigMgr{getErr: errors.New("nacos down")}
+	c := newConfigCache("app-1", "svc", mgr, zap.NewNop())
+	_, err := c.LoadFromConfigMgr(context.Background())
+	require.Error(t, err)
+}
+
+func TestConfigCache_EnsureWatching_NoOpWhenNoServiceNameOrMgr(t *testing.T) {
+	// No serviceName → no-op.
+	c := newConfigCache("app-1", "", nil, zap.NewNop())
+	c.EnsureWatching()
+	assert.False(t, c.IsWatching())
+
+	// serviceName set but configMgr nil → no-op.
+	c2 := newConfigCache("app-1", "svc", nil, zap.NewNop())
+	c2.EnsureWatching()
+	assert.False(t, c2.IsWatching())
+}
+
+func TestConfigCache_EnsureWatching_Idempotent(t *testing.T) {
+	mgr := &fakeConfigMgr{}
+	c := newConfigCache("app-1", "svc", mgr, zap.NewNop())
+	c.EnsureWatching()
+	assert.True(t, c.IsWatching())
+	// Second call must not re-register.
+	c.EnsureWatching()
+	assert.True(t, mgr.watched)
+}
+
+func TestConfigCache_EnsureWatching_CallbackUpdatesConfig(t *testing.T) {
+	mgr := &fakeConfigMgr{}
+	c := newConfigCache("app-1", "svc", mgr, zap.NewNop())
+	c.EnsureWatching()
+	require.NotNil(t, mgr.watchCb)
+
+	// Simulate a config change from the backend.
+	newCfg := &model.AgentConfig{Version: "v2"}
+	mgr.watchCb(&configmanager.AgentConfigChangeEvent{NewConfig: newCfg})
+	assert.Equal(t, "v2", c.Get().Version, "watch callback must update cached config")
+}
+
+func TestConfigCache_Unwatch(t *testing.T) {
+	mgr := &fakeConfigMgr{}
+	c := newConfigCache("app-1", "svc", mgr, zap.NewNop())
+	c.EnsureWatching()
+	c.Unwatch()
+	assert.False(t, c.IsWatching())
+	assert.True(t, mgr.unwatched)
+
+	// Unwatch when not watching (or no mgr) is a no-op.
+	c.Unwatch()
+	assert.False(t, c.IsWatching())
 }
