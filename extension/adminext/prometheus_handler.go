@@ -424,6 +424,9 @@ func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Requ
 			h.writePromError(w, "execution", err.Error())
 			return
 		}
+		// Apply match[] __name__ filtering (Prometheus anchored regex / exact),
+		// OR'd across selectors. See filterMetricNamesByMatch for semantics.
+		names = filterMetricNamesByMatch(names, r.Form["match[]"])
 		h.writePromSuccessLabelList(w, names)
 		return
 	}
