@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFilterMetricNamesByMatch_NoMatch(t *testing.T) {
@@ -86,4 +87,63 @@ func TestFilterMetricNamesByMatch_EmptyNames(t *testing.T) {
 func TestAnchorPromRegex(t *testing.T) {
 	assert.Equal(t, `^(?:pool.*)$`, anchorPromRegex("pool.*"))
 	assert.Equal(t, `^(?:(?i)foo)$`, anchorPromRegex("(?i)foo"))
+}
+
+func TestPlanSeriesMatch_BareName(t *testing.T) {
+	names, labels, labelMatch, matchAll, err := planSeriesMatch(`metric_a{job="x"}`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"metric_a"}, names)
+	assert.Equal(t, map[string]string{"job": "x"}, labels)
+	assert.Empty(t, labelMatch)
+	assert.False(t, matchAll)
+}
+
+func TestPlanSeriesMatch_ExactName(t *testing.T) {
+	names, labels, _, matchAll, err := planSeriesMatch(`{__name__="m", job="x"}`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"m"}, names)
+	assert.Equal(t, map[string]string{"job": "x"}, labels, "__name__ stripped from labels")
+	assert.False(t, matchAll)
+}
+
+func TestPlanSeriesMatch_RegexNameLiteral(t *testing.T) {
+	for _, sel := range []string{`{__name__=~"m"}`, `{__name__=~".*m.*"}`} {
+		names, _, _, matchAll, err := planSeriesMatch(sel)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"m"}, names, sel)
+		assert.False(t, matchAll, sel)
+	}
+}
+
+func TestPlanSeriesMatch_RegexNameAlternation(t *testing.T) {
+	names, _, _, matchAll, err := planSeriesMatch(`{__name__=~"a|b|c"}`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b", "c"}, names)
+	assert.False(t, matchAll)
+}
+
+func TestPlanSeriesMatch_RegexNameMatchAll(t *testing.T) {
+	_, _, _, matchAll, err := planSeriesMatch(`{__name__=~".*"}`)
+	require.NoError(t, err)
+	assert.True(t, matchAll, `__name__=~".*" → match all names`)
+}
+
+func TestPlanSeriesMatch_NoNameMatcher(t *testing.T) {
+	// No __name__ at all → match all names; other regex label kept.
+	_, labels, labelMatch, matchAll, err := planSeriesMatch(`{job=~"x.*", env="prod"}`)
+	require.NoError(t, err)
+	assert.True(t, matchAll)
+	assert.Equal(t, map[string]string{"env": "prod"}, labels)
+	assert.Equal(t, map[string]string{"job": "x.*"}, labelMatch)
+}
+
+func TestPlanSeriesMatch_NameStrippedFromRegexLabels(t *testing.T) {
+	_, _, labelMatch, _, err := planSeriesMatch(`{__name__=~"m", job=~"x.*"}`)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"job": "x.*"}, labelMatch, "__name__ removed from labelMatch")
+}
+
+func TestPlanSeriesMatch_Malformed(t *testing.T) {
+	_, _, _, _, err := planSeriesMatch(`{unclosed`)
+	assert.Error(t, err)
 }
