@@ -738,7 +738,15 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 	// a composite aggregation — full time range, no QueryFlat doc-cap
 	// truncation. buildSeriesMetric keeps all labels because expr.Aggregation
 	// is still "".
-	if expr.Aggregation == "" && expr.Function == "" && len(expr.GroupBy) == 0 {
+	//
+	// missing_bucket=true is essential here: the auto-discovered GroupBy may
+	// contain label keys that not every series has (e.g. http_route vs
+	// rpc_method). With missing_bucket=false, ES composite drops any series
+	// lacking even one of the grouped labels — silently returning 0 series.
+	// missing_bucket=true puts such series into a null-key bucket, so every
+	// series appears in the output regardless of its label set.
+	bareMetric := expr.Aggregation == "" && expr.Function == "" && len(expr.GroupBy) == 0
+	if bareMetric {
 		if labelKeys, derr := h.metricReader.ListLabelNames(r.Context(),
 			observabilitystorageext.TimeRange{Start: start, End: end}, expr.MetricName); derr == nil {
 			groupBy := make([]string, 0, len(labelKeys))
@@ -755,13 +763,14 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 	}
 
 	query := observabilitystorageext.MetricRangeQuery{
-		MetricName:  expr.MetricName,
-		Labels:      filterInternalLabels(labels),
-		LabelMatch:  labelMatch,
-		TimeRange:   observabilitystorageext.TimeRange{Start: start, End: end},
-		Step:        step,
-		Aggregation: expr.Aggregation,
-		GroupBy:     expr.GroupBy,
+		MetricName:    expr.MetricName,
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
+		Step:          step,
+		Aggregation:   expr.Aggregation,
+		GroupBy:       expr.GroupBy,
+		MissingBucket: bareMetric, // bare-metric: include all series; explicit by(): drop missing
 	}
 	if query.Aggregation == "" {
 		query.Aggregation = AggAvg

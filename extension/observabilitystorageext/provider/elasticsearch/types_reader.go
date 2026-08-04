@@ -108,10 +108,10 @@ type Dependency struct {
 
 // LogQuery holds parameters for searching logs.
 type LogQuery struct {
-	AppID       string            // required: identifies which app's data to query
-	Query       string            // full-text search
+	AppID       string // required: identifies which app's data to query
+	Query       string // full-text search
 	ServiceName string
-	Severity    []string          // e.g. ["ERROR", "WARN"]
+	Severity    []string // e.g. ["ERROR", "WARN"]
 	TraceID     string
 	SpanID      string
 	Attributes  map[string]string
@@ -240,18 +240,19 @@ type MetricQuery struct {
 //	GROUP BY time(<Step>), <GroupBy...>
 //	FILL(<Fill>) SLIMIT <SeriesLimit> LIMIT <Limit>
 type MetricRangeQuery struct {
-	AppID       string // required: identifies which app's data to query
-	MetricName  string
-	Labels      map[string]string // WHERE tag = 'value'
-	LabelMatch  map[string]string // WHERE tag =~ /regex/
-	ServiceName string
-	TimeRange   TimeRange
-	Aggregation string   // SELECT <func>, default "avg"
-	Step        time.Duration
-	GroupBy     []string // GROUP BY "tag1", "tag2"
-	Fill        string   // FILL(strategy), default "null"
-	Limit       int      // LIMIT (data points), default 10000
-	SeriesLimit int      // SLIMIT (series count), default 100
+	AppID         string // required: identifies which app's data to query
+	MetricName    string
+	Labels        map[string]string // WHERE tag = 'value'
+	LabelMatch    map[string]string // WHERE tag =~ /regex/
+	ServiceName   string
+	TimeRange     TimeRange
+	Aggregation   string // SELECT <func>, default "avg"
+	Step          time.Duration
+	GroupBy       []string // GROUP BY "tag1", "tag2"
+	Fill          string   // FILL(strategy), default "null"
+	Limit         int      // LIMIT (data points), default 10000
+	SeriesLimit   int      // SLIMIT (series count), default 100
+	MissingBucket bool     // false: drop series lacking a grouped label; true: include them (bare-metric)
 }
 
 // MetricResult holds the result of an instant metric query.
@@ -283,7 +284,7 @@ type MetricSeries struct {
 // Returns original data points without aggregation, sorted by time ASC.
 // Used by PromQL functions like rate()/increase().
 type MetricRawQuery struct {
-	AppID       string            // required: identifies which app's data to query
+	AppID       string // required: identifies which app's data to query
 	MetricName  string
 	Labels      map[string]string // exact match
 	LabelMatch  map[string]string // regex match
@@ -302,15 +303,15 @@ type MetricRawSeries struct {
 type MetricSample struct {
 	TimestampMs  int64
 	Value        float64
-	BucketCounts []int64             // histogram: per-sample bucket counts
-	Bounds       []float64           // histogram: per-sample explicit bounds
-	Labels       map[string]string   // labels from the source document (for flat queries)
+	BucketCounts []int64           // histogram: per-sample bucket counts
+	Bounds       []float64         // histogram: per-sample explicit bounds
+	Labels       map[string]string // labels from the source document (for flat queries)
 }
 
 // MetricFlatQuery holds parameters for a flat document query.
 // Returns all matching documents without ES-side grouping.
 type MetricFlatQuery struct {
-	AppID       string            // required: identifies which app's data to query
+	AppID       string // required: identifies which app's data to query
 	MetricName  string
 	Labels      map[string]string // exact match
 	LabelMatch  map[string]string // regex match
@@ -341,8 +342,8 @@ type TraceMetricsQuery struct {
 	MaxDuration   time.Duration
 	TimeRange     TimeRange
 	Step          time.Duration
-	Function      string   // "rate", "quantile_over_time", "histogram_over_time"
-	Field         string   // intrinsic field, e.g. "duration"
+	Function      string // "rate", "quantile_over_time", "histogram_over_time"
+	Field         string // intrinsic field, e.g. "duration"
 	Percentiles   []float64
 	ByLabels      []string
 	Sample        bool
