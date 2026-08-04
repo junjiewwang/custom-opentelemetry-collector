@@ -28,15 +28,17 @@ func newSGEdgeKey(client, server, connType string) sgEdgeKey {
 
 // sgEdgeSeries holds the aggregated metrics for one service graph edge.
 type sgEdgeSeries struct {
-	key            sgEdgeKey
-	appID          string
-	requestTotal   counter
-	failedTotal    counter
-	clientSeconds  *histogram
-	serverSeconds  *histogram
-	msgSeconds     *histogram
-	messageSize    *histogram
-	overflow       atomic.Bool
+	key           sgEdgeKey
+	appID         string
+	requestTotal  counter
+	failedTotal   counter
+	clientSeconds *histogram
+	serverSeconds *histogram
+	msgSeconds    *histogram
+	messageSize   *histogram
+	overflow      atomic.Bool
+	// lastSeenCycle is the flush cycle index when this edge last received data.
+	lastSeenCycle uint64
 }
 
 // ServiceGraphGenerator processes spans and aggregates service graph metrics.
@@ -63,6 +65,7 @@ type ServiceGraphGenerator struct {
 	mu            sync.RWMutex
 	edges         map[uint64]*sgEdgeSeries
 	dropped       atomic.Int64
+	cycle         atomic.Int64 // flush cycle index, used for stale-edge eviction in cumulative mode
 }
 
 // NewServiceGraphGenerator creates a new ServiceGraphGenerator.
@@ -105,6 +108,9 @@ func (g *ServiceGraphGenerator) ProcessSpan(svcName, appID string, resource pcom
 	if edge.overflow.Load() {
 		return
 	}
+
+	// Mark this edge as active in the current flush cycle (cumulative-mode eviction).
+	atomic.StoreUint64(&edge.lastSeenCycle, uint64(g.cycle.Load()))
 
 	// spanDuration returns milliseconds; SG metrics are in seconds.
 	durationSeconds := spanDuration(span) / 1000.0
@@ -179,6 +185,7 @@ func (g *ServiceGraphGenerator) Cardinality() int {
 }
 
 // Collect drains all aggregated edges and returns them for metric emission.
+// Used in delta-temporality mode.
 func (g *ServiceGraphGenerator) Collect() []*sgEdgeSeries {
 	g.mu.Lock()
 	old := g.edges
@@ -195,17 +202,39 @@ func (g *ServiceGraphGenerator) Collect() []*sgEdgeSeries {
 	return result
 }
 
+// CollectCumulative returns a read-only snapshot of all active edges WITHOUT
+// resetting them, and evicts edges that have been stale for staleCycles flush
+// cycles. Used in cumulative-temporality mode.
+func (g *ServiceGraphGenerator) CollectCumulative(staleCycles int) []*sgEdgeSeries {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	cur := uint64(g.cycle.Load())
+	result := make([]*sgEdgeSeries, 0, len(g.edges))
+	for id, e := range g.edges {
+		if e.overflow.Load() {
+			continue
+		}
+		if staleCycles > 0 && cur-e.lastSeenCycle > uint64(staleCycles) {
+			delete(g.edges, id)
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 const (
-	attrPeerService       = "peer.service"
-	attrMessagingSystem   = "messaging.system"
-	attrConnectionType    = "connection_type"
-	connTypeMessaging     = "messaging_system"
-	connTypeDatabase      = "database"
-	connTypeUnset         = "unset"
+	attrPeerService     = "peer.service"
+	attrMessagingSystem = "messaging.system"
+	attrConnectionType  = "connection_type"
+	connTypeMessaging   = "messaging_system"
+	connTypeDatabase    = "database"
+	connTypeUnset       = "unset"
 )
 
 // extractPeerService reads the peer.service attribute from span attributes.

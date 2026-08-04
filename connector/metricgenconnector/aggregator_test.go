@@ -92,7 +92,19 @@ func TestCreateDefaultConfig(t *testing.T) {
 }
 
 func TestConfig_Validate(t *testing.T) {
-	cfg := &Config{}
-	err := cfg.Validate()
-	assert.NoError(t, err)
+	// Default config (cumulative) validates.
+	cfg := CreateDefaultConfig().(*Config)
+	assert.NoError(t, cfg.Validate())
+
+	// Delta explicitly validates.
+	cfgDelta := CreateDefaultConfig().(*Config)
+	cfgDelta.AggregationTemporality = TemporalityDelta
+	assert.NoError(t, cfgDelta.Validate())
+
+	// Invalid temporality fails.
+	cfgBad := CreateDefaultConfig().(*Config)
+	cfgBad.AggregationTemporality = "bogus"
+	err := cfgBad.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "aggregation_temporality")
 }

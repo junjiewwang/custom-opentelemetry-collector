@@ -64,3 +64,16 @@ func (h *histogram) Snapshot() (buckets []uint64, bounds []float64, sum int64, c
 	count = uint64(h.count.Swap(0))
 	return
 }
+
+// SnapshotCumulative returns a copy of the current histogram state WITHOUT
+// resetting. Used when the connector emits cumulative-temporality metrics.
+func (h *histogram) SnapshotCumulative() (buckets []uint64, bounds []float64, sum int64, count uint64) {
+	buckets = make([]uint64, len(h.buckets))
+	for i := range h.buckets {
+		buckets[i] = uint64(h.buckets[i].Load())
+	}
+	bounds = h.bounds
+	sum = h.sum.Load()
+	count = uint64(h.count.Load())
+	return
+}

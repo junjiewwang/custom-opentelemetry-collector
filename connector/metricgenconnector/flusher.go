@@ -18,11 +18,13 @@ import (
 // metricFlusher periodically collects aggregated metrics from generators
 // and exports them via the metrics consumer.
 type metricFlusher struct {
-	interval time.Duration
-	consumer consumer.Metrics
-	redGen   *REDGenerator
-	sgGen    *ServiceGraphGenerator
-	logger   *zap.Logger
+	interval    time.Duration
+	consumer    consumer.Metrics
+	redGen      *REDGenerator
+	sgGen       *ServiceGraphGenerator
+	logger      *zap.Logger
+	cumulative  bool // true: cumulative (no reset), false: delta (reset per flush)
+	staleCycles int  // cumulative mode: evict series idle for this many cycles
 }
 
 // run is the background flush loop.
@@ -46,16 +48,40 @@ func (f *metricFlusher) flush() {
 	md := pmetric.NewMetrics()
 	count := 0
 
+	// In cumulative mode, series persist across flushes (counters are not reset);
+	// in delta mode, series are drained and reset.
+	if f.cumulative {
+		// Advance cycle for stale-series eviction.
+		if f.redGen != nil {
+			f.redGen.cycle.Add(1)
+		}
+		if f.sgGen != nil {
+			f.sgGen.cycle.Add(1)
+		}
+	}
+
 	// RED metrics.
 	if f.redGen != nil {
-		if redSeries := f.redGen.Collect(); len(redSeries) > 0 {
+		var redSeries []*redMetricSeries
+		if f.cumulative {
+			redSeries = f.redGen.CollectCumulative(f.staleCycles)
+		} else {
+			redSeries = f.redGen.Collect()
+		}
+		if len(redSeries) > 0 {
 			count += f.buildREDMetrics(md, redSeries)
 		}
 	}
 
 	// ServiceGraph metrics.
 	if f.sgGen != nil {
-		if sgEdges := f.sgGen.Collect(); len(sgEdges) > 0 {
+		var sgEdges []*sgEdgeSeries
+		if f.cumulative {
+			sgEdges = f.sgGen.CollectCumulative(f.staleCycles)
+		} else {
+			sgEdges = f.sgGen.Collect()
+		}
+		if len(sgEdges) > 0 {
 			count += f.buildSGMetrics(md, sgEdges)
 		}
 	}
@@ -67,6 +93,26 @@ func (f *metricFlusher) flush() {
 	ctx := context.Background()
 	if err := f.consumer.ConsumeMetrics(ctx, md); err != nil {
 		f.logger.Error("failed to export metrics", zap.Error(err))
+	}
+}
+
+// setTemporality sets the aggregation temporality (and monotonic flag) on a
+// Sum metric according to the configured mode.
+func (f *metricFlusher) setTemporality(sum pmetric.Sum) {
+	if f.cumulative {
+		sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	} else {
+		sum.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+	}
+	sum.SetIsMonotonic(true)
+}
+
+// setTemporalityHist sets the aggregation temporality on a Histogram metric.
+func (f *metricFlusher) setTemporalityHist(h pmetric.Histogram) {
+	if f.cumulative {
+		h.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	} else {
+		h.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
 	}
 }
 
@@ -87,15 +133,20 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 	for _, s := range series {
 		appID := s.appID
 		// --- calls_total counter ---
-		if calls := s.calls.Swap(); calls > 0 {
+		var calls int64
+		if f.cumulative {
+			calls = s.calls.Load()
+		} else {
+			calls = s.calls.Swap()
+		}
+		if calls > 0 {
 			rm := md.ResourceMetrics().AppendEmpty()
 			setResourceAttr(rm.Resource(), appID)
 			sm := rm.ScopeMetrics().AppendEmpty()
 			m := sm.Metrics().AppendEmpty()
 			m.SetName(metricNameREDCallsTotal)
 			sum := m.SetEmptySum()
-			sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
-			sum.SetIsMonotonic(true)
+			f.setTemporality(sum)
 			dp := sum.DataPoints().AppendEmpty()
 			dp.SetStartTimestamp(now)
 			dp.SetTimestamp(now)
@@ -104,7 +155,15 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 		}
 
 		// --- latency histogram ---
-		buckets, bounds, sumMicros, count := s.latency.Snapshot()
+		var buckets []uint64
+		var bounds []float64
+		var sumMicros int64
+		var count uint64
+		if f.cumulative {
+			buckets, bounds, sumMicros, count = s.latency.SnapshotCumulative()
+		} else {
+			buckets, bounds, sumMicros, count = s.latency.Snapshot()
+		}
 		if count > 0 {
 			rm := md.ResourceMetrics().AppendEmpty()
 			setResourceAttr(rm.Resource(), appID)
@@ -112,7 +171,7 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 			m := sm.Metrics().AppendEmpty()
 			m.SetName(metricNameREDLatency)
 			h := m.SetEmptyHistogram()
-			h.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+			f.setTemporalityHist(h)
 			dp := h.DataPoints().AppendEmpty()
 			dp.SetStartTimestamp(now)
 			dp.SetTimestamp(now)
@@ -132,12 +191,12 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 // ---------------------------------------------------------------------------
 
 const (
-	metricNameSGRequestTotal       = "traces_service_graph_request_total"
-	metricNameSGFailedTotal        = "traces_service_graph_request_failed_total"
-	metricNameSGClientSeconds      = "traces_service_graph_request_client_seconds"
-	metricNameSGServerSeconds      = "traces_service_graph_request_server_seconds"
-	metricNameSGMessagingSeconds   = "traces_service_graph_request_messaging_system_seconds"
-	metricNameSGMessageSize        = "traces_service_graph_request_message_size_bytes"
+	metricNameSGRequestTotal     = "traces_service_graph_request_total"
+	metricNameSGFailedTotal      = "traces_service_graph_request_failed_total"
+	metricNameSGClientSeconds    = "traces_service_graph_request_client_seconds"
+	metricNameSGServerSeconds    = "traces_service_graph_request_server_seconds"
+	metricNameSGMessagingSeconds = "traces_service_graph_request_messaging_system_seconds"
+	metricNameSGMessageSize      = "traces_service_graph_request_message_size_bytes"
 )
 
 // buildSGMetrics converts ServiceGraph edges into pmetric.Metrics.
@@ -153,12 +212,24 @@ func (f *metricFlusher) buildSGMetrics(md pmetric.Metrics, edges []*sgEdgeSeries
 		}
 
 		// --- request_total counter ---
-		if calls := e.requestTotal.Swap(); calls > 0 {
+		var calls int64
+		if f.cumulative {
+			calls = e.requestTotal.Load()
+		} else {
+			calls = e.requestTotal.Swap()
+		}
+		if calls > 0 {
 			f.emitCounter(md, metricNameSGRequestTotal, calls, labels, appID, now)
 		}
 
 		// --- failed_total counter ---
-		if failed := e.failedTotal.Swap(); failed > 0 {
+		var failed int64
+		if f.cumulative {
+			failed = e.failedTotal.Load()
+		} else {
+			failed = e.failedTotal.Swap()
+		}
+		if failed > 0 {
 			f.emitCounter(md, metricNameSGFailedTotal, failed, labels, appID, now)
 		}
 
@@ -185,8 +256,7 @@ func (f *metricFlusher) emitCounter(md pmetric.Metrics, name string, value int64
 	m := sm.Metrics().AppendEmpty()
 	m.SetName(name)
 	sum := m.SetEmptySum()
-	sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
-	sum.SetIsMonotonic(true)
+	f.setTemporality(sum)
 	dp := sum.DataPoints().AppendEmpty()
 	dp.SetStartTimestamp(now)
 	dp.SetTimestamp(now)
@@ -195,7 +265,15 @@ func (f *metricFlusher) emitCounter(md pmetric.Metrics, name string, value int64
 }
 
 func (f *metricFlusher) emitHistogramIfNonEmpty(md pmetric.Metrics, name string, h *histogram, labels map[string]string, appID string, now pcommon.Timestamp) {
-	buckets, bounds, sumMicros, count := h.Snapshot()
+	var buckets []uint64
+	var bounds []float64
+	var sumMicros int64
+	var count uint64
+	if f.cumulative {
+		buckets, bounds, sumMicros, count = h.SnapshotCumulative()
+	} else {
+		buckets, bounds, sumMicros, count = h.Snapshot()
+	}
 	if count == 0 {
 		return
 	}
@@ -205,7 +283,7 @@ func (f *metricFlusher) emitHistogramIfNonEmpty(md pmetric.Metrics, name string,
 	m := sm.Metrics().AppendEmpty()
 	m.SetName(name)
 	hist := m.SetEmptyHistogram()
-	hist.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	f.setTemporalityHist(hist)
 	dp := hist.DataPoints().AppendEmpty()
 	dp.SetStartTimestamp(now)
 	dp.SetTimestamp(now)
