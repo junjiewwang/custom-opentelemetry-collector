@@ -237,20 +237,42 @@ func parseAggWrapper(s string) (inner, rest, agg string, groupBy []string) {
 	for _, fn := range AggFuncs {
 		lower := strings.ToLower(s)
 
-		// Pattern 1: fn by (...) (selector) — Grafana Explore Metrics style
-		fnByPrefix := fn + " by ("
-		if strings.HasPrefix(lower, fnByPrefix) {
-			j := strings.IndexByte(s[len(fnByPrefix):], ')')
-			if j > 0 {
-				groupBy = parseLabelList(s[len(fnByPrefix) : len(fnByPrefix)+j])
-				remainder := strings.TrimSpace(s[len(fnByPrefix)+j+1:])
+		// Pattern 1: fn by (...) (selector) — Grafana Explore Metrics style.
+		// PromQL allows optional whitespace between "by" and "(", and Grafana's
+		// query builder emits the no-space form ("sum by(x) (...)"). Match both.
+		if strings.HasPrefix(lower, fn+" ") {
+			afterFn := s[len(fn)+1:] // after "fn "
+			afterLower := strings.ToLower(afterFn)
+			if strings.HasPrefix(afterLower, "by ") || strings.HasPrefix(afterLower, "by(") {
+				byPrefix := afterLower[:3] // "by "
+				var labelStart int
+				if strings.HasPrefix(afterLower, "by(") {
+					labelStart = 3 // "by("
+				} else {
+					// "by (" — skip trailing spaces
+					labelStart = 3
+					for labelStart < len(afterLower) && afterLower[labelStart] == ' ' {
+						labelStart++
+					}
+					if labelStart >= len(afterLower) || afterLower[labelStart] != '(' {
+						continue
+					}
+					labelStart++ // consume '('
+				}
+				_ = byPrefix
+				// Find the matching ')' for the label list.
+				j := strings.IndexByte(afterLower[labelStart:], ')')
+				if j < 0 {
+					continue
+				}
+				groupBy = parseLabelList(afterFn[labelStart : labelStart+j])
+				remainder := strings.TrimSpace(afterFn[labelStart+j+1:])
 				// Strip outer grouping parens: "({selector})" → "{selector}"
 				if strings.HasPrefix(remainder, "(") && strings.HasSuffix(remainder, ")") {
 					remainder = strings.TrimSpace(remainder[1 : len(remainder)-1])
 				}
 				return remainder, "", fn, groupBy
 			}
-			continue
 		}
 
 		// Pattern 2: fn(selector) [by (labels)] — standard PromQL
