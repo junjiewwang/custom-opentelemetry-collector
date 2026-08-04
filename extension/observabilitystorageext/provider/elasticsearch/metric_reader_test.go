@@ -426,3 +426,41 @@ func TestLabelsKey(t *testing.T) {
 	assert.Equal(t, a, b)
 	assert.Equal(t, "cpu=cpu0,method=GET", a)
 }
+
+// TestBuildAggregation_MissingBucketDisabled proves a grouped range query drops
+// documents that lack the grouped label (Prometheus "by (label)" semantics),
+// rather than collapsing them into a null/empty-label catch-all bucket.
+func TestBuildAggregation_MissingBucketDisabled(t *testing.T) {
+	r := newTestMetricReader(&fakeSearcher{})
+	aggFunc, err := GetAggregation("sum")
+	require.NoError(t, err)
+
+	aggs := r.buildAggregation([]string{"http_route"}, "1m", aggFunc, 0, 100)
+
+	byGroup, ok := aggs["by_group"].(map[string]any)
+	require.True(t, ok, "must build composite by_group for grouped query")
+	composite, ok := byGroup["composite"].(map[string]any)
+	require.True(t, ok)
+	sources, ok := composite["sources"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, sources, 1)
+
+	terms := sources[0]["http_route"].(map[string]any)["terms"].(map[string]any)
+	missing, present := terms["missing_bucket"]
+	require.True(t, present, "missing_bucket must be set explicitly")
+	assert.False(t, missing.(bool), "missing_bucket=false: docs without the label are dropped, matching PromQL by()")
+}
+
+// TestBuildAggregation_NoGroupByUsesSimpleHistogram proves an empty GroupBy
+// builds a single time_series aggregation (no composite).
+func TestBuildAggregation_NoGroupByUsesSimpleHistogram(t *testing.T) {
+	r := newTestMetricReader(&fakeSearcher{})
+	aggFunc, err := GetAggregation("avg")
+	require.NoError(t, err)
+
+	aggs := r.buildAggregation(nil, "1m", aggFunc, 0, 100)
+	_, hasTimeSeries := aggs["time_series"]
+	_, hasByGroup := aggs["by_group"]
+	assert.True(t, hasTimeSeries, "no groupBy → simple time_series aggregation")
+	assert.False(t, hasByGroup, "no groupBy → no composite")
+}
