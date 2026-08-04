@@ -705,6 +705,15 @@ connectors:
     metrics_flush_interval: 15s
     # Soft cap on unique metric series (overflow dropped with counter)
     cardinality_limit: 2000
+    # Aggregation temporality of generated metrics.
+    #   AGGREGATION_TEMPORALITY_CUMULATIVE (default): counters are monotonically
+    #     increasing across flushes, matching Prometheus semantics. Use this for
+    #     rate()/increase() queries.
+    #   AGGREGATION_TEMPORALITY_DELTA: each flush emits per-interval increments.
+    aggregation_temporality: AGGREGATION_TEMPORALITY_CUMULATIVE
+    # In cumulative mode, evict series idle for this many flush cycles.
+    # With 15s flush, 5 = 75s. Set to 0 to disable eviction.
+    stale_series_cycles: 5
     # RED (Rate/Error/Duration) generator config
     red:
       enabled: true

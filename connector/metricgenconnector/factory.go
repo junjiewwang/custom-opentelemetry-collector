@@ -33,10 +33,10 @@ func createTracesToMetrics(
 	c := cfg.(*Config)
 
 	conn := &metricGenConnector{
-		config:        c,
+		config:          c,
 		metricsConsumer: nextConsumer,
-		logger:        set.Logger,
-		done:          make(chan struct{}),
+		logger:          set.Logger,
+		done:            make(chan struct{}),
 	}
 
 	if c.RED != nil && c.RED.Enabled {
@@ -48,11 +48,13 @@ func createTracesToMetrics(
 	}
 
 	conn.flusher = &metricFlusher{
-		interval: c.MetricsFlushInterval,
-		consumer: nextConsumer,
-		redGen:   conn.redGen,
-		sgGen:    conn.sgGen,
-		logger:   set.Logger,
+		interval:    c.MetricsFlushInterval,
+		consumer:    nextConsumer,
+		redGen:      conn.redGen,
+		sgGen:       conn.sgGen,
+		logger:      set.Logger,
+		cumulative:  c.IsCumulative(),
+		staleCycles: c.StaleSeriesCycles,
 	}
 
 	return conn, nil

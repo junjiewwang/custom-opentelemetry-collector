@@ -20,6 +20,9 @@ type redMetricSeries struct {
 	calls    counter
 	latency  *histogram
 	overflow atomic.Bool
+	// lastSeenCycle is the flush cycle index when this series last received data.
+	// Used in cumulative mode to evict stale series.
+	lastSeenCycle uint64
 }
 
 // dimensionSet is a sorted, canonicalized set of key=value labels.
@@ -58,11 +61,12 @@ func newDimensionSet(attrs map[string]string) dimensionSet {
 //	traces_spanmetrics_calls_total  — Counter
 //	traces_spanmetrics_latency       — Histogram (sum/count/buckets)
 type REDGenerator struct {
-	config     *REDConfig
-	cardLimit  int
-	mu         sync.RWMutex
-	series     map[uint64]*redMetricSeries
-	dropped    atomic.Int64
+	config    *REDConfig
+	cardLimit int
+	mu        sync.RWMutex
+	series    map[uint64]*redMetricSeries
+	dropped   atomic.Int64
+	cycle     atomic.Int64 // flush cycle index, used for stale-series eviction in cumulative mode
 }
 
 // NewREDGenerator creates a new REDGenerator.
@@ -105,6 +109,8 @@ func (g *REDGenerator) ProcessSpan(svcName, appID string, resource pcommon.Resou
 
 	series.calls.Add(1)
 	series.latency.Record(spanDuration(span))
+	// Mark this series as active in the current flush cycle (cumulative-mode eviction).
+	atomic.StoreUint64(&series.lastSeenCycle, uint64(g.cycle.Load()))
 }
 
 // getOrCreateSeries returns the series for the given dimensions, creating one
@@ -158,7 +164,7 @@ func (g *REDGenerator) Dropped() int64 {
 }
 
 // Collect drains all aggregated series and returns them for metric emission.
-// The generator is reset after this call.
+// The generator is reset after this call. Used in delta-temporality mode.
 func (g *REDGenerator) Collect() []*redMetricSeries {
 	g.mu.Lock()
 	old := g.series
@@ -175,4 +181,26 @@ func (g *REDGenerator) Collect() []*redMetricSeries {
 	return result
 }
 
+// CollectCumulative returns a read-only snapshot of all active series WITHOUT
+// resetting them, and evicts series that have been stale for staleCycles flush
+// cycles. Used in cumulative-temporality mode so that counters are monotonically
+// increasing (matching Prometheus semantics).
+func (g *REDGenerator) CollectCumulative(staleCycles int) []*redMetricSeries {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 
+	cur := uint64(g.cycle.Load())
+	result := make([]*redMetricSeries, 0, len(g.series))
+	for id, s := range g.series {
+		if s.overflow.Load() {
+			continue
+		}
+		if staleCycles > 0 && cur-s.lastSeenCycle > uint64(staleCycles) {
+			// Evict stale series: no new data for too long.
+			delete(g.series, id)
+			continue
+		}
+		result = append(result, s)
+	}
+	return result
+}

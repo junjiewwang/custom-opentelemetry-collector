@@ -4,17 +4,32 @@
 package metricgenconnector
 
 import (
+	"fmt"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
 )
 
+// Aggregation temporality configuration values, aligned with the OTel
+// spanmetrics connector so users can reuse the same config strings.
+const (
+	TemporalityCumulative = "AGGREGATION_TEMPORALITY_CUMULATIVE"
+	TemporalityDelta      = "AGGREGATION_TEMPORALITY_DELTA"
+)
+
+// DefaultStaleSeriesCycles is how many consecutive flush cycles a series can go
+// without new data before being evicted in cumulative mode. With the default
+// 15s flush interval this is 75s.
+const DefaultStaleSeriesCycles = 5
+
 // Config holds the configuration for the MetricGenerator connector.
 type Config struct {
-	MetricsFlushInterval time.Duration `mapstructure:"metrics_flush_interval"`
-	CardinalityLimit     int           `mapstructure:"cardinality_limit"`
-	RED                  *REDConfig    `mapstructure:"red"`
-	ServiceGraph         *ServiceGraphConfig `mapstructure:"service_graph"`
+	MetricsFlushInterval   time.Duration       `mapstructure:"metrics_flush_interval"`
+	CardinalityLimit       int                 `mapstructure:"cardinality_limit"`
+	AggregationTemporality string              `mapstructure:"aggregation_temporality"`
+	StaleSeriesCycles      int                 `mapstructure:"stale_series_cycles"`
+	RED                    *REDConfig          `mapstructure:"red"`
+	ServiceGraph           *ServiceGraphConfig `mapstructure:"service_graph"`
 }
 
 type REDConfig struct {
@@ -24,10 +39,10 @@ type REDConfig struct {
 }
 
 type ServiceGraphConfig struct {
-	Enabled           bool            `mapstructure:"enabled"`
-	Dimensions        []string        `mapstructure:"dimensions"`
-	Histogram         HistogramConfig `mapstructure:"histogram"`           // latency buckets (seconds)
-	MessageSizeHisto  HistogramConfig `mapstructure:"message_size_histo"`  // message size buckets (bytes)
+	Enabled          bool            `mapstructure:"enabled"`
+	Dimensions       []string        `mapstructure:"dimensions"`
+	Histogram        HistogramConfig `mapstructure:"histogram"`          // latency buckets (seconds)
+	MessageSizeHisto HistogramConfig `mapstructure:"message_size_histo"` // message size buckets (bytes)
 }
 
 // DefaultServiceGraphLatencyBuckets returns latency buckets in seconds.
@@ -51,7 +66,17 @@ type HistogramConfig struct {
 
 var _ component.Config = (*Config)(nil)
 
-func (c *Config) Validate() error { return nil }
+func (c *Config) Validate() error {
+	switch c.AggregationTemporality {
+	case TemporalityCumulative, TemporalityDelta:
+	default:
+		return fmt.Errorf("aggregation_temporality must be %q or %q, got %q", TemporalityCumulative, TemporalityDelta, c.AggregationTemporality)
+	}
+	return nil
+}
+
+// IsCumulative reports whether the connector emits cumulative-temporality metrics.
+func (c *Config) IsCumulative() bool { return c.AggregationTemporality == TemporalityCumulative }
 
 var defaultHistogramBuckets = []float64{
 	2, 4, 6, 8, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 300, 400, 500,
@@ -65,8 +90,10 @@ var defaultDimensions = []string{
 
 func CreateDefaultConfig() component.Config {
 	return &Config{
-		MetricsFlushInterval: 15 * time.Second,
-		CardinalityLimit:     2000,
+		MetricsFlushInterval:   15 * time.Second,
+		CardinalityLimit:       2000,
+		AggregationTemporality: TemporalityCumulative,
+		StaleSeriesCycles:      DefaultStaleSeriesCycles,
 		RED: &REDConfig{
 			Enabled:    true,
 			Dimensions: defaultDimensions,
