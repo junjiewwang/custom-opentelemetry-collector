@@ -471,40 +471,64 @@ func (h *promHandlers) handlePromSeries(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	tr := observabilitystorageext.TimeRange{}
+	if start, err := parsePrometheusTime(r.FormValue("start")); err == nil {
+		tr.Start = start
+	}
+	if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
+		tr.End = end
+	}
+
+	// Selectors are OR'd; dedup the unioned series by their label set.
+	seen := make(map[string]struct{})
 	var allSeries []promMetric
 	for _, matchStr := range matchParams {
-		expr, err := parsePromQLSelector(matchStr)
+		names, labels, labelMatch, matchAllNames, err := planSeriesMatch(matchStr)
 		if err != nil {
-			continue
-		}
-
-		tr := observabilitystorageext.TimeRange{}
-		if start, err := parsePrometheusTime(r.FormValue("start")); err == nil {
-			tr.Start = start
-		}
-		if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
-			tr.End = end
+			continue // skip malformed selector
 		}
 
 		query := observabilitystorageext.MetricQuery{
-			MetricName: expr.MetricName,
-			Labels:     expr.Labels,
+			Labels:     labels,
+			LabelMatch: labelMatch,
 			Time:       tr.End,
 		}
 		if query.Time.IsZero() {
 			query.Time = time.Now()
 		}
 
-		result, err := h.metricReader.Query(r.Context(), query)
-		if err != nil {
-			continue
+		// When the selector constrains __name__, issue one query per resolved
+		// metric name. When it doesn't, issue a single name-agnostic query.
+		queryNames := names
+		if matchAllNames {
+			queryNames = []string{""}
 		}
-		for _, dp := range result.Data {
-			m := promMetric{PromLabelName: expr.MetricName}
-			for k, v := range dp.Labels {
-				m[translateLabelToPromQL(k)] = v
+		for _, n := range queryNames {
+			q := query
+			q.MetricName = n
+			result, err := h.metricReader.Query(r.Context(), q)
+			if err != nil {
+				continue
 			}
-			allSeries = append(allSeries, m)
+			for _, dp := range result.Data {
+				m := promMetric{}
+				name := n
+				if name == "" {
+					name = dp.Metric
+				}
+				if name != "" {
+					m[PromLabelName] = name
+				}
+				for k, v := range dp.Labels {
+					m[translateLabelToPromQL(k)] = v
+				}
+				key := seriesKey(m)
+				if _, dup := seen[key]; dup {
+					continue
+				}
+				seen[key] = struct{}{}
+				allSeries = append(allSeries, m)
+			}
 		}
 	}
 

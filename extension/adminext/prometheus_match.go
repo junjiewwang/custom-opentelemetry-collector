@@ -5,7 +5,91 @@ package adminext
 
 import (
 	"regexp"
+	"sort"
+	"strings"
 )
+
+// seriesKey returns a stable, dedup-key string for a Prometheus series label set.
+func seriesKey(m promMetric) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(m[k])
+		b.WriteByte(',')
+	}
+	return b.String()
+}
+
+// planSeriesMatch decodes a single /api/v1/series match[] selector into the
+// metric name(s) to query and the remaining (non-__name__) label matchers.
+//
+// The storage layer keys metrics by name (a term query on the name field), not
+// by a "__name__" label, so __name__ must be routed to MetricName rather than
+// passed as a label. This mirrors the /labels handler:
+//   - bare name form "metric{...}"          → names=["metric"]
+//   - __name__="x"                          → names=["x"]
+//   - __name__=~"x" / ".*x.*"               → names=["x"]   (literal extraction)
+//   - __name__=~"a|b|c"                     → names=["a","b","c"]
+//   - __name__=~".*" / no __name__ matcher  → matchAllNames=true (all metrics)
+//
+// Real wildcard regexes (e.g. __name__=~"pool.*") reduce lossily to their
+// literal portion ("pool"), consistent with /labels; this is a shared limitation
+// from the storage layer not supporting metric-name regex.
+//
+// Other label matchers (exact and regex) are returned verbatim for the storage
+// layer. __name__ is never included in the returned label maps.
+func planSeriesMatch(matchStr string) (names []string, labels, labelMatch map[string]string, matchAllNames bool, err error) {
+	expr, perr := parsePromQLSelector(matchStr)
+	if perr != nil {
+		return nil, nil, nil, false, perr
+	}
+	if expr == nil {
+		return nil, nil, nil, false, errInvalidPromQL("empty selector")
+	}
+
+	labels = make(map[string]string, len(expr.Labels))
+	for k, v := range expr.Labels {
+		if k == PromLabelName {
+			continue
+		}
+		labels[k] = v
+	}
+	labelMatch = make(map[string]string, len(expr.LabelMatch))
+	for k, v := range expr.LabelMatch {
+		if k == PromLabelName {
+			continue
+		}
+		labelMatch[k] = v
+	}
+
+	// Bare metric name before the brace takes precedence.
+	if expr.MetricName != "" {
+		return []string{expr.MetricName}, labels, labelMatch, false, nil
+	}
+	// Exact __name__="x".
+	if v, ok := expr.Labels[PromLabelName]; ok && v != "" {
+		return []string{v}, labels, labelMatch, false, nil
+	}
+	// Regex __name__=~"r": reduce to literal name(s) via the /labels helpers.
+	if _, ok := expr.LabelMatch[PromLabelName]; ok {
+		if single := extractMetricNameFromMatch([]string{matchStr}); single != "" {
+			return []string{single}, labels, labelMatch, false, nil
+		}
+		if many := extractMetricNamesFromMatch([]string{matchStr}); len(many) > 0 {
+			return many, labels, labelMatch, false, nil
+		}
+		// Regex carried no literal name (e.g. ".*") → match all names.
+		return nil, labels, labelMatch, true, nil
+	}
+	// No __name__ constraint at all → query across all metrics.
+	return nil, labels, labelMatch, true, nil
+}
 
 // anchorPromRegex wraps a Prometheus regex pattern so it matches the entire
 // string, replicating Prometheus's fully-anchored =~ semantics. Go's regexp
