@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 )
 
@@ -146,10 +147,10 @@ func TestExtractMetricNameFromMatch(t *testing.T) {
 
 func TestParseHistogramQuantileWrapper(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		wantInner   string
-		wantTheta   float64
+		name      string
+		input     string
+		wantInner string
+		wantTheta float64
 	}{
 		{
 			name:      "basic",
@@ -170,12 +171,12 @@ func TestParseHistogramQuantileWrapper(t *testing.T) {
 			wantTheta: 0.5,
 		},
 		{
-			name:    "no match",
-			input:   `sum(rate(metric[5m])) by (label)`,
+			name:  "no match",
+			input: `sum(rate(metric[5m])) by (label)`,
 		},
 		{
-			name:    "empty",
-			input:   ``,
+			name:  "empty",
+			input: ``,
 		},
 	}
 	for _, tt := range tests {
@@ -275,11 +276,11 @@ func TestComputeRateInWindow_InsufficientSamples(t *testing.T) {
 
 func TestParseTopKWrapper(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		wantInner   string
-		wantK       int
-		wantIsBk    bool
+		name      string
+		input     string
+		wantInner string
+		wantK     int
+		wantIsBk  bool
 	}{
 		{
 			name:      "topk basic",
@@ -310,32 +311,32 @@ func TestParseTopKWrapper(t *testing.T) {
 			wantIsBk:  false,
 		},
 		{
-			name:    "not topk or bottomk",
-			input:   `sum(rate(x[5m]))`,
+			name:  "not topk or bottomk",
+			input: `sum(rate(x[5m]))`,
 		},
 		{
-			name:    "empty",
-			input:   ``,
+			name:  "empty",
+			input: ``,
 		},
 		{
-			name:    "topk with zero K (invalid)",
-			input:   `topk(0, expr)`,
+			name:  "topk with zero K (invalid)",
+			input: `topk(0, expr)`,
 		},
 		{
-			name:    "topk with negative K (invalid)",
-			input:   `topk(-5, expr)`,
+			name:  "topk with negative K (invalid)",
+			input: `topk(-5, expr)`,
 		},
 		{
-			name:    "topk with non-integer K (invalid)",
-			input:   `topk(abc, expr)`,
+			name:  "topk with non-integer K (invalid)",
+			input: `topk(abc, expr)`,
 		},
 		{
-			name:    "topk without comma (malformed)",
-			input:   `topk(5)`,
+			name:  "topk without comma (malformed)",
+			input: `topk(5)`,
 		},
 		{
-			name:    "bottomk with aggregation inner",
-			input:   `bottomk(3, avg(rate(http_requests_total[1m])) by (status_code))`,
+			name:      "bottomk with aggregation inner",
+			input:     `bottomk(3, avg(rate(http_requests_total[1m])) by (status_code))`,
 			wantInner: `avg(rate(http_requests_total[1m])) by (status_code)`,
 			wantK:     3,
 			wantIsBk:  true,
@@ -472,6 +473,35 @@ func TestParsePromQL_NoTopK_DefaultsZero(t *testing.T) {
 	assert.Equal(t, FnRate, expr.Function)
 	assert.Equal(t, AggSum, expr.Aggregation)
 	assert.Equal(t, []string{"app"}, expr.GroupBy)
+}
+
+// TestParsePromQL_AggByWhitespaceForms proves the "fn by (labels) (sel)" form is
+// parsed regardless of whitespace between "by" and "(". Grafana's PromQL builder
+// emits the no-space form ("sum by(peer_service) (...)"), which previously fell
+// through to the bare-metric path (Agg="", GroupBy=[], Metric=whole expression).
+func TestParsePromQL_AggByWhitespaceForms(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		agg     string
+		groupBy []string
+		metric  string
+	}{
+		{"no space after by", `sum by(peer_service) (traces_spanmetrics_latency)`, AggSum, []string{"peer_service"}, "traces_spanmetrics_latency"},
+		{"space after by", `sum by (peer_service) (traces_spanmetrics_latency)`, AggSum, []string{"peer_service"}, "traces_spanmetrics_latency"},
+		{"extra spaces in label list", `sum by(  peer_service , foo ) (traces_spanmetrics_latency)`, AggSum, []string{"peer_service", "foo"}, "traces_spanmetrics_latency"},
+		{"avg no space", `avg by(http.status) (rpc.server.duration)`, AggAvg, []string{"http.status"}, "rpc.server.duration"},
+		{"max space", `max by (a) (m)`, AggMax, []string{"a"}, "m"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			expr, err := parsePromQL(tt.input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.agg, expr.Aggregation)
+			assert.Equal(t, tt.groupBy, expr.GroupBy)
+			assert.Equal(t, tt.metric, expr.MetricName, "must not swallow the whole expression as a bare metric name")
+		})
+	}
 }
 
 // ── applyTopK / parseVectorValue tests ───────────────
