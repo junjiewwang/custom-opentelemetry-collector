@@ -378,8 +378,13 @@ func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFu
 		sources = append(sources, map[string]any{
 			label: map[string]any{
 				"terms": map[string]any{
-					"field":          aggField,
-					"missing_bucket": true,
+					"field": aggField,
+					// missing_bucket=false: documents lacking this label are dropped
+					// from the result, matching Prometheus "by (label)" semantics —
+					// a series without the grouped label does not appear in the output
+					// (no null/empty-label bucket). This prevents a large catch-all
+					// "no-label" series from dominating charts.
+					"missing_bucket": false,
 				},
 			},
 		})
