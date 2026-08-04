@@ -19,26 +19,26 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 )
 
-// stubFlatReader implements QueryFlat (returns a fixed sample list) and QueryRange
-// (returns an empty result), so it can back both the bare-metric flat path and
-// the aggregated range path without panicking on unimplemented methods.
-type stubFlatReader struct {
+// stubRangeReader backs the bare-metric /query_range path: ListLabelNames
+// discovers label keys, QueryRange returns per-series buckets.
+type stubRangeReader struct {
 	observabilitystorageext.MetricReader
-	samples []observabilitystorageext.MetricSample
-	err     error
+	labelNames []string
+	series     []observabilitystorageext.MetricSeries
+	err        error
 }
 
-func (r *stubFlatReader) QueryFlat(_ context.Context, _ observabilitystorageext.MetricFlatQuery) (*observabilitystorageext.MetricFlatResult, error) {
+func (r *stubRangeReader) ListLabelNames(_ context.Context, _ observabilitystorageext.TimeRange, _ string) ([]string, error) {
+	return r.labelNames, nil
+}
+
+func (r *stubRangeReader) QueryRange(_ context.Context, q observabilitystorageext.MetricRangeQuery) (*observabilitystorageext.MetricRangeResult, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	out := make([]observabilitystorageext.MetricSample, len(r.samples))
-	copy(out, r.samples)
-	return &observabilitystorageext.MetricFlatResult{Samples: out}, nil
-}
-
-func (r *stubFlatReader) QueryRange(_ context.Context, _ observabilitystorageext.MetricRangeQuery) (*observabilitystorageext.MetricRangeResult, error) {
-	return &observabilitystorageext.MetricRangeResult{}, nil
+	out := make([]observabilitystorageext.MetricSeries, len(r.series))
+	copy(out, r.series)
+	return &observabilitystorageext.MetricRangeResult{Data: out}, nil
 }
 
 func newRangeRequest(t *testing.T, query string, t0 time.Time, dur, step time.Duration) *http.Request {
@@ -67,18 +67,17 @@ func decodeRangeMatrix(t *testing.T, body string) []map[string]any {
 }
 
 // TestHandlePromQueryRange_BareMetricReturnsPerSeriesLabels proves a bare metric
-// selector returns one series per distinct label set with full labels, not a
-// single label-less collapsed series.
+// selector returns one series per distinct label set with full labels (not a
+// single collapsed label-less series), via the QueryRange composite path.
 func TestHandlePromQueryRange_BareMetricReturnsPerSeriesLabels(t *testing.T) {
 	t0 := time.UnixMilli(1_000_000_000_000)
-
-	// Two distinct label sets, two samples each within their step buckets.
-	r := &stubFlatReader{samples: []observabilitystorageext.MetricSample{
-		{TimestampMs: t0.UnixMilli(), Value: 10, Labels: map[string]string{"client": "a", "server": "x"}},
-		{TimestampMs: t0.Add(30 * time.Second).UnixMilli(), Value: 12, Labels: map[string]string{"client": "a", "server": "x"}},
-		{TimestampMs: t0.UnixMilli(), Value: 20, Labels: map[string]string{"client": "b", "server": "x"}},
-		{TimestampMs: t0.Add(30 * time.Second).UnixMilli(), Value: 22, Labels: map[string]string{"client": "b", "server": "x"}},
-	}}
+	r := &stubRangeReader{
+		labelNames: []string{"client", "server", "connection_type"},
+		series: []observabilitystorageext.MetricSeries{
+			{Labels: map[string]string{"client": "a", "server": "x", "connection_type": "grpc"}},
+			{Labels: map[string]string{"client": "b", "server": "x", "connection_type": "grpc"}},
+		},
+	}
 	h := &promHandlers{metricReader: r, logger: zap.NewNop()}
 
 	rr := httptest.NewRecorder()
@@ -88,26 +87,51 @@ func TestHandlePromQueryRange_BareMetricReturnsPerSeriesLabels(t *testing.T) {
 	matrix := decodeRangeMatrix(t, rr.Body.String())
 	require.Len(t, matrix, 2, "two distinct label sets → two series")
 
-	// Each series carries __name__ + its dimension labels (NOT label-less).
 	for _, s := range matrix {
 		metric := s["metric"].(map[string]any)
 		assert.Equal(t, "traces_service_graph_request_total", metric["__name__"])
-		client, ok := metric["client"]
-		require.True(t, ok, "client label must be present")
-		assert.Contains(t, []string{"a", "b"}, client)
+		// Full dimension labels present (not label-less).
+		assert.Contains(t, []string{"a", "b"}, metric["client"])
 		assert.Equal(t, "x", metric["server"])
+		assert.Equal(t, "grpc", metric["connection_type"])
 	}
 }
 
-func TestHandlePromQueryRange_BareMetricStepAveraging(t *testing.T) {
+// TestHandlePromQueryRange_BareMetricUsesQueryRangeNotFlat proves the bare-metric
+// path no longer routes through QueryFlat (which truncated at MaxDocs). A stub
+// that only implements QueryRange (QueryFlat returns nil) must still return data.
+func TestHandlePromQueryRange_BareMetricUsesQueryRangeNotFlat(t *testing.T) {
 	t0 := time.UnixMilli(1_000_000_000_000)
+	r := &stubRangeReader{
+		labelNames: []string{"job"},
+		series: []observabilitystorageext.MetricSeries{
+			{Labels: map[string]string{"job": "a"}},
+		},
+	}
+	// QueryFlat is intentionally NOT implemented (nil via embedding) — if the
+	// bare path tried to use it, it would panic/nil-deref. QueryRange returns data.
+	h := &promHandlers{metricReader: r, logger: zap.NewNop()}
 
-	// One series; two samples in the first step bucket (10, 20 → avg 15), one in the second (30).
-	r := &stubFlatReader{samples: []observabilitystorageext.MetricSample{
-		{TimestampMs: t0.UnixMilli(), Value: 10, Labels: map[string]string{"job": "a"}},
-		{TimestampMs: t0.Add(5 * time.Second).UnixMilli(), Value: 20, Labels: map[string]string{"job": "a"}},
-		{TimestampMs: t0.Add(30 * time.Second).UnixMilli(), Value: 30, Labels: map[string]string{"job": "a"}},
-	}}
+	rr := httptest.NewRecorder()
+	h.handlePromQueryRange(rr, newRangeRequest(t, "m", t0, 60*time.Second, 30*time.Second))
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	matrix := decodeRangeMatrix(t, rr.Body.String())
+	require.Len(t, matrix, 1)
+	assert.Equal(t, "a", matrix[0]["metric"].(map[string]any)["job"])
+}
+
+// TestHandlePromQueryRange_BareMetricNoLabelsCollapsesToOneSeries proves that when
+// a metric has no dimension labels, the bare path degrades to a single series
+// (empty GroupBy → simple date_histogram), rather than erroring.
+func TestHandlePromQueryRange_BareMetricNoLabelsCollapsesToOneSeries(t *testing.T) {
+	t0 := time.UnixMilli(1_000_000_000_000)
+	r := &stubRangeReader{
+		labelNames: nil, // no labels discovered
+		series: []observabilitystorageext.MetricSeries{
+			{Labels: map[string]string{}},
+		},
+	}
 	h := &promHandlers{metricReader: r, logger: zap.NewNop()}
 
 	rr := httptest.NewRecorder()
@@ -115,31 +139,23 @@ func TestHandlePromQueryRange_BareMetricStepAveraging(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	matrix := decodeRangeMatrix(t, rr.Body.String())
-	require.Len(t, matrix, 1)
-	values := matrix[0]["values"].([]any)
-	require.Len(t, values, 2)
-	// formatPromValue emits strings; parse to float.
-	v0, _ := strconv.ParseFloat(values[0].([]any)[1].(string), 64)
-	v1, _ := strconv.ParseFloat(values[1].([]any)[1].(string), 64)
-	assert.InDelta(t, 15.0, v0, 1e-9)
-	assert.InDelta(t, 30.0, v1, 1e-9)
+	require.Len(t, matrix, 1, "no labels → single series (graceful fallback)")
 }
 
-// TestHandlePromQueryRange_ExplicitAggregationSkipsBarePath confirms that an
-// explicit sum(metric) (no by) does NOT take the bare-metric flat path: with a
-// stub that returns per-series samples only from QueryFlat (QueryRange returns
-// empty), sum(m) yields an empty matrix, not the per-series data.
-func TestHandlePromQueryRange_ExplicitAggregationSkipsBarePath(t *testing.T) {
+// TestHandlePromQueryRange_ExplicitAggregationStillCollapses confirms explicit
+// sum(metric) (no by) still uses QueryRange without auto-GroupBy discovery:
+// the bare-metric branch is skipped because expr.Aggregation != "".
+func TestHandlePromQueryRange_ExplicitAggregationSkipsAutoGroupBy(t *testing.T) {
 	t0 := time.UnixMilli(1_000_000_000_000)
-	r := &stubFlatReader{samples: []observabilitystorageext.MetricSample{
-		{TimestampMs: t0.UnixMilli(), Value: 1, Labels: map[string]string{"job": "a"}},
-	}}
+	r := &stubRangeReader{
+		labelNames: []string{"job"}, // should NOT be used for sum(m)
+		series:     []observabilitystorageext.MetricSeries{{Labels: map[string]string{}}},
+	}
 	h := &promHandlers{metricReader: r, logger: zap.NewNop()}
 
 	rr := httptest.NewRecorder()
 	h.handlePromQueryRange(rr, newRangeRequest(t, "sum(m)", t0, 60*time.Second, 30*time.Second))
 	require.Equal(t, http.StatusOK, rr.Code)
-
 	matrix := decodeRangeMatrix(t, rr.Body.String())
-	assert.Empty(t, matrix, "explicit aggregation uses QueryRange (empty here), not the flat bare path")
+	require.Len(t, matrix, 1, "sum(m) with no by → single aggregated series")
 }
