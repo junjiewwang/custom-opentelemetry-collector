@@ -151,7 +151,7 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 	}
 
 	// 5. Build ES aggregations (with or without groupBy).
-	aggs := r.buildAggregation(query.GroupBy, interval, aggFunc, minDocCount, query.SeriesLimit)
+	aggs := r.buildAggregation(query.GroupBy, interval, aggFunc, minDocCount, query.SeriesLimit, query.MissingBucket)
 
 	searchReq := &SearchRequest{
 		Query:        esQuery,
@@ -346,7 +346,10 @@ func (r *MetricReader) buildQueryFilter(query MetricRangeQuery) metricFilterResu
 
 // buildAggregation constructs the ES aggregation for metric range queries.
 // Uses simple date_histogram when groupBy is empty, or composite+date_histogram when grouping.
-func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFunc *AggregationFunc, minDocCount int, seriesLimit int) map[string]any {
+// missingBucket controls whether documents lacking a grouped label are dropped
+// (false, for explicit "by (label)" queries) or included as null-key buckets
+// (true, for bare-metric selectors that must return every series).
+func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFunc *AggregationFunc, minDocCount int, seriesLimit int, missingBucket bool) map[string]any {
 	// The sub-aggregation for each time bucket.
 	timeAgg := map[string]any{
 		"date_histogram": map[string]any{
@@ -379,12 +382,12 @@ func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFu
 			label: map[string]any{
 				"terms": map[string]any{
 					"field": aggField,
-					// missing_bucket=false: documents lacking this label are dropped
-					// from the result, matching Prometheus "by (label)" semantics —
-					// a series without the grouped label does not appear in the output
-					// (no null/empty-label bucket). This prevents a large catch-all
-					// "no-label" series from dominating charts.
-					"missing_bucket": false,
+					// missing_bucket=false (explicit "by (label)"): documents lacking
+					// this label are dropped — matching PromQL "by" semantics.
+					// missing_bucket=true (bare-metric selector): documents lacking
+					// this label fall into a null-key bucket — every series appears
+					// regardless of which labels it has.
+					"missing_bucket": missingBucket,
 				},
 			},
 		})

@@ -30,13 +30,13 @@ type KeyValue struct {
 // AnyValue represents a typed attribute value.
 // Aligned with opentelemetry.proto.common.v1.AnyValue.
 type AnyValue struct {
-	StringValue *string     `json:"stringValue,omitempty"`
-	IntValue    *int64      `json:"intValue,omitempty"`
-	DoubleValue *float64    `json:"doubleValue,omitempty"`
-	BoolValue   *bool       `json:"boolValue,omitempty"`
-	ArrayValue  *ArrayValue `json:"arrayValue,omitempty"`
+	StringValue *string      `json:"stringValue,omitempty"`
+	IntValue    *int64       `json:"intValue,omitempty"`
+	DoubleValue *float64     `json:"doubleValue,omitempty"`
+	BoolValue   *bool        `json:"boolValue,omitempty"`
+	ArrayValue  *ArrayValue  `json:"arrayValue,omitempty"`
 	KvlistValue *KvlistValue `json:"kvlistValue,omitempty"`
-	BytesValue  *string     `json:"bytesValue,omitempty"` // base64 encoded
+	BytesValue  *string      `json:"bytesValue,omitempty"` // base64 encoded
 }
 
 // ArrayValue holds a list of AnyValue.
@@ -108,16 +108,16 @@ type TimeRange struct {
 
 // TraceQuery holds parameters for searching traces.
 type TraceQuery struct {
-	AppID         string              `json:"appId,omitempty"`
-	ServiceName   string              `json:"service,omitempty"`
-	OperationName string              `json:"operation,omitempty"`
-	Tags          map[string]string   `json:"tags,omitempty"`
+	AppID         string                `json:"appId,omitempty"`
+	ServiceName   string                `json:"service,omitempty"`
+	OperationName string                `json:"operation,omitempty"`
+	Tags          map[string]string     `json:"tags,omitempty"`
 	TagsOr        [][]map[string]string `json:"tagsOr,omitempty"` // OR groups: outer groups ANDed, inner maps ORed, map entries ANDed
-	MinDuration   time.Duration       `json:"minDuration,omitempty"`
-	MaxDuration   time.Duration       `json:"maxDuration,omitempty"`
-	TimeRange     TimeRange           `json:"timeRange"`
-	Limit         int                 `json:"limit,omitempty"`
-	Offset        int                 `json:"offset,omitempty"`
+	MinDuration   time.Duration         `json:"minDuration,omitempty"`
+	MaxDuration   time.Duration         `json:"maxDuration,omitempty"`
+	TimeRange     TimeRange             `json:"timeRange"`
+	Limit         int                   `json:"limit,omitempty"`
+	Offset        int                   `json:"offset,omitempty"`
 
 	// ── Intrinsic filters (from TraceQL engine) ──
 	SpanKind string `json:"spanKind,omitempty"` // "client", "server", "internal", "producer", "consumer"
@@ -126,15 +126,15 @@ type TraceQuery struct {
 
 	// ── Event filters (from TraceQL event:* scope) ──
 	EventTags   []map[string]string     `json:"eventTags,omitempty"`
-	TagsNotOr   [][]map[string]string `json:"tagsNotOr,omitempty"`
-	TagsRegexOr [][]map[string]string `json:"tagsRegexOr,omitempty"`
+	TagsNotOr   [][]map[string]string   `json:"tagsNotOr,omitempty"`
+	TagsRegexOr [][]map[string]string   `json:"tagsRegexOr,omitempty"`
 	EventTagsOr [][][]map[string]string `json:"eventTagsOr,omitempty"`
 
 	// ── Negation / Existence / Regex filters (Sprint 2) ──
-	TagsNot    map[string]string `json:"tagsNot,omitempty"`    // != value conditions → ES must_not + term
+	TagsNot       map[string]string `json:"tagsNot,omitempty"` // != value conditions → ES must_not + term
 	TagsNotExists []string
-	TagsExists []string          `json:"tagsExists,omitempty"` // != nil conditions → ES exists query
-	TagsRegex  map[string]string `json:"tagsRegex,omitempty"`  // =~ regex conditions → ES regexp query
+	TagsExists    []string          `json:"tagsExists,omitempty"` // != nil conditions → ES exists query
+	TagsRegex     map[string]string `json:"tagsRegex,omitempty"`  // =~ regex conditions → ES regexp query
 
 	// ── Root span intrinsic filters (Sprint 3) ──
 	RootName    string `json:"rootName,omitempty"`    // trace:rootName = "GET /api"
@@ -171,7 +171,7 @@ type Trace struct {
 	TraceID string `json:"traceId"`
 	Spans   []Span `json:"spans"`
 	// Derived fields (pre-computed by backend for UI convenience)
-	DurationNano    string `json:"durationNano"`          // total duration in nanoseconds (string for precision)
+	DurationNano    string `json:"durationNano"` // total duration in nanoseconds (string for precision)
 	SpanCount       int    `json:"spanCount"`
 	ServiceCount    int    `json:"serviceCount"`
 	RootServiceName string `json:"rootServiceName,omitempty"`
@@ -182,22 +182,22 @@ type Trace struct {
 // Core fields aligned with opentelemetry.proto.trace.v1.Span.
 type Span struct {
 	// ═══ OTel Standard Fields ═══
-	TraceID            string     `json:"traceId"`
-	SpanID             string     `json:"spanId"`
-	ParentSpanID       string     `json:"parentSpanId,omitempty"`
-	TraceState         string     `json:"traceState,omitempty"`
-	Name               string     `json:"name"`                    // operation name (OTel uses "name")
-	Kind               SpanKind   `json:"kind"`
-	StartTimeUnixNano  string     `json:"startTimeUnixNano"`       // nanosecond Unix timestamp as string
-	EndTimeUnixNano    string     `json:"endTimeUnixNano"`
-	Attributes         []KeyValue `json:"attributes,omitempty"`
-	Events             []SpanEvent `json:"events,omitempty"`
-	Links              []SpanLink  `json:"links,omitempty"`
-	Status             SpanStatus  `json:"status"`
+	TraceID           string      `json:"traceId"`
+	SpanID            string      `json:"spanId"`
+	ParentSpanID      string      `json:"parentSpanId,omitempty"`
+	TraceState        string      `json:"traceState,omitempty"`
+	Name              string      `json:"name"` // operation name (OTel uses "name")
+	Kind              SpanKind    `json:"kind"`
+	StartTimeUnixNano string      `json:"startTimeUnixNano"` // nanosecond Unix timestamp as string
+	EndTimeUnixNano   string      `json:"endTimeUnixNano"`
+	Attributes        []KeyValue  `json:"attributes,omitempty"`
+	Events            []SpanEvent `json:"events,omitempty"`
+	Links             []SpanLink  `json:"links,omitempty"`
+	Status            SpanStatus  `json:"status"`
 	// ═══ Derived Fields (for UI convenience) ═══
-	ServiceName        string     `json:"serviceName"`             // extracted from resource["service.name"]
-	DurationNano       string     `json:"durationNano"`            // endTime - startTime
-	Resource           []KeyValue `json:"resource,omitempty"`      // resource attributes
+	ServiceName  string     `json:"serviceName"`        // extracted from resource["service.name"]
+	DurationNano string     `json:"durationNano"`       // endTime - startTime
+	Resource     []KeyValue `json:"resource,omitempty"` // resource attributes
 }
 
 // SpanEvent represents a timestamped event on a span.
@@ -258,18 +258,19 @@ type MetricQuery struct {
 //	GROUP BY time(<Step>), <GroupBy...>
 //	FILL(<Fill>) SLIMIT <SeriesLimit> LIMIT <Limit>
 type MetricRangeQuery struct {
-	AppID       string            `json:"appId,omitempty"`
-	MetricName  string            `json:"metric"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	LabelMatch  map[string]string `json:"labelMatch,omitempty"`
-	ServiceName string            `json:"service,omitempty"`
-	TimeRange   TimeRange         `json:"timeRange"`
-	Aggregation string            `json:"aggregation,omitempty"` // default "avg"
-	Step        time.Duration     `json:"step"`
-	GroupBy     []string          `json:"groupBy,omitempty"`     // label keys to group by
-	Fill        string            `json:"fill,omitempty"`        // default "null"
-	Limit       int               `json:"limit,omitempty"`       // default 10000
-	SeriesLimit int               `json:"seriesLimit,omitempty"` // default 100
+	AppID         string            `json:"appId,omitempty"`
+	MetricName    string            `json:"metric"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
+	ServiceName   string            `json:"service,omitempty"`
+	TimeRange     TimeRange         `json:"timeRange"`
+	Aggregation   string            `json:"aggregation,omitempty"` // default "avg"
+	Step          time.Duration     `json:"step"`
+	GroupBy       []string          `json:"groupBy,omitempty"`       // label keys to group by
+	Fill          string            `json:"fill,omitempty"`          // default "null"
+	Limit         int               `json:"limit,omitempty"`         // default 10000
+	SeriesLimit   int               `json:"seriesLimit,omitempty"`   // default 100
+	MissingBucket bool              `json:"missingBucket,omitempty"` // false: drop series lacking a grouped label; true: include them (bare-metric semantics)
 }
 
 // MetricResult holds the result of an instant metric query.
@@ -306,9 +307,9 @@ type MetricDataPoint struct {
 
 // MetricSeries is a series of metric values over time.
 type MetricSeries struct {
-	Metric string              `json:"metric,omitempty"`
-	Labels map[string]string   `json:"labels"`
-	Values []MetricTimeValue   `json:"values"`
+	Metric string            `json:"metric,omitempty"`
+	Labels map[string]string `json:"labels"`
+	Values []MetricTimeValue `json:"values"`
 }
 
 // MetricTimeValue is a single time-value pair in a metric series.
@@ -340,8 +341,8 @@ type MetricRawSeries struct {
 type MetricSample struct {
 	TimestampMs  int64             `json:"t"`
 	Value        float64           `json:"v"`
-	BucketCounts []int64           `json:"bc,omitempty"` // histogram bucket counts per sample
-	Bounds       []float64         `json:"bd,omitempty"` // histogram explicit bounds per sample
+	BucketCounts []int64           `json:"bc,omitempty"`     // histogram bucket counts per sample
+	Bounds       []float64         `json:"bd,omitempty"`     // histogram explicit bounds per sample
 	Labels       map[string]string `json:"labels,omitempty"` // optional labels for flat queries
 }
 
@@ -377,7 +378,7 @@ type MetricFlatResult struct {
 // LogQuery holds parameters for searching logs.
 type LogQuery struct {
 	AppID       string            `json:"appId,omitempty"`
-	Query       string            `json:"query,omitempty"`   // free-text or ES query_string
+	Query       string            `json:"query,omitempty"` // free-text or ES query_string
 	ServiceName string            `json:"service,omitempty"`
 	Severity    []string          `json:"severity,omitempty"`
 	TraceID     string            `json:"traceId,omitempty"`
@@ -468,8 +469,8 @@ type LogRecord struct {
 	Attributes           []KeyValue `json:"attributes,omitempty"`
 	Resource             []KeyValue `json:"resource,omitempty"`
 	// Derived fields
-	ServiceName          string     `json:"serviceName"`
-	AppID                string     `json:"appId,omitempty"`
+	ServiceName string `json:"serviceName"`
+	AppID       string `json:"appId,omitempty"`
 }
 
 // LogContext holds surrounding log lines for context viewing.
@@ -553,7 +554,7 @@ type IndexInfo struct {
 	Name      string     `json:"name"`
 	DocsCount int64      `json:"docsCount"`
 	SizeBytes int64      `json:"sizeBytes"`
-	Signal    SignalType  `json:"signal"`
+	Signal    SignalType `json:"signal"`
 }
 
 // PurgeResult holds the result of a data purge operation.
@@ -565,9 +566,9 @@ type PurgeResult struct {
 
 // DiskUsage holds storage space usage information.
 type DiskUsage struct {
-	TotalBytes     int64               `json:"totalBytes"`
-	UsedBytes      int64               `json:"usedBytes"`
-	AvailableBytes int64               `json:"availableBytes"`
+	TotalBytes     int64                `json:"totalBytes"`
+	UsedBytes      int64                `json:"usedBytes"`
+	AvailableBytes int64                `json:"availableBytes"`
 	BySignal       map[SignalType]int64 `json:"bySignal,omitempty"`
 	ByApp          map[string]int64     `json:"byApp,omitempty"`
 }

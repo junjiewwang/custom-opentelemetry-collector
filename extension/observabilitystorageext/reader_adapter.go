@@ -427,18 +427,19 @@ func (a *metricReaderAdapter) Query(ctx context.Context, query MetricQuery) (*Me
 
 func (a *metricReaderAdapter) QueryRange(ctx context.Context, query MetricRangeQuery) (*MetricRangeResult, error) {
 	esQuery := elasticsearch.MetricRangeQuery{
-		AppID:       query.AppID,
-		MetricName:  query.MetricName,
-		Labels:      query.Labels,
-		LabelMatch:  query.LabelMatch,
-		ServiceName: query.ServiceName,
-		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
-		Aggregation: query.Aggregation,
-		Step:        query.Step,
-		GroupBy:     query.GroupBy,
-		Fill:        query.Fill,
-		Limit:       query.Limit,
-		SeriesLimit: query.SeriesLimit,
+		AppID:         query.AppID,
+		MetricName:    query.MetricName,
+		Labels:        query.Labels,
+		LabelMatch:    query.LabelMatch,
+		ServiceName:   query.ServiceName,
+		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		Aggregation:   query.Aggregation,
+		Step:          query.Step,
+		GroupBy:       query.GroupBy,
+		Fill:          query.Fill,
+		Limit:         query.Limit,
+		SeriesLimit:   query.SeriesLimit,
+		MissingBucket: query.MissingBucket,
 	}
 	result, err := a.inner.QueryRange(ctx, esQuery)
 	if err != nil {

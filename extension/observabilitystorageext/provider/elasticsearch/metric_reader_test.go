@@ -435,7 +435,7 @@ func TestBuildAggregation_MissingBucketDisabled(t *testing.T) {
 	aggFunc, err := GetAggregation("sum")
 	require.NoError(t, err)
 
-	aggs := r.buildAggregation([]string{"http_route"}, "1m", aggFunc, 0, 100)
+	aggs := r.buildAggregation([]string{"http_route"}, "1m", aggFunc, 0, 100, false)
 
 	byGroup, ok := aggs["by_group"].(map[string]any)
 	require.True(t, ok, "must build composite by_group for grouped query")
@@ -451,6 +451,32 @@ func TestBuildAggregation_MissingBucketDisabled(t *testing.T) {
 	assert.False(t, missing.(bool), "missing_bucket=false: docs without the label are dropped, matching PromQL by()")
 }
 
+// TestBuildAggregation_MissingBucketEnabled proves a bare-metric range query
+// includes documents that lack some grouped labels (null-key buckets), so
+// every series appears regardless of its label set.
+func TestBuildAggregation_MissingBucketEnabled(t *testing.T) {
+	r := newTestMetricReader(&fakeSearcher{})
+	aggFunc, err := GetAggregation("sum")
+	require.NoError(t, err)
+
+	aggs := r.buildAggregation([]string{"http_route", "rpc_method"}, "1m", aggFunc, 0, 100, true)
+
+	byGroup, ok := aggs["by_group"].(map[string]any)
+	require.True(t, ok)
+	sources, ok := byGroup["composite"].(map[string]any)["sources"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, sources, 2)
+
+	for _, src := range sources {
+		terms := src
+		for _, v := range terms {
+			termsInner := v.(map[string]any)["terms"].(map[string]any)
+			missing := termsInner["missing_bucket"].(bool)
+			assert.True(t, missing, "missing_bucket=true: bare-metric must include series lacking some labels")
+		}
+	}
+}
+
 // TestBuildAggregation_NoGroupByUsesSimpleHistogram proves an empty GroupBy
 // builds a single time_series aggregation (no composite).
 func TestBuildAggregation_NoGroupByUsesSimpleHistogram(t *testing.T) {
@@ -458,7 +484,7 @@ func TestBuildAggregation_NoGroupByUsesSimpleHistogram(t *testing.T) {
 	aggFunc, err := GetAggregation("avg")
 	require.NoError(t, err)
 
-	aggs := r.buildAggregation(nil, "1m", aggFunc, 0, 100)
+	aggs := r.buildAggregation(nil, "1m", aggFunc, 0, 100, false)
 	_, hasTimeSeries := aggs["time_series"]
 	_, hasByGroup := aggs["by_group"]
 	assert.True(t, hasTimeSeries, "no groupBy → simple time_series aggregation")
