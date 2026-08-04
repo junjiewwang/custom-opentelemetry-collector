@@ -704,6 +704,21 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 		return result
 	}
 
+	// No aggregation and no rate/increase function → a bare metric selector
+	// (e.g. "traces_service_graph_request_total" or "metric{job=\"x\"}").
+	// Return one series per distinct label set with full labels, matching
+	// Prometheus semantics and the instant-query path. Forcing an aggregation
+	// here (the previous behavior) collapsed all series into one carrying only
+	// __name__, dropping every dimension label.
+	if expr.Aggregation == "" && expr.Function == "" {
+		defer span.SetAttributes(attribute.Int("promql.series_count", 0))
+		result := h.execPlainRange(r, expr, start, end, step, labels, labelMatch)
+		if result == nil {
+			return &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}}
+		}
+		return result
+	}
+
 	query := observabilitystorageext.MetricRangeQuery{
 		MetricName:  expr.MetricName,
 		Labels:      filterInternalLabels(labels),
@@ -832,6 +847,114 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 		ResultType: ResultTypeMatrix,
 		Result:     matrix,
 	}
+}
+
+// execPlainRange handles range queries with no aggregation and no rate/increase
+// function — a bare metric selector such as "traces_service_graph_request_total"
+// or "metric{job=\"x\"}". It must return one series per distinct label set, each
+// carrying its full labels (Prometheus bare-metric semantics, matching the
+// instant-query path).
+//
+// The ES QueryRange path can't do this: it requires an aggregation, and with an
+// empty GroupBy a date_histogram collapses every series into one. So we reuse the
+// QueryFlat + Go-side grouping approach from execRateRange, then average the
+// samples within each step bucket per series (the same AggAvg semantics the
+// aggregated path uses, but applied per-series instead of globally).
+func (h *promHandlers) execPlainRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+	span := trace.SpanFromContext(r.Context())
+
+	flatQuery := observabilitystorageext.MetricFlatQuery{
+		MetricName: expr.MetricName,
+		Labels:     filterInternalLabels(labels),
+		LabelMatch: labelMatch,
+		TimeRange:  observabilitystorageext.TimeRange{Start: start, End: end},
+	}
+
+	flatResult, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
+	if err != nil {
+		h.logger.Error("prom query_flat failed", zap.Error(err))
+		span.RecordError(err)
+		return nil
+	}
+	if flatResult == nil || len(flatResult.Samples) == 0 {
+		return nil
+	}
+	h.checkFlatTruncation(flatResult)
+
+	sampleGroups := groupMetricSamplesByLabels(flatResult.Samples)
+
+	matrix := make([]promMatrixSample, 0, len(sampleGroups))
+	for _, sg := range sampleGroups {
+		if len(sg.Samples) == 0 {
+			continue
+		}
+		name := expr.MetricName
+		if expr.HistogramSub != "" {
+			name = expr.BaseMetric + "_" + expr.HistogramSub
+		}
+		m := promMetric{PromLabelName: name}
+		for k, v := range sg.Labels {
+			m[translateLabelToPromQL(k)] = v
+		}
+		values := averageSamplesByStep(sg.Samples, start, end, step)
+		if len(values) == 0 {
+			continue
+		}
+		matrix = append(matrix, promMatrixSample{
+			Metric: m,
+			Values: values,
+		})
+	}
+
+	span.SetAttributes(attribute.Int(SpanAttrPromQLSeriesCount, len(matrix)))
+	return &promQueryData{
+		ResultType: ResultTypeMatrix,
+		Result:     matrix,
+	}
+}
+
+// averageSamplesByStep buckets samples into [start, start+step) intervals aligned
+// to the query step and returns one [unixSeconds, "value"] pair per non-empty
+// bucket, averaged across the samples it contains. Used by execPlainRange to
+// produce per-step values for a bare metric selector.
+func averageSamplesByStep(samples []observabilitystorageext.MetricSample, start, end time.Time, step time.Duration) [][]any {
+	startMs := start.UnixMilli()
+	endMs := end.UnixMilli()
+	stepMs := step.Milliseconds()
+	if stepMs <= 0 || endMs < startMs {
+		return nil
+	}
+
+	bucketCount := int((endMs-startMs)/stepMs) + 1
+	if bucketCount <= 0 {
+		return nil
+	}
+	type acc struct{ sum, count float64 }
+	buckets := make([]acc, bucketCount)
+	for _, s := range samples {
+		if s.TimestampMs < startMs || s.TimestampMs > endMs {
+			continue
+		}
+		idx := int((s.TimestampMs - startMs) / stepMs)
+		if idx < 0 || idx >= len(buckets) {
+			continue
+		}
+		buckets[idx].sum += s.Value
+		buckets[idx].count++
+	}
+
+	out := make([][]any, 0, len(buckets))
+	for i, b := range buckets {
+		if b.count == 0 {
+			continue
+		}
+		t := startMs + int64(i)*stepMs
+		out = append(out, []any{
+			float64(t) / 1000.0,
+			formatPromValue(b.sum / b.count),
+		})
+	}
+	return out
 }
 
 // execRateInstant handles rate/increase/irate instant queries.
