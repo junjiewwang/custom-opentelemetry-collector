@@ -129,7 +129,7 @@ func TestBuildTraceSearchQuery_TagsNot(t *testing.T) {
 
 	query := TraceQuery{
 		TagsNot: map[string]string{
-			"name":    "foo",
+			"name":        "foo",
 			"http.method": "OPTIONS",
 		},
 		TimeRange: TimeRange{
@@ -174,10 +174,10 @@ func TestBuildTraceSearchQuery_TagsExists(t *testing.T) {
 	assert.Contains(t, queryStr, `"exists"`)
 	// Intrinsic service.name → serviceName
 	assert.Contains(t, queryStr, `"field":"serviceName"`)
-	// Custom attribute → should check attributes and resource
+	// Custom attribute → should check attributes and resource (with .keyword for regexp/exists)
 	assert.Contains(t, queryStr, `"should"`)
-	assert.Contains(t, queryStr, `"attributes.http.method"`)
-	assert.Contains(t, queryStr, `"resource.http.method"`)
+	assert.Contains(t, queryStr, `"attributes.http.method.keyword"`)
+	assert.Contains(t, queryStr, `"resource.http.method.keyword"`)
 }
 
 func TestBuildTraceSearchQuery_TagsRegex(t *testing.T) {
@@ -205,8 +205,8 @@ func TestBuildTraceSearchQuery_TagsRegex(t *testing.T) {
 	assert.Contains(t, queryStr, `"regexp"`)
 	// Intrinsic name → FieldName regexp
 	assert.Contains(t, queryStr, `"name":{"value":"^api"`)
-	// Custom attribute → attributes.http.method regexp
-	assert.Contains(t, queryStr, `"attributes.http.method":{"value":"GET|POST"`)
+	// Custom attribute → attributes.http.method.keyword regexp (text field needs .keyword for regexp)
+	assert.Contains(t, queryStr, `"attributes.http.method.keyword":{"value":"GET|POST"`)
 }
 
 // ═══════════════════════════════════════════════════
@@ -283,8 +283,8 @@ func TestBuildTraceSearchQuery_StatusMessageExists(t *testing.T) {
 
 	queryStr := string(raw)
 
-	// Should generate exists on status.message, not attributes.status.message
-	assert.Contains(t, queryStr, `"field":"status.message"`)
+	// Should generate exists on status.message.keyword (text field needs .keyword for exists)
+	assert.Contains(t, queryStr, `"field":"status.message.keyword"`)
 }
 
 func TestBuildTraceSearchQuery_RootName(t *testing.T) {
