@@ -78,8 +78,8 @@ func TestBuildMetricsFilter_RootName_WithIsRoot(t *testing.T) {
 	now := time.Now()
 
 	query := TraceMetricsQuery{
-		IsRoot:    true,
-		RootName:  "GET /api",
+		IsRoot:   true,
+		RootName: "GET /api",
 		TimeRange: TimeRange{
 			Start: now.Add(-1 * time.Hour),
 			End:   now,
@@ -203,9 +203,9 @@ func TestBuildMetricsFilter_StatusMessageExists(t *testing.T) {
 
 	queryStr := string(raw)
 
-	// Should generate exists on status.message, NOT attributes.statusMessage.
-	assert.Contains(t, queryStr, `"field":"status.message"`,
-		"statusMessage should generate exists:status.message")
+	// Should generate exists on status.message.keyword, NOT attributes.statusMessage.
+	assert.Contains(t, queryStr, `"field":"status.message.keyword"`,
+		"statusMessage should generate exists:status.message.keyword")
 	assert.NotContains(t, queryStr, `"field":"attributes.statusMessage"`,
 		"statusMessage must NOT generate exists:attributes.statusMessage")
 }

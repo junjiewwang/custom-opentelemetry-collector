@@ -234,7 +234,7 @@ func (r *TraceReader) QueryTraceDurations(ctx context.Context, traceIDs []string
 
 	var agg struct {
 		Buckets []struct {
-			Key     string `json:"key"`
+			Key      string `json:"key"`
 			MinStart struct {
 				Value float64 `json:"value"`
 			} `json:"min_start"`
@@ -847,6 +847,8 @@ func resolveTagTermClauses(key, value string) []map[string]any {
 
 // resolveTagFieldPaths resolves a scoped tag key to ES field paths (no value).
 // Used by exists and regex queries that only need field paths, not values.
+// For text+keyword fields (most attributes.*), returns the .keyword sub-field
+// so that regexp/exists queries match raw values (not analyzed tokens).
 func resolveTagFieldPaths(key string) []string {
 	scope, plainKey := parseScopeAndKey(key)
 	resolved := attrResolver.Resolve(key)
@@ -855,12 +857,16 @@ func resolveTagFieldPaths(key string) []string {
 	// Scoped or intrinsic: precise single-field mapping.
 	if scope != "" || (!strings.HasPrefix(esField, FieldAttributes+".") &&
 		!strings.HasPrefix(esField, FieldResource+".")) {
-		return []string{esField}
+		return []string{aggregatableField("trace", esField)}
 	}
 
 	// Unscoped custom attribute: backward-compatible dual search.
+	// Use .keyword sub-field for regexp/exists on text fields.
 	sanitized := storedmodel.SanitizeKey(plainKey)
-	return []string{FieldAttributes + "." + sanitized, FieldResource + "." + sanitized}
+	return []string{
+		aggregatableField("trace", FieldAttributes+"."+sanitized),
+		aggregatableField("trace", FieldResource+"."+sanitized),
+	}
 }
 
 // resolveTagESFields resolves a scoped tag key to ES field paths and typed value.
