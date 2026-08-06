@@ -548,6 +548,32 @@ func (r *TraceReader) indexPattern(appID ...string) string {
 	return esq.IndexPattern(r.config.Traces.IndexPrefix, id)
 }
 
+// eventFieldPath resolves a TraceQL event-scoped key to its ES field path
+// within the nested "events" document.
+//
+// StoredEvent keeps "name" and "timeUnixNano" as top-level fields and puts
+// everything else under "attributes", so event:name maps to events.name while
+// event.exception.type maps to events.attributes.exception.type.
+//
+// Event attributes come from the dynamic template, which maps strings as text
+// with a .keyword sub-field, so exact term matching must target .keyword —
+// the analyzed text field only matches individual tokens, never the full
+// dotted value (e.g. "java.lang.IllegalArgumentException"). events.name is
+// explicitly mapped as keyword and takes no suffix.
+//
+// Known limit: the dynamic template sets ignore_above=256, so values longer
+// than that are not indexed into .keyword and cannot be filtered on. In
+// practice this only affects event.exception.stacktrace (typically several KB);
+// selecting/projecting it still works, only equality filtering does not.
+func eventFieldPath(key string) string {
+	switch key {
+	case "name", FieldLogTimeUnixNano:
+		return FieldEvents + "." + key
+	default:
+		return FieldEvents + "." + FieldAttributes + "." + key + ".keyword"
+	}
+}
+
 // buildTraceSearchQuery constructs the ES query from TraceQuery parameters.
 func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 	qb := esq.NewBuilder().
@@ -615,9 +641,13 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 	appendSharedTagFilters(qb, tq.Tags, tq.TagsOr, tq.TagsNot, tq.TagsExists, tq.TagsRegex)
 
 	// ── Event filters (nested queries on the events field) ──
+	// Event attributes are stored under events.attributes.<key> (see StoredEvent),
+	// while "name" and the timestamp are top-level fields of the nested document.
+	// Querying events.<key> matched no nested document, so these filters returned
+	// nothing. See eventFieldPath for the .keyword requirement.
 	for _, eventTag := range tq.EventTags {
 		for k, v := range eventTag {
-			qb.Raw(esq.NestedQuery(FieldEvents, esq.T(FieldEvents+"."+k, v)))
+			qb.Raw(esq.NestedQuery(FieldEvents, esq.T(eventFieldPath(k), v)))
 		}
 	}
 	for _, eventOrGroup := range tq.EventTagsOr {
@@ -626,7 +656,7 @@ func (r *TraceReader) buildTraceSearchQuery(tq TraceQuery) map[string]any {
 			builder := esq.NewBuilder()
 			for _, branchMap := range branchMaps {
 				for k, v := range branchMap {
-					builder.Raw(esq.T(FieldEvents+"."+k, v))
+					builder.Raw(esq.T(eventFieldPath(k), v))
 				}
 			}
 			nestedClauses = append(nestedClauses, esq.NestedQuery(FieldEvents, builder.Build()))

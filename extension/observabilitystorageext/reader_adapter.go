@@ -37,16 +37,28 @@ func (a *traceReaderAdapter) GetTrace(ctx context.Context, traceID string) (*Tra
 	return buildTraceFromStoredSpans(spans), nil
 }
 
-func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery) (*TraceSearchResult, error) {
-	q := storedmodel.TraceQuery{
+// toStoredTraceQuery converts the public TraceQuery to its storedmodel twin.
+//
+// Every caller must go through this: the previous per-call-site literals each
+// copied a subset of the fields, so EventTags, EventTagsOr, TagsNotOr,
+// TagsRegexOr and TagsNotExists never reached the provider. Event filters were
+// parsed and planned correctly but then silently dropped here, which made
+// {event.exception.type="..."} behave as an unfiltered match-all.
+func toStoredTraceQuery(query TraceQuery) storedmodel.TraceQuery {
+	return storedmodel.TraceQuery{
 		AppID:         query.AppID,
 		ServiceName:   query.ServiceName,
 		OperationName: query.OperationName,
 		Tags:          query.Tags,
 		TagsOr:        query.TagsOr,
 		TagsNot:       query.TagsNot,
+		TagsNotOr:     query.TagsNotOr,
 		TagsExists:    query.TagsExists,
+		TagsNotExists: query.TagsNotExists,
 		TagsRegex:     query.TagsRegex,
+		TagsRegexOr:   query.TagsRegexOr,
+		EventTags:     query.EventTags,
+		EventTagsOr:   query.EventTagsOr,
 		MinDuration:   query.MinDuration,
 		MaxDuration:   query.MaxDuration,
 		TimeRange:     storedmodel.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
@@ -58,6 +70,10 @@ func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery)
 		RootName:      query.RootName,
 		RootService:   query.RootService,
 	}
+}
+
+func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery) (*TraceSearchResult, error) {
+	q := toStoredTraceQuery(query)
 	spans, _, err := a.inner.SearchSpans(ctx, q)
 	if err != nil {
 		return nil, err
@@ -171,26 +187,7 @@ func (a *traceReaderAdapter) GetDependencies(ctx context.Context, timeRange Time
 }
 
 func (a *traceReaderAdapter) SearchTraceSummaries(ctx context.Context, query TraceQuery, spss int) (*TraceSummaryResult, error) {
-	q := storedmodel.TraceQuery{
-		AppID:         query.AppID,
-		ServiceName:   query.ServiceName,
-		OperationName: query.OperationName,
-		Tags:          query.Tags,
-		TagsOr:        query.TagsOr,
-		TagsNot:       query.TagsNot,
-		TagsExists:    query.TagsExists,
-		TagsRegex:     query.TagsRegex,
-		MinDuration:   query.MinDuration,
-		MaxDuration:   query.MaxDuration,
-		TimeRange:     storedmodel.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
-		Limit:         query.Limit,
-		Offset:        query.Offset,
-		SpanKind:      query.SpanKind,
-		Status:        query.Status,
-		IsRoot:        query.IsRoot,
-		RootName:      query.RootName,
-		RootService:   query.RootService,
-	}
+	q := toStoredTraceQuery(query)
 	esResult, err := a.inner.SearchTraceSummaries(ctx, q, spss)
 	if err != nil {
 		return nil, err

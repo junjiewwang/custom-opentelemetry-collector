@@ -2189,6 +2189,32 @@ func resolveSelectField(span observabilitystorageext.Span, field string, nsInfo 
 		key = field[idx+1:]
 	}
 
+	// ── Event scope ──
+	// Resolved before the intrinsic switch: event:name must read the event's
+	// name, not the span's. The Exceptions tab selects
+	// event.exception.{message,type,stacktrace}, which live on the span's events
+	// rather than its attributes. Event-scoped keys resolve only here, so an
+	// unscoped or span-scoped key never picks up an event value.
+	if scope == TempoScopeEvent {
+		if key == TempoIntrinsicName {
+			for _, ev := range span.Events {
+				if ev.Name != "" {
+					return strVal(ev.Name)
+				}
+			}
+			return nil
+		}
+		for _, ev := range span.Events {
+			for _, attr := range ev.Attributes {
+				if attr.Key == key {
+					tv := publicAnyValueToTempo(attr.Value)
+					return &tv
+				}
+			}
+		}
+		return nil
+	}
+
 	// ── System / intrinsic fields ──
 	switch key {
 	case TempoIntrinsicName:
@@ -2329,8 +2355,13 @@ func mapToTempoKeyValues(m map[string]any) []tempoKeyValue {
 
 // stringToTempoAnyValue wraps a string into a typed Tempo AnyValue.
 // Used for metrics series labels where values are always strings.
+//
+// Unlike span attributes (see anyToTempoValue) this deliberately omits the
+// snake_case Value fallback: traces-drilldown only reads Value.string_value on
+// the trace-merge path (Structure tab), never for metrics labels, so emitting it
+// here just doubled the size of every label in a by() query.
 func stringToTempoAnyValue(s string) tempoAnyValue {
-	return tempoAnyValue{StringValue: &s, Value: &tempoAnyValueAlt{StringValue: &s}}
+	return tempoAnyValue{StringValue: &s}
 }
 
 // anyToTempoValue converts interface{} to Tempo AnyValue.
