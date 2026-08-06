@@ -385,9 +385,9 @@ func TestBuildMetricsFilter_SharedTagPath_DualAttributeSearch(t *testing.T) {
 	require.NoError(t, err)
 	queryStr := string(raw)
 
-	assert.Contains(t, queryStr, `"attributes.http.method"`,
+	assert.Contains(t, queryStr, `"attributes.http.method.keyword"`,
 		"unscoped attribute must search the attributes.* path")
-	assert.Contains(t, queryStr, `"resource.http.method"`,
+	assert.Contains(t, queryStr, `"resource.http.method.keyword"`,
 		"unscoped attribute must also search the resource.* path (backward compat)")
 	assert.Contains(t, queryStr, `"should"`,
 		"dual-path search must be wrapped in a bool.should")

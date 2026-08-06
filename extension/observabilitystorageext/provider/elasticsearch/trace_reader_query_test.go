@@ -148,8 +148,8 @@ func TestBuildTraceSearchQuery_TagsNot(t *testing.T) {
 	assert.Contains(t, queryStr, `"must_not"`)
 	// Intrinsic name → FieldName
 	assert.Contains(t, queryStr, `"name":"foo"`)
-	// Custom attribute → attributes.xxx
-	assert.Contains(t, queryStr, `"attributes.http.method":"OPTIONS"`)
+	// Custom attribute → attributes.xxx.keyword (text field needs .keyword for term)
+	assert.Contains(t, queryStr, `"attributes.http.method.keyword":"OPTIONS"`)
 }
 
 func TestBuildTraceSearchQuery_TagsExists(t *testing.T) {
@@ -370,7 +370,7 @@ func TestBuildTraceSearchQuery_RootName_NotMixedIntoTags(t *testing.T) {
 
 	// RootName should generate its own composite bool query.
 	assert.Contains(t, queryStr, `"parentSpanId"`)
-	// Tags should still work independently (http.method resolved to attributes.http.method).
-	assert.Contains(t, queryStr, `"attributes.http.method"`)
+	// Tags should still work independently (http.method resolved to attributes.http.method.keyword).
+	assert.Contains(t, queryStr, `"attributes.http.method.keyword"`)
 	assert.Contains(t, queryStr, `"GET"`)
 }

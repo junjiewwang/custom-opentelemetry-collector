@@ -834,9 +834,14 @@ func resolveTagTermClauses(key, value string) []map[string]any {
 	fields, val := resolveTagESFields(key, value)
 	clauses := make([]map[string]any, 0, len(fields))
 	for _, f := range fields {
-		if needsMatchQuery(f) {
+		// Strip .keyword suffix for match-query check: matchFields maps the bare
+		// ES field (e.g. "status.message"), but resolveTagESFields may return
+		// "status.message.keyword". Both should trigger a match query.
+		bareField := strings.TrimSuffix(f, ".keyword")
+		if needsMatchQuery(bareField) {
+			// For match queries, use the bare text field (not .keyword).
 			clauses = append(clauses, map[string]any{
-				"match": map[string]any{f: val},
+				"match": map[string]any{bareField: val},
 			})
 		} else {
 			clauses = append(clauses, esq.T(f, val))
@@ -870,6 +875,9 @@ func resolveTagFieldPaths(key string) []string {
 }
 
 // resolveTagESFields resolves a scoped tag key to ES field paths and typed value.
+// For text+keyword fields, returns the .keyword sub-field so that term queries
+// match the raw value (not analyzed tokens). Fields in matchFields (e.g.
+// status.message) keep the bare text field — they use match queries, not term.
 func resolveTagESFields(key, value string) (fields []string, val string) {
 	scope, plainKey := parseScopeAndKey(key)
 	resolved := attrResolver.Resolve(key)
@@ -886,18 +894,21 @@ func resolveTagESFields(key, value string) (fields []string, val string) {
 
 	// Scoped keys: use precise resolver mapping.
 	if scope != "" {
-		return []string{esField}, val
+		return []string{aggregatableField("trace", esField)}, val
 	}
 
 	// Intrinsic fields (mapped to non-attributes/non-resource paths): precise.
 	if !strings.HasPrefix(esField, FieldAttributes+".") &&
 		!strings.HasPrefix(esField, FieldResource+".") {
-		return []string{esField}, val
+		return []string{aggregatableField("trace", esField)}, val
 	}
 
 	// Unscoped custom attribute: backward-compatible dual search.
 	sanitized := storedmodel.SanitizeKey(plainKey)
-	return []string{FieldAttributes + "." + sanitized, FieldResource + "." + sanitized}, val
+	return []string{
+		aggregatableField("trace", FieldAttributes+"."+sanitized),
+		aggregatableField("trace", FieldResource+"."+sanitized),
+	}, val
 }
 
 // timeRangeQuery returns a simple time range query using nanosecond long values.
