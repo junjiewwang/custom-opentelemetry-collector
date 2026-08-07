@@ -392,7 +392,7 @@ func convertToTempoTrace(trace *observabilitystorageext.Trace) tempoTrace {
 	// Group spans by service name (each service becomes a resourceSpans).
 	type serviceGroup struct {
 		serviceName string
-		resource    map[string]any // resource attributes from first span
+		resource    []observabilitystorageext.KeyValue // resource attributes (already AnyValue-typed)
 		spans       []observabilitystorageext.Span
 	}
 
@@ -407,15 +407,15 @@ func convertToTempoTrace(trace *observabilitystorageext.Trace) tempoTrace {
 		if idx, ok := seen[svc]; ok {
 			groups[idx].spans = append(groups[idx].spans, span)
 		} else {
-			// Build resource attributes from span's Resource field.
-			resAttrs := make(map[string]any)
-			for _, kv := range span.Resource {
-				resAttrs[kv.Key] = kv.Value
-			}
+			// Keep span.Resource ([]KeyValue) as-is. It was already converted from
+			// the stored map[string]any to AnyValue by StoredSpanToPublic; re-running
+			// it through anyToTempoValue (via mapToTempoKeyValues) would %v-dump the
+			// AnyValue structs as "{0x... <nil> ...}". publicKeyValuesToTempo below
+			// handles AnyValue correctly.
 			seen[svc] = len(groups)
 			groups = append(groups, serviceGroup{
 				serviceName: svc,
-				resource:    resAttrs,
+				resource:    span.Resource,
 				spans:       []observabilitystorageext.Span{span},
 			})
 		}
@@ -425,7 +425,7 @@ func convertToTempoTrace(trace *observabilitystorageext.Trace) tempoTrace {
 	for _, g := range groups {
 		rs := tempoResourceSpans{
 			Resource: tempoResource{
-				Attributes: mapToTempoKeyValues(g.resource),
+				Attributes: publicKeyValuesToTempo(g.resource),
 			},
 		}
 

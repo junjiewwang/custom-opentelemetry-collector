@@ -4,6 +4,7 @@
 package adminext
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"testing"
@@ -1139,4 +1140,45 @@ func TestParseTempoTimeParam(t *testing.T) {
 		_, ok := parseTempoTimeParam("not-a-time")
 		assert.False(t, ok)
 	})
+}
+
+// TestConvertToTempoTrace_ResourceAttrsNotDumped is a regression test for BUG 5:
+// resource attributes (service.name, os.type, ...) used to serialize as Go struct
+// dumps like "{0x... <nil> <nil> ...}" because convertToTempoTrace stuffed the
+// already-converted AnyValue structs back into a map[string]any and re-ran them
+// through anyToTempoValue (whose default case does fmt.Sprintf("%v")).
+//
+// The fix routes span.Resource ([]KeyValue, AnyValue-typed) directly through
+// publicKeyValuesToTempo, which handles AnyValue correctly.
+func TestConvertToTempoTrace_ResourceAttrsNotDumped(t *testing.T) {
+	svcName := "test-svc"
+	osType := "linux"
+	trace := &observabilitystorageext.Trace{
+		TraceID: "abc123",
+		Spans: []observabilitystorageext.Span{{
+			TraceID:     "abc123",
+			SpanID:      "span1",
+			Name:        "GET /",
+			ServiceName: svcName,
+			Resource: []observabilitystorageext.KeyValue{
+				{Key: "service.name", Value: observabilitystorageext.AnyValue{StringValue: &svcName}},
+				{Key: "os.type", Value: observabilitystorageext.AnyValue{StringValue: &osType}},
+			},
+		}},
+	}
+
+	out := convertToTempoTrace(trace)
+	require.Len(t, out.ResourceSpans, 1)
+	require.Len(t, out.ResourceSpans[0].Resource.Attributes, 2)
+
+	// Marshal to JSON and assert no Go struct dump leaked through.
+	body, err := json.Marshal(out)
+	require.NoError(t, err)
+	bodyStr := string(body)
+	assert.NotContains(t, bodyStr, "{0x", "resource attribute serialized as a Go pointer dump")
+	assert.NotContains(t, bodyStr, "<nil>", "resource attribute serialized as a Go nil dump")
+
+	// The actual values must be present.
+	assert.Contains(t, bodyStr, `"stringValue":"test-svc"`)
+	assert.Contains(t, bodyStr, `"stringValue":"linux"`)
 }
