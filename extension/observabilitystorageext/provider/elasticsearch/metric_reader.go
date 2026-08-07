@@ -49,7 +49,8 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 	if !query.Time.IsZero() {
 		timeRange = TimeRange{End: query.Time}
 	}
-	filterResult := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, timeRange)
+	filterResult := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, timeRange,
+		metricNegations{Not: query.LabelNot, NotMatch: query.LabelNotMatch})
 	esQuery := filterResult.Query
 
 	// Fetch matching documents sorted newest-first, then dedupe by label set in
@@ -223,12 +224,83 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 	return names, nil
 }
 
+// ListMetricTypes returns each metric name mapped to its stored OTel-derived
+// type ("gauge", "counter", "histogram", "summary").
+//
+// The type is written per data point by storedmodel (Sum → counter, Gauge →
+// gauge, ...), so a terms sub-aggregation recovers it without scanning
+// documents. A metric that somehow carries more than one type reports the most
+// frequent one, which is what the terms ordering yields first.
+func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error) {
+	searchReq := &SearchRequest{
+		Query: r.timeRangeQuery(timeRange),
+		Size:  0,
+		Aggregations: map[string]any{
+			"metric_names": map[string]any{
+				"terms": map[string]any{
+					"field": FieldName,
+					"size":  5000,
+				},
+				"aggs": map[string]any{
+					"metric_type": map[string]any{
+						"terms": map[string]any{
+							"field": FieldMetricType,
+							"size":  1,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("list metric types failed: %w", err)
+	}
+
+	raw, ok := resp.Aggregations["metric_names"]
+	if !ok {
+		return nil, nil
+	}
+
+	var agg struct {
+		Buckets []struct {
+			Key        string `json:"key"`
+			MetricType struct {
+				Buckets []struct {
+					Key string `json:"key"`
+				} `json:"buckets"`
+			} `json:"metric_type"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(raw, &agg); err != nil {
+		return nil, fmt.Errorf("failed to parse metric_names aggregation: %w", err)
+	}
+
+	out := make(map[string]string, len(agg.Buckets))
+	for _, b := range agg.Buckets {
+		if len(b.MetricType.Buckets) > 0 {
+			out[b.Key] = b.MetricType.Buckets[0].Key
+		} else {
+			out[b.Key] = ""
+		}
+	}
+	return out, nil
+}
+
 // ListLabelNames returns label names for the specified metric within the time range.
 // If metricName is empty, all label names across all metrics are returned.
 func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error) {
+	// Sampling the newest documents is a heuristic, not an exhaustive scan: the
+	// label set is the union of whatever these hits happen to carry. Keep the
+	// sample large, because the unscoped call competes across every metric and
+	// the highest-frequency writers otherwise crowd out rarer labels entirely —
+	// the unscoped list came back MISSING labels that the metric-scoped list
+	// returned. A larger sample narrows that gap; it cannot close it.
+	const labelSampleSize = 2000
 	searchReq := &SearchRequest{
 		Query:  r.timeRangeQuery(timeRange),
-		Size:   100,
+		Size:   labelSampleSize,
 		Source: []string{FieldMetricLabels},
 		Sort: []map[string]any{
 			{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}},
@@ -271,15 +343,38 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 	return names, nil
 }
 
-// ListLabelValues returns values for a specific label within the time range.
+// ListLabelValues returns values for a specific label within the time range,
+// across all metrics.
 func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
+	return r.ListLabelValuesForMetric(ctx, label, "", timeRange)
+}
+
+// ListLabelValuesForMetric returns values for a specific label, restricted to a
+// single metric. An empty metricName means "across all metrics".
+//
+// Scoping matters for Prometheus /label/{name}/values?match[]=...: Grafana's
+// breakdown UI uses it to populate the value picker, and an unscoped list offers
+// values that exist on some other metric entirely and yield an empty panel.
+func (r *MetricReader) ListLabelValuesForMetric(ctx context.Context, label, metricName string, timeRange TimeRange) ([]string, error) {
 	// Metric labels are dynamic text+keyword fields — terms aggregation
 	// requires the .keyword sub-field (aggregating on the bare text field is
 	// rejected by ES with "Text fields are not optimised for aggregations").
 	fieldPath := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", storedmodel.SanitizeMetricKey(label)))
 
+	esQuery := r.timeRangeQuery(timeRange)
+	if metricName != "" {
+		esQuery = map[string]any{
+			"bool": map[string]any{
+				"must": []map[string]any{
+					esQuery,
+					{"term": map[string]any{FieldName: metricName}},
+				},
+			},
+		}
+	}
+
 	searchReq := &SearchRequest{
-		Query: r.timeRangeQuery(timeRange),
+		Query: esQuery,
 		Size:  0,
 		Aggregations: map[string]any{
 			"label_values": map[string]any{
@@ -341,7 +436,8 @@ func (r *MetricReader) buildMetricQuery(metricName string, labels map[string]str
 // including metric name, service, labels, labelMatch (regex), and time range.
 // Uses buildMetricFilter for consistent regex→ES query translation.
 func (r *MetricReader) buildQueryFilter(query MetricRangeQuery) metricFilterResult {
-	return r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
+	return r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange,
+		metricNegations{Not: query.LabelNot, NotMatch: query.LabelNotMatch})
 }
 
 // buildAggregation constructs the ES aggregation for metric range queries.
@@ -685,7 +781,15 @@ type metricFilterResult struct {
 //   - "literal_with_escaped_dots" → term query (single exact match)
 //   - "prefix.*" → prefix query
 //   - Complex regex → no ES filter (returned in PostFilters for application-layer filtering)
-func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels, labelMatch map[string]string, timeRange TimeRange) metricFilterResult {
+//
+// metricNegations carries the not-equal / not-regex matchers for a query.
+// Grouped into a struct so buildMetricFilter keeps a readable signature.
+type metricNegations struct {
+	Not      map[string]string // != value
+	NotMatch map[string]string // !~ pattern
+}
+
+func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels, labelMatch map[string]string, timeRange TimeRange, neg metricNegations) metricFilterResult {
 	// Translate PromQL-style labels (underscores, full enum values) to ES storage format
 	// (dots, short enum values). Known OTel standard attributes get translated;
 	// custom labels pass through unchanged.
@@ -705,9 +809,12 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 	}
 
 	// Translate regex patterns to ES-compatible queries for flattened fields.
+	// Uses the same .keyword sub-field as exact matches above: metric labels are
+	// dynamically mapped text+keyword, and term/terms/prefix on the bare (analyzed)
+	// field never matches a multi-token value.
 	var postFilters map[string]string
 	for k, pattern := range labelMatch {
-		field := fmt.Sprintf(FieldMetricLabels+".%s", k)
+		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
 		translation := TranslatePromQLRegex(pattern)
 		clause := BuildESClauseFromRegex(field, translation)
 		if clause != nil {
@@ -718,6 +825,25 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 				postFilters = make(map[string]string)
 			}
 			postFilters[k] = pattern
+		}
+	}
+
+	// Negated matchers. Exact != becomes must_not term; !~ reuses the same
+	// regex translation as =~ and is negated. A pattern the translator cannot
+	// express in ES is dropped rather than silently narrowing the result set —
+	// post-filtering only supports the positive direction today.
+	negLabels, negMatch := normalizeMetricQueryLabels(neg.Not, neg.NotMatch)
+	for k, v := range negLabels {
+		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
+		qb.Raw(esq.MustNotQ(esq.T(field, v)))
+	}
+	for k, pattern := range negMatch {
+		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
+		if clause := BuildESClauseFromRegex(field, TranslatePromQLRegex(pattern)); clause != nil {
+			qb.Raw(esq.MustNotQ(clause))
+		} else {
+			r.logger.Warn("metric filter: unsupported !~ pattern, ignoring",
+				zap.String("label", k), zap.String("pattern", pattern))
 		}
 	}
 
@@ -736,7 +862,8 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 
 // buildRawQueryFilter builds an ES bool query from a MetricRawQuery.
 func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) metricFilterResult {
-	return r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
+	return r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange,
+		metricNegations{Not: query.LabelNot, NotMatch: query.LabelNotMatch})
 }
 
 // QueryFlat returns all matching metric documents without ES-side grouping.
@@ -746,7 +873,8 @@ func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) metricFilterRes
 // Designed for histogram_quantile which needs complete bucket_counts data
 // across all matching documents in a time range.
 func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*MetricFlatResult, error) {
-	filterResult := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange)
+	filterResult := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange,
+		metricNegations{Not: query.LabelNot, NotMatch: query.LabelNotMatch})
 
 	maxDocs := query.MaxDocs
 	if maxDocs <= 0 {

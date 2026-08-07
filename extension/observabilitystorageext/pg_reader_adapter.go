@@ -186,6 +186,14 @@ func (a *pgMetricReaderAdapter) ListMetricNames(ctx context.Context, timeRange T
 	return a.inner.ListMetricNames(ctx, pgTimeRange)
 }
 
+// ListMetricTypes is not implemented for PostgreSQL: the provider does not
+// expose the stored metric type. Returning an empty map rather than an error
+// lets /api/v1/metadata degrade to reporting every metric as a gauge instead of
+// failing the request outright.
+func (a *pgMetricReaderAdapter) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error) {
+	return nil, nil
+}
+
 func (a *pgMetricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQuery) ([]MetricRawSeries, error) {
 	return nil, fmt.Errorf("QueryRaw not yet implemented for PostgreSQL provider")
 }
@@ -202,6 +210,13 @@ func (a *pgMetricReaderAdapter) ListLabelNames(ctx context.Context, timeRange Ti
 func (a *pgMetricReaderAdapter) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
 	pgTimeRange := postgresql.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListLabelValues(ctx, label, pgTimeRange)
+}
+
+// ListLabelValuesForMetric ignores metricName: the PostgreSQL provider has no
+// metric-scoped label query, so it degrades to the unscoped list rather than
+// failing. Callers may see values that do not occur on the requested metric.
+func (a *pgMetricReaderAdapter) ListLabelValuesForMetric(ctx context.Context, label, _ string, timeRange TimeRange) ([]string, error) {
+	return a.ListLabelValues(ctx, label, timeRange)
 }
 
 func (a *pgMetricReaderAdapter) ListLabelCombinations(ctx context.Context, query LabelCombinationsQuery) (*LabelCombinationsResult, error) {

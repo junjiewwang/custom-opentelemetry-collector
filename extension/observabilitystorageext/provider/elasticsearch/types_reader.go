@@ -224,12 +224,14 @@ type TimeBucket struct {
 
 // MetricQuery holds parameters for an instant metric query.
 type MetricQuery struct {
-	AppID       string // required: identifies which app's data to query
-	MetricName  string
-	Labels      map[string]string
-	LabelMatch  map[string]string // regex match patterns (PromQL =~)
-	ServiceName string
-	Time        time.Time
+	AppID         string // required: identifies which app's data to query
+	MetricName    string
+	Labels        map[string]string
+	LabelMatch    map[string]string // regex match patterns (PromQL =~)
+	LabelNot      map[string]string // not-equal (!=)
+	LabelNotMatch map[string]string // not-regex (!~)
+	ServiceName   string
+	Time          time.Time
 }
 
 // MetricRangeQuery holds parameters for a range metric query.
@@ -244,6 +246,8 @@ type MetricRangeQuery struct {
 	MetricName    string
 	Labels        map[string]string // WHERE tag = 'value'
 	LabelMatch    map[string]string // WHERE tag =~ /regex/
+	LabelNot      map[string]string // not-equal (!=)
+	LabelNotMatch map[string]string // not-regex (!~)
 	ServiceName   string
 	TimeRange     TimeRange
 	Aggregation   string // SELECT <func>, default "avg"
@@ -284,13 +288,15 @@ type MetricSeries struct {
 // Returns original data points without aggregation, sorted by time ASC.
 // Used by PromQL functions like rate()/increase().
 type MetricRawQuery struct {
-	AppID       string // required: identifies which app's data to query
-	MetricName  string
-	Labels      map[string]string // exact match
-	LabelMatch  map[string]string // regex match
-	ServiceName string
-	TimeRange   TimeRange
-	Limit       int // max samples per series, default 10000
+	AppID         string // required: identifies which app's data to query
+	MetricName    string
+	Labels        map[string]string // exact match
+	LabelMatch    map[string]string // regex match
+	LabelNot      map[string]string // not-equal (!=)
+	LabelNotMatch map[string]string // not-regex (!~)
+	ServiceName   string
+	TimeRange     TimeRange
+	Limit         int // max samples per series, default 10000
 }
 
 // MetricRawSeries is a raw time series with original sample points.
@@ -311,13 +317,15 @@ type MetricSample struct {
 // MetricFlatQuery holds parameters for a flat document query.
 // Returns all matching documents without ES-side grouping.
 type MetricFlatQuery struct {
-	AppID       string // required: identifies which app's data to query
-	MetricName  string
-	Labels      map[string]string // exact match
-	LabelMatch  map[string]string // regex match
-	ServiceName string
-	TimeRange   TimeRange
-	MaxDocs     int // max documents to return, default 10000
+	AppID         string // required: identifies which app's data to query
+	MetricName    string
+	Labels        map[string]string // exact match
+	LabelMatch    map[string]string // regex match
+	LabelNot      map[string]string // not-equal (!=)
+	LabelNotMatch map[string]string // not-regex (!~)
+	ServiceName   string
+	TimeRange     TimeRange
+	MaxDocs       int // max documents to return, default 10000
 }
 
 // MetricFlatResult holds flat query results.

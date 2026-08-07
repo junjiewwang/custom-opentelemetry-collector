@@ -42,53 +42,80 @@ func seriesKey(m promMetric) string {
 // literal portion ("pool"), consistent with /labels; this is a shared limitation
 // from the storage layer not supporting metric-name regex.
 //
-// Other label matchers (exact and regex) are returned verbatim for the storage
-// layer. __name__ is never included in the returned label maps.
+// Other label matchers (exact, regex, and their negations) are returned
+// verbatim for the storage layer. __name__ is never included in the label maps.
 func planSeriesMatch(matchStr string) (names []string, labels, labelMatch map[string]string, matchAllNames bool, err error) {
-	expr, perr := parsePromQLSelector(matchStr)
+	plan, perr := planSeriesMatchFull(matchStr)
 	if perr != nil {
 		return nil, nil, nil, false, perr
 	}
+	return plan.Names, plan.Labels, plan.LabelMatch, plan.MatchAllNames, nil
+}
+
+// seriesMatchPlan is the decoded form of a single match[] selector.
+type seriesMatchPlan struct {
+	Names         []string
+	MatchAllNames bool
+	Labels        map[string]string // =
+	LabelMatch    map[string]string // =~
+	LabelNot      map[string]string // !=
+	LabelNotMatch map[string]string // !~
+}
+
+// planSeriesMatchFull is planSeriesMatch including the negated matchers.
+// Kept separate so the existing 5-value call sites stay readable.
+func planSeriesMatchFull(matchStr string) (*seriesMatchPlan, error) {
+	expr, perr := parsePromQLSelector(matchStr)
+	if perr != nil {
+		return nil, perr
+	}
 	if expr == nil {
-		return nil, nil, nil, false, errInvalidPromQL("empty selector")
+		return nil, errInvalidPromQL("empty selector")
 	}
 
-	labels = make(map[string]string, len(expr.Labels))
-	for k, v := range expr.Labels {
-		if k == PromLabelName {
-			continue
+	// __name__ is routed to MetricName, never passed through as a label.
+	stripName := func(in map[string]string) map[string]string {
+		out := make(map[string]string, len(in))
+		for k, v := range in {
+			if k == PromLabelName {
+				continue
+			}
+			out[k] = v
 		}
-		labels[k] = v
+		return out
 	}
-	labelMatch = make(map[string]string, len(expr.LabelMatch))
-	for k, v := range expr.LabelMatch {
-		if k == PromLabelName {
-			continue
-		}
-		labelMatch[k] = v
+
+	plan := &seriesMatchPlan{
+		Labels:        stripName(expr.Labels),
+		LabelMatch:    stripName(expr.LabelMatch),
+		LabelNot:      stripName(expr.LabelNot),
+		LabelNotMatch: stripName(expr.LabelNotMatch),
 	}
 
 	// Bare metric name before the brace takes precedence.
 	if expr.MetricName != "" {
-		return []string{expr.MetricName}, labels, labelMatch, false, nil
-	}
-	// Exact __name__="x".
-	if v, ok := expr.Labels[PromLabelName]; ok && v != "" {
-		return []string{v}, labels, labelMatch, false, nil
+		plan.Names = []string{expr.MetricName}
+		return plan, nil
 	}
 	// Regex __name__=~"r": reduce to literal name(s) via the /labels helpers.
+	// (The exact __name__="x" form needs no branch here: parsePromQLSelector
+	// already routes it to MetricName, handled above.)
 	if _, ok := expr.LabelMatch[PromLabelName]; ok {
 		if single := extractMetricNameFromMatch([]string{matchStr}); single != "" {
-			return []string{single}, labels, labelMatch, false, nil
+			plan.Names = []string{single}
+			return plan, nil
 		}
 		if many := extractMetricNamesFromMatch([]string{matchStr}); len(many) > 0 {
-			return many, labels, labelMatch, false, nil
+			plan.Names = many
+			return plan, nil
 		}
 		// Regex carried no literal name (e.g. ".*") → match all names.
-		return nil, labels, labelMatch, true, nil
+		plan.MatchAllNames = true
+		return plan, nil
 	}
 	// No __name__ constraint at all → query across all metrics.
-	return nil, labels, labelMatch, true, nil
+	plan.MatchAllNames = true
+	return plan, nil
 }
 
 // anchorPromRegex wraps a Prometheus regex pattern so it matches the entire
@@ -135,8 +162,10 @@ func filterMetricNamesByMatch(names []string, matches []string) []string {
 		if err != nil || expr == nil {
 			continue // skip malformed selector
 		}
-		if v, ok := expr.Labels[PromLabelName]; ok {
-			matchers = append(matchers, nameMatcher{exact: v})
+		// parsePromQLSelector routes both the bare form ("metric{...}") and the
+		// __name__="x" form to MetricName, so read the exact name from there.
+		if expr.MetricName != "" {
+			matchers = append(matchers, nameMatcher{exact: expr.MetricName})
 			continue
 		}
 		if pat, ok := expr.LabelMatch[PromLabelName]; ok {

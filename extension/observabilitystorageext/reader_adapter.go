@@ -409,11 +409,14 @@ var _ MetricReader = (*metricReaderAdapter)(nil)
 
 func (a *metricReaderAdapter) Query(ctx context.Context, query MetricQuery) (*MetricResult, error) {
 	esQuery := elasticsearch.MetricQuery{
-		AppID:       query.AppID,
-		MetricName:  query.MetricName,
-		Labels:      query.Labels,
-		ServiceName: query.ServiceName,
-		Time:        query.Time,
+		AppID:         query.AppID,
+		MetricName:    query.MetricName,
+		Labels:        query.Labels,
+		LabelMatch:    query.LabelMatch,
+		LabelNot:      query.LabelNot,
+		LabelNotMatch: query.LabelNotMatch,
+		ServiceName:   query.ServiceName,
+		Time:          query.Time,
 	}
 	result, err := a.inner.Query(ctx, esQuery)
 	if err != nil {
@@ -428,6 +431,8 @@ func (a *metricReaderAdapter) QueryRange(ctx context.Context, query MetricRangeQ
 		MetricName:    query.MetricName,
 		Labels:        query.Labels,
 		LabelMatch:    query.LabelMatch,
+		LabelNot:      query.LabelNot,
+		LabelNotMatch: query.LabelNotMatch,
 		ServiceName:   query.ServiceName,
 		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
 		Aggregation:   query.Aggregation,
@@ -447,13 +452,15 @@ func (a *metricReaderAdapter) QueryRange(ctx context.Context, query MetricRangeQ
 
 func (a *metricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQuery) ([]MetricRawSeries, error) {
 	esQuery := elasticsearch.MetricRawQuery{
-		AppID:       query.AppID,
-		MetricName:  query.MetricName,
-		Labels:      query.Labels,
-		LabelMatch:  query.LabelMatch,
-		ServiceName: query.ServiceName,
-		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
-		Limit:       query.Limit,
+		AppID:         query.AppID,
+		MetricName:    query.MetricName,
+		Labels:        query.Labels,
+		LabelMatch:    query.LabelMatch,
+		LabelNot:      query.LabelNot,
+		LabelNotMatch: query.LabelNotMatch,
+		ServiceName:   query.ServiceName,
+		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		Limit:         query.Limit,
 	}
 	rawSeries, err := a.inner.QueryRaw(ctx, esQuery)
 	if err != nil {
@@ -481,13 +488,15 @@ func (a *metricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQuery
 
 func (a *metricReaderAdapter) QueryFlat(ctx context.Context, query MetricFlatQuery) (*MetricFlatResult, error) {
 	esQuery := elasticsearch.MetricFlatQuery{
-		AppID:       query.AppID,
-		MetricName:  query.MetricName,
-		Labels:      query.Labels,
-		LabelMatch:  query.LabelMatch,
-		ServiceName: query.ServiceName,
-		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
-		MaxDocs:     query.MaxDocs,
+		AppID:         query.AppID,
+		MetricName:    query.MetricName,
+		Labels:        query.Labels,
+		LabelMatch:    query.LabelMatch,
+		LabelNot:      query.LabelNot,
+		LabelNotMatch: query.LabelNotMatch,
+		ServiceName:   query.ServiceName,
+		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		MaxDocs:       query.MaxDocs,
 	}
 	flatResult, err := a.inner.QueryFlat(ctx, esQuery)
 	if err != nil {
@@ -514,6 +523,11 @@ func (a *metricReaderAdapter) ListMetricNames(ctx context.Context, timeRange Tim
 	return a.inner.ListMetricNames(ctx, esTimeRange)
 }
 
+func (a *metricReaderAdapter) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error) {
+	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
+	return a.inner.ListMetricTypes(ctx, esTimeRange)
+}
+
 func (a *metricReaderAdapter) ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error) {
 	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListLabelNames(ctx, esTimeRange, metricName)
@@ -522,6 +536,11 @@ func (a *metricReaderAdapter) ListLabelNames(ctx context.Context, timeRange Time
 func (a *metricReaderAdapter) ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error) {
 	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListLabelValues(ctx, label, esTimeRange)
+}
+
+func (a *metricReaderAdapter) ListLabelValuesForMetric(ctx context.Context, label, metricName string, timeRange TimeRange) ([]string, error) {
+	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
+	return a.inner.ListLabelValuesForMetric(ctx, label, metricName, esTimeRange)
 }
 
 func (a *metricReaderAdapter) ListLabelCombinations(ctx context.Context, query LabelCombinationsQuery) (*LabelCombinationsResult, error) {

@@ -242,12 +242,14 @@ type Dependency struct {
 
 // MetricQuery holds parameters for an instant metric query.
 type MetricQuery struct {
-	AppID       string            `json:"appId,omitempty"`
-	MetricName  string            `json:"metric"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	LabelMatch  map[string]string `json:"labelMatch,omitempty"`
-	ServiceName string            `json:"service,omitempty"`
-	Time        time.Time         `json:"time"`
+	AppID         string            `json:"appId,omitempty"`
+	MetricName    string            `json:"metric"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
+	LabelNot      map[string]string `json:"labelNot,omitempty"`      // not-equal (!=)
+	LabelNotMatch map[string]string `json:"labelNotMatch,omitempty"` // not-regex (!~)
+	ServiceName   string            `json:"service,omitempty"`
+	Time          time.Time         `json:"time"`
 }
 
 // MetricRangeQuery holds parameters for a range metric query.
@@ -262,6 +264,8 @@ type MetricRangeQuery struct {
 	MetricName    string            `json:"metric"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
+	LabelNot      map[string]string `json:"labelNot,omitempty"`      // not-equal (!=)
+	LabelNotMatch map[string]string `json:"labelNotMatch,omitempty"` // not-regex (!~)
 	ServiceName   string            `json:"service,omitempty"`
 	TimeRange     TimeRange         `json:"timeRange"`
 	Aggregation   string            `json:"aggregation,omitempty"` // default "avg"
@@ -322,13 +326,15 @@ type MetricTimeValue struct {
 // Returns original data points without aggregation, sorted by time ASC.
 // Used by PromQL rate()/increase() which need the original sample sequence.
 type MetricRawQuery struct {
-	AppID       string            `json:"appId,omitempty"`
-	MetricName  string            `json:"metric"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	LabelMatch  map[string]string `json:"labelMatch,omitempty"`
-	ServiceName string            `json:"service,omitempty"`
-	TimeRange   TimeRange         `json:"timeRange"`
-	Limit       int               `json:"limit,omitempty"` // max samples per series, default 10000
+	AppID         string            `json:"appId,omitempty"`
+	MetricName    string            `json:"metric"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
+	LabelNot      map[string]string `json:"labelNot,omitempty"`      // not-equal (!=)
+	LabelNotMatch map[string]string `json:"labelNotMatch,omitempty"` // not-regex (!~)
+	ServiceName   string            `json:"service,omitempty"`
+	TimeRange     TimeRange         `json:"timeRange"`
+	Limit         int               `json:"limit,omitempty"` // max samples per series, default 10000
 }
 
 // MetricRawSeries is a raw time series with original sample points.
@@ -354,12 +360,14 @@ type MetricSample struct {
 // Designed for histogram_quantile which needs complete bucket_counts data
 // across all matching documents, performing grouping + aggregation in Go.
 type MetricFlatQuery struct {
-	AppID       string            `json:"appId,omitempty"`
-	MetricName  string            `json:"metric"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	LabelMatch  map[string]string `json:"labelMatch,omitempty"`
-	ServiceName string            `json:"service,omitempty"`
-	TimeRange   TimeRange         `json:"timeRange"`
+	AppID         string            `json:"appId,omitempty"`
+	MetricName    string            `json:"metric"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
+	LabelNot      map[string]string `json:"labelNot,omitempty"`      // not-equal (!=)
+	LabelNotMatch map[string]string `json:"labelNotMatch,omitempty"` // not-regex (!~)
+	ServiceName   string            `json:"service,omitempty"`
+	TimeRange     TimeRange         `json:"timeRange"`
 	// MaxDocs is the hard cap on documents returned (default 10000).
 	// Prevents unbounded memory usage on large time ranges.
 	MaxDocs int `json:"maxDocs,omitempty"`

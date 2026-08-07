@@ -136,7 +136,7 @@ func TestBuildMetricFilter_LabelMatch_TermsTranslation(t *testing.T) {
 		map[string]string{"service.name": "my-service"},
 		map[string]string{"span.name": `opentelemetry\.proto\.collector\.logs\.v1\.LogsService/Export|POST /api/v2/prometheus/api/v1/query`},
 		TimeRange{},
-	)
+		metricNegations{})
 
 	// Should have no post-filters (all patterns translatable).
 	assert.Empty(t, result.PostFilters, "simple alternation should be fully handled at ES level")
@@ -159,7 +159,7 @@ func TestBuildMetricFilter_LabelMatch_UnsupportedRegex(t *testing.T) {
 		nil,
 		map[string]string{"span.name": `opentelemetry.*Export`},
 		TimeRange{},
-	)
+		metricNegations{})
 
 	// Should have post-filters.
 	assert.NotEmpty(t, result.PostFilters)
@@ -177,7 +177,7 @@ func TestBuildMetricFilter_LabelMatch_SingleLiteral(t *testing.T) {
 		nil,
 		map[string]string{"span.name": `opentelemetry\.proto\.collector\.logs\.v1\.LogsService/Export`},
 		TimeRange{},
-	)
+		metricNegations{})
 
 	// Should have no post-filters.
 	assert.Empty(t, result.PostFilters)

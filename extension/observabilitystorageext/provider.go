@@ -205,6 +205,12 @@ type MetricReader interface {
 	// ListMetricNames returns all available metric names.
 	ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error)
 
+	// ListMetricTypes maps each metric name to its type ("gauge", "counter",
+	// "histogram", "summary"). Backs the Prometheus /api/v1/metadata endpoint,
+	// which Grafana Metrics Drilldown reads to choose a visualization and decide
+	// whether to wrap a query in rate().
+	ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error)
+
 	// ListLabelCombinations returns unique label value combinations for the
 	// specified metric and label keys. Used by Grafana "group by" explore queries.
 	ListLabelCombinations(ctx context.Context, query LabelCombinationsQuery) (*LabelCombinationsResult, error)
@@ -215,6 +221,12 @@ type MetricReader interface {
 
 	// ListLabelValues returns values for a specific label.
 	ListLabelValues(ctx context.Context, label string, timeRange TimeRange) ([]string, error)
+
+	// ListLabelValuesForMetric returns values for a specific label restricted to
+	// one metric. An empty metricName means "across all metrics", making it
+	// equivalent to ListLabelValues. Providers that cannot scope by metric fall
+	// back to the unscoped list.
+	ListLabelValuesForMetric(ctx context.Context, label, metricName string, timeRange TimeRange) ([]string, error)
 }
 
 // LogReader queries log data from the storage backend.

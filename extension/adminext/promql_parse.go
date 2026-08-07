@@ -4,7 +4,9 @@
 package adminext
 
 import (
+	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +52,11 @@ func parsePromQL(s string) (*promqlExpr, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The inner aggregation (the "sum" of `sum by (le) (rate(...))`) is
+		// replaced by the histogram_quantile marker, so remember it separately:
+		// it decides whether the per-series buckets collapse into one output
+		// series (bare `sum`) or one per GroupBy dimension.
+		expr.InnerAgg = expr.Aggregation
 		expr.Aggregation = AggHistogramQuantile
 		expr.Quantile = theta
 		return expr, nil
@@ -90,7 +97,7 @@ func parsePromQL(s string) (*promqlExpr, error) {
 	}
 
 	// Parse selector: metric_name{labels}
-	name, labels, labelMatch, err := parseSelector(s)
+	name, labels, labelMatch, labelNot, labelNotMatch, err := parseSelector(s)
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +107,18 @@ func parsePromQL(s string) (*promqlExpr, error) {
 	//   traces_service_graph_request_server_seconds_bucket{le="0.005"}
 	// ES stores the base metric name, so we strip the suffix and query the
 	// underlying histogram data.
+	// A bare name before the brace wins; otherwise honour __name__="x". The
+	// storage layer keys metrics by name (a term query on the name field) and
+	// has no "__name__" label, so leaving it in Labels filters on a label that
+	// never exists — which ES ignores, returning every metric unfiltered.
+	// Mirrors planSeriesMatch, which already routes __name__ this way.
+	if name == "" {
+		if v, ok := labels[PromLabelName]; ok && v != "" {
+			name = v
+		}
+	}
+	delete(labels, PromLabelName)
+
 	expr.MetricName = name
 	if sub, ok := detectHistogramSub(name); ok {
 		expr.HistogramSub = sub
@@ -109,6 +128,8 @@ func parsePromQL(s string) (*promqlExpr, error) {
 
 	expr.Labels = labels
 	expr.LabelMatch = labelMatch
+	expr.LabelNot = labelNot
+	expr.LabelNotMatch = labelNotMatch
 
 	// Grafana Explore Metrics compatibility: when no explicit `by` clause
 	// was found but the selector has the "__ignore_usage__" internal label
@@ -359,26 +380,69 @@ func parseFuncWrapper(s string) (fn, inner string, dur time.Duration) {
 	return "", "", 0
 }
 
+// metricNameRe matches a legal Prometheus metric name. UTF-8/dotted names
+// (e.g. "jvm.memory.used") are accepted because OTel emits them; anything
+// containing an operator, bracket, or space is not a name.
+var metricNameRe = regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:.]*$`)
+
+// validateMetricName rejects leftovers that are clearly not a metric name.
+//
+// parseSelector treats any brace-less remainder as a metric name. For an
+// expression the parser does not understand — a binary operation, an
+// unsupported function, free text — that remainder is the raw query string,
+// which then becomes a term query for a metric that cannot exist. The result is
+// HTTP 200 with an empty vector, which Grafana renders as "No data", making an
+// unsupported query indistinguishable from a genuinely empty one.
+//
+// Worse, for `sum(rate(a[5m])) / sum(rate(a[5m]))` the aggregation wrapper
+// consumes the left operand and the leftover is only the trailing operand, so
+// the division is dropped and the LEFT SIDE's value is returned as if it were
+// the ratio — wrong data presented as correct.
+func validateMetricName(name string) error {
+	if name == "" || metricNameRe.MatchString(name) {
+		return nil
+	}
+	return errInvalidPromQL(fmt.Sprintf("unsupported expression near %q: "+
+		"binary operators, unsupported functions and free-form text are not implemented", truncateForError(name)))
+}
+
+// truncateForError bounds an error message so a long query cannot flood logs.
+func truncateForError(s string) string {
+	const max = 60
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
 // parseSelector parses metric_name{key="val", key=~"regex"}.
 // Also handles Grafana Explore Metrics format: {"metric_name", label="val"}
 // where a bare quoted string inside braces is the metric name.
-func parseSelector(s string) (name string, labels map[string]string, labelMatch map[string]string, err error) {
+func parseSelector(s string) (name string, labels, labelMatch, labelNot, labelNotMatch map[string]string, err error) {
 	s = strings.TrimSpace(s)
 
 	// Find label block
 	braceIdx := strings.IndexByte(s, '{')
 	if braceIdx < 0 {
-		return s, nil, nil, nil
+		if err := validateMetricName(s); err != nil {
+			return "", nil, nil, nil, nil, err
+		}
+		return s, nil, nil, nil, nil, nil
 	}
 
 	name = strings.TrimSpace(s[:braceIdx])
+	if err := validateMetricName(name); err != nil {
+		return "", nil, nil, nil, nil, err
+	}
 	closeBrace := strings.LastIndexByte(s, '}')
 	if closeBrace < 0 {
-		return "", nil, nil, errInvalidPromQL("unclosed brace in selector")
+		return "", nil, nil, nil, nil, errInvalidPromQL("unclosed brace in selector")
 	}
 
 	labels = make(map[string]string)
 	labelMatch = make(map[string]string)
+	labelNot = make(map[string]string)
+	labelNotMatch = make(map[string]string)
 
 	// Parse label pairs: key="value", key=~"regex"
 	labelStr := s[braceIdx+1 : closeBrace]
@@ -386,6 +450,21 @@ func parseSelector(s string) (name string, labels map[string]string, labelMatch 
 	for _, pair := range pairs {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
+			continue
+		}
+
+		// Split on the operator. "!~" is the only matcher with no "=" in it, so
+		// look for it first — otherwise the strings.Index(pair, "=") below finds
+		// nothing and the pair is silently swallowed by the metric-name branch,
+		// dropping the filter and returning unfiltered results.
+		var key, value, op string
+		if tildeIdx := strings.Index(pair, "!~"); tildeIdx >= 0 {
+			key = strings.TrimSpace(pair[:tildeIdx])
+			value = strings.TrimSpace(pair[tildeIdx+2:])
+			op = "!~"
+			key = strings.Trim(key, `"'`)
+			value = strings.Trim(value, `"'`)
+			labelNotMatch[key] = value
 			continue
 		}
 
@@ -401,18 +480,34 @@ func parseSelector(s string) (name string, labels map[string]string, labelMatch 
 			continue
 		}
 
-		key := strings.TrimSpace(pair[:eqIdx])
-		value := strings.TrimSpace(pair[eqIdx+1:])
-		op := "="
+		key = strings.TrimSpace(pair[:eqIdx])
+		value = strings.TrimSpace(pair[eqIdx+1:])
+		op = "="
+
+		// Check for != / !~ — the "!" sits at the end of the key because the
+		// split point is the "=". Handle it before the "~" checks so that
+		// "key!~" is read as not-regex rather than regex.
+		if strings.HasSuffix(key, "!") {
+			key = strings.TrimSpace(key[:len(key)-1])
+			op = "!="
+		}
 
 		// Check for =~ (regex match) — before quote-stripping key
 		if strings.HasSuffix(key, "~") {
 			key = strings.TrimSpace(key[:len(key)-1])
-			op = "=~"
+			if op == "!=" {
+				op = "!~"
+			} else {
+				op = "=~"
+			}
 		}
-		// Check for != and !~
+		// Value-side "~" (the "=~" form splits with "~" leading the value).
 		if strings.HasPrefix(value, "~") {
-			op = "=~"
+			if op == "!=" {
+				op = "!~"
+			} else {
+				op = "=~"
+			}
 			value = strings.TrimSpace(value[1:])
 		}
 
@@ -422,14 +517,19 @@ func parseSelector(s string) (name string, labels map[string]string, labelMatch 
 		key = strings.Trim(key, `"'`)
 		value = strings.Trim(value, `"'`)
 
-		if op == "=~" {
+		switch op {
+		case "=~":
 			labelMatch[key] = value
-		} else {
+		case "!=":
+			labelNot[key] = value
+		case "!~":
+			labelNotMatch[key] = value
+		default:
 			labels[key] = value
 		}
 	}
 
-	return name, labels, labelMatch, nil
+	return name, labels, labelMatch, labelNot, labelNotMatch, nil
 }
 
 // splitLabelPairs splits a comma-separated label string respecting quotes.

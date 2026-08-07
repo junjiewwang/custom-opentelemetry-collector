@@ -139,10 +139,21 @@ func TestParsePercentileValue_NotFound(t *testing.T) {
 }
 
 func TestValidAggregations(t *testing.T) {
-	names := ValidAggregations()
-	expected := 11
-	if len(names) != expected {
-		t.Fatalf("expected %d aggregations, got %d", expected, len(names))
+	// Assert on the contents, not a count: a bare number tells whoever adds an
+	// aggregation nothing about what broke, and says nothing about whether the
+	// right ones are registered.
+	got := make(map[string]bool)
+	for _, n := range ValidAggregations() {
+		got[n] = true
+	}
+	for _, want := range []string{
+		"avg", "sum", "max", "min", "count", "last", "first",
+		"p50", "p90", "p95", "p99",
+		"stddev", "stdvar",
+	} {
+		if !got[want] {
+			t.Errorf("aggregation %q is not registered", want)
+		}
 	}
 }
 
@@ -162,5 +173,40 @@ func TestBuildPercentile(t *testing.T) {
 	percents := pMap["percents"].([]float64)
 	if len(percents) != 1 || percents[0] != 95.0 {
 		t.Fatalf("expected [95.0], got %v", percents)
+	}
+}
+
+func TestParseExtendedStatsField(t *testing.T) {
+	raw := json.RawMessage(`{"count":3,"avg":4,"variance":2.6666666666666665,"std_deviation":1.632993161855452}`)
+
+	if v := parseExtendedStatsField("std_deviation")(raw); v == nil || *v != 1.632993161855452 {
+		t.Fatalf("std_deviation: got %v", v)
+	}
+	if v := parseExtendedStatsField("variance")(raw); v == nil || *v != 2.6666666666666665 {
+		t.Fatalf("variance: got %v", v)
+	}
+	// ES omits the stats fields for an empty bucket; that must read as "no
+	// value" rather than a real zero.
+	if v := parseExtendedStatsField("std_deviation")(json.RawMessage(`{"count":0}`)); v != nil {
+		t.Fatalf("expected nil for absent field, got %v", *v)
+	}
+	if v := parseExtendedStatsField("std_deviation")(json.RawMessage(`{"std_deviation":null}`)); v != nil {
+		t.Fatalf("expected nil for null field, got %v", *v)
+	}
+	if v := parseExtendedStatsField("std_deviation")(json.RawMessage(`not json`)); v != nil {
+		t.Fatalf("expected nil for malformed json, got %v", *v)
+	}
+}
+
+func TestStddevStdvarBuildExtendedStats(t *testing.T) {
+	for _, name := range []string{"stddev", "stdvar"} {
+		agg, err := GetAggregation(name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		built := agg.Build("value")
+		if _, ok := built["extended_stats"]; !ok {
+			t.Fatalf("%s must build an extended_stats aggregation, got %v", name, built)
+		}
 	}
 }

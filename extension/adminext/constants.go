@@ -65,6 +65,12 @@ const (
 	// AggCount is the count aggregation function.
 	AggCount = "count"
 
+	// AggStddev is the stddev aggregation function (population standard deviation).
+	AggStddev = "stddev"
+
+	// AggStdvar is the stdvar aggregation function (population variance).
+	AggStdvar = "stdvar"
+
 	// FnRate is the rate() PromQL function.
 	FnRate = "rate"
 
@@ -78,7 +84,7 @@ const (
 // AggFuncs is the ordered list of aggregation functions recognized by parseAggWrapper.
 // Order matters: longer names must appear before shorter ones to avoid partial matches
 // (e.g. "count" must not match inside "count_values").
-var AggFuncs = []string{AggSum, AggAvg, AggMax, AggMin, AggCount}
+var AggFuncs = []string{AggSum, AggAvg, AggMax, AggMin, AggCount, AggStddev, AggStdvar}
 
 // ── Histogram Sub-Series ───────────────────────────
 

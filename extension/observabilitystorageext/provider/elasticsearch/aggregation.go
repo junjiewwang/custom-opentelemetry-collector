@@ -56,6 +56,22 @@ var aggregationRegistry = map[string]*AggregationFunc{
 		},
 		ParseValue: parseSimpleValue,
 	},
+	// stddev/stdvar come from a single extended_stats aggregation. ES reports
+	// the POPULATION forms (divide by N), which is what PromQL specifies.
+	"stddev": {
+		Name: "stddev",
+		Build: func(field string) map[string]any {
+			return map[string]any{"extended_stats": map[string]any{"field": field}}
+		},
+		ParseValue: parseExtendedStatsField("std_deviation"),
+	},
+	"stdvar": {
+		Name: "stdvar",
+		Build: func(field string) map[string]any {
+			return map[string]any{"extended_stats": map[string]any{"field": field}}
+		},
+		ParseValue: parseExtendedStatsField("variance"),
+	},
 	"last": {
 		Name: "last",
 		Build: func(field string) map[string]any {
@@ -132,6 +148,27 @@ func ValidAggregations() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// parseExtendedStatsField extracts one named field from an extended_stats
+// aggregation result (e.g. "std_deviation", "variance"). ES omits these when
+// the bucket has no documents, so a missing field yields nil, not zero.
+func parseExtendedStatsField(field string) func(json.RawMessage) *float64 {
+	return func(raw json.RawMessage) *float64 {
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return nil
+		}
+		v, ok := result[field]
+		if !ok {
+			return nil
+		}
+		var f *float64
+		if err := json.Unmarshal(v, &f); err != nil {
+			return nil
+		}
+		return f
+	}
 }
 
 // parseSimpleValue extracts value from simple aggregation results (avg, sum, max, min, value_count).

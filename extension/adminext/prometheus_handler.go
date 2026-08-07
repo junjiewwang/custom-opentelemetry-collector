@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -90,8 +92,11 @@ type promqlExpr struct {
 	MetricName    string
 	Labels        map[string]string // exact match (=)
 	LabelMatch    map[string]string // regex match (=~)
+	LabelNot      map[string]string // not-equal (!=)
+	LabelNotMatch map[string]string // not-regex (!~)
 	Aggregation   string            // sum, avg, max, min, count, ""
 	GroupBy       []string          // by (label1, label2)
+	InnerAgg      string            // aggregation nested inside histogram_quantile, "" if none
 	RangeDuration time.Duration     // [5m] for rate/increase/irate
 	Function      string            // rate, increase, irate, ""
 	HistogramSub  string            // "sum" or "bucket" (for HS sub-series), ""
@@ -205,6 +210,18 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 	if result == nil {
 		result = &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}}
 	}
+
+	// topk/bottomk post-processing. Applied here rather than inside
+	// dispatchRangeQuery because that function returns a matrix from several
+	// different branches; ranking once at the join covers all of them.
+	if expr.TopK > 0 {
+		if matrix, ok := result.Result.([]promMatrixSample); ok {
+			matrix = applyTopKMatrix(expr.TopK, expr.IsBottomK, matrix)
+			result.Result = matrix
+			span.SetAttributes(attribute.Int(SpanAttrPromQLTopKCount, len(matrix)))
+		}
+	}
+
 	h.writePromSuccess(w, result)
 }
 
@@ -410,6 +427,15 @@ func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Parse explicitly: r.Form is only populated once the request has been
+	// parsed, and both branches below read r.Form["match[]"] directly. Relying
+	// on an earlier FormValue call to parse as a side effect is what silently
+	// emptied match[] in /series.
+	if err := r.ParseForm(); err != nil {
+		h.writePromError(w, "bad_data", "failed to parse request parameters")
+		return
+	}
+
 	// Handle __name__ (metric names)
 	if labelName == PromLabelName {
 		tr := observabilitystorageext.TimeRange{}
@@ -446,7 +472,13 @@ func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Requ
 		esLabelName = labelName
 	}
 
-	values, err := h.metricReader.ListLabelValues(r.Context(), esLabelName, tr)
+	// Scope to the metric named by match[], mirroring /labels. Without this the
+	// breakdown UI lists values drawn from every metric, so picking one yields
+	// an empty panel. Only the __name__ constraint is honoured; other matchers
+	// in the selector are not applied.
+	metricName := extractMetricNameFromMatch(r.Form["match[]"])
+
+	values, err := h.metricReader.ListLabelValuesForMetric(r.Context(), esLabelName, metricName, tr)
 	if err != nil {
 		h.writePromError(w, "execution", err.Error())
 		return
@@ -461,6 +493,16 @@ func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Requ
 func (h *promHandlers) handlePromSeries(w http.ResponseWriter, r *http.Request) {
 	if h.metricReader == nil {
 		h.writePromError(w, "service_unavailable", "metric reader not available")
+		return
+	}
+
+	// r.Form is only populated once the request has been parsed. The other
+	// handlers happen to touch FormValue first, which parses as a side effect;
+	// this one reads match[] straight away, so parse explicitly. Without it
+	// r.Form was always empty and every /series call failed with
+	// "parameter 'match[]' is required".
+	if err := r.ParseForm(); err != nil {
+		h.writePromError(w, "bad_data", "failed to parse request parameters")
 		return
 	}
 
@@ -483,15 +525,18 @@ func (h *promHandlers) handlePromSeries(w http.ResponseWriter, r *http.Request) 
 	seen := make(map[string]struct{})
 	var allSeries []promMetric
 	for _, matchStr := range matchParams {
-		names, labels, labelMatch, matchAllNames, err := planSeriesMatch(matchStr)
+		plan, err := planSeriesMatchFull(matchStr)
 		if err != nil {
 			continue // skip malformed selector
 		}
+		names, matchAllNames := plan.Names, plan.MatchAllNames
 
 		query := observabilitystorageext.MetricQuery{
-			Labels:     labels,
-			LabelMatch: labelMatch,
-			Time:       tr.End,
+			Labels:        plan.Labels,
+			LabelMatch:    plan.LabelMatch,
+			LabelNot:      plan.LabelNot,
+			LabelNotMatch: plan.LabelNotMatch,
+			Time:          tr.End,
 		}
 		if query.Time.IsZero() {
 			query.Time = time.Now()
@@ -537,6 +582,24 @@ func (h *promHandlers) handlePromSeries(w http.ResponseWriter, r *http.Request) 
 
 // ── Handler: metadata ──────────────────────────────
 
+// handlePromBuildInfo handles GET /api/v1/status/buildinfo.
+//
+// Grafana calls this once when a Prometheus datasource is initialised and uses
+// the reported version to decide which API flavour to speak (for example which
+// label-discovery calls Metrics Drilldown may issue). Returning 404 left the
+// datasource on its most conservative code path, so report a version that
+// advertises the endpoints we actually implement.
+func (h *promHandlers) handlePromBuildInfo(w http.ResponseWriter, _ *http.Request) {
+	h.writePromSuccess(w, map[string]string{
+		"version":   "2.48.0",
+		"revision":  "unknown",
+		"branch":    "main",
+		"buildUser": "customcol",
+		"buildDate": "unknown",
+		"goVersion": runtime.Version(),
+	})
+}
+
 // handlePromMetadata handles GET /api/v1/metadata.
 func (h *promHandlers) handlePromMetadata(w http.ResponseWriter, r *http.Request) {
 	if h.metricReader == nil {
@@ -558,15 +621,48 @@ func (h *promHandlers) handlePromMetadata(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Return minimal metadata (type: gauge for all metrics)
+	// Metric type drives Grafana Metrics Drilldown's visualization choice and
+	// whether it wraps a query in rate(), so report the stored OTel type rather
+	// than labelling everything a gauge. A backend that cannot supply types
+	// returns an empty map and every metric falls back to "gauge".
+	types, err := h.metricReader.ListMetricTypes(r.Context(), tr)
+	if err != nil {
+		h.logger.Warn("prom metadata: metric type lookup failed, defaulting to gauge", zap.Error(err))
+		types = nil
+	}
+
+	// Prometheus supports narrowing to one metric via ?metric=<name>.
+	if want := r.FormValue("metric"); want != "" {
+		filtered := names[:0:0]
+		for _, name := range names {
+			if name == want {
+				filtered = append(filtered, name)
+				break
+			}
+		}
+		names = filtered
+	}
+
 	metadata := make(map[string][]map[string]string, len(names))
 	for _, name := range names {
 		metadata[name] = []map[string]string{
-			{"type": "gauge", "help": "", "unit": ""},
+			{"type": promMetricType(types[name]), "help": "", "unit": ""},
 		}
 	}
 
 	h.writePromSuccess(w, metadata)
+}
+
+// promMetricType maps a stored OTel metric type to the Prometheus metadata
+// vocabulary. storedmodel already writes "gauge"/"counter"/"histogram"/
+// "summary", so this mostly guards unknown or missing values.
+func promMetricType(stored string) string {
+	switch stored {
+	case "counter", "gauge", "histogram", "summary":
+		return stored
+	default:
+		return "gauge"
+	}
 }
 
 // ── Query dispatch ─────────────────────────────────
@@ -627,10 +723,12 @@ func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, e
 	} else {
 		// Plain instant query.
 		query := observabilitystorageext.MetricQuery{
-			MetricName: expr.MetricName,
-			Labels:     filterInternalLabels(labels),
-			LabelMatch: labelMatch,
-			Time:       evalTime,
+			MetricName:    expr.MetricName,
+			Labels:        filterInternalLabels(labels),
+			LabelMatch:    labelMatch,
+			LabelNot:      expr.LabelNot,
+			LabelNotMatch: expr.LabelNotMatch,
+			Time:          evalTime,
 		}
 
 		// Record the effective ES query labels on the span
@@ -710,12 +808,25 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 	span := trace.SpanFromContext(r.Context())
 
 	if expr.Function != "" && expr.RangeDuration > 0 {
-		// histogram_quantile + _bucket range query
-		if expr.HistogramSub == "bucket" && !math.IsNaN(expr.Quantile) {
+		// histogram_quantile range query. Gated on the aggregation marker — see
+		// the matching comment in execRateInstant for why a _bucket suffix is
+		// not required (native-histogram form from Grafana Metrics Drilldown).
+		if expr.Aggregation == AggHistogramQuantile {
 			defer span.SetAttributes(attribute.Int("promql.series_count", 0))
 			result := h.execHistogramQuantileRange(r, expr, start, end, step, labels, labelMatch)
 			if result == nil {
 				return &promQueryData{ResultType: "matrix", Result: []promMatrixSample{}}
+			}
+			return result
+		}
+		// Heatmap: `sum by (le) (rate(m[5m]))`. Must precede the plain rate path,
+		// which would group by a label ES does not store and collapse every
+		// bucket into one series.
+		if expr.Aggregation != "" && groupsByLe(expr.GroupBy) {
+			defer span.SetAttributes(attribute.Int("promql.series_count", 0))
+			result := h.execHistogramBucketRange(r, expr, start, end, step, labels, labelMatch)
+			if result == nil {
+				return &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}}
 			}
 			return result
 		}
@@ -766,6 +877,8 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 		MetricName:    expr.MetricName,
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
 		Step:          step,
 		Aggregation:   expr.Aggregation,
@@ -838,10 +951,12 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName: expr.MetricName,
-		Labels:     filterInternalLabels(labels),
-		LabelMatch: labelMatch,
-		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
+		MetricName:    expr.MetricName,
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
 	flatResult, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
@@ -882,7 +997,9 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 		})
 	}
 
-	if expr.Aggregation != "" && len(expr.GroupBy) > 0 {
+	if expr.Aggregation != "" {
+		// Also runs with an empty GroupBy: bare `sum(rate(m[5m]))` must collapse
+		// every series into one, exactly as the instant path does.
 		matrix = aggregateMatrix(expr.Aggregation, expr.GroupBy, matrix)
 		stripMatrixMetricToGroupBy(matrix, expr.GroupBy)
 	}
@@ -895,8 +1012,16 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 
 // execRateInstant handles rate/increase/irate instant queries.
 func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) []promVectorSample {
-	// histogram_quantile + _bucket → aggregate bucket_counts and compute quantile.
-	if expr.HistogramSub == HistogramSubBucket && !math.IsNaN(expr.Quantile) {
+	// histogram_quantile → aggregate bucket_counts and compute the quantile.
+	// Gated on the aggregation marker, not on a _bucket name suffix: ES stores
+	// the buckets on the base metric document, so Grafana Metrics Drilldown's
+	// native-histogram form — histogram_quantile(θ, sum(rate(m[5m]))) with no
+	// _bucket series and no by(le) — must take this path too. Without it the
+	// query fell through to the plain rate path and returned raw per-series
+	// rates, identical for every θ.
+	//
+	// Note: Quantile's zero value is 0.0, not NaN, so it cannot itself gate this.
+	if expr.Aggregation == AggHistogramQuantile {
 		return h.execHistogramQuantileInstant(r, expr, evalTime, labels, labelMatch)
 	}
 
@@ -906,10 +1031,12 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 	// Use QueryFlat (same as execRateRange) to avoid ES top_hits limit and
 	// painless script hardcoded label fields. Data is grouped by labels in Go.
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName: expr.MetricName,
-		Labels:     filterInternalLabels(labels),
-		LabelMatch: labelMatch,
-		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
+		MetricName:    expr.MetricName,
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 	}
 
 	flatResult, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
@@ -957,17 +1084,58 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 	return vectors
 }
 
-// execHistogramQuantileInstant handles histogram_quantile(θ, rate(_bucket[...]))
+// histogramGroupLabels projects a histogram series' labels onto the grouping
+// implied by the aggregation nested inside histogram_quantile.
+//
+// PromQL evaluates `histogram_quantile(θ, sum by (le) (rate(m[5m])))` inside
+// out: the inner `sum by (le)` collapses every series to the `le` dimension, so
+// the quantile yields ONE series. `sum by (le, service)` yields one per service.
+// `le` itself is consumed by the quantile and never appears in the output.
+//
+// Returns nil when the inner aggregation collapses everything to a single
+// series, so callers group all buckets together.
+func histogramGroupLabels(expr *promqlExpr, labels map[string]string) map[string]string {
+	if expr.InnerAgg == "" {
+		// No inner aggregation: one output series per input series, labels intact.
+		out := make(map[string]string, len(labels))
+		for k, v := range labels {
+			if k == PromLabelLe {
+				continue
+			}
+			out[translateLabelToPromQL(k)] = v
+		}
+		return out
+	}
+
+	out := make(map[string]string, len(expr.GroupBy))
+	for _, g := range expr.GroupBy {
+		if g == PromLabelLe {
+			continue // consumed by the quantile computation
+		}
+		// GroupBy is in PromQL form; sample labels are in ES dot form.
+		for k, v := range labels {
+			if translateLabelToPromQL(k) == g {
+				out[g] = v
+				break
+			}
+		}
+	}
+	return out
+}
+
+// execHistogramQuantileInstant handles histogram_quantile(θ, rate(...))
 // by querying ES histogram documents via QueryFlat, grouping by labels in Go,
 // aggregating bucket_counts across time, and computing quantiles via linear interpolation.
 func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) []promVectorSample {
 	lookbackStart := evalTime.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName: expr.MetricName,
-		Labels:     filterInternalLabels(labels),
-		LabelMatch: labelMatch,
-		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
+		MetricName:    expr.MetricName,
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 	}
 
 	result, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
@@ -987,9 +1155,11 @@ func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promq
 	buckets := make([]HistogramBucket, 0, len(groups))
 	for _, samples := range groups {
 		hb := HistogramBucket{}
-		// Extract labels from first sample.
+		// Project onto the grouping implied by the inner aggregation, so that
+		// AggregateHistogramBuckets (which groups by label set) collapses the
+		// series exactly as PromQL would.
 		if len(samples) > 0 {
-			hb.Labels = copyMap(samples[0].Labels)
+			hb.Labels = histogramGroupLabels(expr, samples[0].Labels)
 		}
 
 		// Find bounds from first sample that has them, then accumulate.
@@ -1025,13 +1195,14 @@ func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promq
 	vectors := make([]promVectorSample, 0, len(aggregated))
 	for _, hb := range aggregated {
 		q := ComputeHistogramQuantile(expr.Quantile, hb)
-		m := promMetric{PromLabelName: expr.MetricName}
+		// An aggregated result carries no metric name, matching PromQL.
+		m := promMetric{}
+		if expr.InnerAgg == "" {
+			m[PromLabelName] = expr.MetricName
+		}
+		// Labels are already projected and PromQL-formatted.
 		for k, v := range hb.Labels {
-			if k == PromLabelLe {
-				continue
-			}
-			// Translate ES dot-format keys back to PromQL underscore format.
-			m[translateLabelToPromQL(k)] = v
+			m[k] = v
 		}
 		vectors = append(vectors, promVectorSample{
 			Metric: m,
@@ -1042,16 +1213,168 @@ func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promq
 	return vectors
 }
 
+// execHistogramBucketRange handles `sum by (le) (rate(m[5m]))` — the heatmap
+// query Grafana Metrics Drilldown issues for histogram metrics.
+//
+// ES has no "le" label: bucket data lives in the bucket_counts/explicit_bounds
+// arrays on each document. Grouping by a label that does not exist collapses
+// every bucket into one series, so the heatmap renders a single row instead of
+// a distribution. This synthesises the le dimension from the arrays.
+//
+// Emits Prometheus-style CUMULATIVE buckets (each le carries the count of all
+// buckets up to and including it) plus the +Inf bucket, since that is what a
+// heatmap consumer expects from `_bucket` series. Values are per-second rates
+// over the window, matching the rate() the caller asked for.
+func (h *promHandlers) execHistogramBucketRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+	lookbackStart := start.Add(-expr.RangeDuration)
+
+	flatQuery := observabilitystorageext.MetricFlatQuery{
+		MetricName:    expr.MetricName,
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
+	}
+
+	result, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
+	if err != nil {
+		h.logger.Error("histogram bucket range query_flat failed", zap.Error(err))
+		return nil
+	}
+	if result == nil || len(result.Samples) == 0 {
+		return nil
+	}
+	h.checkFlatTruncation(result)
+
+	// Non-le grouping dimensions requested alongside le, e.g. sum by (le, service).
+	extraGroupBy := make([]string, 0, len(expr.GroupBy))
+	for _, g := range expr.GroupBy {
+		if g != PromLabelLe {
+			extraGroupBy = append(extraGroupBy, g)
+		}
+	}
+
+	// Merge the raw per-series groups down to the requested grouping.
+	type bucketGroup struct {
+		labels  map[string]string
+		samples []HistogramSample
+	}
+	merged := make(map[string]*bucketGroup)
+	for _, samples := range groupSamplesByLabels(result.Samples) {
+		if len(samples) == 0 {
+			continue
+		}
+		projected := make(map[string]string, len(extraGroupBy))
+		for _, g := range extraGroupBy {
+			for k, v := range samples[0].Labels {
+				if translateLabelToPromQL(k) == g {
+					projected[g] = v
+					break
+				}
+			}
+		}
+		key := sortedLabelKey(projected)
+		g, ok := merged[key]
+		if !ok {
+			g = &bucketGroup{labels: projected}
+			merged[key] = g
+		}
+		g.samples = append(g.samples, samples...)
+	}
+
+	stepMs := step.Milliseconds()
+	rangeMs := expr.RangeDuration.Milliseconds()
+	rangeSecs := expr.RangeDuration.Seconds()
+	if rangeSecs <= 0 {
+		return nil
+	}
+
+	// One output series per (group, le) pair; points accumulate across steps.
+	series := make(map[bucketSeriesKey]*promMatrixSample)
+	var order []bucketSeriesKey
+
+	for gk, g := range merged {
+		for t := start.UnixMilli(); t <= end.UnixMilli(); t += stepMs {
+			hb := AggregateHistogramSamples(g.samples, t-rangeMs, t)
+			if hb.TotalCount == 0 || len(hb.Bounds) == 0 {
+				continue
+			}
+
+			var cumulative int64
+			for i, bound := range hb.Bounds {
+				if i < len(hb.BucketCounts) {
+					cumulative += hb.BucketCounts[i]
+				}
+				le := formatPromFloat(bound)
+				addBucketPoint(series, &order, bucketSeriesKey{gk, le},
+					g.labels, le, t, float64(cumulative)/rangeSecs)
+			}
+			// +Inf carries the full count; Prometheus always emits it.
+			addBucketPoint(series, &order, bucketSeriesKey{gk, "+Inf"},
+				g.labels, "+Inf", t, float64(hb.TotalCount)/rangeSecs)
+		}
+	}
+
+	if len(series) == 0 {
+		return nil
+	}
+
+	matrix := make([]promMatrixSample, 0, len(series))
+	for _, k := range order {
+		matrix = append(matrix, *series[k])
+	}
+	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
+}
+
+// groupsByLe reports whether a `by (...)` clause includes the le dimension,
+// which marks the query as a histogram bucket (heatmap) query.
+func groupsByLe(groupBy []string) bool {
+	return slices.Contains(groupBy, PromLabelLe)
+}
+
+// bucketSeriesKey identifies one heatmap output series: a grouping key plus the
+// le bound it represents.
+type bucketSeriesKey struct {
+	group string
+	le    string
+}
+
+// addBucketPoint appends one sample to the (group, le) series, creating it on
+// first use and recording insertion order for stable output.
+func addBucketPoint(series map[bucketSeriesKey]*promMatrixSample, order *[]bucketSeriesKey,
+	key bucketSeriesKey, groupLabels map[string]string, le string, tsMs int64, value float64) {
+	s, ok := series[key]
+	if !ok {
+		m := promMetric{PromLabelLe: le}
+		for k, v := range groupLabels {
+			m[k] = v
+		}
+		s = &promMatrixSample{Metric: m}
+		series[key] = s
+		*order = append(*order, key)
+	}
+	s.Values = append(s.Values, []any{float64(tsMs) / 1000.0, formatPromValue(value)})
+}
+
+// formatPromFloat renders a bucket bound the way Prometheus writes le labels:
+// the shortest representation that round-trips.
+func formatPromFloat(f float64) string {
+	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
 // execHistogramQuantileRange handles histogram_quantile(θ, rate(_bucket[...]))
 // range queries by computing quantile at each step from a sliding window.
 func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName: expr.MetricName,
-		Labels:     filterInternalLabels(labels),
-		LabelMatch: labelMatch,
-		TimeRange:  observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
+		MetricName:    expr.MetricName,
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
 	result, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1068,12 +1391,36 @@ func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlE
 	// Group samples by labels in Go (replaces ES-side composite+painless script).
 	groups := groupSamplesByLabels(result.Samples)
 
+	// Re-key by the grouping the inner aggregation implies, merging the raw
+	// per-series groups so a bare `sum by (le)` collapses to a single series.
+	// Iteration order of the raw map does not matter: the merge is additive and
+	// each output key is built from the projected labels alone.
+	type histGroup struct {
+		labels  map[string]string
+		samples []HistogramSample
+	}
+	merged := make(map[string]*histGroup, len(groups))
+	for _, samples := range groups {
+		if len(samples) == 0 {
+			continue
+		}
+		projected := histogramGroupLabels(expr, samples[0].Labels)
+		key := sortedLabelKey(projected)
+		g, ok := merged[key]
+		if !ok {
+			g = &histGroup{labels: projected}
+			merged[key] = g
+		}
+		g.samples = append(g.samples, samples...)
+	}
+
 	stepMs := step.Milliseconds()
 	rangeMs := expr.RangeDuration.Milliseconds()
 
-	// Build matrix: one series per label group, values at each step.
-	matrix := make([]promMatrixSample, 0, len(groups))
-	for _, histSamples := range groups {
+	// Build matrix: one series per group, values at each step.
+	matrix := make([]promMatrixSample, 0, len(merged))
+	for _, g := range merged {
+		histSamples := g.samples
 		values := make([][]any, 0)
 		for t := start.UnixMilli(); t <= end.UnixMilli(); t += stepMs {
 			windowStart := t - rangeMs
@@ -1094,15 +1441,14 @@ func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlE
 			continue
 		}
 
-		m := promMetric{PromLabelName: expr.MetricName}
-		if len(histSamples) > 0 {
-			for k, v := range histSamples[0].Labels {
-				if k == PromLabelLe {
-					continue
-				}
-				// Translate ES dot-format keys back to PromQL underscore format.
-				m[translateLabelToPromQL(k)] = v
-			}
+		// An aggregated result carries no metric name, matching PromQL.
+		m := promMetric{}
+		if expr.InnerAgg == "" {
+			m[PromLabelName] = expr.MetricName
+		}
+		// Labels are already projected and PromQL-formatted.
+		for k, v := range g.labels {
+			m[k] = v
 		}
 		matrix = append(matrix, promMatrixSample{Metric: m, Values: values})
 	}
@@ -1316,6 +1662,70 @@ func applyTopK(k int, isBottomK bool, vectors []promVectorSample) []promVectorSa
 	return vectors[:k]
 }
 
+// applyTopKMatrix selects the K highest (or lowest) series from a matrix.
+//
+// PromQL evaluates topk independently at each timestamp, so a series can enter
+// and leave the set over the range. Grafana charts a fixed set of lines, so
+// rank each series once by its extreme value over the whole range — the K
+// series that peak highest for topk, that dip lowest for bottomk. This keeps
+// the line count at K instead of returning every series unranked.
+func applyTopKMatrix(k int, isBottomK bool, matrix []promMatrixSample) []promMatrixSample {
+	if k <= 0 || k >= len(matrix) {
+		return matrix
+	}
+
+	rank := func(m promMatrixSample) float64 {
+		best := math.NaN()
+		for _, pair := range m.Values {
+			if len(pair) < 2 {
+				continue
+			}
+			s, ok := pair[1].(string)
+			if !ok {
+				continue
+			}
+			v, err := strconv.ParseFloat(s, 64)
+			if err != nil || math.IsNaN(v) {
+				continue
+			}
+			if math.IsNaN(best) || (isBottomK && v < best) || (!isBottomK && v > best) {
+				best = v
+			}
+		}
+		return best
+	}
+
+	ranks := make(map[int]float64, len(matrix))
+	for i, m := range matrix {
+		ranks[i] = rank(m)
+	}
+	idx := make([]int, len(matrix))
+	for i := range idx {
+		idx[i] = i
+	}
+
+	// Series with no usable point rank last regardless of direction.
+	sort.SliceStable(idx, func(a, b int) bool {
+		va, vb := ranks[idx[a]], ranks[idx[b]]
+		if math.IsNaN(va) {
+			return false
+		}
+		if math.IsNaN(vb) {
+			return true
+		}
+		if isBottomK {
+			return va < vb
+		}
+		return va > vb
+	})
+
+	out := make([]promMatrixSample, 0, k)
+	for _, i := range idx[:k] {
+		out = append(out, matrix[i])
+	}
+	return out
+}
+
 // parseVectorValue extracts the float64 value from a promVectorSample's Value field.
 func parseVectorValue(v promVectorSample) float64 {
 	if len(v.Value) < 2 {
@@ -1330,6 +1740,14 @@ func parseVectorValue(v promVectorSample) float64 {
 // ── Aggregation helpers ─────────────────────────────
 
 func applyAggregation(fn string, groupBy []string, vectors []promVectorSample) []promVectorSample {
+	// An aggregation over nothing is nothing, not one empty sample. Without this
+	// guard a rate window shorter than the scrape interval (fewer than two
+	// samples, so no vectors) emitted {"metric":null,"value":null} — a malformed
+	// series that breaks strict JSON consumers instead of reading as "no data".
+	if len(vectors) == 0 {
+		return nil
+	}
+
 	if len(groupBy) == 0 {
 		// Aggregate all into one group
 		return []promVectorSample{aggregateGroup(fn, vectors)}
@@ -1381,43 +1799,70 @@ func aggregateGroup(fn string, vectors []promVectorSample) promVectorSample {
 		return promVectorSample{}
 	}
 
+	// Collect the usable values once; every branch below needs the same set.
+	// NaN/Inf are excluded: strconv.ParseFloat accepts "NaN"/"+Inf", and letting
+	// them through makes sum/avg/stddev collapse to NaN for the whole group.
+	values := make([]float64, 0, len(vectors))
+	for _, v := range vectors {
+		s, ok := v.Value[1].(string)
+		if !ok {
+			continue
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			continue
+		}
+		values = append(values, f)
+	}
+
 	val := 0.0
 	switch fn {
 	case AggSum:
-		for _, v := range vectors {
-			if f, ok := strconv.ParseFloat(v.Value[1].(string), 64); ok == nil {
-				val += f
-			}
+		for _, f := range values {
+			val += f
 		}
 	case AggAvg:
-		for _, v := range vectors {
-			if f, ok := strconv.ParseFloat(v.Value[1].(string), 64); ok == nil {
-				val += f
-			}
+		for _, f := range values {
+			val += f
 		}
-		if len(vectors) > 0 {
-			val /= float64(len(vectors))
+		if len(values) > 0 {
+			val /= float64(len(values))
 		}
 	case AggMax:
 		val = math.Inf(-1)
-		for _, v := range vectors {
-			if f, ok := strconv.ParseFloat(v.Value[1].(string), 64); ok == nil {
-				if f > val {
-					val = f
-				}
+		for _, f := range values {
+			if f > val {
+				val = f
 			}
 		}
 	case AggMin:
 		val = math.Inf(1)
-		for _, v := range vectors {
-			if f, ok := strconv.ParseFloat(v.Value[1].(string), 64); ok == nil {
-				if f < val {
-					val = f
-				}
+		for _, f := range values {
+			if f < val {
+				val = f
 			}
 		}
 	case AggCount:
+		// Counts series, not parseable values: an unparseable sample is still a
+		// member of the group.
 		val = float64(len(vectors))
+	case AggStddev, AggStdvar:
+		// Population (not sample) variance, matching Prometheus.
+		if len(values) > 0 {
+			mean := 0.0
+			for _, f := range values {
+				mean += f
+			}
+			mean /= float64(len(values))
+			for _, f := range values {
+				d := f - mean
+				val += d * d
+			}
+			val /= float64(len(values))
+			if fn == AggStddev {
+				val = math.Sqrt(val)
+			}
+		}
 	}
 
 	return promVectorSample{
@@ -1502,27 +1947,163 @@ func stripMatrixMetricToGroupBy(matrix []promMatrixSample, groupBy []string) {
 }
 
 // aggregateMatrix performs groupBy aggregation on matrix samples.
+//
+// Series are grouped by the groupBy labels (all series collapse into a single
+// group when groupBy is empty, matching PromQL's bare `sum(...)`), then reduced
+// per timestamp. The rate/increase/irate path evaluates every series on the same
+// start/end/step grid, so samples align on their timestamps and can be combined
+// directly; a timestamp missing from a series simply does not contribute to that
+// point, as in Prometheus.
+//
+// This previously returned the input unchanged, so range queries like
+// `sum(rate(m[5m]))` came back as hundreds of un-aggregated series while the
+// instant-query path returned the correct single series.
 func aggregateMatrix(fn string, groupBy []string, matrix []promMatrixSample) []promMatrixSample {
-	if len(groupBy) == 0 {
+	if len(matrix) == 0 {
 		return matrix
 	}
 
-	// Group matrix by groupBy labels
+	// Preserve input order of groups so output is stable across calls.
 	groups := make(map[string][]promMatrixSample)
+	var order []string
 	for _, m := range matrix {
 		key := groupKey(promMetric(m.Metric), groupBy)
+		if _, seen := groups[key]; !seen {
+			order = append(order, key)
+		}
 		groups[key] = append(groups[key], m)
 	}
 
-	// Need timestamp alignment for matrix aggregation.
-	// Simple approach: only aggregate if there's exactly one sample, otherwise pass through.
-	result := make([]promMatrixSample, 0)
-	for _, group := range groups {
-		for _, m := range group {
-			result = append(result, m)
+	result := make([]promMatrixSample, 0, len(order))
+	for _, key := range order {
+		group := groups[key]
+		metric := promMetric{}
+		if len(groupBy) > 0 {
+			metric = filterMetricByKeys(promMetric(group[0].Metric), groupBy)
 		}
+		result = append(result, promMatrixSample{
+			Metric: metric,
+			Values: aggregateMatrixValues(fn, group),
+		})
 	}
 	return result
+}
+
+// aggregateMatrixValues reduces a group of aligned series to one value per
+// timestamp, applying fn across the series present at that timestamp.
+func aggregateMatrixValues(fn string, group []promMatrixSample) [][]any {
+	// Collect values per timestamp, keeping first-seen timestamp order so the
+	// result stays chronological (the rate path emits ascending timestamps).
+	byTs := make(map[float64][]float64)
+	var tsOrder []float64
+
+	for _, m := range group {
+		for _, tv := range m.Values {
+			if len(tv) != 2 {
+				continue
+			}
+			ts, ok := toFloat(tv[0])
+			if !ok {
+				continue
+			}
+			v, ok := toFloat(tv[1])
+			if !ok {
+				// NaN/Inf are formatted as strings; skip so they do not poison
+				// the aggregate, matching how the vector path parses values.
+				continue
+			}
+			if _, seen := byTs[ts]; !seen {
+				tsOrder = append(tsOrder, ts)
+			}
+			byTs[ts] = append(byTs[ts], v)
+		}
+	}
+
+	sort.Float64s(tsOrder)
+
+	values := make([][]any, 0, len(tsOrder))
+	for _, ts := range tsOrder {
+		values = append(values, []any{ts, formatPromValue(reduceSamples(fn, byTs[ts]))})
+	}
+	return values
+}
+
+// reduceSamples applies a PromQL aggregation operator to the values observed at
+// one timestamp.
+func reduceSamples(fn string, vals []float64) float64 {
+	if len(vals) == 0 {
+		return math.NaN()
+	}
+	switch fn {
+	case AggSum:
+		total := 0.0
+		for _, v := range vals {
+			total += v
+		}
+		return total
+	case AggAvg:
+		total := 0.0
+		for _, v := range vals {
+			total += v
+		}
+		return total / float64(len(vals))
+	case AggMax:
+		out := math.Inf(-1)
+		for _, v := range vals {
+			if v > out {
+				out = v
+			}
+		}
+		return out
+	case AggMin:
+		out := math.Inf(1)
+		for _, v := range vals {
+			if v < out {
+				out = v
+			}
+		}
+		return out
+	case AggCount:
+		return float64(len(vals))
+	case AggStddev, AggStdvar:
+		// Population (not sample) variance, matching Prometheus.
+		mean := 0.0
+		for _, v := range vals {
+			mean += v
+		}
+		mean /= float64(len(vals))
+		variance := 0.0
+		for _, v := range vals {
+			d := v - mean
+			variance += d * d
+		}
+		variance /= float64(len(vals))
+		if fn == AggStdvar {
+			return variance
+		}
+		return math.Sqrt(variance)
+	default:
+		return vals[0]
+	}
+}
+
+// toFloat reads a matrix cell, which holds timestamps as float64 and values as
+// the strings produced by formatPromValue.
+func toFloat(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case int64:
+		return float64(t), true
+	case string:
+		f, err := strconv.ParseFloat(t, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
 }
 
 // parseHistogramQuantileWrapper extracts histogram_quantile(θ, inner_expr).
