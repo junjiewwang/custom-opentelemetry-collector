@@ -375,7 +375,15 @@ func (e *Extension) newRouter() http.Handler {
 		r.Get("/drilldown-limits", loki.handleLokiDrilldownLimits)
 		r.Get("/detected_labels", loki.handleLokiDetectedLabels)
 		r.Get("/detected_fields", loki.handleLokiDetectedFields)
+		// logs-drilldown's detected-field VALUES endpoint is plural
+		// (/detected_fields/<name>/values); the singular form is kept as a
+		// backward-compatible alias for direct API callers.
+		r.Get("/detected_fields/{name}/values", loki.handleLokiDetectedFieldValues)
 		r.Get("/detected_field/{name}/values", loki.handleLokiDetectedFieldValues)
+		// Loki series endpoint (used by getTagKeys for ad-hoc filter key
+		// auto-completion) and the patterns ingester endpoint.
+		r.Get("/series", loki.handleLokiSeries)
+		r.Get("/patterns", loki.handleLokiPatterns)
 	})
 	// Shorter aliases for direct curl/API access
 	// Full: /api/v2 + /loki/* = /api/v2/loki/*

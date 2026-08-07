@@ -98,3 +98,97 @@ go test -count=1 ./extension/adminext/...
 - `extension/adminext/loki_handler_test.go` — `TestParseLokiTime_*` incl. new `ScientificWithDot`
 - `extension/adminext/loki_metric_test.go` — `TestComputeMetricInterval_*` updated for `time.Duration` step
 - `scripts/logs-drilldown/VERIFICATION_REPORT.md` — this report
+
+---
+
+## 9. Addendum — source-driven coverage gap analysis & fix (2026-08-07)
+
+After the 36/36 pass, a coverage question remained: **did the suite exercise every
+real API call the logs-drilldown plugin makes?** We enumerated every Loki HTTP
+call from the plugin source (`github.com/grafana/grafana-lokiexplore-app`,
+`src/services/datasource.ts` and friends), cross-checked against the collector's
+route table (`extension/adminext/router.go`), and **found 3 real gaps** — all
+HTTP 404 against the live collector.
+
+### 9.1 How the plugin actually reaches each endpoint
+
+The plugin drives everything through `ds.getResource('<name>', params)`, which
+maps to `/loki/api/v1/<name>`. Key facts confirmed from source:
+
+- `getResource('detected_labels')` → `/detected_labels` ✅ (registered)
+- `getResource('detected_fields')` → `/detected_fields` ✅ (registered)
+- **detected-field VALUES** are fetched by the underlying Loki datasource's
+  `languageProvider.fetchDetectedLabelValues`, which hits
+  **`/detected_fields/<name>/values` (PLURAL)**.
+- `getTagKeys` (ad-hoc filter key auto-completion) → underlying Loki
+  datasource `/series`.
+- `getResource('patterns')` (Patterns panel) → `/patterns`.
+- Time params for `detected_*` / `index` / `patterns` are sent as **ISO-8601**
+  (`range.from.utc().toISOString()`); `query_range`/`query` go through the
+  Grafana core Loki client (epoch) — both formats are accepted by
+  `parseLokiTime` (RFC3339 + epoch magnitudes + scientific).
+
+### 9.2 Gaps found (all live-verified 404 before fix)
+
+| # | Plugin call | Collector state | Result (before) |
+|---|-------------|----------------|-----------------|
+| G1 | `/detected_fields/<name>/values` (PLURAL) | only `/detected_field/<name>/values` (SINGULAR) registered | **404** |
+| G2 | `/series` | not registered | **404** |
+| G3 | `/patterns` | not registered | **404** |
+
+Consequence: the detected-field value picker, ad-hoc filter key dropdown, and
+the Patterns panel would all fail/error in the real UI, despite the earlier
+36/36 "pass" (which had used the singular path and never probed series/patterns).
+
+### 9.3 Fixes
+
+- **router.go** — registered the PLURAL `/detected_fields/{name}/values` (alongside
+  the singular alias, both reusing `handleLokiDetectedFieldValues` which resolves
+  the field via `ListLogLabelValues`); added `/series` and `/patterns`.
+- **loki_handler.go** —
+  - `handleLokiSeries`: returns `{status, data:[{metric:{label:label}}]}` built
+    from `ListLogLabels` so `getTagKeys` can auto-complete label keys. Degrades to
+    an empty set on storage error instead of 500/404.
+  - `handleLokiPatterns`: returns `{data:[]}` (no patterns ingester) so the
+    Patterns panel renders "no patterns" instead of erroring.
+
+### 9.4 Redeploy required (unlike §4)
+
+The original two fixes were already in the running image; these three were not,
+so a rebuild + restart was required:
+
+```bash
+export DOCKER_CONTEXT=minikube && make docker-build
+kubectl rollout restart deployment/custom-otlp-collector -n default
+```
+
+Verified the three endpoints return 200 post-redeploy (direct collector path,
+`X-API-Key: your-api-key-1`):
+- `/detected_fields/service_name/values` → 200 + 6 values
+- `/series` → 200 + 5 label-key series
+- `/patterns` → 200 + `{"data":[]}`
+
+### 9.5 Suite extended (section 10) → 44/44
+
+Added 8 cases under "10. COVERAGE GAPS": real-plugin ISO-8601 `query_range`,
+`step="15s"` (Bug B live), scientific `start="1.78e9"` (Bug A live), `1+1`
+health probe, plural detected_fields values, `/series`, `/patterns`, and
+`detected_labels` with no time range.
+
+```
+go build ./extension/adminext/...          -> BUILD_EXIT=0
+LD_DIRECT=1 LD_API_KEY=your-api-key-1 \
+  LD_COLLECTOR=http://custom-otlp-collector.default.svc.cluster.local:8088 \
+  python3 scripts/logs-drilldown/suite.py  -> TOTAL: 44/44 passed, 0 failed
+```
+
+(Grafana proxy path could not be probed from this shell — Grafana not reachable
+on `localhost:3000` — but the proxy is a transparent pass-through over the same
+route prefix, so collector-side behavior is identical.)
+
+### 9.6 Files changed (this addendum)
+
+- `extension/adminext/router.go` — added `/detected_fields/{name}/values` (plural), `/series`, `/patterns`
+- `extension/adminext/loki_handler.go` — `handleLokiSeries`, `handleLokiPatterns`
+- `scripts/logs-drilldown/suite.py` — section 10 (8 new cases, total 44)
+- `scripts/logs-drilldown/VERIFICATION_REPORT.md` — §9 addendum

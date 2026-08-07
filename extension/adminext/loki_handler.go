@@ -761,3 +761,61 @@ func (h *lokiHandlers) handleLokiIndexStats(w http.ResponseWriter, r *http.Reque
 		"entries": 0,
 	})
 }
+
+// ── Series (Loki /series, used by getTagKeys for ad-hoc filter keys) ──
+
+// handleLokiSeries returns the set of label keys available in the index so the
+// logs-drilldown ad-hoc filter builder can auto-complete label names. The Loki
+// /series API returns {status, data:[{metric:{label:value}}]}; getTagKeys only
+// reads the metric keys, so we emit one series per known label with a
+// placeholder value (the label name itself) — enough to populate the key list
+// without a full series scan.
+func (h *lokiHandlers) handleLokiSeries(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLokiReader(w) {
+		return
+	}
+
+	start, _ := parseLokiTime(r.FormValue("start"))
+	end, _ := parseLokiTime(r.FormValue("end"))
+	tr := observabilitystorageext.TimeRange{Start: start, End: end}
+
+	labels, err := h.logReader.ListLogLabels(r.Context(), tr, "")
+	if err != nil {
+		h.logger.Warn("loki: series label list failed", zap.Error(err))
+		// Degrade gracefully to an empty series set rather than 404/500.
+		labels = []string{}
+	}
+	if labels == nil {
+		labels = []string{}
+	}
+
+	series := make([]map[string]map[string]string, 0, len(labels))
+	for _, l := range labels {
+		if l == "traceID" || l == "spanID" {
+			continue
+		}
+		series = append(series, map[string]map[string]string{
+			"metric": {l: l},
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   series,
+	})
+}
+
+// ── Patterns (Loki patterns ingester endpoint) ──
+
+// handleLokiPatterns serves the logs-drilldown Patterns panel. The real Loki
+// patterns ingester mines recurring line templates and returns
+// { data: [{ pattern, samples: [[ts_seconds, count], ...], level }] }. We do not
+// run the ingester; returning an empty data array keeps the panel in a clean
+// "no patterns detected" state instead of erroring on a missing endpoint.
+func (h *lokiHandlers) handleLokiPatterns(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"data": []interface{}{},
+	})
+}
