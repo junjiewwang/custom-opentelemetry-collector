@@ -10,10 +10,22 @@ import (
 )
 
 const (
-	// DefaultMaxBuckets is the safe upper bound for ES date_histogram buckets.
-	// This is deliberately set below ES's default max_buckets (65535) to leave
-	// headroom for nested aggregations that multiply the bucket count.
+	// DefaultMaxBuckets is the safe upper bound for ES date_histogram buckets
+	// when the aggregation is NESTED under a composite (group-by) aggregation.
+	// Per-shard bucket count = seriesLimit × time_buckets, so the time axis must
+	// stay well below ES's max_buckets (65535) divided by the series fan-out.
 	DefaultMaxBuckets = 10000
+
+	// DefaultMaxBucketsFlat is the upper bound for a NON-grouped range query,
+	// where the date_histogram is the top-level (only) aggregation. The per-shard
+	// bucket count equals the time_buckets directly, so it can safely reach ES's
+	// default search.max_buckets (65535). This lets long-range flat queries
+	// (e.g. 7d @ 10s step = 60480 buckets) return full-resolution data instead of
+	// being clamped down to ~10000 points.
+	DefaultMaxBucketsFlat = 65535
+
+	// ESHardMaxBuckets is ES's built-in per-shard aggregation bucket limit.
+	ESHardMaxBuckets = 65535
 )
 
 // BucketParams holds the inputs needed to calculate a safe histogram interval.

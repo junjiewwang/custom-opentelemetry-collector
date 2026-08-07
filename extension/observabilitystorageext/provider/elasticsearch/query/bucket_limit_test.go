@@ -237,6 +237,98 @@ func TestSafeInterval_EdgeCases(t *testing.T) {
 	}
 }
 
+// TestSafeInterval_FlatCap_LongRangeNotClamped verifies Phase 1.1: a non-grouped
+// (flat) range query uses DefaultMaxBucketsFlat (65535), so a 7d @ 10s step
+// (60480 buckets) is returned at full resolution instead of being clamped to
+// ~10000 points. Under the old DefaultMaxBuckets (10000) this would clamp.
+func TestSafeInterval_FlatCap_LongRangeNotClamped(t *testing.T) {
+	tests := []struct {
+		name         string
+		duration     time.Duration
+		step         time.Duration
+		maxBuckets   int
+		wantInterval string
+		wantClamped  bool
+	}{
+		{
+			name:         "7d @ 10s under flat cap (60480 < 65535) — no clamp",
+			duration:     7 * 24 * time.Hour,
+			step:         10 * time.Second,
+			maxBuckets:   DefaultMaxBucketsFlat,
+			wantInterval: "10s",
+			wantClamped:  false,
+		},
+		{
+			name:         "7d @ 10s under OLD cap (60480 > 10000) — would clamp",
+			duration:     7 * 24 * time.Hour,
+			step:         10 * time.Second,
+			maxBuckets:   DefaultMaxBuckets,
+			wantInterval: "61s", // ceil(604800/10000) = 61
+			wantClamped:  true,
+		},
+		{
+			name:         "30d @ 1m under flat cap (43200 < 65535) — no clamp",
+			duration:     30 * 24 * time.Hour,
+			step:         1 * time.Minute,
+			maxBuckets:   DefaultMaxBucketsFlat,
+			wantInterval: "1m",
+			wantClamped:  false,
+		},
+		{
+			name:         "1y @ 1h under flat cap (8760 < 65535) — no clamp",
+			duration:     365 * 24 * time.Hour,
+			step:         1 * time.Hour,
+			maxBuckets:   DefaultMaxBucketsFlat,
+			wantInterval: "1h",
+			wantClamped:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			interval, clamped := SafeInterval(BucketParams{
+				Duration:   tt.duration,
+				Step:       tt.step,
+				MaxBuckets: tt.maxBuckets,
+			})
+			if interval != tt.wantInterval {
+				t.Errorf("interval = %q, want %q", interval, tt.wantInterval)
+			}
+			if clamped != tt.wantClamped {
+				t.Errorf("clamped = %v, want %v", clamped, tt.wantClamped)
+			}
+		})
+	}
+}
+
+// TestSafeInterval_GroupedCap_AvoidsTooManyBuckets verifies Phase 1.1: a grouped
+// query caps the time axis at ESHardMaxBuckets/seriesLimit so the per-shard
+// bucket count (seriesLimit × time_buckets) never exceeds ES's 65535 limit,
+// turning a too_many_buckets ERROR into a (visible) clamp.
+func TestSafeInterval_GroupedCap_AvoidsTooManyBuckets(t *testing.T) {
+	seriesLimit := 100
+	cap := ESHardMaxBuckets / seriesLimit // 655
+	// 7d @ 10s = 60480 time buckets > 655 → must clamp (not error).
+	interval, clamped := SafeInterval(BucketParams{
+		Duration:   7 * 24 * time.Hour,
+		Step:        10 * time.Second,
+		MaxBuckets: cap,
+	})
+	if !clamped {
+		t.Fatalf("expected clamped=true for 7d@10s under grouped cap %d, got interval=%q", cap, interval)
+	}
+	// Resulting time buckets must fit under seriesLimit×cap ≤ ESHardMaxBuckets.
+	parsed, err := time.ParseDuration(interval)
+	if err != nil {
+		t.Fatalf("unparseable interval %q: %v", interval, err)
+	}
+	timeBuckets := EstimateBucketCount(7*24*time.Hour, parsed)
+	if total := seriesLimit * timeBuckets; total > ESHardMaxBuckets {
+		t.Errorf("grouped total buckets %d×%d = %d exceeds ES limit %d",
+			seriesLimit, timeBuckets, total, ESHardMaxBuckets)
+	}
+}
+
 func TestEstimateBucketCount(t *testing.T) {
 	tests := []struct {
 		name     string

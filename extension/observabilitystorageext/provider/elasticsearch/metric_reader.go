@@ -144,7 +144,23 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 	esQuery := filterResult.Query
 
 	// 3. Calculate interval for date_histogram.
-	interval := r.calculateInterval(query.TimeRange, query.Step)
+	// Size the bucket cap for the aggregation shape: a non-grouped query has a
+	// single top-level date_histogram (per-shard buckets == time_buckets), so it
+	// can use ES's full max_buckets. A grouped query nests date_histogram under
+	// a composite, so per-shard buckets = seriesLimit × time_buckets; cap the time
+	// axis at ESHardMaxBuckets/seriesLimit to avoid too_many_buckets.
+	maxBuckets := esq.DefaultMaxBucketsFlat
+	if len(query.GroupBy) > 0 {
+		seriesLimit := query.SeriesLimit
+		if seriesLimit <= 0 {
+			seriesLimit = 100
+		}
+		maxBuckets = esq.ESHardMaxBuckets / seriesLimit
+		if maxBuckets < 1 {
+			maxBuckets = 1
+		}
+	}
+	interval := r.calculateInterval(query.TimeRange, query.Step, maxBuckets)
 
 	// 4. Determine min_doc_count based on fill strategy.
 	minDocCount := 0
@@ -675,7 +691,13 @@ func (r *MetricReader) timeRangeQuery(tr TimeRange) map[string]any {
 // ensuring bucket count stays within ES max_buckets limit.
 // Delegates to esq.SafeInterval which implements clamping when a user-
 // specified step would produce too many buckets.
-func (r *MetricReader) calculateInterval(tr TimeRange, step time.Duration) string {
+//
+// maxBuckets caps the TIME-axis bucket count. Callers must size it for the
+// aggregation shape: a non-grouped query (single date_histogram) can use
+// esq.DefaultMaxBucketsFlat (65535); a grouped query nests date_histogram
+// under a composite, so per-shard buckets = seriesLimit × time_buckets and
+// maxBuckets must be ESHardMaxBuckets/seriesLimit to avoid too_many_buckets.
+func (r *MetricReader) calculateInterval(tr TimeRange, step time.Duration, maxBuckets int) string {
 	duration := time.Duration(0)
 	if !tr.Start.IsZero() && !tr.End.IsZero() {
 		duration = tr.End.Sub(tr.Start)
@@ -684,7 +706,7 @@ func (r *MetricReader) calculateInterval(tr TimeRange, step time.Duration) strin
 	interval, clamped := esq.SafeInterval(esq.BucketParams{
 		Duration:   duration,
 		Step:       step,
-		MaxBuckets: esq.DefaultMaxBuckets,
+		MaxBuckets: maxBuckets,
 	})
 
 	if clamped {
@@ -692,7 +714,7 @@ func (r *MetricReader) calculateInterval(tr TimeRange, step time.Duration) strin
 			zap.Duration("original_step", step),
 			zap.String("clamped_interval", interval),
 			zap.Duration("duration", duration),
-			zap.Int("max_buckets", esq.DefaultMaxBuckets),
+			zap.Int("max_buckets", maxBuckets),
 		)
 	}
 
@@ -986,6 +1008,34 @@ func (r *MetricReader) buildRawQueryFilter(query MetricRawQuery) metricFilterRes
 		metricNegations{Not: query.LabelNot, NotMatch: query.LabelNotMatch})
 }
 
+// adaptiveFlatMaxDocs scales the QueryFlat document cap with the query span so
+// long-range rate()/increase()/histogram_quantile() queries fetch enough raw
+// samples instead of being silently truncated at 10000, while staying under a
+// memory ceiling.
+//
+// Heuristic: ~2000 docs per hour of span (≈ covers a single series at ~2s scrape
+// interval, or a handful of series at 15s). Floor 10000 (short ranges keep the
+// old default), ceiling 50000 (bounds heap: ~10s of MB worst case).
+//
+// Long-range rate over MANY series still cannot be fully served from raw docs —
+// that is the remit of the rollup tiers (Phase 2). This only lifts the silent
+// truncation ceiling for the common single-series / low-cardinality case.
+func adaptiveFlatMaxDocs(tr TimeRange) int {
+	const floor, ceiling, perHour = 10000, 50000, 2000
+	span := 5 * time.Hour // default floor span
+	if !tr.Start.IsZero() && !tr.End.IsZero() && tr.End.After(tr.Start) {
+		span = tr.End.Sub(tr.Start)
+	}
+	estimate := int(span.Hours()) * perHour
+	if estimate < floor {
+		return floor
+	}
+	if estimate > ceiling {
+		return ceiling
+	}
+	return estimate
+}
+
 // QueryFlat returns all matching metric documents without ES-side grouping.
 // Uses a simple ES search (no aggregation) with a configurable MaxDocs cap.
 // Grouping by label set happens in Go via the Labels field on each MetricSample.
@@ -998,7 +1048,7 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 
 	maxDocs := query.MaxDocs
 	if maxDocs <= 0 {
-		maxDocs = 10000
+		maxDocs = adaptiveFlatMaxDocs(query.TimeRange)
 	}
 
 	searchReq := &SearchRequest{
