@@ -44,7 +44,16 @@ func ConvertOTLPMetric(metric pmetric.Metric, resource pcommon.Resource) []Store
 	case pmetric.MetricTypeGauge:
 		return convertNumberPoints(metric.Gauge().DataPoints(), "gauge", base)
 	case pmetric.MetricTypeSum:
-		return convertNumberPoints(metric.Sum().DataPoints(), "counter", base)
+		// Only a monotonic Sum is a counter. A non-monotonic Sum is an OTel
+		// UpDownCounter (jvm.memory.used, jvm.thread.count, ...), which can
+		// decrease and maps to a Prometheus gauge — the same mapping the OTel
+		// Prometheus exporter uses. Reporting those as counters made Grafana
+		// Metrics Drilldown wrap them in rate(), which is meaningless for a
+		// value that goes up and down.
+		if metric.Sum().IsMonotonic() {
+			return convertNumberPoints(metric.Sum().DataPoints(), "counter", base)
+		}
+		return convertNumberPoints(metric.Sum().DataPoints(), "gauge", base)
 	case pmetric.MetricTypeHistogram:
 		return convertHistogramPoints(metric.Histogram().DataPoints(), base)
 	case pmetric.MetricTypeSummary:

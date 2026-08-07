@@ -40,13 +40,31 @@ func TestConvertOTLPMetric_Sum(t *testing.T) {
 	rm := md.ResourceMetrics().AppendEmpty()
 	m := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
 	m.SetName("request.count")
-	dp := m.SetEmptySum().DataPoints().AppendEmpty()
+	sum := m.SetEmptySum()
+	// A request count is monotonic; only a monotonic Sum maps to "counter"
+	// (a non-monotonic Sum is an UpDownCounter and maps to "gauge").
+	sum.SetIsMonotonic(true)
+	dp := sum.DataPoints().AppendEmpty()
 	dp.SetIntValue(100)
 
 	points := storedmodel.ConvertOTLPMetric(m, rm.Resource())
 	assert.Len(t, points, 1)
 	assert.Equal(t, "counter", points[0].Type)
 	assert.Equal(t, float64(100), points[0].Value)
+}
+
+func TestConvertOTLPMetric_NonMonotonicSum(t *testing.T) {
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	m := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	m.SetName("jvm.memory.used")
+	sum := m.SetEmptySum() // IsMonotonic defaults to false → UpDownCounter
+	dp := sum.DataPoints().AppendEmpty()
+	dp.SetIntValue(100)
+
+	points := storedmodel.ConvertOTLPMetric(m, rm.Resource())
+	assert.Len(t, points, 1)
+	assert.Equal(t, "gauge", points[0].Type, "UpDownCounter is a Prometheus gauge")
 }
 
 func TestMetricWriter_GetIndexName(t *testing.T) {
