@@ -67,6 +67,7 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 		},
 		Source: []string{
 			FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels,
+			FieldServiceName,
 			FieldMetricBucketCounts, FieldMetricExplicitBounds,
 		},
 	}
@@ -227,10 +228,17 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 // ListMetricTypes returns each metric name mapped to its stored OTel-derived
 // type ("gauge", "counter", "histogram", "summary").
 //
-// The type is written per data point by storedmodel (Sum → counter, Gauge →
-// gauge, ...), so a terms sub-aggregation recovers it without scanning
-// documents. A metric that somehow carries more than one type reports the most
-// frequent one, which is what the terms ordering yields first.
+// The type is written per data point by storedmodel (monotonic Sum → counter,
+// Gauge and non-monotonic Sum → gauge, ...), so a sub-aggregation recovers it
+// without scanning documents.
+//
+// Reports the type of the NEWEST data point, not the most frequent one. When a
+// metric is re-typed — as every non-monotonic Sum was, on being corrected from
+// counter to gauge — the old documents outnumber the new ones for as long as
+// the retention window holds them. Picking by frequency kept serving the stale
+// type indefinitely, and Grafana Metrics Drilldown then wrapped gauges like
+// jvm.thread.count in rate(). Grafana sends no start/end to /metadata, so the
+// query spans all history and the stale majority always won.
 func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error) {
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),
@@ -243,9 +251,10 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 				},
 				"aggs": map[string]any{
 					"metric_type": map[string]any{
-						"terms": map[string]any{
-							"field": FieldMetricType,
-							"size":  1,
+						"top_hits": map[string]any{
+							"size":    1,
+							"sort":    []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}}},
+							"_source": []string{FieldMetricType},
 						},
 					},
 				},
@@ -267,9 +276,13 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 		Buckets []struct {
 			Key        string `json:"key"`
 			MetricType struct {
-				Buckets []struct {
-					Key string `json:"key"`
-				} `json:"buckets"`
+				Hits struct {
+					Hits []struct {
+						Source struct {
+							Type string `json:"type"`
+						} `json:"_source"`
+					} `json:"hits"`
+				} `json:"hits"`
 			} `json:"metric_type"`
 		} `json:"buckets"`
 	}
@@ -279,8 +292,8 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 
 	out := make(map[string]string, len(agg.Buckets))
 	for _, b := range agg.Buckets {
-		if len(b.MetricType.Buckets) > 0 {
-			out[b.Key] = b.MetricType.Buckets[0].Key
+		if hits := b.MetricType.Hits.Hits; len(hits) > 0 {
+			out[b.Key] = hits[0].Source.Type
 		} else {
 			out[b.Key] = ""
 		}
@@ -301,7 +314,7 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 	searchReq := &SearchRequest{
 		Query:  r.timeRangeQuery(timeRange),
 		Size:   labelSampleSize,
-		Source: []string{FieldMetricLabels},
+		Source: []string{FieldMetricLabels, FieldServiceName},
 		Sort: []map[string]any{
 			{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}},
 		},
@@ -327,11 +340,16 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 	labelSet := make(map[string]struct{})
 	for _, hit := range resp.Hits.Hits {
 		var doc struct {
-			Labels map[string]any `json:"labels"`
+			ServiceName string         `json:"serviceName"`
+			Labels      map[string]any `json:"labels"`
 		}
 		if err := json.Unmarshal(hit.Source, &doc); err == nil {
 			for k := range doc.Labels {
 				labelSet[k] = struct{}{}
+			}
+			// service_name lives in the top-level serviceName field, not "labels".
+			if doc.ServiceName != "" {
+				labelSet["service_name"] = struct{}{}
 			}
 		}
 	}
@@ -356,10 +374,29 @@ func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRa
 // breakdown UI uses it to populate the value picker, and an unscoped list offers
 // values that exist on some other metric entirely and yield an empty panel.
 func (r *MetricReader) ListLabelValuesForMetric(ctx context.Context, label, metricName string, timeRange TimeRange) ([]string, error) {
-	// Metric labels are dynamic text+keyword fields — terms aggregation
-	// requires the .keyword sub-field (aggregating on the bare text field is
-	// rejected by ES with "Text fields are not optimised for aggregations").
-	fieldPath := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", storedmodel.SanitizeMetricKey(label)))
+	// Read the stored `labels` object from a sample of documents and extract the
+	// requested label's value in Go. This mirrors ListLabelNames (which the
+	// /labels endpoint uses) and the `sum by (label)` path (which goes through
+	// QueryFlat) — both read the labels object directly and work reliably.
+	//
+	// We deliberately do NOT use an ES `terms` aggregation on `labels.<key>.keyword`:
+	// in the running indices that aggregation returns empty buckets (or
+	// illegal_argument for text fields) for string-valued labels, which blanked
+	// the Grafana breakdown value picker even though the values are present on
+	// the documents. Reading the typed labels object also handles numeric and
+	// boolean attributes uniformly (the metricLabels decoder yields their string
+	// form, e.g. "200", "true"), so a single path covers every label type.
+	//
+	// Sampling the newest documents is a heuristic, not an exhaustive scan — the
+	// value set is the union of whatever these hits happen to carry. Keep the
+	// sample large (see ListLabelNames for the same trade-off); it narrows the
+	// gap vs an exhaustive scan but cannot close it.
+	const labelSampleSize = 2000
+
+	// Normalize the Prometheus/OTel label key to the ES storage form (dots →
+	// underscores), matching how the writer stored it via SanitizeMetricKey and
+	// how ListLabelNames reads the raw keys back.
+	esKey := storedmodel.SanitizeMetricKey(label)
 
 	esQuery := r.timeRangeQuery(timeRange)
 	if metricName != "" {
@@ -374,15 +411,11 @@ func (r *MetricReader) ListLabelValuesForMetric(ctx context.Context, label, metr
 	}
 
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0,
-		Aggregations: map[string]any{
-			"label_values": map[string]any{
-				"terms": map[string]any{
-					"field": fieldPath,
-					"size":  1000,
-				},
-			},
+		Query:  esQuery,
+		Size:   labelSampleSize,
+		Source: []string{FieldMetricLabels, FieldServiceName},
+		Sort: []map[string]any{
+			{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}},
 		},
 	}
 
@@ -391,13 +424,25 @@ func (r *MetricReader) ListLabelValuesForMetric(ctx context.Context, label, metr
 		return nil, fmt.Errorf("list label values failed: %w", err)
 	}
 
-	raw, ok := resp.Aggregations["label_values"]
-	if !ok {
-		return nil, nil
+	valueSet := make(map[string]struct{})
+	for _, hit := range resp.Hits.Hits {
+		var doc struct {
+			ServiceName string       `json:"serviceName"`
+			Labels      metricLabels `json:"labels"`
+		}
+		if err := json.Unmarshal(hit.Source, &doc); err == nil {
+			// service_name is sourced from the top-level serviceName field, not
+			// the "labels" object.
+			allLabels := mergeServiceName(doc.Labels, doc.ServiceName)
+			if v, ok := allLabels[esKey]; ok && v != "" {
+				valueSet[v] = struct{}{}
+			}
+		}
 	}
-	values, err := esq.ParseTermsAgg(raw)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse label_values aggregation: %w", err)
+
+	values := make([]string, 0, len(valueSet))
+	for v := range valueSet {
+		values = append(values, v)
 	}
 	return values, nil
 }
@@ -470,10 +515,21 @@ func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFu
 
 	sources := make([]map[string]any, 0, len(groupBy))
 	for _, label := range groupBy {
-		esKey := translateLabelKey(label)
-		// Metric labels are text fields from ES dynamic template — must use
-		// .keyword sub-field for terms/composite aggregation.
-		aggField := aggregatableField("metric", fmt.Sprintf("%s.%s", FieldMetricLabels, esKey))
+		var aggField string
+		if label == "service_name" {
+			// service_name is stored in the TOP-LEVEL serviceName field (the
+			// resource attribute service.name), NOT inside the labels object.
+			// Grouping by labels.service_name.keyword yields 0 buckets for metrics
+			// whose service comes only from the resource (db.client.connections.*,
+			// kafka.consumer.*), so the panel shows "no data" even though the
+			// samples exist. Group by the actual stored field instead.
+			aggField = FieldServiceName
+		} else {
+			esKey := translateLabelKey(label)
+			// Metric labels are text fields from ES dynamic template — must use
+			// .keyword sub-field for terms/composite aggregation.
+			aggField = aggregatableField("metric", fmt.Sprintf("%s.%s", FieldMetricLabels, esKey))
+		}
 		sources = append(sources, map[string]any{
 			label: map[string]any{
 				"terms": map[string]any{
@@ -643,14 +699,77 @@ func (r *MetricReader) calculateInterval(tr TimeRange, step time.Duration) strin
 	return interval
 }
 
+// metricLabels decodes the "labels" object, tolerating non-string scalars.
+//
+// OTel attributes are typed, so a label can arrive as a JSON number or bool
+// (http.response.status_code=200, rpc.grpc.status_code=0). Decoding straight
+// into map[string]string makes encoding/json fail on the FIRST such key and
+// abandon the rest of the document — the caller then sees an empty sample and
+// loses bucket_counts/explicit_bounds too. That is why histogram_quantile and
+// the heatmap returned nothing for every http.* and rpc.client.* metric while
+// the bucket data sat intact in Elasticsearch.
+type metricLabels map[string]string
+
+func (m *metricLabels) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	out := make(metricLabels, len(raw))
+	for k, v := range raw {
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil {
+			out[k] = s
+			continue
+		}
+		// Numbers, booleans and null: keep the literal JSON text, which for a
+		// scalar is exactly its Prometheus label value ("200", "true"). null
+		// becomes the empty string, matching an absent attribute.
+		if string(v) == "null" {
+			out[k] = ""
+			continue
+		}
+		out[k] = string(v)
+	}
+	*m = out
+	return nil
+}
+
+// mergeServiceName promotes the stored TOP-LEVEL "serviceName" field onto a
+// sample's label set as the canonical "service_name" Prometheus label.
+//
+// Metrics whose only service identifier is the resource attribute
+// service.name are stored with it in the top-level serviceName field (see
+// storedmodel.ConvertOTLPMetric), NOT inside the "labels" object. The query
+// layer must promote it, otherwise such metrics have no service_name label and
+// Grafana Metrics Drilldown — which breaks every metric down by service_name
+// by default — returns 0 series and shows "no data" on the page even though
+// the raw samples exist (e.g. db.client.connections.*, kafka.consumer.*).
+//
+// A data-point label already named service_name (e.g. emitted by the spanmetrics
+// connector) lives inside "labels" and wins; we never override it.
+func mergeServiceName(labels metricLabels, serviceName string) metricLabels {
+	if serviceName == "" {
+		return labels
+	}
+	if labels == nil {
+		labels = make(metricLabels)
+	}
+	if _, ok := labels["service_name"]; !ok {
+		labels["service_name"] = serviceName
+	}
+	return labels
+}
+
 // hitToDataPoint converts an ES search hit to a MetricDataPoint.
 func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 	var doc struct {
-		TimeUnixMilli  int64             `json:"timeUnixMilli"`
-		Value          float64           `json:"value"`
-		Labels         map[string]string `json:"labels"`
-		BucketCounts   []int64           `json:"bucket_counts"`
-		ExplicitBounds []float64         `json:"explicit_bounds"`
+		TimeUnixMilli  int64        `json:"timeUnixMilli"`
+		Value          float64      `json:"value"`
+		ServiceName    string       `json:"serviceName"`
+		Labels         metricLabels `json:"labels"`
+		BucketCounts   []int64      `json:"bucket_counts"`
+		ExplicitBounds []float64    `json:"explicit_bounds"`
 	}
 	if err := json.Unmarshal(hit.Source, &doc); err != nil {
 		r.logger.Warn("Failed to unmarshal metric hit", zap.String("id", hit.ID), zap.Error(err))
@@ -658,7 +777,7 @@ func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 	}
 
 	return MetricDataPoint{
-		Labels:         doc.Labels,
+		Labels:         mergeServiceName(doc.Labels, doc.ServiceName),
 		Value:          doc.Value,
 		Time:           time.UnixMilli(doc.TimeUnixMilli),
 		BucketCounts:   doc.BucketCounts,
@@ -670,11 +789,12 @@ func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 // Used by QueryFlat to return samples with their original labels for Go-side grouping.
 func (r *MetricReader) hitToSample(hit SearchHit) MetricSample {
 	var doc struct {
-		TimeUnixMilli  int64             `json:"timeUnixMilli"`
-		Value          float64           `json:"value"`
-		Labels         map[string]string `json:"labels"`
-		BucketCounts   []int64           `json:"bucket_counts"`
-		ExplicitBounds []float64         `json:"explicit_bounds"`
+		TimeUnixMilli  int64        `json:"timeUnixMilli"`
+		Value          float64      `json:"value"`
+		ServiceName    string       `json:"serviceName"`
+		Labels         metricLabels `json:"labels"`
+		BucketCounts   []int64      `json:"bucket_counts"`
+		ExplicitBounds []float64    `json:"explicit_bounds"`
 	}
 	if err := json.Unmarshal(hit.Source, &doc); err != nil {
 		r.logger.Warn("Failed to unmarshal metric hit", zap.String("id", hit.ID), zap.Error(err))
@@ -686,7 +806,7 @@ func (r *MetricReader) hitToSample(hit SearchHit) MetricSample {
 		Value:        doc.Value,
 		BucketCounts: doc.BucketCounts,
 		Bounds:       doc.ExplicitBounds,
-		Labels:       doc.Labels,
+		Labels:       mergeServiceName(doc.Labels, doc.ServiceName),
 	}
 }
 
@@ -733,7 +853,7 @@ func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]Me
 					"top_hits": map[string]any{
 						"size":    limit,
 						"sort":    []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "asc"}}},
-						"_source": []string{FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels, FieldMetricBucketCounts, FieldMetricExplicitBounds},
+						"_source": []string{FieldMetricTimeUnixMilli, FieldMetricValue, FieldMetricLabels, FieldServiceName, FieldMetricBucketCounts, FieldMetricExplicitBounds},
 					},
 				},
 			},
@@ -887,7 +1007,7 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 		Sort:  []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "asc"}}},
 		Source: []string{
 			FieldMetricTimeUnixMilli, FieldMetricValue,
-			FieldMetricLabels, FieldMetricBucketCounts, FieldMetricExplicitBounds,
+			FieldMetricLabels, FieldServiceName, FieldMetricBucketCounts, FieldMetricExplicitBounds,
 		},
 	}
 
@@ -1024,24 +1144,26 @@ func (r *MetricReader) parseRawResult(resp *SearchResponse) ([]MetricRawSeries, 
 		var labels map[string]string
 		for _, hit := range hits {
 			var doc struct {
-				TimeUnixMilli  int64             `json:"timeUnixMilli"`
-				Value          float64           `json:"value"`
-				Labels         map[string]string `json:"labels"`
-				BucketCounts   []int64           `json:"bucket_counts"`
-				ExplicitBounds []float64         `json:"explicit_bounds"`
+				TimeUnixMilli  int64        `json:"timeUnixMilli"`
+				Value          float64      `json:"value"`
+				ServiceName    string       `json:"serviceName"`
+				Labels         metricLabels `json:"labels"`
+				BucketCounts   []int64      `json:"bucket_counts"`
+				ExplicitBounds []float64    `json:"explicit_bounds"`
 			}
 			if err := json.Unmarshal(hit.Source, &doc); err != nil {
 				continue
 			}
+			merged := mergeServiceName(doc.Labels, doc.ServiceName)
 			if labels == nil {
-				labels = doc.Labels
+				labels = merged
 			}
 			samples = append(samples, MetricSample{
 				TimestampMs:  doc.TimeUnixMilli,
 				Value:        doc.Value,
 				BucketCounts: doc.BucketCounts,
 				Bounds:       doc.ExplicitBounds,
-				Labels:       doc.Labels,
+				Labels:       merged,
 			})
 		}
 		if labels == nil {

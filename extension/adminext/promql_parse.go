@@ -41,6 +41,16 @@ func parsePromQL(s string) (*promqlExpr, error) {
 
 	expr := &promqlExpr{}
 
+	// Grafana's datasource health check (and other liveness probes) issue a
+	// scalar expression such as "1+1" or "1". This custom Prometheus API only
+	// implements a subset of PromQL, but these probes must still return 200 so
+	// the datasource reports as healthy. Recognize and short-circuit them.
+	if v, ok := evalScalarProbe(s); ok {
+		expr.IsScalarProbe = true
+		expr.ScalarValue = v
+		return expr, nil
+	}
+
 	// Check for histogram_quantile(θ, ...) wrapper before aggregation.
 	// This is a special two-arg function where the first arg is a float quantile
 	// and the second is the inner expression.
@@ -413,6 +423,50 @@ func truncateForError(s string) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// scalarLiteralRe matches a bare numeric literal used as a health probe (e.g. "1").
+var scalarLiteralRe = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
+
+// scalarProbeRe matches a binary arithmetic of two numeric literals — the other
+// shape Grafana's health check sends (e.g. "1+1", "2*3"). Functions such as
+// vector()/time() are deliberately not supported; the health probe never uses them.
+var scalarProbeRe = regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*([+\-*/])\s*(\d+(?:\.\d+)?)$`)
+
+// evalScalarProbe recognizes and evaluates the trivial scalar expressions that
+// Grafana's datasource health check emits, so the Prometheus-compatible API can
+// answer them with HTTP 200 instead of "unsupported expression" (400). It
+// returns (0, false) for anything that is not one of those probe shapes.
+func evalScalarProbe(s string) (float64, bool) {
+	if scalarLiteralRe.MatchString(s) {
+		if v, err := strconv.ParseFloat(s, 64); err == nil {
+			return v, true
+		}
+		return 0, false
+	}
+	m := scalarProbeRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, false
+	}
+	a, err1 := strconv.ParseFloat(m[1], 64)
+	b, err2 := strconv.ParseFloat(m[3], 64)
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	switch m[2] {
+	case "+":
+		return a + b, true
+	case "-":
+		return a - b, true
+	case "*":
+		return a * b, true
+	case "/":
+		if b == 0 {
+			return 0, false
+		}
+		return a / b, true
+	}
+	return 0, false
 }
 
 // parseSelector parses metric_name{key="val", key=~"regex"}.

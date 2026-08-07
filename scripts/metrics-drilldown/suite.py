@@ -93,6 +93,13 @@ print("=" * 92)
 print("2. LABEL VALUES SCOPING  (breakdown value picker)")
 print("=" * 92)
 
+# REGRESSION: Grafana's "breakdown by <label>" picker calls /label/<name>/values.
+# This used to run an Elasticsearch `terms` aggregation on labels.<name>.keyword,
+# which silently returns EMPTY buckets for string attributes even when the data
+# is present -- so the picker showed no values and users couldn't break down by
+# service_name / span_kind / http_route. The fix reads label values straight from
+# sampled documents (raw-doc extraction), which works for every attribute type.
+
 s, b = get("/label/span_kind/values", {"match[]": '{__name__="%s"}' % G})
 check("span_kind values scoped to a gauge metric", s == 200 and b.get("data") in ([], None),
       "got %s (expected empty: label absent on %s)" % (b.get("data"), G))
@@ -102,8 +109,17 @@ check("jvm_memory_type scoped to a counter metric", s == 200 and b.get("data") i
       "got %s (expected empty)" % (b.get("data"),))
 
 s, b = get("/label/span_kind/values", {"match[]": '{__name__="%s"}' % M})
-check("span_kind values present on the right metric", s == 200 and len(b.get("data") or []) > 0,
-      str(b.get("data"))[:60])
+sk_vals = b.get("data") or []
+check("span_kind values present on the right metric", s == 200 and len(sk_vals) > 0,
+      str(sk_vals)[:60])
+check("span_kind enumeration is NOT empty (string-label regression)",
+      s == 200 and len(sk_vals) > 0,
+      "raw-doc extraction must surface string attributes; got %s" % sk_vals)
+
+s, b = get("/label/service_name/values", {"match[]": '{__name__="%s"}' % M})
+sv_vals = b.get("data") or []
+check("service_name values present (string label, unscoped fallback)",
+      s == 200 and len(sv_vals) > 0, "%d values" % len(sv_vals))
 
 print()
 print("=" * 92)
@@ -142,8 +158,12 @@ print("=" * 92)
 
 s, bare = instant(M)
 s, named = instant('{__name__="%s"}' % M)
+# Series counts drift by a couple between two calls against live data, so allow
+# a small delta. What matters is that the selector FILTERS at all: before the
+# fix the __name__ form ignored the matcher and returned every metric (126 vs
+# 83), which no tolerance would hide.
 check("{__name__=\"m\"} filters like the bare name",
-      nseries(named) == nseries(bare) and nseries(bare) > 0,
+      nseries(bare) > 0 and abs(nseries(named) - nseries(bare)) <= max(3, nseries(bare) * 0.05),
       "%d vs %d series" % (nseries(named), nseries(bare)))
 
 s, b = instant('{__name__="%s"}' % G)
@@ -312,10 +332,156 @@ check("POST /series", s == 200 and len(b.get("data", [])) > 0,
 # what must never happen is a malformed {"metric":null,"value":null} series.
 for dur in ["5m", "1m0s", "4m30s", "30s", "1h", "2h15m0s"]:
     s, b = instant("sum(rate(%s[%s]))" % (M, dur))
-    res = b.get("data", {}).get("result", [])
+    data = b.get("data") or {}
+    res = data.get("result") or []
     wellformed = all(r.get("metric") is not None and r.get("value") is not None for r in res)
     check("duration [%s]" % dur, s == 200 and wellformed,
           "%d series%s" % (len(res), "" if wellformed else " — NULL metric/value!"))
+
+print()
+print("=" * 92)
+print("11. EVERY HISTOGRAM METRIC MUST EXPOSE BUCKETS")
+print("=" * 92)
+
+# A histogram whose buckets cannot be read degrades to a plain sum: no
+# quantiles, no heatmap. This went unnoticed because the metric still returned
+# data. Root cause was a numeric label (http.response.status_code=200) making
+# the whole document fail to decode, taking bucket_counts down with it -- so
+# assert across ALL histograms, not just the one that happened to work.
+s, b = get("/metadata")
+hist_metrics = sorted(k for k, v in (b.get("data") or {}).items()
+                      if v and v[0].get("type") == "histogram")
+check("backend reports histogram metrics", len(hist_metrics) > 0,
+      "%d histogram metrics" % len(hist_metrics))
+
+fresh, bucketless = [], []
+for m in hist_metrics:
+    s, r = rng('sum by (le) (rate({"%s"}[5m]))' % m)
+    if len(r.get("data", {}).get("result", [])) > 0:
+        fresh.append(m)
+        continue
+    # No buckets can also mean no data in the window. Only call it broken if
+    # the metric has samples in that SAME window -- several metrics here are
+    # days stale and legitimately return nothing.
+    s, raw = rng('{"%s"}' % m)
+    series = raw.get("data", {}).get("result", []) or []
+    has_points = any(r.get("values") for r in series)
+    if has_points:
+        bucketless.append(m)
+
+check("no histogram with live data lacks buckets", not bucketless,
+      "broken: %s" % (", ".join(bucketless) if bucketless else "none"))
+check("histograms with buckets in window", len(fresh) > 0,
+      "%d of %d have live bucket data" % (len(fresh), len(hist_metrics)))
+
+print()
+print("=" * 92)
+print("12. NUMERIC LABEL VALUES ARE READABLE")
+print("=" * 92)
+
+# OTel attributes are typed; http.response.status_code arrives as a JSON number.
+s, b = get("/label/http_response_status_code/values")
+codes = b.get("data") or []
+check("numeric label exposes its values", len(codes) > 0, "values: %s" % str(codes[:6]))
+
+s, b = instant('sum by (http_response_status_code) (rate({"http.server.request.duration"}[5m]))')
+seen = labels_of(b, "http_response_status_code")
+check("can group by a numeric label", nseries(b) > 0 and "?" not in seen,
+      "%d series, values=%s" % (nseries(b), str(seen[:5])))
+
+print()
+print("=" * 92)
+print("13. service_name PROMOTED FROM RESOURCE (db/kafka metrics)")
+print("=" * 92)
+
+# Metrics whose only service identifier is the RESOURCE attribute service.name
+# (e.g. db.client.connections.*, kafka.consumer.* from a Java agent) store it in
+# the top-level serviceName field, NOT inside labels. The query layer must
+# promote it to the service_name label, else Metrics Drilldown -- which breaks
+# every metric down by service_name by default -- returns 0 series and the page
+# shows "no data" even though the samples exist.
+
+svc_metrics = [
+    "db.client.connections.idle.max",
+    "db.client.connections.idle.min",
+    "db.client.connections.usage",
+    "db.client.connections.pending_requests",
+    "db.client.connections.max",
+    "kafka.consumer.bytes_consumed_total",
+    "kafka.consumer.commit_total",
+    "kafka.consumer.connection_close_total",
+]
+
+# Pick a supported grouping shape per metric type. The custom PromQL parser does
+# NOT support nested aggregation (sum by (x) (avg(...))); it supports the
+# PromQL-standard `avg(m) by (x)` and `sum(rate(m[5m])) by (x)` forms.
+s, mt = get("/metadata")
+meta = mt.get("data") or {}
+
+def group_shape(m):
+    t = (meta.get(m) or [{}])[0].get("type") if meta.get(m) else None
+    if t == "counter":
+        return 'sum(rate({"%s"}[5m])) by (service_name)' % m
+    return 'avg({"%s"}) by (service_name)' % m
+
+for m in svc_metrics:
+    s, b = instant(group_shape(m))
+    sv = labels_of(b, "service_name")
+    check("service_name grouping works for %s" % m, nseries(b) > 0 and len(sv) > 0,
+          "%d series, services=%s" % (nseries(b), sv))
+
+# non-service_name grouping (pool_name lives inside labels) must still work -- a
+# control proving the fix only ADDS service_name rather than disturbing grouping.
+m0 = svc_metrics[0]
+s, b = instant('avg({"%s"}) by (pool_name)' % m0)
+check("pool_name grouping still works for %s" % m0, nseries(b) > 0,
+      "%d series" % nseries(b))
+
+# the breakdown picker must offer service_name as a label for these metrics
+s, b = get("/labels", {"match[]": '{__name__="%s"}' % m0})
+lbls = set(b.get("data") or [])
+check("service_name discoverable via /labels for %s" % m0, "service_name" in lbls,
+      "labels: %s" % sorted(lbls))
+
+s, b = get("/label/service_name/values", {"match[]": '{__name__="%s"}' % m0})
+sv_vals = b.get("data") or []
+check("service_name values enumerated for %s" % m0, len(sv_vals) > 0,
+      "values: %s" % sv_vals[:6])
+
+print()
+print("=" * 92)
+print("14. RATE WINDOW BRACKETING (aliased 1m rate must not be empty)")
+print("=" * 92)
+
+# The metrics-drilldown page issues range queries of the shape
+#   sum by (service_name) (rate({metric}[$__rate_interval]))
+# Grafana expands $__rate_interval to max(minInterval, step) x 4. With the
+# collector datasource's small effective interval this resolves to ~1m0s, and
+# the evaluation grid (step=15s) never aligns with the 60s scrape grid -- so a
+# naive rate() that requires >=2 samples strictly inside the window returns an
+# EMPTY frame for every step. The collector must bracket the window with the
+# nearest adjacent samples (Prometheus-style extrapolation) so the page shows
+# data. This is the exact regression the 9 "no data" metrics hit (the paste the
+# user shared for jvm.class.loaded returned 6 correct frames with 0 data points).
+STEP_S = 15
+SPAN_S = 1800
+end = NOW
+start = NOW - SPAN_S
+rate_metrics = [
+    "jvm.class.loaded",
+    "kafka.consumer.commit_total",
+    "kafka.consumer.bytes_consumed_total",
+    "kafka.consumer.connection_close_total",
+]
+for m in rate_metrics:
+    params = {"query": 'sum by (service_name) (rate({"%s"}[1m0s]))' % m,
+              "start": start, "end": end, "step": STEP_S}
+    s, b = get("/query_range", params)
+    res = (b.get("data") or {}).get("result") or []
+    pts = sum(len(r.get("values", [])) for r in res)
+    check("rate([1m0s]) non-empty for %s" % m,
+          s == 200 and len(res) > 0 and pts > 0,
+          "%d series, %d pts" % (len(res), pts))
 
 print()
 print("=" * 92)

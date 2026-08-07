@@ -104,6 +104,8 @@ type promqlExpr struct {
 	Quantile      float64           // θ for histogram_quantile, NaN if not set
 	TopK          int               // K for topk/bottomk; 0 = not set
 	IsBottomK     bool              // true = bottomk (smallest K), false = topk (largest K)
+	IsScalarProbe bool              // Grafana health/connectivity probe (e.g. "1+1")
+	ScalarValue   float64           // evaluated value of the probe
 }
 
 // ── Handler: query ─────────────────────────────────
@@ -149,6 +151,13 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 		attribute.Int(SpanAttrPromQLTopK, expr.TopK),
 		attribute.Bool(SpanAttrPromQLIsBottomK, expr.IsBottomK),
 	)
+
+	// Grafana health/connectivity probe (e.g. "1+1"): answer with a scalar so
+	// the datasource reports healthy instead of an "unsupported expression" 400.
+	if expr.IsScalarProbe {
+		h.writePromScalar(w, expr.ScalarValue)
+		return
+	}
 
 	result := h.dispatchInstantQuery(r, expr, evalTime, expr.Labels, expr.LabelMatch)
 	if result == nil {
@@ -1549,23 +1558,22 @@ func (h *promHandlers) computeRate(samples []observabilitystorageext.MetricSampl
 // Handles counter resets (e.g. service restart → counter rolls back to 0)
 // using the same algorithm as Prometheus rate(): when a sample value drops
 // below the previous sample, the pre-reset value is accumulated as compensation.
+//
+// Unlike the naive "need >=2 samples strictly inside the window" rule, this
+// brackets the window with the nearest adjacent samples when too few fall
+// inside it. This matches Prometheus-style extrapolation and is essential for
+// sparse or aliased sampling: e.g. a metric scraped every 60s evaluated on an
+// unaligned 15s grid with rate([1m]) would otherwise never contain 2 in-window
+// samples and silently return an empty gap for every step.
 func computeRateInWindow(samples []observabilitystorageext.MetricSample, windowStart, windowEnd int64, fn string) float64 {
 	if fn == FnIrate {
 		// irate: use the last two samples in the window
 		return computeIRate(samples, windowStart, windowEnd)
 	}
 
-	// For rate and increase, use first and last samples in the window.
-	firstIdx, lastIdx := -1, -1
-	for i, s := range samples {
-		if s.TimestampMs >= windowStart && s.TimestampMs <= windowEnd {
-			if firstIdx == -1 {
-				firstIdx = i
-			}
-			lastIdx = i
-		}
-	}
-
+	// For rate and increase, bracket the window with the first/last samples
+	// that cover it (extending just outside the window if needed).
+	firstIdx, lastIdx := bracketWindow(samples, windowStart, windowEnd)
 	if firstIdx < 0 || lastIdx < 0 || firstIdx >= lastIdx {
 		return math.NaN()
 	}
@@ -1576,12 +1584,75 @@ func computeRateInWindow(samples []observabilitystorageext.MetricSample, windowS
 		return increase
 	}
 
-	// rate: increase / duration in seconds
+	// rate: increase / duration in seconds, extrapolated to the full window
+	// width. Prometheus only extrapolates UP (when the bracketing samples span
+	// less than the window); we never shrink below 1 so that extending the
+	// bracket just outside the window does not under-report the rate.
 	durationSec := float64(samples[lastIdx].TimestampMs-samples[firstIdx].TimestampMs) / 1000.0
 	if durationSec <= 0 {
 		return math.NaN()
 	}
-	return increase / durationSec
+	windowSec := float64(windowEnd-windowStart) / 1000.0
+	factor := windowSec / durationSec
+	if factor < 1 {
+		factor = 1
+	}
+	return increase / durationSec * factor
+}
+
+// bracketWindow returns the [first, last] sample indices that bracket the window
+// [windowStart, windowEnd] for rate/increase computation. It prefers samples
+// strictly inside the window; if fewer than two are inside, it extends to the
+// nearest samples just outside the window so a rate can still be produced
+// (matching Prometheus-style extrapolation for sparse/aliased sampling).
+//
+// samples must be sorted ascending by TimestampMs.
+func bracketWindow(samples []observabilitystorageext.MetricSample, windowStart, windowEnd int64) (int, int) {
+	firstInside, lastInside := -1, -1
+	for i, s := range samples {
+		if s.TimestampMs >= windowStart && s.TimestampMs <= windowEnd {
+			if firstInside == -1 {
+				firstInside = i
+			}
+			lastInside = i
+		}
+	}
+	if firstInside >= 0 && lastInside > firstInside {
+		return firstInside, lastInside
+	}
+	if firstInside < 0 {
+		// No sample inside the window: Prometheus yields NaN for an
+		// undersampled range (e.g. rate([30s]) on 60s-spaced data).
+		return -1, -1
+	}
+
+	// Exactly one sample inside: pair it with the nearest outside neighbor so a
+	// rate can still be produced for an aliased grid (e.g. rate([1m]) on
+	// 60s-spaced data evaluated at 15s steps). Extending to BOTH outside
+	// neighbors would over-extend the span (wrong for increase / narrow
+	// windows), so we only bridge to a single adjacent sample.
+	left := -1 // last sample strictly before windowStart
+	for i := range samples {
+		if samples[i].TimestampMs < windowStart {
+			left = i
+		} else {
+			break
+		}
+	}
+	if left >= 0 {
+		return left, firstInside
+	}
+	right := -1 // first sample strictly after windowEnd
+	for i := range samples {
+		if samples[i].TimestampMs > windowEnd {
+			right = i
+			break
+		}
+	}
+	if right >= 0 {
+		return firstInside, right
+	}
+	return -1, -1
 }
 
 // counterIncrease computes the total increase of a counter metric between
@@ -2221,6 +2292,22 @@ func (h *promHandlers) writePromSuccess(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
+}
+
+// writePromScalar answers Grafana's health/connectivity probes (e.g. "1+1")
+// with a Prometheus scalar result: {"status":"success","data":{"resultType":
+// "scalar","result":[<ts>, "<value>"]}}. The value is a string, matching the
+// Prometheus wire format, so Grafana's datasource health check passes.
+func (h *promHandlers) writePromScalar(w http.ResponseWriter, v float64) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "success",
+		"data": map[string]any{
+			"resultType": "scalar",
+			"result":     []any{float64(time.Now().Unix()), formatPromValue(v)},
+		},
+	})
 }
 
 func (h *promHandlers) writePromSuccessLabelList(w http.ResponseWriter, values []string) {

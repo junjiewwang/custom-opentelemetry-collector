@@ -272,6 +272,58 @@ func TestComputeRateInWindow_InsufficientSamples(t *testing.T) {
 	assert.True(t, math.IsNaN(got))
 }
 
+// makeSamplesAt builds samples spaced `stepMs` apart starting at `base`.
+func makeSamplesAt(base int64, stepMs int64, vals ...float64) []observabilitystorageext.MetricSample {
+	samples := make([]observabilitystorageext.MetricSample, len(vals))
+	for i, v := range vals {
+		samples[i] = observabilitystorageext.MetricSample{
+			TimestampMs: base + int64(i)*stepMs,
+			Value:       v,
+		}
+	}
+	return samples
+}
+
+// Counter incrementing by 100 every 60s: true per-second rate = 100/60.
+func TestComputeRateInWindow_SparseAliasedRate(t *testing.T) {
+	base := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC).UnixMilli()
+	samples := makeSamplesAt(base, 60000, 100, 200, 300, 400)
+
+	// A 1m window that lands between two 60s samples (only 1 inside) must still
+	// produce the correct per-second rate, not half of it.
+	ws := base + 15000 // [base+15s, base+75s] -> sample at base+60s inside only
+	we := base + 75000
+	got := computeRateInWindow(samples, ws, we, "rate")
+	assert.False(t, math.IsNaN(got))
+	assert.InDelta(t, 100.0/60.0, got, 0.001)
+}
+
+// A 1m window fully aligned with 60s samples (2 inside) still matches exactly.
+func TestComputeRateInWindow_AlignedSparseRate(t *testing.T) {
+	base := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC).UnixMilli()
+	samples := makeSamplesAt(base, 60000, 100, 200, 300, 400)
+	got := computeRateInWindow(samples, base, base+60000, "rate")
+	assert.InDelta(t, 100.0/60.0, got, 0.001)
+}
+
+// increase must not be extrapolated/divided by time, even when bracketed
+// from outside the window.
+func TestComputeRateInWindow_SparseAliasedIncrease(t *testing.T) {
+	base := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC).UnixMilli()
+	samples := makeSamplesAt(base, 60000, 100, 200, 300, 400)
+	ws, we := base+15000, base+75000
+	got := computeRateInWindow(samples, ws, we, "increase")
+	assert.InDelta(t, 100.0, got, 0.001) // one 60s step of +100
+}
+
+// Window entirely outside the sample range still yields NaN.
+func TestComputeRateInWindow_WindowBeforeAllSamples(t *testing.T) {
+	base := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC).UnixMilli()
+	samples := makeSamplesAt(base, 60000, 100, 200, 300)
+	got := computeRateInWindow(samples, base-200000, base-100000, "rate")
+	assert.True(t, math.IsNaN(got))
+}
+
 // ── parseTopKWrapper tests ──────────────────────────
 
 func TestParseTopKWrapper(t *testing.T) {
@@ -502,6 +554,57 @@ func TestParsePromQL_AggByWhitespaceForms(t *testing.T) {
 			assert.Equal(t, tt.metric, expr.MetricName, "must not swallow the whole expression as a bare metric name")
 		})
 	}
+}
+
+// ── scalar probe (Grafana health check) tests ─────────
+
+func TestEvalScalarProbe(t *testing.T) {
+	cases := []struct {
+		in    string
+		want  float64
+		ok    bool
+	}{
+		{"1", 1, true},
+		{"1+1", 2, true},
+		{"2*3", 6, true},
+		{"10/2", 5, true},
+		{"5-3", 2, true},
+		{"0.5+0.5", 1, true},
+		{"1 / 0", 0, false}, // div by zero rejected
+		{"up", 0, false},    // not a scalar probe
+		{"1+1+1", 0, false}, // not a simple binary op
+		{"vector(1)", 0, false},
+		{"time()", 0, false},
+	}
+	for _, tt := range cases {
+		t.Run(tt.in, func(t *testing.T) {
+			v, ok := evalScalarProbe(tt.in)
+			assert.Equal(t, tt.ok, ok)
+			if tt.ok {
+				assert.InDelta(t, tt.want, v, 1e-9)
+			}
+		})
+	}
+}
+
+// Grafana's datasource health check issues "1+1"; the parser must short-circuit
+// it into a scalar probe so the handler can return 200 instead of 400.
+func TestParsePromQL_ScalarProbe(t *testing.T) {
+	for _, q := range []string{"1+1", "1"} {
+		expr, err := parsePromQL(q)
+		require.NoError(t, err)
+		assert.True(t, expr.IsScalarProbe, "query %q must be flagged as a scalar probe", q)
+		if q == "1+1" {
+			assert.InDelta(t, 2.0, expr.ScalarValue, 1e-9)
+		} else {
+			assert.InDelta(t, 1.0, expr.ScalarValue, 1e-9)
+		}
+	}
+
+	// A real metric query must NOT be treated as a probe.
+	expr, err := parsePromQL("sum(rate(traces_spanmetrics_calls_total[5m])) by (service_name)")
+	require.NoError(t, err)
+	assert.False(t, expr.IsScalarProbe)
 }
 
 // ── applyTopK / parseVectorValue tests ───────────────

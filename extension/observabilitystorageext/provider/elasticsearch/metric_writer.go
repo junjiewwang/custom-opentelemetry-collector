@@ -58,6 +58,16 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
 				points := storedmodel.ConvertOTLPMetric(metric, res)
+				if len(points) == 0 && metric.Type() != pmetric.MetricTypeEmpty {
+					// ConvertOTLPMetric returns nothing for a metric type it does
+					// not handle (notably ExponentialHistogram). Dropping it
+					// silently is indistinguishable downstream from the metric
+					// never being sent, so say so.
+					w.logger.Warn("dropping metric of unsupported type",
+						zap.String("metric", metric.Name()),
+						zap.String("type", metric.Type().String()))
+					continue
+				}
 				for _, pt := range points {
 					if pt.AppID == "" {
 						return fmt.Errorf("app_id is required, refusing to write metrics without app-level data isolation")
