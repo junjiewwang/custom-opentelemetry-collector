@@ -38,22 +38,15 @@ func (h *lokiHandlers) handleLokiMetricQuery(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Instant queries use "time", range queries use "start"/"end".
-	start, startOk := parseLokiTime(r.FormValue("start"))
-	end, endOk := parseLokiTime(r.FormValue("end"))
-	if !startOk || !endOk {
-		// Fallback: instant query uses "time" parameter.
-		t, tOk := parseLokiTime(r.FormValue("time"))
-		if tOk {
-			start, end, startOk, endOk = t, t, true, true
+	// `step` is a duration (e.g. "15", "15s", "5m"), NOT an epoch timestamp.
+	// Parse it as a Prometheus duration; reusing parseLokiTime (epoch semantics)
+	// silently drops suffixed values like "15s".
+	var step time.Duration
+	if s := r.FormValue("step"); s != "" {
+		if d, err := parsePrometheusDuration(s); err == nil {
+			step = d
 		}
 	}
-	if !startOk || !endOk {
-		writeLokiError(w, "invalid start/end time", http.StatusBadRequest)
-		return
-	}
-
-	step, _ := parseLokiTime(r.FormValue("step"))
 
 	// Parse the metric expression
 	expr, err := logql.ParseMetric(q)
@@ -66,6 +59,28 @@ func (h *lokiHandlers) handleLokiMetricQuery(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Range queries use start/end (+ step). Instant queries use a single
+	// "time" parameter. Grafana/Loki instant queries (e.g. the Logs Drilldown
+	// ad-hoc metric mode, or `count_over_time({...}[5m])` evaluated at a point)
+	// must evaluate the range vector by looking back RangeDuration ending at
+	// `time`, and return a VECTOR — not an empty matrix over a zero-width range.
+	start, startOk := parseLokiTime(r.FormValue("start"))
+	end, endOk := parseLokiTime(r.FormValue("end"))
+	instant := false
+	if !startOk || !endOk {
+		t, tOk := parseLokiTime(r.FormValue("time"))
+		if !tOk {
+			writeLokiError(w, "invalid start/end/time", http.StatusBadRequest)
+			return
+		}
+		lookback := expr.RangeDuration
+		if lookback <= 0 {
+			lookback = 5 * time.Minute // default for instant-only vectors
+		}
+		start, end = t.Add(-lookback), t
+		instant = true
+	}
+
 	// Resolve inner branches: OR-decomposed or single query.
 	innerBranches := expr.InnerBranches
 	if innerBranches == nil {
@@ -74,6 +89,10 @@ func (h *lokiHandlers) handleLokiMetricQuery(w http.ResponseWriter, r *http.Requ
 
 	// Compute histogram interval.
 	interval := computeMetricInterval(expr.RangeDuration, step, start, end)
+	if instant {
+		// Single bucket spanning the whole lookback window.
+		interval = end.Sub(start).Nanoseconds()
+	}
 
 	// Evaluate and execute each OR branch independently.
 	var branchResults []*observabilitystorageext.LogMetricResult
@@ -83,11 +102,15 @@ func (h *lokiHandlers) handleLokiMetricQuery(w http.ResponseWriter, r *http.Requ
 		branch.End = end
 		storageQ := logEv.Evaluate(branch)
 
+		topN := 10
+		if instant {
+			topN = 1000 // vector must not be truncated by default TopN
+		}
 		metricQ := &observabilitystorageext.LogMetricQuery{
 			LogQuery:      *storageQ,
 			GroupByLabels: expr.By,
 			IntervalNanos: interval,
-			TopN:          10,
+			TopN:          topN,
 		}
 
 		result, err := h.logReader.SearchLogMetric(r.Context(), *metricQ)
@@ -103,7 +126,11 @@ func (h *lokiHandlers) handleLokiMetricQuery(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	merged := mergeMetricResults(branchResults)
-	writeLokiMatrixResponse(w, merged)
+	if instant {
+		writeLokiVectorResponse(w, merged)
+	} else {
+		writeLokiMatrixResponse(w, merged)
+	}
 }
 
 // computeMetricInterval determines the histogram bucket interval in nanoseconds.
@@ -112,15 +139,15 @@ func (h *lokiHandlers) handleLokiMetricQuery(w http.ResponseWriter, r *http.Requ
 //  1. RangeDuration from the metric expression (e.g. 5m)
 //  2. Step parameter from HTTP request
 //  3. Auto-calculate from time range (target ~100 buckets)
-func computeMetricInterval(rangeDur time.Duration, step time.Time, start, end time.Time) int64 {
+func computeMetricInterval(rangeDur time.Duration, step time.Duration, start, end time.Time) int64 {
 	// Use the range vector duration as the histogram interval (most natural).
 	if rangeDur > 0 {
 		return int64(rangeDur)
 	}
 
 	// Use step from HTTP request.
-	if !step.IsZero() {
-		dur := step.Sub(time.Unix(0, 0))
+	if step != 0 {
+		dur := step
 		if dur > 0 {
 			return int64(dur)
 		}

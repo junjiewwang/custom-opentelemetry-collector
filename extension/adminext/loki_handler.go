@@ -6,6 +6,7 @@ package adminext
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -240,7 +241,7 @@ type lokiStream struct {
 }
 
 type lokiQueryRangeResponse struct {
-	Status string       `json:"status"`
+	Status string        `json:"status"`
 	Data   lokiQueryData `json:"data"`
 }
 
@@ -320,14 +321,14 @@ func writeLokiStreamsResponse(w http.ResponseWriter, result *observabilitystorag
 		key := rec.ServiceName + "|" + rec.SeverityText
 		s, ok := streamMap[key]
 		if !ok {
-		s = &lokiStream{
-			Stream: map[string]string{
-				"service_name":   rec.ServiceName,
-				"severity":       rec.SeverityText,
-				"level":          rec.SeverityText, // Loki standard — used for color coding
-				"detected_level": rec.SeverityText, // Loki standard — used by logs-drilldown plugin
-			},
-		}
+			s = &lokiStream{
+				Stream: map[string]string{
+					"service_name":   rec.ServiceName,
+					"severity":       rec.SeverityText,
+					"level":          rec.SeverityText, // Loki standard — used for color coding
+					"detected_level": rec.SeverityText, // Loki standard — used by logs-drilldown plugin
+				},
+			}
 			streamMap[key] = s
 			streamOrder = append(streamOrder, key)
 		}
@@ -377,25 +378,61 @@ func reverseValues(vals [][]string) {
 	}
 }
 
-// parseLokiTime parses a Loki/ISO-format time value. Supports:
-//   - Nanosecond epoch: "1784707266594000000"
-//   - Second epoch:     "1784707266"
-//   - RFC3339/ISO 8601: "2026-07-23T02:50:19.343Z"
+// parseLokiTime parses a Loki/ISO-format time value. Matches Loki/cortex
+// ParseTime unit inference:
+//   - Fractional seconds:  "1784707266.594"  -> seconds (float)
+//   - Nanosecond epoch:    "1784707266594000000" (>= 1e18) -> nanoseconds
+//   - Millisecond epoch:    "1784707266594"  (>= 1e12) -> milliseconds
+//   - Second epoch:         "1784707266"     (<  1e12) -> seconds
+//   - RFC3339/ISO 8601:     "2026-07-23T02:50:19.343Z"
+//
+// NOTE: range query start/end are ALWAYS nanoseconds per the Loki API; instant
+// query `time` may be seconds (Prometheus convention) or milliseconds (Grafana
+// JS timestamps). Inferring the unit by magnitude makes all three work.
 func parseLokiTime(s string) (time.Time, bool) {
 	if s == "" {
 		return time.Time{}, false
 	}
-	// Support nanoseconds: "1784707266594000000"
-	ns, err := strconv.ParseInt(s, 10, 64)
-	if err == nil && s != "" {
-		return time.Unix(0, ns), true
+	// Fractional seconds (non-scientific): "1784707266.594". Scientific
+	// notation ("1.78e9") is handled by the ParseFloat branch below — it must
+	// NOT be split on '.' here or the exponent gets dropped.
+	if strings.ContainsRune(s, '.') && !strings.ContainsAny(s, "eE") {
+		// Parse the integer and fractional parts EXACTLY (avoids float rounding
+		// error when converting fractional seconds to nanoseconds).
+		parts := strings.SplitN(s, ".", 2)
+		if sec, err1 := strconv.ParseInt(parts[0], 10, 64); err1 == nil {
+			frac := parts[1]
+			if i := strings.IndexAny(frac, "eE"); i >= 0 {
+				frac = frac[:i]
+			}
+			if len(frac) < 9 {
+				frac += strings.Repeat("0", 9-len(frac))
+			} else if len(frac) > 9 {
+				frac = frac[:9]
+			}
+			if nsec, err2 := strconv.ParseInt(frac, 10, 64); err2 == nil {
+				return time.Unix(sec, nsec), true
+			}
+		}
 	}
-	// Support seconds: "1784707266"
-	sec, err := strconv.ParseInt(s, 10, 64)
-	if err == nil {
-		return time.Unix(sec, 0), true
+	if strings.ContainsAny(s, "eE") {
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			sec, nsec := math.Modf(f)
+			return time.Unix(int64(sec), int64(math.Round(nsec*1e9))), true
+		}
 	}
-	// Support RFC3339 / ISO 8601 (used by logs-drilldown index/volume)
+	// Integer: infer unit by magnitude.
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		switch {
+		case i >= 1e18:
+			return time.Unix(0, i), true // nanoseconds
+		case i >= 1e12:
+			return time.Unix(0, i*1e6), true // milliseconds
+		default:
+			return time.Unix(i, 0), true // seconds
+		}
+	}
+	// RFC3339 / ISO 8601 (used by logs-drilldown detected_*/index endpoints)
 	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
 		return t, true
 	}
@@ -434,11 +471,11 @@ func isLokiHealthCheckQuery(q string) bool {
 func (h *lokiHandlers) handleLokiDrilldownLimits(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"volume_enabled": true,
-		"volume_max_series": 1000,
-		"max_query_series": 1000,
+		"volume_enabled":           true,
+		"volume_max_series":        1000,
+		"max_query_series":         1000,
 		"pattern_ingester_enabled": false,
-		"version": "custom-otel-collector",
+		"version":                  "custom-otel-collector",
 	})
 }
 
@@ -612,11 +649,11 @@ func (h *lokiHandlers) handleLokiDetectedFields(w http.ResponseWriter, r *http.R
 	}
 
 	type field struct {
-		Label        string   `json:"label"`
-		Type         string   `json:"type"`
-		Cardinality  int      `json:"cardinality"`
-		JsonPath     []string `json:"jsonPath"`
-		Parsers      any      `json:"parsers"`
+		Label       string   `json:"label"`
+		Type        string   `json:"type"`
+		Cardinality int      `json:"cardinality"`
+		JsonPath    []string `json:"jsonPath"`
+		Parsers     any      `json:"parsers"`
 	}
 
 	// 1. Top-level Loki labels (always aggregatable via logLabelFieldMap)
@@ -642,7 +679,8 @@ func (h *lokiHandlers) handleLokiDetectedFields(w http.ResponseWriter, r *http.R
 		if q != "" {
 			parsed, err := logql.Parse(q)
 			if err == nil {
-				parsed.Start = start; parsed.End = end
+				parsed.Start = start
+				parsed.End = end
 				ev := &logql.Evaluator{}
 				lq := ev.Evaluate(parsed)
 				storageQ = lq
@@ -657,13 +695,17 @@ func (h *lokiHandlers) handleLokiDetectedFields(w http.ResponseWriter, r *http.R
 			for _, log := range result.Logs {
 				for _, attr := range log.Attributes {
 					label := toLokiFieldName(attr.Key)
-					if seen[label] { continue }
+					if seen[label] {
+						continue
+					}
 					seen[label] = true
 					fields = append(fields, field{Label: label, Type: inferAnyValueType(&attr.Value), Cardinality: 0, JsonPath: []string{"attributes", attr.Key}, Parsers: nil})
 				}
 				for _, rsrc := range log.Resource {
 					label := toLokiFieldName(rsrc.Key)
-					if seen[label] { continue }
+					if seen[label] {
+						continue
+					}
 					seen[label] = true
 					fields = append(fields, field{Label: label, Type: inferAnyValueType(&rsrc.Value), Cardinality: 0, JsonPath: []string{"resource", rsrc.Key}, Parsers: nil})
 				}
@@ -683,16 +725,26 @@ func (h *lokiHandlers) handleLokiDetectedFields(w http.ResponseWriter, r *http.R
 func toLokiFieldName(name string) string {
 	s := make([]byte, 0, len(name))
 	for i := 0; i < len(name); i++ {
-		if name[i] == '.' { s = append(s, '_') } else { s = append(s, name[i]) }
+		if name[i] == '.' {
+			s = append(s, '_')
+		} else {
+			s = append(s, name[i])
+		}
 	}
 	return string(s)
 }
 
 // inferAnyValueType returns the LogQL type for an OTel AnyValue.
 func inferAnyValueType(v *observabilitystorageext.AnyValue) string {
-	if v.StringValue != nil || v.BytesValue != nil { return "string" }
-	if v.BoolValue != nil { return "boolean" }
-	if v.IntValue != nil || v.DoubleValue != nil { return "number" }
+	if v.StringValue != nil || v.BytesValue != nil {
+		return "string"
+	}
+	if v.BoolValue != nil {
+		return "boolean"
+	}
+	if v.IntValue != nil || v.DoubleValue != nil {
+		return "number"
+	}
 	return "string"
 }
 

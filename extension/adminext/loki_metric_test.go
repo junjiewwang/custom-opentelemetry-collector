@@ -4,8 +4,12 @@
 package adminext
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -20,20 +24,24 @@ import (
 
 func TestComputeMetricInterval_RangeDuration(t *testing.T) {
 	// Priority 1: RangeDuration from metric expression.
-	got := computeMetricInterval(5*time.Minute, time.Time{}, time.Time{}, time.Time{})
+	got := computeMetricInterval(5*time.Minute, time.Duration(0), time.Time{}, time.Time{})
 	assert.Equal(t, int64(5*time.Minute), got)
 }
 
 func TestComputeMetricInterval_Step(t *testing.T) {
 	// Priority 2: HTTP step parameter (when no RangeDuration).
-	step := time.Date(2026, 7, 23, 0, 0, 0, 0, time.UTC)
+	// step is now a time.Duration parsed from a Prometheus duration string
+	// (e.g. "15s"), not an epoch timestamp. Regression: the HTTP `step` param
+	// used to be parsed via parseLokiTime (epoch) so suffixed values like "15s"
+	// were silently dropped.
+	step := 15 * time.Second
 	got := computeMetricInterval(0, step, time.Time{}, time.Time{})
-	assert.Equal(t, int64(step.Sub(time.Unix(0, 0))), got)
+	assert.Equal(t, int64(15*time.Second), got)
 }
 
 func TestComputeMetricInterval_RangeDurationOverridesStep(t *testing.T) {
 	// RangeDuration has highest priority — step is ignored.
-	step := time.Date(2026, 7, 23, 0, 0, 0, 0, time.UTC)
+	step := 15 * time.Second
 	got := computeMetricInterval(10*time.Minute, step, time.Time{}, time.Time{})
 	assert.Equal(t, int64(10*time.Minute), got)
 }
@@ -42,7 +50,7 @@ func TestComputeMetricInterval_AutoCalculate(t *testing.T) {
 	// Priority 3: auto-calculate from time range (target ~100 buckets).
 	start := time.Unix(1784770000, 0)
 	end := time.Unix(1784773600, 0) // 3600 seconds = 1 hour
-	got := computeMetricInterval(0, time.Time{}, start, end)
+	got := computeMetricInterval(0, time.Duration(0), start, end)
 
 	// 3600s / 100 = 36s per bucket → 36_000_000_000 nanos
 	assert.Equal(t, int64(36_000_000_000), got)
@@ -52,7 +60,7 @@ func TestComputeMetricInterval_AutoCalculate_Min1Second(t *testing.T) {
 	// Very short range: ensure minimum 1 second interval.
 	start := time.Unix(1784770000, 0)
 	end := time.Unix(1784770010, 0) // 10 seconds
-	got := computeMetricInterval(0, time.Time{}, start, end)
+	got := computeMetricInterval(0, time.Duration(0), start, end)
 
 	// 10s / 100 = 0.1s → should clamp to 1s
 	assert.Equal(t, int64(1_000_000_000), got)
@@ -60,7 +68,7 @@ func TestComputeMetricInterval_AutoCalculate_Min1Second(t *testing.T) {
 
 func TestComputeMetricInterval_ZeroRange(t *testing.T) {
 	// Zero range → fallback to 5 minutes.
-	got := computeMetricInterval(0, time.Time{}, time.Time{}, time.Time{})
+	got := computeMetricInterval(0, time.Duration(0), time.Time{}, time.Time{})
 	assert.Equal(t, int64(5*time.Minute), got)
 }
 
@@ -233,4 +241,90 @@ func TestWriteLokiMatrixResponse_ValueIsString(t *testing.T) {
 
 	val := parsed.Data.Result[0].Values[0][1]
 	assert.Equal(t, "1037", val, "value should be string representation")
+}
+
+// ==================== Instant metric query (vector) ====================
+
+// fakeLogMetricReader is a minimal LogReader mock that returns a canned
+// metric result, used to exercise handleLokiMetricQuery without a backend.
+type fakeLogMetricReader struct {
+	observabilitystorageext.LogReader
+	result *observabilitystorageext.LogMetricResult
+}
+
+func (f *fakeLogMetricReader) SearchLogMetric(_ context.Context, _ observabilitystorageext.LogMetricQuery) (*observabilitystorageext.LogMetricResult, error) {
+	return f.result, nil
+}
+
+func TestHandleLokiMetricQuery_InstantReturnsVector(t *testing.T) {
+	// Instant metric query (count_over_time with a `time` param, no start/end)
+	// must evaluate the range vector at `time` (looking back RangeDuration) and
+	// return a VECTOR — historically it returned an empty MATRIX over a zero-width
+	// range. See the logs-drilldown instant metric mode.
+	mock := &fakeLogMetricReader{
+		result: &observabilitystorageext.LogMetricResult{
+			Series: []observabilitystorageext.LogMetricSeries{
+				{
+					Labels: map[string]string{"level": "ERROR"},
+					Values: []observabilitystorageext.LogMetricValue{
+						{TimestampNano: 1784771400123000000, Value: 42},
+					},
+				},
+				{
+					Labels: map[string]string{"level": "INFO"},
+					Values: []observabilitystorageext.LogMetricValue{
+						{TimestampNano: 1784771400123000000, Value: 300},
+					},
+				},
+			},
+		},
+	}
+	h := &lokiHandlers{logReader: mock}
+
+	q := url.Values{}
+	q.Set("query", `count_over_time({service_name=~".+"}[5m])`)
+	q.Set("time", "1784771400") // instant: single time point
+	req := httptest.NewRequest(http.MethodGet, "/query?"+q.Encode(), nil)
+	w := httptest.NewRecorder()
+
+	h.handleLokiMetricQuery(w, req, `count_over_time({service_name=~".+"}[5m])`)
+
+	assert.Equal(t, 200, w.Code)
+	var parsed struct {
+		Status string `json:"status"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     []struct {
+				Metric map[string]string `json:"metric"`
+				Value  []interface{}     `json:"value"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&parsed))
+	assert.Equal(t, "success", parsed.Status)
+	assert.Equal(t, "vector", parsed.Data.ResultType, "instant metric query must return a vector, not matrix")
+	assert.Len(t, parsed.Data.Result, 2, "both series must be present in the vector")
+
+	var errVal float64
+	for _, r := range parsed.Data.Result {
+		if r.Metric["level"] == "ERROR" {
+			errVal, _ = strconv.ParseFloat(r.Value[1].(string), 64)
+		}
+	}
+	assert.Equal(t, 42.0, errVal, "ERROR series value carried through as a vector element")
+}
+
+func TestHandleLokiMetricQuery_InstantNoStartEnd(t *testing.T) {
+	// Without start/end AND without time the handler must 400, not panic.
+	mock := &fakeLogMetricReader{result: &observabilitystorageext.LogMetricResult{}}
+	h := &lokiHandlers{logReader: mock}
+
+	q := url.Values{}
+	q.Set("query", `count_over_time({}[5m])`)
+	req := httptest.NewRequest(http.MethodGet, "/query?"+q.Encode(), nil)
+	w := httptest.NewRecorder()
+
+	h.handleLokiMetricQuery(w, req, `count_over_time({}[5m])`)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
