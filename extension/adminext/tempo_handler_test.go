@@ -1087,3 +1087,56 @@ func TestParseTempoSearchParams_InvalidQuery(t *testing.T) {
 		})
 	}
 }
+
+// TestNormalizeTraceQLMetricsQuery verifies the standard Tempo TraceQL metrics
+// syntax (function-prefix + range selector) is rewritten into the pipeline form
+// our parser accepts, so Grafana's TraceQL metrics panel / service map queries
+// work without a lexer that understands '['.
+func TestNormalizeTraceQLMetricsQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"rate with range", `rate({resource.service.name="x"}[5m])`, `{resource.service.name="x"} | rate()`},
+		{"count_over_time with range", `count_over_time({.foo="bar"}[5m])`, `{.foo="bar"} | count_over_time()`},
+		{"quantile with range + percentile", `quantile_over_time({resource.service.name="x"}[5m], 0.95)`, `{resource.service.name="x"} | quantile_over_time(duration, 0.95)`},
+		{"histogram with range", `histogram_over_time({resource.service.name="x"}[5m])`, `{resource.service.name="x"} | histogram_over_time(duration)`},
+		{"rate with by()", `rate({resource.service.name="x"}[5m]) by (resource.service.name)`, `{resource.service.name="x"} | rate() by (resource.service.name)`},
+		{"already pipeline form unchanged", `{resource.service.name="x"} | rate()`, `{resource.service.name="x"} | rate()`},
+		{"plain selector unchanged", `{resource.service.name="x"}`, `{resource.service.name="x"}`},
+		{"empty unchanged", ``, ``},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, normalizeTraceQLMetricsQuery(tc.in))
+		})
+	}
+}
+
+// TestParseTempoTimeParam verifies Tempo time params accept both unix seconds
+// (float) and RFC3339, since Grafana may emit either.
+func TestParseTempoTimeParam(t *testing.T) {
+	t.Run("unix seconds float", func(t *testing.T) {
+		got, ok := parseTempoTimeParam("1720000000")
+		require.True(t, ok)
+		assert.Equal(t, int64(1720000000), got.Unix())
+	})
+	t.Run("unix seconds fractional", func(t *testing.T) {
+		got, ok := parseTempoTimeParam("1720000000.5")
+		require.True(t, ok)
+		assert.Equal(t, int64(1720000000), got.Unix())
+		assert.Equal(t, 500_000_000, got.Nanosecond())
+	})
+	t.Run("rfc3339", func(t *testing.T) {
+		got, ok := parseTempoTimeParam("2026-07-01T12:00:00Z")
+		require.True(t, ok)
+		assert.Equal(t, 2026, got.Year())
+		assert.Equal(t, time.July, got.Month())
+		assert.Equal(t, 1, got.Day())
+	})
+	t.Run("invalid", func(t *testing.T) {
+		_, ok := parseTempoTimeParam("not-a-time")
+		assert.False(t, ok)
+	})
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -866,81 +867,42 @@ func (h *tempoHandlers) handleTempoV2Search(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	rawQuery := r.URL.RawQuery
-
 	_, query, err := parseTempoSearchParams(r)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// Lightweight search first.
-	result, err := h.traceReader.SearchTraceSummaries(r.Context(), query, 3)
+	// Tempo's /api/v2/search returns the SAME JSON search response as /api/search.
+	// OTLP protobuf encoding is reserved for /api/v2/traces/{id}, NOT search — a
+	// binary body here breaks Grafana (Grafana 12+ defaults to the V2 search path).
+	spss := 3
+	if v := r.FormValue("spss"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			spss = n
+		}
+	}
+
+	result, err := h.traceReader.SearchTraceSummaries(r.Context(), query, spss)
 	if err != nil {
-		h.logger.Error("tempo v2 search failed", zap.String("query", rawQuery), zap.Error(err))
-		SpanFromContext(r.Context()).SetAttributes(attribute.String("tempo.v2.error", "search_failed"))
+		h.logger.Error("tempo v2 search failed", zap.String("query", r.URL.RawQuery), zap.Error(err))
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Fetch full traces for search results.
-	limit := query.Limit
-	if limit <= 0 || limit > 20 {
-		limit = 20
-	}
-	if len(result.Summaries) > limit {
-		result.Summaries = result.Summaries[:limit]
-	}
-
-	var allTraces []*observabilitystorageext.Trace
+	searchTraces := make([]tempoSearchTrace, 0, len(result.Summaries))
 	for _, s := range result.Summaries {
-		trace, err := h.traceReader.GetTrace(r.Context(), s.TraceID)
-		if err != nil {
-			h.logger.Debug("tempo v2 search: skip trace fetch error",
-				zap.String("traceID", s.TraceID), zap.Error(err))
-			continue
-		}
-		if trace != nil && len(trace.Spans) > 0 {
-			allTraces = append(allTraces, trace)
-		}
+		searchTraces = append(searchTraces, convertTraceSummaryToTempoSearchTrace(s, nil))
 	}
 
-	pbBytes, err := mergeTracesToProtobuf(allTraces)
-	if err != nil {
-		h.logger.Error("tempo v2 search protobuf conversion failed",
-			zap.String("query", rawQuery),
-			zap.Int("tracesFetched", len(allTraces)),
-			zap.Error(err),
-		)
-		h.writeError(w, http.StatusInternalServerError, "failed to encode search results as protobuf")
-		return
+	resp := tempoSearchResponse{
+		Traces: searchTraces,
+		Metrics: tempoSearchMetrics{
+			InspectedTraces: result.Total,
+			InspectedBytes:  "0",
+		},
 	}
-
-	w.Header().Set("Content-Type", "application/protobuf")
-	w.Header().Set("Content-Length", strconv.Itoa(len(pbBytes)))
-
-	// Expose diagnostics via response headers (visible in istio/proxy access logs).
-	w.Header().Set("X-Tempo-V2-PbBytes", strconv.Itoa(len(pbBytes)))
-	w.Header().Set("X-Tempo-V2-Traces", strconv.Itoa(len(allTraces)))
-
-	w.WriteHeader(http.StatusOK)
-	n, err := w.Write(pbBytes)
-
-	// Record in tracing span.
-	SpanFromContext(r.Context()).SetAttributes(
-		attribute.Int("tempo.v2.search_traces_count", len(allTraces)),
-		attribute.Int("tempo.v2.search_protobuf_bytes_expected", len(pbBytes)),
-		attribute.Int("tempo.v2.search_protobuf_bytes_written", n),
-	)
-	if err != nil {
-		SpanFromContext(r.Context()).SetAttributes(attribute.String("tempo.v2.search_write_error", err.Error()))
-		h.logger.Error("tempo v2 search write protobuf body failed",
-			zap.String("query", rawQuery),
-			zap.Int("bytesExpected", len(pbBytes)),
-			zap.Error(err),
-		)
-		return
-	}
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // convertTraceSummaryToTempoSearchTrace converts a TraceSummary to a Tempo search result entry.
@@ -1211,7 +1173,10 @@ func (h *tempoHandlers) handleTempoSearchTagValues(w http.ResponseWriter, r *htt
 
 // resolveTagValues returns distinct values for a given tag name.
 func (h *tempoHandlers) resolveTagValues(r *http.Request, tagName string) ([]string, error) {
-	timeRange := parseTimeRange(r)
+	// Use the wider default window (7d) like the V2 tag-values handler, so that
+	// value discovery is not limited to the last hour (which made the V1
+	// service.name values come back empty while V2 returned results).
+	timeRange := parseTempoTagValuesTimeRange(r)
 
 	switch tagName {
 	case "service.name":
@@ -1576,7 +1541,7 @@ func parseTagValuesFilter(r *http.Request, logger *zap.Logger) map[string]string
 	if rawQ == "" {
 		return nil
 	}
-	ast, err := traceql.Parse(rawQ)
+	ast, err := traceql.Parse(normalizeTraceQLMetricsQuery(rawQ))
 	if err != nil {
 		if logger != nil {
 			logger.Warn("tempo tag-values: failed to parse q filter, ignoring",
@@ -1692,7 +1657,7 @@ func (h *tempoHandlers) handleTempoMetricsQueryRange(w http.ResponseWriter, r *h
 	timeRange := parseTempoTimeRange(r)
 	step := parseTempoMetricsStep(r, timeRange)
 
-	ast, err := traceql.Parse(rawQ)
+	ast, err := traceql.Parse(normalizeTraceQLMetricsQuery(rawQ))
 	if err != nil {
 		h.logger.Warn("tempo metrics: invalid query", zap.String("q", rawQ), zap.Error(err))
 		h.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid TraceQL metrics query: %v", err))
@@ -2406,6 +2371,54 @@ func anyToTempoValue(v any) tempoAnyValue {
 // TraceQL is parsed via the unified AST parser (traceql.Parse + Plan). A parse
 // error is returned (→ 400) — invalid TraceQL is rejected rather than silently
 // salvaged. An empty selector ("{}") yields no filter (match-all).
+// metricFnPrefixRe matches the standard Tempo TraceQL metrics syntax where a
+// metric function wraps a selector with a range selector, e.g.
+// `rate({...}[5m])` or `quantile_over_time({...}[5m], 0.95)`.
+//
+//	group 1: function name
+//	group 2: selector ({...})
+//	group 3: range selector contents (e.g. "5m")
+//	group 4: extra function args (e.g. ", 0.95")
+//	group 5: optional by(...) clause
+var metricFnPrefixRe = regexp.MustCompile(`^(rate|count_over_time|quantile_over_time|histogram_over_time)\(\s*(\{[^}]*\})\[([^\]]*)\]\s*(,[^)]*)?\)(\s+by\s*\([^)]*\))?$`)
+
+// normalizeTraceQLMetricsQuery rewrites the standard Tempo TraceQL metrics syntax
+// (function-prefix + range selector) into the pipeline form this parser accepts:
+//
+//	rate({...}[5m])                   -> {...} | rate()
+//	count_over_time({...}[5m])        -> {...} | count_over_time()
+//	quantile_over_time({...}[5m],0.95) -> {...} | quantile_over_time(duration, 0.95)
+//	histogram_over_time({...}[5m])    -> {...} | histogram_over_time(duration)
+//
+// Grafana's TraceQL metrics panel and service map emit the function-prefix form;
+// our parser only tokenizes the pipeline form (the lexer has no '[' token). The
+// range selector (e.g. [5m]) is redundant here because the step is derived from
+// the query time range.
+func normalizeTraceQLMetricsQuery(q string) string {
+	m := metricFnPrefixRe.FindStringSubmatch(strings.TrimSpace(q))
+	if m == nil {
+		return q
+	}
+	selector := m[2]
+	extraArgs := strings.TrimPrefix(m[4], ",") // e.g. " 0.95"
+	by := m[5]
+
+	var args string
+	switch m[1] {
+	case "quantile_over_time", "histogram_over_time":
+		// These take a duration as the leading argument; the range selector maps
+		// to the literal "duration" keyword the parser expects.
+		if extraArgs != "" {
+			args = "duration, " + strings.TrimSpace(extraArgs)
+		} else {
+			args = "duration"
+		}
+	default: // rate, count_over_time
+		args = strings.TrimSpace(extraArgs)
+	}
+	return selector + " | " + m[1] + "(" + args + ")" + by
+}
+
 func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabilitystorageext.TraceQuery, error) {
 	q := r.URL.Query()
 	query := observabilitystorageext.TraceQuery{
@@ -2425,7 +2438,7 @@ func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabil
 	// which correctly handles all operators (=, >, <, >=, <=, !=, =~)
 	// and intrinsic fields (duration, kind, status, name, etc.).
 	if traceQL := q.Get("q"); traceQL != "" {
-		ast, err := traceql.Parse(traceQL)
+		ast, err := traceql.Parse(normalizeTraceQLMetricsQuery(traceQL))
 		if err != nil {
 			return nil, query, fmt.Errorf("invalid TraceQL query: %w", err)
 		}
@@ -2555,21 +2568,35 @@ func parseTempoTimeRange(r *http.Request) observabilitystorageext.TimeRange {
 
 	q := r.URL.Query()
 	if v := q.Get("start"); v != "" {
-		if ft, err := strconv.ParseFloat(v, 64); err == nil {
-			sec := int64(ft)
-			nsec := int64((ft - float64(sec)) * 1e9)
-			tr.Start = time.Unix(sec, nsec)
+		if t, ok := parseTempoTimeParam(v); ok {
+			tr.Start = t
 		}
 	}
 	if v := q.Get("end"); v != "" {
-		if ft, err := strconv.ParseFloat(v, 64); err == nil {
-			sec := int64(ft)
-			nsec := int64((ft - float64(sec)) * 1e9)
-			tr.End = time.Unix(sec, nsec)
+		if t, ok := parseTempoTimeParam(v); ok {
+			tr.End = t
 		}
 	}
 
 	return tr
+}
+
+// parseTempoTimeParam parses a Tempo time parameter, which may be:
+//   - Unix seconds (float, possibly fractional): "1720000000" / "1720000000.123"
+//   - RFC3339: "2026-07-01T12:00:00Z" (Tempo accepts both; Grafana may emit either)
+func parseTempoTimeParam(v string) (time.Time, bool) {
+	if ft, err := strconv.ParseFloat(v, 64); err == nil {
+		sec := int64(ft)
+		nsec := int64((ft - float64(sec)) * 1e9)
+		return time.Unix(sec, nsec), true
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 // parseTempoTagValuesTimeRange returns the time range for tag value discovery.
