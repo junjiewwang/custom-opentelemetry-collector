@@ -296,6 +296,8 @@ func (e *Extension) newRouter() http.Handler {
 			r.Get("/series", prom.handlePromSeries)
 			r.Post("/series", prom.handlePromSeries)
 			r.Get("/metadata", prom.handlePromMetadata)
+			r.Get("/query_exemplars", prom.handlePromQueryExemplars)
+			r.Post("/query_exemplars", prom.handlePromQueryExemplars)
 			r.Get("/status/buildinfo", prom.handlePromBuildInfo)
 		})
 	}

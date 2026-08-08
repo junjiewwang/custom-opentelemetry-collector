@@ -13,12 +13,14 @@ import (
 // handlers, decoupling them from *Extension (P1 dependency-injection seam).
 type promHandlers struct {
 	metricReader observabilitystorageext.MetricReader
+	traceReader  observabilitystorageext.TraceReader
 	logger       *zap.Logger
 }
 
 func newPromHandlers(e *Extension) *promHandlers {
 	return &promHandlers{
 		metricReader: e.storageMetricReader,
+		traceReader:  e.storageTraceReader,
 		logger:       e.logger,
 	}
 }

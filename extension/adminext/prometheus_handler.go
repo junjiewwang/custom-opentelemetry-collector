@@ -4,6 +4,7 @@
 package adminext
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -232,6 +233,174 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.writePromSuccess(w, result)
+}
+
+// ── Handler: query_exemplars ───────────────────────
+
+// handlePromQueryExemplars handles GET/POST /api/v1/query_exemplars.
+//
+// Returns traceID exemplars for trace-derived metrics (traces_*), letting
+// Grafana drill down from a metric data point to the underlying trace (and
+// from there to logs via tracesToLogsV2). Non-trace metrics (jvm/runtime)
+// return an empty series list — no natural trace exists, so Grafana shows no
+// exemplar dots.
+//
+// One exemplar per series: the most recent trace matching the series' service
+// context within [start,end]. For service-graph metrics the service comes from
+// the `server` label (the callee); for spanmetrics from `service_name`.
+//
+// Response format (Prometheus exemplar API):
+//
+//	{"status":"success","data":[{"seriesLabels":{...},"exemplars":[
+//	  {"labels":{"traceID":"..."},"value":"1","timestamp":<unix_seconds_float>}]}]}
+func (h *promHandlers) handlePromQueryExemplars(w http.ResponseWriter, r *http.Request) {
+	if h.metricReader == nil {
+		h.writePromError(w, "service_unavailable", "metric reader not available")
+		return
+	}
+
+	queryStr := h.getQueryParam(r, "query")
+	if queryStr == "" {
+		h.writePromError(w, "bad_data", "parameter 'query' is required")
+		return
+	}
+	start, err := parsePrometheusTime(r.FormValue("start"))
+	if err != nil {
+		h.writePromError(w, "bad_data", "invalid 'start' parameter: "+err.Error())
+		return
+	}
+	end, err := parsePrometheusTime(r.FormValue("end"))
+	if err != nil {
+		h.writePromError(w, "bad_data", "invalid 'end' parameter: "+err.Error())
+		return
+	}
+
+	expr, err := parsePromQL(queryStr)
+	if err != nil {
+		h.writePromError(w, "bad_data", err.Error())
+		return
+	}
+
+	// Only trace-derived metrics carry a representative traceID.
+	metricName := expr.MetricName
+	if !strings.HasPrefix(metricName, "traces_") {
+		h.writePromSuccess(w, &promExemplarData{Result: []promExemplarSeries{}})
+		return
+	}
+
+	// No trace reader → cannot resolve traceIDs; return empty (not an error).
+	if h.traceReader == nil {
+		h.writePromSuccess(w, &promExemplarData{Result: []promExemplarSeries{}})
+		return
+	}
+
+	tr := observabilitystorageext.TimeRange{Start: start, End: end}
+
+	// Determine the service-context label key + the distinct values to probe.
+	// service-graph → "server" (the callee is the metric's subject);
+	// spanmetrics → "service_name".
+	serviceLabelKey := "service_name"
+	if strings.HasPrefix(metricName, "traces_service_graph_") {
+		serviceLabelKey = "server"
+	}
+
+	// If the selector already pins a service, use it directly (single series).
+	// Otherwise enumerate distinct values so each series gets its own exemplar.
+	type serviceTarget struct {
+		service string
+		// extraLabels are the seriesLabels beyond __name__ + service.
+		extraLabels map[string]string
+	}
+	var targets []serviceTarget
+
+	if svc, ok := expr.Labels[serviceLabelKey]; ok && svc != "" {
+		extra := make(map[string]string, len(expr.Labels)-1)
+		for k, v := range expr.Labels {
+			if k != serviceLabelKey {
+				extra[k] = v
+			}
+		}
+		targets = append(targets, serviceTarget{service: svc, extraLabels: extra})
+	} else {
+		values, lerr := h.metricReader.ListLabelValuesForMetric(r.Context(), serviceLabelKey, metricName, tr)
+		if lerr != nil {
+			h.logger.Warn("exemplars: list service label values failed", zap.Error(lerr))
+		}
+		// Cap the number of per-service trace lookups to bound cost.
+		maxSeries := 5
+		for i, svc := range values {
+			if i >= maxSeries {
+				break
+			}
+			targets = append(targets, serviceTarget{service: svc})
+		}
+	}
+
+	var series []promExemplarSeries
+	for _, t := range targets {
+		summary, terr := h.findExemplarTrace(r.Context(), t.service, metricName, tr)
+		if terr != nil || summary == nil {
+			continue
+		}
+		seriesLabels := map[string]string{
+			"__name__": metricName,
+			serviceLabelKey: t.service,
+		}
+		for k, v := range t.extraLabels {
+			seriesLabels[k] = v
+		}
+		ts, _ := strconv.ParseInt(summary.StartTimeUnixNano, 10, 64)
+		series = append(series, promExemplarSeries{
+			SeriesLabels: seriesLabels,
+			Exemplars: []promExemplar{{
+				Labels: map[string]string{"traceID": summary.TraceID},
+				Value:  "1",
+				// Prometheus exemplar timestamps are Unix seconds (float).
+				Timestamp: float64(ts) / 1e9,
+			}},
+		})
+	}
+
+	h.writePromSuccess(w, &promExemplarData{Result: series})
+}
+
+// findExemplarTrace resolves the most recent trace for a service in the time
+// range — the traceID that backs one exemplar dot. spss=0 skips fetching
+// preview spans (we only need the TraceID + StartTime).
+func (h *promHandlers) findExemplarTrace(ctx context.Context, serviceName, metricName string, tr observabilitystorageext.TimeRange) (*observabilitystorageext.TraceSummary, error) {
+	q := observabilitystorageext.TraceQuery{
+		ServiceName: serviceName,
+		TimeRange:   tr,
+		Limit:       1,
+	}
+	// For spanmetrics, narrow by span name when the metric carries one.
+	if strings.HasPrefix(metricName, "traces_spanmetrics_") {
+		// No span_name in the bare selector here; service-level match suffices.
+	}
+	result, err := h.traceReader.SearchTraceSummaries(ctx, q, 0)
+	if err != nil || result == nil || len(result.Summaries) == 0 {
+		return nil, err
+	}
+	return &result.Summaries[0], nil
+}
+
+// promExemplarData is the {resultType, result} envelope for /query_exemplars.
+type promExemplarData struct {
+	ResultType string               `json:"resultType"`
+	Result     []promExemplarSeries `json:"result"`
+}
+
+// promExemplarSeries is one series' exemplars.
+type promExemplarSeries struct {
+	SeriesLabels map[string]string `json:"seriesLabels"`
+	Exemplars    []promExemplar    `json:"exemplars"`
+}
+
+// promExemplar is a single exemplar point linking to a trace.
+type promExemplar struct {
+	Labels    map[string]string `json:"labels"`
+	Value     string            `json:"value"`
+	Timestamp float64           `json:"timestamp"`
 }
 
 // extractMetricNameFromMatch extracts the __name__ label from Prometheus match[]
