@@ -62,6 +62,7 @@ var aggregatableFields = map[string]map[string]bool{
 		FieldResource + ".host.name":         true,
 		FieldResource + ".service.namespace": true,
 		FieldResource + ".service.version":   true,
+		FieldResource + ".app_id":            true, // keyword (agent-gateway injected, per-app isolation)
 		FieldResource + ".process.pid":       true, // dynamically mapped long
 	},
 	// metric: top-level keyword/numeric fields from the metric template. metric
