@@ -371,7 +371,7 @@ func (r *LogReader) ListLogFields(ctx context.Context, timeRange TimeRange) ([]L
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list log fields failed: %w", err)
 	}
@@ -785,7 +785,7 @@ func (r *LogReader) listFieldKeys(ctx context.Context, timeRange TimeRange, appI
 		Query: r.timeRangeQuery(timeRange),
 		Size:  0,
 	}
-	resp, err := r.searcher.Search(ctx, r.indexPattern(appID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(appID, timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list log labels failed: %w", err)
 	}
@@ -811,7 +811,7 @@ func (r *LogReader) listFieldValues(ctx context.Context, field string, isDynamic
 			},
 		},
 	}
-	resp, err := r.searcher.Search(ctx, r.indexPattern(appID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(appID, timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list log label values failed (field=%s): %w", field, err)
 	}

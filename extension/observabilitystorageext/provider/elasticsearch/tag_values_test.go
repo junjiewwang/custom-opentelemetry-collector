@@ -21,8 +21,8 @@ func TestGetTagValues_FieldNameConstruction(t *testing.T) {
 		{tagKey: "http.method", scope: "span", wantBase: "attributes.http.method", wantKW: true},
 		{tagKey: "peer.service", scope: "span", wantBase: "attributes.peer.service", wantKW: true},
 
-		// Resource text fields → needs .keyword
-		{tagKey: "app_id", scope: "resource", wantBase: "resource.app_id", wantKW: true},
+		// Resource keyword fields → NO .keyword
+		{tagKey: "app_id", scope: "resource", wantBase: "resource.app_id", wantKW: false},
 
 		// Resource keyword fields → NO .keyword
 		{tagKey: "service.name", scope: "resource", wantBase: "resource.service.name", wantKW: false},

@@ -70,8 +70,8 @@ func TestMetricsAggField_AllIntrinsics(t *testing.T) {
 			note: "custom attributes are text → needs .keyword (general solution)"},
 		{label: "span.peer.service", want: "attributes.peer.service.keyword",
 			note: "scoped custom attr → attributes.<key> + .keyword"},
-		{label: "resource.app_id", want: "resource.app_id.keyword",
-			note: "resource.app_id is text → needs .keyword (was KNOWN GAP)"},
+		{label: "resource.app_id", want: "resource.app_id",
+			note: "resource.app_id is keyword in the trace template → no .keyword needed"},
 	}
 
 	for _, tt := range tests {

@@ -309,10 +309,10 @@ func TestMetricsAggField_OtherFields(t *testing.T) {
 	assert.Equal(t, "resource.service.instance.id.keyword", field,
 		"dynamic resource sub-field should get .keyword")
 
-	// resource.app_id is also text → needs .keyword (removed from NoKeyword list).
+	// resource.app_id is explicitly keyword in the trace template → no .keyword.
 	field = metricsAggField(resolver, "resource.app_id")
-	assert.Equal(t, "resource.app_id.keyword", field,
-		"resource.app_id is text field, needs .keyword suffix")
+	assert.Equal(t, "resource.app_id", field,
+		"resource.app_id is keyword in the trace template, no .keyword needed")
 
 	// resource.* (explicit keyword/long fields) → no .keyword needed.
 	for _, label := range []string{"resource.host.name", "resource.service.namespace", "resource.process.pid"} {

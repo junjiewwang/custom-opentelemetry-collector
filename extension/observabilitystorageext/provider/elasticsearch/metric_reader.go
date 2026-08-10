@@ -225,7 +225,7 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list metric names failed: %w", err)
 	}
@@ -278,7 +278,7 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list metric types failed: %w", err)
 	}
@@ -348,7 +348,7 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 		}
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list label names failed: %w", err)
 	}
@@ -435,7 +435,7 @@ func (r *MetricReader) ListLabelValuesForMetric(ctx context.Context, label, metr
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list label values failed: %w", err)
 	}
