@@ -132,6 +132,7 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 
 	for _, s := range series {
 		appID := s.appID
+		svcName, _ := s.dims.Lookup("service.name")
 		// --- calls_total counter ---
 		var calls int64
 		if f.cumulative {
@@ -141,7 +142,7 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 		}
 		if calls > 0 {
 			rm := md.ResourceMetrics().AppendEmpty()
-			setResourceAttr(rm.Resource(), appID)
+			setResourceAttr(rm.Resource(), appID, svcName)
 			sm := rm.ScopeMetrics().AppendEmpty()
 			m := sm.Metrics().AppendEmpty()
 			m.SetName(metricNameREDCallsTotal)
@@ -166,7 +167,7 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 		}
 		if count > 0 {
 			rm := md.ResourceMetrics().AppendEmpty()
-			setResourceAttr(rm.Resource(), appID)
+			setResourceAttr(rm.Resource(), appID, svcName)
 			sm := rm.ScopeMetrics().AppendEmpty()
 			m := sm.Metrics().AppendEmpty()
 			m.SetName(metricNameREDLatency)
@@ -251,7 +252,7 @@ func (f *metricFlusher) buildSGMetrics(md pmetric.Metrics, edges []*sgEdgeSeries
 
 func (f *metricFlusher) emitCounter(md pmetric.Metrics, name string, value int64, labels map[string]string, appID string, now pcommon.Timestamp) {
 	rm := md.ResourceMetrics().AppendEmpty()
-	setResourceAttr(rm.Resource(), appID)
+	setResourceAttr(rm.Resource(), appID, labels["service.name"])
 	sm := rm.ScopeMetrics().AppendEmpty()
 	m := sm.Metrics().AppendEmpty()
 	m.SetName(name)
@@ -278,7 +279,7 @@ func (f *metricFlusher) emitHistogramIfNonEmpty(md pmetric.Metrics, name string,
 		return
 	}
 	rm := md.ResourceMetrics().AppendEmpty()
-	setResourceAttr(rm.Resource(), appID)
+	setResourceAttr(rm.Resource(), appID, labels["service.name"])
 	sm := rm.ScopeMetrics().AppendEmpty()
 	m := sm.Metrics().AppendEmpty()
 	m.SetName(name)
@@ -294,9 +295,18 @@ func (f *metricFlusher) emitHistogramIfNonEmpty(md pmetric.Metrics, name string,
 	setLabelsSorted(dp.Attributes(), labels)
 }
 
-func setResourceAttr(res pcommon.Resource, appID string) {
+// setResourceAttr populates the metric resource with app_id and service.name.
+// service.name is REQUIRED so the storage layer (ConvertOTLPMetric reads
+// resource.service.name → top-level serviceName) does not fall back to
+// "unknown". Without it, spanmetrics metrics get serviceName="unknown" at the
+// top level even though labels.service_name is correct — which then surfaces
+// as the wrong service_name in group-by queries.
+func setResourceAttr(res pcommon.Resource, appID, svcName string) {
 	if appID != "" {
 		res.Attributes().PutStr("app_id", appID)
+	}
+	if svcName != "" {
+		res.Attributes().PutStr("service.name", svcName)
 	}
 }
 

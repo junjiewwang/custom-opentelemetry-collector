@@ -32,6 +32,18 @@ type dimensionSet struct {
 	hash   uint64
 }
 
+// Lookup returns the value for a dimension key, ok=false if absent.
+// keys is sorted (see newDimensionSet), but a linear scan is fine — dimension
+// sets are small (handful of keys).
+func (ds dimensionSet) Lookup(key string) (string, bool) {
+	for i, k := range ds.keys {
+		if k == key {
+			return ds.values[i], true
+		}
+	}
+	return "", false
+}
+
 func newDimensionSet(attrs map[string]string) dimensionSet {
 	ds := dimensionSet{
 		keys:   make([]string, 0, len(attrs)),
