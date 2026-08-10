@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 )
 
 // ═══════════════════════════════════════════════════
@@ -190,7 +191,7 @@ func (a *pgMetricReaderAdapter) ListMetricNames(ctx context.Context, timeRange T
 // expose the stored metric type. Returning an empty map rather than an error
 // lets /api/v1/metadata degrade to reporting every metric as a gauge instead of
 // failing the request outright.
-func (a *pgMetricReaderAdapter) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error) {
+func (a *pgMetricReaderAdapter) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]storedmodel.MetricMeta, error) {
 	return nil, nil
 }
 

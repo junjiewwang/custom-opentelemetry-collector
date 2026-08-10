@@ -19,10 +19,22 @@ type StoredMetricDataPoint struct {
 	Resource      map[string]any `json:"resource,omitempty"`
 	ServiceName   string         `json:"serviceName"`
 	AppID         string         `json:"appId,omitempty"`
+	// Unit is the OTel metric unit (e.g. "By"=bytes, "1"=count, "ms", "s").
+	// Backs the Prometheus /metadata "unit" field so Grafana Metrics Drilldown
+	// can show "Unit: bytes" instead of a bare number.
+	Unit string `json:"unit,omitempty"`
 
 	// Histogram-specific fields (present only when Type="histogram").
 	BucketCounts  []uint64  `json:"bucket_counts,omitempty"`
 	ExplicitBounds []float64 `json:"explicit_bounds,omitempty"`
+}
+
+// MetricMeta holds a metric's stored type and unit, returned by ListMetricTypes.
+// Lives in storedmodel so both the observabilitystorageext interface and the
+// elasticsearch provider can reference it without an import cycle.
+type MetricMeta struct {
+	Type string // "gauge", "counter", "histogram", "summary"
+	Unit string // OTel unit (e.g. "By"=bytes, "1"=count, "ms", "s")
 }
 
 // ConvertOTLPMetric converts an OTLP metric to one or more StoredMetricDataPoint.
@@ -37,6 +49,7 @@ func ConvertOTLPMetric(metric pmetric.Metric, resource pcommon.Resource) []Store
 		Name:        metric.Name(),
 		ServiceName: serviceName,
 		AppID:       appID,
+		Unit:        metric.Unit(),
 		Resource:    pcommonMapToFlat(resourceAttrs),
 	}
 

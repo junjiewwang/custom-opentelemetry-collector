@@ -361,6 +361,7 @@ func metricTemplateMappings(cfg IndexConfig) map[string]any {
 					FieldMetricValue:  map[string]any{"type": "double"},
 					FieldServiceName:  map[string]any{"type": "keyword"},
 					FieldAppID:        map[string]any{"type": "keyword"},
+					FieldMetricUnit:   map[string]any{"type": "keyword"}, // OTel metric Unit() (By/1/ms) for /metadata
 					FieldMetricLabels: map[string]any{"type": "object", "dynamic": true},
 					FieldResource:     map[string]any{"type": "object", "dynamic": true},
 				},

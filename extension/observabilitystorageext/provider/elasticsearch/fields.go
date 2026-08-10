@@ -53,6 +53,7 @@ const (
 	FieldMetricTimeUnixMilli     = "timeUnixMilli"
 	FieldMetricType              = "type"
 	FieldMetricValue             = "value"
+	FieldMetricUnit              = "unit" // OTel metric Unit() (By/1/ms)
 	FieldMetricLabels            = "labels"
 	FieldMetricBucketCounts      = "bucket_counts"
 	FieldMetricExplicitBounds    = "explicit_bounds"

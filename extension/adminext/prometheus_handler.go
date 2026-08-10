@@ -793,12 +793,35 @@ func (h *promHandlers) handlePromMetadata(w http.ResponseWriter, r *http.Request
 
 	metadata := make(map[string][]map[string]string, len(names))
 	for _, name := range names {
+		meta := types[name] // storedmodel.MetricMeta{Type, Unit}
 		metadata[name] = []map[string]string{
-			{"type": promMetricType(types[name]), "help": "", "unit": ""},
+			{"type": promMetricType(meta.Type), "help": "", "unit": promMetricUnit(meta.Unit)},
 		}
 	}
 
 	h.writePromSuccess(w, metadata)
+}
+
+// promMetricUnit maps an OTel metric unit to a human-readable form for the
+// Prometheus /metadata "unit" field, which Grafana Metrics Drilldown shows as
+// "Unit: <unit>" in the metric description. OTel uses compact UCUM codes
+// ("By"=bytes, "1"=dimensionless); we render those the way the drilldown's
+// UNIT_BYTES constant expects ("bytes") and leave unknown codes as-is.
+func promMetricUnit(otel string) string {
+	switch otel {
+	case "By":
+		return "bytes"
+	case "1":
+		return "" // count, dimensionless — no unit to show
+	case "ms":
+		return "ms"
+	case "s":
+		return "s"
+	case "us":
+		return "µs"
+	default:
+		return otel // unknown — pass through unchanged
+	}
 }
 
 // promMetricType maps a stored OTel metric type to the Prometheus metadata

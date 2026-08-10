@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 )
 
 // ListMetricTypes must report the type of the NEWEST data point, not the most
@@ -46,11 +48,11 @@ func TestListMetricTypes_UsesNewestNotMostFrequent(t *testing.T) {
 	got, err := r.ListMetricTypes(context.Background(), TimeRange{})
 	require.NoError(t, err)
 
-	assert.Equal(t, map[string]string{
-		"jvm.thread.count":             "gauge",
-		"kafka.consumer.commit_total":  "counter",
-		"http.server.request.duration": "histogram",
-		"no.type.recorded":             "",
+	assert.Equal(t, map[string]storedmodel.MetricMeta{
+		"jvm.thread.count":             {Type: "gauge"},
+		"kafka.consumer.commit_total":  {Type: "counter"},
+		"http.server.request.duration": {Type: "histogram"},
+		"no.type.recorded":             {},
 	}, got)
 
 	// The sub-aggregation must sort by time descending, otherwise "newest" is

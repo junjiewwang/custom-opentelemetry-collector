@@ -523,7 +523,7 @@ func (a *metricReaderAdapter) ListMetricNames(ctx context.Context, timeRange Tim
 	return a.inner.ListMetricNames(ctx, esTimeRange)
 }
 
-func (a *metricReaderAdapter) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error) {
+func (a *metricReaderAdapter) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]storedmodel.MetricMeta, error) {
 	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListMetricTypes(ctx, esTimeRange)
 }

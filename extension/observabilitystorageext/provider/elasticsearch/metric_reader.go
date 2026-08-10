@@ -21,9 +21,9 @@ import (
 //
 //	timeUnixMilli, name, type, serviceName, value, labels, resource
 type MetricReader struct {
-	searcher     Searcher
-	config       *Config
-	logger       *zap.Logger
+	searcher      Searcher
+	config        *Config
+	logger        *zap.Logger
 	labelResolver MetricLabelResolver // stateless; resolves PromQL labels → ES fields (promotion + .keyword)
 }
 
@@ -256,7 +256,7 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 // type indefinitely, and Grafana Metrics Drilldown then wrapped gauges like
 // jvm.thread.count in rate(). Grafana sends no start/end to /metadata, so the
 // query spans all history and the stale majority always won.
-func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error) {
+func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]storedmodel.MetricMeta, error) {
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),
 		Size:  0,
@@ -271,7 +271,7 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 						"top_hits": map[string]any{
 							"size":    1,
 							"sort":    []map[string]any{{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}}},
-							"_source": []string{FieldMetricType},
+							"_source": []string{FieldMetricType, FieldMetricUnit},
 						},
 					},
 				},
@@ -297,6 +297,7 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 					Hits []struct {
 						Source struct {
 							Type string `json:"type"`
+							Unit string `json:"unit"`
 						} `json:"_source"`
 					} `json:"hits"`
 				} `json:"hits"`
@@ -307,12 +308,12 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 		return nil, fmt.Errorf("failed to parse metric_names aggregation: %w", err)
 	}
 
-	out := make(map[string]string, len(agg.Buckets))
+	out := make(map[string]storedmodel.MetricMeta, len(agg.Buckets))
 	for _, b := range agg.Buckets {
 		if hits := b.MetricType.Hits.Hits; len(hits) > 0 {
-			out[b.Key] = hits[0].Source.Type
+			out[b.Key] = storedmodel.MetricMeta{Type: hits[0].Source.Type, Unit: hits[0].Source.Unit}
 		} else {
-			out[b.Key] = ""
+			out[b.Key] = storedmodel.MetricMeta{}
 		}
 	}
 	return out, nil

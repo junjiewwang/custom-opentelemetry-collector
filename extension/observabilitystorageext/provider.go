@@ -206,10 +206,10 @@ type MetricReader interface {
 	ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error)
 
 	// ListMetricTypes maps each metric name to its type ("gauge", "counter",
-	// "histogram", "summary"). Backs the Prometheus /api/v1/metadata endpoint,
-	// which Grafana Metrics Drilldown reads to choose a visualization and decide
-	// whether to wrap a query in rate().
-	ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]string, error)
+	// "histogram", "summary") and OTel unit. Backs the Prometheus /api/v1/metadata
+	// endpoint, which Grafana Metrics Drilldown reads to choose a visualization,
+	// decide whether to wrap a query in rate(), and show the unit.
+	ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]storedmodel.MetricMeta, error)
 
 	// ListLabelCombinations returns unique label value combinations for the
 	// specified metric and label keys. Used by Grafana "group by" explore queries.
