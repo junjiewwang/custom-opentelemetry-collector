@@ -47,17 +47,14 @@ func (s *MemoryStore) SaveTask(_ context.Context, task *Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.tasks[task.ID]; exists {
-		return fmt.Errorf("task %s already exists", task.ID)
+	// Upsert semantics: overwrite if exists (supports retry, import, etc.)
+	if _, ok := s.tasks[task.ID]; !ok && task.GroupID != "" {
+		s.groups[task.GroupID] = append(s.groups[task.GroupID], task.ID)
 	}
 
 	// Deep copy to avoid external mutation
 	copied := *task
 	s.tasks[task.ID] = &copied
-
-	if task.GroupID != "" {
-		s.groups[task.GroupID] = append(s.groups[task.GroupID], task.ID)
-	}
 	return nil
 }
 
@@ -188,7 +185,7 @@ func (s *MemoryStore) ListTasks(_ context.Context, query ListQuery) (*ListPage, 
 	return &ListPage{
 		Tasks:  page,
 		Total:  total,
-		Offset: query.Offset,
+		Offset: start, // use corrected offset (clamped to total when query.Offset > total)
 		Limit:  limit,
 	}, nil
 }

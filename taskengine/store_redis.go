@@ -125,6 +125,12 @@ func (s *RedisStore) newResultKey(id string) string {
 	return fmt.Sprintf("%s:{%s}:result", s.prefix, id)
 }
 
+// agentIndexKey returns the per-agent ZSET key: te:agent:{agentID}:tasks
+// Members are task IDs, scored by createdAt for chronological ordering.
+func (s *RedisStore) agentIndexKey(agentID string) string {
+	return fmt.Sprintf("%s:agent:%s:tasks", s.prefix, agentID)
+}
+
 func (s *RedisStore) eventChannel(eventType TaskEventType) string {
 	return fmt.Sprintf("%s:events:%s", s.prefix, eventType)
 }
@@ -167,6 +173,14 @@ func (s *RedisStore) SaveTask(ctx context.Context, task *Task) error {
 	// ZADD pending index (score = createdAt for ordering)
 	if task.Status == StatusPending {
 		pipe.ZAdd(ctx, s.pendingIndexKey(), redis.Z{
+			Score:  float64(task.CreatedAt),
+			Member: task.ID,
+		})
+	}
+
+	// ZADD per-agent index for direct-routed tasks
+	if task.Routing.TargetNodeID != "" {
+		pipe.ZAdd(ctx, s.agentIndexKey(task.Routing.TargetNodeID), redis.Z{
 			Score:  float64(task.CreatedAt),
 			Member: task.ID,
 		})
@@ -493,22 +507,29 @@ if currentStatus == newStatus then
     return 'SAME'
 end
 
--- Terminal guard: cannot transition from terminal state
-local terminalStates = {success=true, failed=true, timeout=true, skipped=true, cancelled=true}
-if terminalStates[currentStatus] then
-    return 'TERMINAL'
-end
-
 -- ─── Validate transition ───
+-- Allowed transitions (must stay in sync with Go state_machine.go:validTransitions):
 local validNext = {
-    pending = {running=true, cancelled=true, timeout=true},
-    running = {success=true, failed=true, timeout=true, skipped=true, cancelled=true}
+	pending = {running=true, cancelled=true, timeout=true},
+	running = {success=true, failed=true, timeout=true, skipped=true, cancelled=true},
+	-- Retry support: Failed/Timeout can transition back to Pending
+	failed  = {pending=true},
+	timeout = {pending=true}
 }
+
+-- Fully terminal states: no outgoing transitions allowed
+local fullyTerminal = {success=true, skipped=true, cancelled=true}
+if fullyTerminal[currentStatus] then
+	return 'TERMINAL'
+end
 
 local allowed = validNext[currentStatus]
 if not allowed or not allowed[newStatus] then
-    return 'INVALID:' .. currentStatus
+	return 'INVALID:' .. currentStatus
 end
+
+-- Terminal states that should get TTL expiry (includes failed/timeout)
+local terminalStates = {success=true, failed=true, timeout=true, skipped=true, cancelled=true}
 
 -- ─── Apply transition to HASH meta (atomically within same slot) ───
 redis.call('HSET', KEYS[1], 'status', newStatus)
@@ -634,6 +655,18 @@ func (s *RedisStore) updateIndex(ctx context.Context, taskID string, from, to Ta
 		pipe.ZRem(ctx, s.pendingIndexKey(), taskID)
 	}
 
+	// ─── Agent index: add task to agent's ZSET when claimed ───
+	// The agent index enables O(logN) queries by agent_id, avoiding a capped
+	// SCAN of the full key space.  Tasks are never removed from the agent index
+	// so historical queries (agent_id=X, no status filter) return all tasks.
+	if claimedBy != "" {
+		createdAt := s.readTaskCreatedAt(ctx, taskID)
+		pipe.ZAdd(ctx, s.agentIndexKey(claimedBy), redis.Z{
+			Score:  float64(createdAt),
+			Member: taskID,
+		})
+	}
+
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.logger.Debug("updateIndex: index maintenance failed (non-critical, Reaper Safety-Net covers it)",
 			zap.String("task_id", taskID),
@@ -642,6 +675,17 @@ func (s *RedisStore) updateIndex(ctx context.Context, taskID string, from, to Ta
 			zap.Error(err),
 		)
 	}
+}
+
+// readTaskCreatedAt reads the createdAt field from the meta HASH.
+// Returns 0 on error (index score will be 0, non-critical).
+func (s *RedisStore) readTaskCreatedAt(ctx context.Context, taskID string) int64 {
+	v, err := s.client.HGet(ctx, s.metaKey(taskID), "createdAt").Result()
+	if err != nil {
+		return 0
+	}
+	ts, _ := strconv.ParseInt(v, 10, 64)
+	return ts
 }
 
 // DeleteTask removes a task and all its associated keys (new + legacy formats).
@@ -682,13 +726,31 @@ func (s *RedisStore) DeleteTask(ctx context.Context, taskID string) error {
 }
 
 // ListTasks returns a paginated list of tasks.
+//
+// Routing priority:
+//   1) AgentID set      → ZSET index (listByAgentIndex, O(logN+K)), fallback to capped SCAN
+//   2) Status=Running   → ZSET index (listRunningTasks, O(logN+K))
+//   3) Status=Pending   → ZSET index (listByPendingIndex, O(logN+K))
+//   4) GroupID set      → SMEMBERS + chunked fetch (O(N) but constrained to group size)
+//   5) No status filter → Capped SCAN (covers all statuses including terminal)
+//   6) Terminal status  → Capped SCAN with timeout protection (prevent OOM/timeout on large DBs)
 func (s *RedisStore) ListTasks(ctx context.Context, query ListQuery) (*ListPage, error) {
-	// Fast path: running tasks via ZSET index (O(logN) vs O(N) SCAN)
+	// Fast path: agent-level query via per-agent ZSET index
+	if query.AgentID != "" && query.GroupID == "" {
+		return s.listByAgentIndex(ctx, query)
+	}
+
+	// Fast path: running tasks via ZSET index
 	if query.Status == StatusRunning && query.GroupID == "" {
 		return s.listRunningTasks(ctx, query)
 	}
 
-	// Slow path with group filtering
+	// Fast path: pending tasks via ZSET index
+	if query.Status == StatusPending && query.GroupID == "" {
+		return s.listByPendingIndex(ctx, query)
+	}
+
+	// Group-based filtering (constrained by group cardinality)
 	if query.GroupID != "" {
 		ids, err := s.client.SMembers(ctx, s.groupKey(query.GroupID)).Result()
 		if err != nil {
@@ -701,9 +763,16 @@ func (s *RedisStore) ListTasks(ctx context.Context, query ListQuery) (*ListPage,
 		return filterAndPage(tasks, query), nil
 	}
 
-	// Slow path: full SCAN
-	return s.listTasksSlow(ctx, query)
+	// No status filter — use capped SCAN so terminal tasks (failed/success/cancelled)
+	// are included alongside active tasks.
+	return s.listTasksScanCapped(ctx, query)
 }
+
+// maxScanKeys caps the total number of SCAN-matched keys to prevent timeout
+// on Redis DBs with a large cardinality (>10k keys).
+// Beyond this cap the result is still returned (Total reflects the cap), and a
+// warning is logged so operators know the index is stale.
+const maxScanKeys = 1000
 
 func filterAndPage(tasks []*Task, query ListQuery) *ListPage {
 	var filtered []*Task
@@ -744,9 +813,9 @@ func (s *RedisStore) listRunningTasks(ctx context.Context, query ListQuery) (*Li
 		return nil, fmt.Errorf("zrange running tasks: %w", err)
 	}
 
-	// Fall back to slow path if ZSET is empty (may need bootstrap)
+	// Fall back to capped scan if ZSET is empty (may need bootstrap)
 	if len(taskKeys) == 0 {
-		return s.listTasksSlow(ctx, query)
+		return s.listTasksScanCapped(ctx, query)
 	}
 
 	// Extract task IDs from keys
@@ -791,8 +860,11 @@ func (s *RedisStore) listRunningTasks(ctx context.Context, query ListQuery) (*Li
 	}, nil
 }
 
-// listTasksSlow is the original SCAN-based implementation (used as fallback).
-func (s *RedisStore) listTasksSlow(ctx context.Context, query ListQuery) (*ListPage, error) {
+// listTasksScanCapped is the SCAN-based implementation with a hard cap on
+// scanned key count. Used as fallback when ZSET indexes are empty or for
+// terminal status queries (success/failed/cancelled/timeout).  The cap ensures
+// the call returns within the HTTP read timeout even on DBs with 10k+ keys.
+func (s *RedisStore) listTasksScanCapped(ctx context.Context, query ListQuery) (*ListPage, error) {
 	limit := queryLimit(query)
 	pattern := fmt.Sprintf("%s:task:*", s.prefix)
 	var cursor uint64
@@ -805,6 +877,19 @@ func (s *RedisStore) listTasksSlow(ctx context.Context, query ListQuery) (*ListP
 			return nil, fmt.Errorf("scan tasks: %w", err)
 		}
 		keys = append(keys, batch...)
+
+		// Hard cap: stop scanning when exceeding maxScanKeys to prevent timeout
+		// on large DBs (>10k keys). Operator must periodically rebuild ZSET indexes
+		// or clean terminal tasks so this cap is rarely hit.
+		if len(keys) >= maxScanKeys {
+			s.logger.Warn("ListTasks scan reached maxScanKeys cap",
+				zap.Int("cap", maxScanKeys),
+				zap.String("pattern", pattern),
+				zap.String("hint", "rebuild ZSET indexes or clean terminal tasks to avoid performance degradation"),
+			)
+			keys = keys[:maxScanKeys]
+			break
+		}
 		if cursor == 0 {
 			break
 		}
@@ -845,6 +930,72 @@ func (s *RedisStore) listTasksSlow(ctx context.Context, query ListQuery) (*ListP
 	return &ListPage{
 		Tasks:  allTasks[start:end],
 		Total:  total,
+		Offset: query.Offset,
+		Limit:  limit,
+	}, nil
+}
+
+// listByPendingIndex queries pending tasks via the te:pending ZSET index.
+// Uses ZREVRANGE for descending order (newest first by createdAt score),
+// then batch-fetches task metadata via getTasksChunked.
+// Falls back to capped SCAN when the index is empty (cold-start / rebuild).
+func (s *RedisStore) listByPendingIndex(ctx context.Context, query ListQuery) (*ListPage, error) {
+	limit := queryLimit(query)
+	card, err := s.client.ZCard(ctx, s.pendingIndexKey()).Result()
+	if err != nil {
+		return nil, fmt.Errorf("zcard pending: %w", err)
+	}
+	// Fall back to capped scan if index is empty
+	if card == 0 {
+		return s.listTasksScanCapped(ctx, query)
+	}
+
+	endIdx := query.Offset + int(limit) - 1
+	members, err := s.client.ZRevRange(ctx, s.pendingIndexKey(), int64(query.Offset), int64(endIdx)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("zrevrange pending: %w", err)
+	}
+
+	tasks, err := s.getTasksChunked(ctx, members)
+	if err != nil {
+		return nil, fmt.Errorf("batch get pending tasks: %w", err)
+	}
+
+	return &ListPage{
+		Tasks:  tasks,
+		Total:  int(card),
+		Offset: query.Offset,
+		Limit:  limit,
+	}, nil
+}
+
+// listByAgentIndex queries tasks for a specific agent via the per-agent ZSET index
+// (te:agent:{agentID}:tasks). Falls back to capped SCAN if the index is empty.
+func (s *RedisStore) listByAgentIndex(ctx context.Context, query ListQuery) (*ListPage, error) {
+	limit := queryLimit(query)
+	card, err := s.client.ZCard(ctx, s.agentIndexKey(query.AgentID)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("zcard agent %s: %w", query.AgentID, err)
+	}
+	// Fall back to capped scan if this agent has no indexed tasks yet
+	if card == 0 {
+		return s.listTasksScanCapped(ctx, query)
+	}
+
+	endIdx := query.Offset + limit - 1
+	members, err := s.client.ZRevRange(ctx, s.agentIndexKey(query.AgentID), int64(query.Offset), int64(endIdx)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("zrevrange agent %s: %w", query.AgentID, err)
+	}
+
+	tasks, err := s.getTasksChunked(ctx, members)
+	if err != nil {
+		return nil, fmt.Errorf("batch get agent tasks: %w", err)
+	}
+
+	return &ListPage{
+		Tasks:  tasks,
+		Total:  int(card),
 		Offset: query.Offset,
 		Limit:  limit,
 	}, nil

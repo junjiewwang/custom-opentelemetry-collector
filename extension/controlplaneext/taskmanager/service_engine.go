@@ -211,12 +211,17 @@ func (s *TaskServiceEngine) GetPendingTasks(ctx context.Context, agentID string)
 		return nil, nil
 	}
 
-	// Filter: tasks routed to this agent OR broadcast tasks
+	// Filter: tasks routed to this agent OR broadcast OR capability-based.
+	// Note: capability-based tasks are included unconditionally here; the actual
+	// capability match is enforced by the engine's Claim logic, not the list query.
 	var tasks []*model.Task
 	for _, t := range page.Tasks {
-		if t.Routing.Strategy == taskengine.RoutingDirect && t.Routing.TargetNodeID == agentID {
-			tasks = append(tasks, engineTaskToControlplane(t))
-		} else if t.Routing.Strategy == taskengine.RoutingBroadcast {
+		switch t.Routing.Strategy {
+		case taskengine.RoutingDirect:
+			if t.Routing.TargetNodeID == agentID {
+				tasks = append(tasks, engineTaskToControlplane(t))
+			}
+		case taskengine.RoutingBroadcast, taskengine.RoutingCapability:
 			tasks = append(tasks, engineTaskToControlplane(t))
 		}
 	}
@@ -236,10 +241,10 @@ func (s *TaskServiceEngine) GetGlobalPendingTasks(ctx context.Context) ([]*model
 		return nil, nil
 	}
 
-	// Filter: only broadcast tasks
+	// Filter: broadcast tasks + capability-based tasks (not direct-targeted)
 	var tasks []*model.Task
 	for _, t := range page.Tasks {
-		if t.Routing.Strategy == taskengine.RoutingBroadcast {
+		if t.Routing.Strategy == taskengine.RoutingBroadcast || t.Routing.Strategy == taskengine.RoutingCapability {
 			tasks = append(tasks, engineTaskToControlplane(t))
 		}
 	}
@@ -270,6 +275,12 @@ func (s *TaskServiceEngine) ListTasks(ctx context.Context, query ListTasksQuery)
 	// Build engine query
 	engineQuery := taskengine.ListQuery{
 		Limit: query.Limit,
+	}
+
+	// Pass agent_id filter down to engine so it can use per-agent ZSET index
+	// rather than a full SCAN of the key space.
+	if query.AgentID != "" {
+		engineQuery.AgentID = query.AgentID
 	}
 
 	// Map task type filter
@@ -316,9 +327,14 @@ func (s *TaskServiceEngine) ListTasks(ctx context.Context, query ListTasksQuery)
 		items = append(items, info)
 	}
 
-	// Compute pagination metadata
-	nextOffset := page.Offset + len(page.Tasks)
-	hasMore := page.Total > nextOffset
+	// Compute pagination metadata — use client-side filtered count for accuracy.
+	// Engine-level page.Offset and page.Total reflect the engine's pre-filter view;
+	// when the service layer applies additional filters (e.g. multi-status, appID),
+	// we must advance the cursor by the filtered item count, not by page.Tasks length.
+	nextOffset := engineQuery.Offset + len(items)
+	// hasMore is best-effort when client-side filters are active: we assume more
+	// data exists if the engine returned a full page worth of pre-filtered tasks.
+	hasMore := len(page.Tasks) == engineQuery.Limit || page.Total > (page.Offset+len(page.Tasks))
 	nextCursor := ""
 	if hasMore {
 		nextCursor = fmt.Sprintf("%d", nextOffset)

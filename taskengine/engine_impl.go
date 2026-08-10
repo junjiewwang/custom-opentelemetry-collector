@@ -76,6 +76,15 @@ func (e *EngineImpl) Submit(ctx context.Context, task *Task) error {
 		return fmt.Errorf("task type is required")
 	}
 
+	// Duplicate-ID check: reject submissions with an ID that already exists.
+	// (Store.SaveTask is upsert for retry support, but Submit should still
+	// prevent accidental duplicate submissions.)
+	if existing, err := e.store.GetTask(ctx, task.ID); err != nil {
+		return fmt.Errorf("check duplicate: %w", err)
+	} else if existing != nil {
+		return fmt.Errorf("task %s already exists", task.ID)
+	}
+
 	// Set initial state
 	task.Status = StatusPending
 	task.CreatedAt = time.Now().UnixMilli()
@@ -85,11 +94,17 @@ func (e *EngineImpl) Submit(ctx context.Context, task *Task) error {
 		return fmt.Errorf("save task: %w", err)
 	}
 
-	// Route to queue
+	// Route to queue — rollback the save on failure to avoid orphan tasks
 	queueID := e.router.Route(task)
 	if err := e.store.Enqueue(ctx, queueID, task.ID, task.Priority); err != nil {
-		// Best effort: task is saved but not enqueued — reaper can detect this
-		e.logger.Error("failed to enqueue task",
+		// Best-effort rollback: delete the saved task so it doesn't become orphaned
+		if delErr := e.store.DeleteTask(ctx, task.ID); delErr != nil {
+			e.logger.Error("failed to rollback task after enqueue failure",
+				zap.String("taskID", task.ID),
+				zap.Error(delErr),
+			)
+		}
+		e.logger.Error("failed to enqueue task (rolled back)",
 			zap.String("taskID", task.ID),
 			zap.String("queueID", queueID),
 			zap.Error(err),
@@ -309,29 +324,41 @@ func (e *EngineImpl) retryTask(ctx context.Context, task *Task, result *TaskResu
 		e.logger.Warn("failed to save retry result", zap.Error(err))
 	}
 
-	// Reset status to Pending for retry
-	// Note: Running → Failed is valid, then we re-submit which creates a new cycle.
-	// For simplicity, we mark it as Failed first, then directly re-enqueue.
+	// Reset status to Pending for retry.
+	// Strategy: delete the old task entry then re-save with updated retry fields.
+	// This avoids Store-specific idempotency semantics (HSETNX in Redis vs upsert
+	// in Memory) and works with both stores uniformly.
 	if err := e.store.UpdateTaskStatus(ctx, task.ID, StatusFailed, ""); err != nil {
 		if !IsInvalidTransition(err) {
 			return err
 		}
 	}
 
-	// Increment retry count and re-save task as Pending
-	// Create a new entry since the original is now Failed
+	// Increment retry count and re-persist as Pending.
 	retryTask := *task
 	retryTask.RetryCount++
 	retryTask.Status = StatusPending
 	retryTask.ClaimedBy = ""
 	retryTask.CreatedAt = time.Now().UnixMilli()
 
-	// For retry, we use a different approach: update in-place via a new status cycle
-	// This is simpler — directly re-enqueue to the same queue
+	// Delete old entry then save the retry copy — works with both Redis and Memory stores.
+	if err := e.store.DeleteTask(ctx, retryTask.ID); err != nil {
+		e.logger.Warn("delete task before retry save", zap.Error(err))
+	}
+	if err := e.store.SaveTask(ctx, &retryTask); err != nil {
+		return fmt.Errorf("save retry task: %w", err)
+	}
+
 	queueID := e.router.Route(&retryTask)
 	if err := e.store.Enqueue(ctx, queueID, retryTask.ID, retryTask.Priority); err != nil {
 		return fmt.Errorf("re-enqueue for retry: %w", err)
 	}
+
+	e.logger.Info("task re-enqueued for retry",
+		zap.String("taskID", retryTask.ID),
+		zap.Int("retryCount", retryTask.RetryCount),
+		zap.String("queueID", queueID),
+	)
 
 	return nil
 }

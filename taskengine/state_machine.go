@@ -11,30 +11,34 @@ import "fmt"
 // State machine diagram:
 //
 //	               ┌─────────────┐
-//	               │   Pending   │
-//	               └──────┬──────┘
-//	                      │
-//	          ┌───────────┼───────────┐
-//	          │           │           │
-//	          ▼           ▼           ▼
-//	    ┌──────────┐ ┌─────────┐ ┌──────────┐
-//	    │ Running  │ │Cancelled│ │ Timeout  │
-//	    └────┬─────┘ └─────────┘ └──────────┘
-//	         │
-//	    ┌────┼─────┬──────────┬──────────┐
-//	    │    │     │          │          │
-//	    ▼    ▼     ▼          ▼          ▼
-//	┌───────┐┌──────┐┌───────┐┌────────┐┌──────────┐
-//	│Success││Failed││Timeout││Skipped ││Cancelled │
-//	└───────┘└──────┘└───────┘└────────┘└──────────┘
+//	               │   Pending   │◄───────────── retry ───────────┐
+//	               └──────┬──────┘                                │
+//	                      │                                       │
+//	          ┌───────────┼───────────┐                           │
+//	          │           │           │                           │
+//	          ▼           ▼           ▼                           │
+//	    ┌──────────┐ ┌─────────┐ ┌──────────┐                    │
+//	    │ Running  │ │Cancelled│ │ Timeout  │                    │
+//	    └────┬─────┘ └─────────┘ └─────┬────┘                    │
+//	         │                         │                          │
+//	    ┌────┼─────┬──────────┬────────┤                          │
+//	    │    │     │          │        │                          │
+//	    ▼    ▼     ▼          ▼        ▼                          │
+//	┌───────┐┌──────┐┌───────┐┌────────┐┌──────────┐            │
+//	│Success││Failed││Timeout││Skipped ││Cancelled │            │
+//	└───────┘└──┬───┘└───┬───┘└────────┘└──────────┘            │
+//	             │        │                                       │
+//	             └────────┴───────────────────────────────────────┘
+//	                     retry (if RetryCount < MaxRetries)
 //
 var validTransitions = map[TaskStatus][]TaskStatus{
 	StatusPending: {StatusRunning, StatusCancelled, StatusTimeout},
 	StatusRunning: {StatusSuccess, StatusFailed, StatusTimeout, StatusSkipped, StatusCancelled},
-	// Terminal states — no outgoing transitions
+	// Failed and Timeout support retry → Pending transition
+	StatusFailed:    {StatusPending},
+	StatusTimeout:   {StatusPending},
+	// Fully terminal states — no outgoing transitions
 	StatusSuccess:   {},
-	StatusFailed:    {},
-	StatusTimeout:   {},
 	StatusSkipped:   {},
 	StatusCancelled: {},
 }

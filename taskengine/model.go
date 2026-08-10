@@ -222,6 +222,9 @@ type ListQuery struct {
 	TaskType TaskType
 	// Status filters by status (empty = all statuses).
 	Status TaskStatus
+	// AgentID filters tasks by the owning agent (claimedBy or direct routing target).
+	// When set, the store can use a per-agent ZSET index for O(logN+K) lookup.
+	AgentID string
 	// GroupID filters by group/epoch.
 	GroupID string
 	// Offset for pagination.
