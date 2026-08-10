@@ -21,9 +21,10 @@ import (
 //
 //	timeUnixMilli, name, type, serviceName, value, labels, resource
 type MetricReader struct {
-	searcher Searcher
-	config   *Config
-	logger   *zap.Logger
+	searcher     Searcher
+	config       *Config
+	logger       *zap.Logger
+	labelResolver MetricLabelResolver // stateless; resolves PromQL labels → ES fields (promotion + .keyword)
 }
 
 // NewMetricReader creates a new MetricReader instance.
@@ -538,21 +539,10 @@ func (r *MetricReader) buildAggregation(groupBy []string, interval string, aggFu
 
 	sources := make([]map[string]any, 0, len(groupBy))
 	for _, label := range groupBy {
-		var aggField string
-		if label == "service_name" {
-			// service_name is stored in the TOP-LEVEL serviceName field (the
-			// resource attribute service.name), NOT inside the labels object.
-			// Grouping by labels.service_name.keyword yields 0 buckets for metrics
-			// whose service comes only from the resource (db.client.connections.*,
-			// kafka.consumer.*), so the panel shows "no data" even though the
-			// samples exist. Group by the actual stored field instead.
-			aggField = FieldServiceName
-		} else {
-			esKey := translateLabelKey(label)
-			// Metric labels are text fields from ES dynamic template — must use
-			// .keyword sub-field for terms/composite aggregation.
-			aggField = aggregatableField("metric", fmt.Sprintf("%s.%s", FieldMetricLabels, esKey))
-		}
+		// Resolve via labelResolver: service_name → top-level serviceName
+		// (resource-derived; grouping on labels.service_name.keyword yields 0
+		// buckets for jvm/runtime metrics). Other labels → labels.<key>.keyword.
+		aggField := r.labelResolver.Resolve(label).ESField
 		sources = append(sources, map[string]any{
 			label: map[string]any{
 				"terms": map[string]any{
@@ -953,29 +943,20 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 		qb.Term(FieldServiceName, serviceName)
 	}
 	for k, v := range labels {
-		// service_name is stored in the TOP-LEVEL serviceName field (the resource
-		// attribute service.name), NOT inside the labels object — jvm/runtime
-		// metrics have empty labels. Filtering on labels.service_name.keyword
-		// matches 0 docs and returns empty frames. Promote to FieldServiceName,
-		// matching buildAggregation's group-by handling.
-		field := FieldServiceName
-		if k != "service_name" {
-			field = aggregatableField("metric", FieldMetricLabels+"."+k)
-		}
-		qb.Term(field, v)
+		// Resolve via labelResolver: service_name is promoted to the top-level
+		// serviceName field (jvm/runtime metrics have empty labels); other labels
+		// target labels.<key>.keyword.
+		qb.Term(r.labelResolver.Resolve(k).ESField, v)
 	}
 
 	// Translate regex patterns to ES-compatible queries for flattened fields.
-	// Uses the same .keyword sub-field as exact matches above: metric labels are
-	// dynamically mapped text+keyword, and term/terms/prefix on the bare (analyzed)
-	// field never matches a multi-token value.
+	// Uses the same field resolution as exact matches above (service_name is
+	// promoted; others use the .keyword sub-field because metric labels are
+	// dynamically mapped text+keyword, and term/regex on the bare analyzed
+	// field never matches a multi-token value).
 	var postFilters map[string]string
 	for k, pattern := range labelMatch {
-		// service_name regex (~=) also targets the top-level serviceName field.
-		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
-		if k == "service_name" {
-			field = FieldServiceName
-		}
+		field := r.labelResolver.Resolve(k).ESField
 		translation := TranslatePromQLRegex(pattern)
 		clause := BuildESClauseFromRegex(field, translation)
 		if clause != nil {
@@ -995,18 +976,10 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 	// post-filtering only supports the positive direction today.
 	negLabels, negMatch := normalizeMetricQueryLabels(neg.Not, neg.NotMatch)
 	for k, v := range negLabels {
-		// service_name negation also targets the top-level serviceName field.
-		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
-		if k == "service_name" {
-			field = FieldServiceName
-		}
-		qb.Raw(esq.MustNotQ(esq.T(field, v)))
+		qb.Raw(esq.MustNotQ(esq.T(r.labelResolver.Resolve(k).ESField, v)))
 	}
 	for k, pattern := range negMatch {
-		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
-		if k == "service_name" {
-			field = FieldServiceName
-		}
+		field := r.labelResolver.Resolve(k).ESField
 		if clause := BuildESClauseFromRegex(field, TranslatePromQLRegex(pattern)); clause != nil {
 			qb.Raw(esq.MustNotQ(clause))
 		} else {
