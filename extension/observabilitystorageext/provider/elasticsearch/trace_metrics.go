@@ -192,7 +192,13 @@ func (r *TraceReader) buildMetricsAggTree(query TraceMetricsQuery, histogramAgg 
 			"by_" + label: map[string]any{
 				"terms": map[string]any{
 					"field": aggField,
-					"size":  1000,
+					// 100, not 1000: TraceQL metrics group-by labels are low-cardinality
+					// (service.name, span.name, status, kind — at most a few hundred
+					// distinct values). 1000 forced every shard to materialize 1000 buckets
+					// × the histogram sub-buckets × every shard (16 indices × 3 shards =
+					// 48 shards), which overflowed the 1.5GB heap node (parent circuit
+					// breaker). 100 covers real cardinality with headroom.
+					"size": 100,
 				},
 				"aggs": outerAggs,
 			},
