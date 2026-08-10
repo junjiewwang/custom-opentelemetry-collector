@@ -88,7 +88,7 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("trace search failed: %w", err)
 	}
@@ -177,7 +177,7 @@ func (r *TraceReader) SearchTraceSummaries(ctx context.Context, query TraceQuery
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("trace summary search failed: %w", err)
 	}
@@ -222,7 +222,7 @@ func (r *TraceReader) QueryTraceDurations(ctx context.Context, traceIDs []string
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("trace duration query failed: %w", err)
 	}
@@ -430,7 +430,7 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 			},
 		},
 	}
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, nil, fmt.Errorf("search spans failed: %w", err)
 	}
@@ -448,7 +448,7 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 		Query: esq.TermsQ(FieldTraceID, traceIDs),
 		Size:  fetchSize,
 	}
-	fetchResp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), fetchReq)
+	fetchResp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), fetchReq)
 	if err != nil {
 		return nil, traceIDs, fmt.Errorf("fetch spans by IDs failed: %w", err)
 	}
@@ -546,6 +546,14 @@ func (r *TraceReader) indexPattern(appID ...string) string {
 		id = appID[0]
 	}
 	return esq.IndexPattern(r.config.Traces.IndexPrefix, id)
+}
+
+// indexPatternForRange narrows the index pattern to only the daily partitions
+// overlapping [start,end]. See esq.IndexPatternForRange. This avoids scanning
+// every historical day's shards when the query window is short — the main
+// cause of ES heap OOM on long-retention clusters.
+func (r *TraceReader) indexPatternForRange(appID string, start, end time.Time) string {
+	return esq.IndexPatternForRange(r.config.Traces.IndexPrefix, appID, start, end)
 }
 
 // eventFieldPath resolves a TraceQL event-scoped key to its ES field path

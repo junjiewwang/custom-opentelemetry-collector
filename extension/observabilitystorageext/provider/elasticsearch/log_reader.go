@@ -53,7 +53,7 @@ func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchR
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("log search failed: %w", err)
 	}
@@ -127,7 +127,7 @@ func (r *LogReader) SearchLogMetric(ctx context.Context, query LogMetricQuery) (
 		searchReq.Aggregations = innerAgg
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("log metric search failed: %w", err)
 	}
@@ -448,7 +448,7 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("log stats query failed: %w", err)
 	}
@@ -522,6 +522,13 @@ func (r *LogReader) indexPattern(appID ...string) string {
 		id = appID[0]
 	}
 	return esq.IndexPattern(r.config.Logs.IndexPrefix, id)
+}
+
+// indexPatternForRange narrows the index pattern to daily partitions overlapping
+// [start,end]. See esq.IndexPatternForRange — avoids scanning every historical
+// day's shards for a short-range query (the ES heap OOM trigger).
+func (r *LogReader) indexPatternForRange(appID string, start, end time.Time) string {
+	return esq.IndexPatternForRange(r.config.Logs.IndexPrefix, appID, start, end)
 }
 
 // buildLogSearchQuery constructs the ES query from LogQuery parameters.

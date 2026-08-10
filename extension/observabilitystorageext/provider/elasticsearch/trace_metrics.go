@@ -66,7 +66,7 @@ func (r *TraceReader) QueryTraceMetrics(ctx context.Context, query TraceMetricsQ
 		Aggregations: searchAggs,
 	}
 
-	indexPat := r.indexPattern(query.AppID)
+	indexPat := r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End)
 	resp, err := r.searcher.Search(ctx, indexPat, searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("trace metrics query failed: %w", err)

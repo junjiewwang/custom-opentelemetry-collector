@@ -72,7 +72,7 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.Time.Add(-24*time.Hour), query.Time.Add(24*time.Hour)), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric query failed: %w", err)
 	}
@@ -177,7 +177,7 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 		Aggregations: aggs,
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		if strings.Contains(err.Error(), "too_many_buckets") {
 			return nil, fmt.Errorf("metric range query: time range too large for the given step, try a larger step or shorter time range")
@@ -473,6 +473,13 @@ func (r *MetricReader) indexPattern(appID ...string) string {
 		id = appID[0]
 	}
 	return esq.IndexPattern(r.config.Metrics.IndexPrefix, id)
+}
+
+// indexPatternForRange narrows the index pattern to daily partitions overlapping
+// [start,end]. See esq.IndexPatternForRange — avoids scanning every historical
+// day's shards for a short-range query (the ES heap OOM trigger).
+func (r *MetricReader) indexPatternForRange(appID string, start, end time.Time) string {
+	return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix, appID, start, end)
 }
 
 // buildMetricQuery constructs the ES query for metric search.
@@ -888,7 +895,7 @@ func (r *MetricReader) QueryRaw(ctx context.Context, query MetricRawQuery) ([]Me
 		Aggregations: aggs,
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric raw query failed: %w", err)
 	}
@@ -1061,7 +1068,7 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPattern(query.AppID), searchReq)
+	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric flat query failed: %w", err)
 	}
