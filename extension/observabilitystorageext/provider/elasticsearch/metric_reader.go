@@ -953,7 +953,15 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 		qb.Term(FieldServiceName, serviceName)
 	}
 	for k, v := range labels {
-		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
+		// service_name is stored in the TOP-LEVEL serviceName field (the resource
+		// attribute service.name), NOT inside the labels object — jvm/runtime
+		// metrics have empty labels. Filtering on labels.service_name.keyword
+		// matches 0 docs and returns empty frames. Promote to FieldServiceName,
+		// matching buildAggregation's group-by handling.
+		field := FieldServiceName
+		if k != "service_name" {
+			field = aggregatableField("metric", FieldMetricLabels+"."+k)
+		}
 		qb.Term(field, v)
 	}
 
@@ -963,7 +971,11 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 	// field never matches a multi-token value.
 	var postFilters map[string]string
 	for k, pattern := range labelMatch {
+		// service_name regex (~=) also targets the top-level serviceName field.
 		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
+		if k == "service_name" {
+			field = FieldServiceName
+		}
 		translation := TranslatePromQLRegex(pattern)
 		clause := BuildESClauseFromRegex(field, translation)
 		if clause != nil {
@@ -983,11 +995,18 @@ func (r *MetricReader) buildMetricFilter(metricName, serviceName string, labels,
 	// post-filtering only supports the positive direction today.
 	negLabels, negMatch := normalizeMetricQueryLabels(neg.Not, neg.NotMatch)
 	for k, v := range negLabels {
+		// service_name negation also targets the top-level serviceName field.
 		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
+		if k == "service_name" {
+			field = FieldServiceName
+		}
 		qb.Raw(esq.MustNotQ(esq.T(field, v)))
 	}
 	for k, pattern := range negMatch {
 		field := aggregatableField("metric", fmt.Sprintf(FieldMetricLabels+".%s", k))
+		if k == "service_name" {
+			field = FieldServiceName
+		}
 		if clause := BuildESClauseFromRegex(field, TranslatePromQLRegex(pattern)); clause != nil {
 			qb.Raw(esq.MustNotQ(clause))
 		} else {
