@@ -518,13 +518,7 @@ func (h *promHandlers) handlePromLabels(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	tr := observabilitystorageext.TimeRange{}
-	if start, err := parsePrometheusTime(r.FormValue("start")); err == nil {
-		tr.Start = start
-	}
-	if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
-		tr.End = end
-	}
+	tr := parsePromQueryTimeRange(r)
 
 	// Extract optional metric name from match[] parameter.
 	metricName := extractMetricNameFromMatch(r.Form["match[]"])
@@ -616,13 +610,7 @@ func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Requ
 
 	// Handle __name__ (metric names)
 	if labelName == PromLabelName {
-		tr := observabilitystorageext.TimeRange{}
-		if start, err := parsePrometheusTime(r.FormValue("start")); err == nil {
-			tr.Start = start
-		}
-		if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
-			tr.End = end
-		}
+		tr := parsePromQueryTimeRange(r)
 		names, err := h.metricReader.ListMetricNames(r.Context(), tr)
 		if err != nil {
 			h.writePromError(w, "execution", err.Error())
@@ -635,13 +623,7 @@ func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	tr := observabilitystorageext.TimeRange{}
-	if start, err := parsePrometheusTime(r.FormValue("start")); err == nil {
-		tr.Start = start
-	}
-	if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
-		tr.End = end
-	}
+	tr := parsePromQueryTimeRange(r)
 
 	// Translate PromQL underscore label name to ES dot format for the storage query.
 	// e.g. Grafana sends "span_kind" → ES stores "span.kind".
@@ -691,13 +673,7 @@ func (h *promHandlers) handlePromSeries(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	tr := observabilitystorageext.TimeRange{}
-	if start, err := parsePrometheusTime(r.FormValue("start")); err == nil {
-		tr.Start = start
-	}
-	if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
-		tr.End = end
-	}
+	tr := parsePromQueryTimeRange(r)
 
 	// Selectors are OR'd; dedup the unioned series by their label set.
 	seen := make(map[string]struct{})
@@ -785,13 +761,7 @@ func (h *promHandlers) handlePromMetadata(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tr := observabilitystorageext.TimeRange{}
-	if start, err := parsePrometheusTime(r.FormValue("start")); err == nil {
-		tr.Start = start
-	}
-	if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
-		tr.End = end
-	}
+	tr := parsePromQueryTimeRange(r)
 
 	names, err := h.metricReader.ListMetricNames(r.Context(), tr)
 	if err != nil {
@@ -2515,6 +2485,28 @@ func (h *promHandlers) writePromError(w http.ResponseWriter, errorType, message 
 
 // parsePrometheusTime parses a Prometheus time parameter.
 // Supports RFC3339 and Unix timestamp (with optional decimals).
+// parsePromQueryTimeRange builds a TimeRange from the Prometheus start/end
+// query params. Grafana's metadata/labels/series requests frequently omit these,
+// which would otherwise fall through to a match_all scan across EVERY historical
+// index (39+ indices × all shards) and OOM the ES node. When both are absent we
+// constrain to the last 2 hours — enough to enumerate metric names / labels
+// without touching cold shards.
+func parsePromQueryTimeRange(r *http.Request) observabilitystorageext.TimeRange {
+	tr := observabilitystorageext.TimeRange{}
+	if start, err := parsePrometheusTime(r.FormValue("start")); err == nil {
+		tr.Start = start
+	}
+	if end, err := parsePrometheusTime(r.FormValue("end")); err == nil {
+		tr.End = end
+	}
+	if tr.Start.IsZero() && tr.End.IsZero() {
+		now := time.Now()
+		tr.Start = now.Add(-2 * time.Hour)
+		tr.End = now
+	}
+	return tr
+}
+
 func parsePrometheusTime(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil

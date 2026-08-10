@@ -171,6 +171,18 @@ func (a *Admin) PurgeByApp(ctx context.Context, indexPrefix string, signal strin
 }
 
 // createILMPolicy creates an ILM policy with the given retention.
+//
+// The collector writes to date-suffix indices directly (otel-<sig>-<appID>-<date>,
+// see metric_writer.go getIndexName), NOT through a rollover alias. So the policy
+// must NOT use a rollover action: rollover requires <alias>-000001 form + write
+// alias, and a date-suffix index never rollovers — the index stays stuck in
+// "check-rollover-ready" forever, and every later phase (warm, delete) is keyed
+// off rollover time, so delete NEVER fires and old data accumulates indefinitely.
+//
+// With only a delete phase (min_age measured from index creation time, which is
+// exactly the date in the suffix), a 7d retention actually deletes indices 7 days
+// after they were created. The warm phase is also dropped: shrink/forcemerge on a
+// single-node cluster has nowhere to relocate shards to, so it's pure overhead.
 func (a *Admin) createILMPolicy(ctx context.Context, name string, retention time.Duration) error {
 	if retention <= 0 {
 		retention = 7 * 24 * time.Hour // default 7 days
@@ -180,19 +192,7 @@ func (a *Admin) createILMPolicy(ctx context.Context, name string, retention time
 		"policy": map[string]any{
 			"phases": map[string]any{
 				"hot": map[string]any{
-					"actions": map[string]any{
-						"rollover": map[string]any{
-							"max_size": "30gb",
-							"max_age":  "1d",
-						},
-					},
-				},
-				"warm": map[string]any{
-					"min_age": "2d",
-					"actions": map[string]any{
-						"shrink":     map[string]any{"number_of_shards": 1},
-						"forcemerge": map[string]any{"max_num_segments": 1},
-					},
+					"actions": map[string]any{}, // no rollover — date-suffix indices age out naturally
 				},
 				"delete": map[string]any{
 					"min_age": formatDuration(retention),
@@ -223,8 +223,10 @@ func traceTemplateMappings(cfg IndexConfig) map[string]any {
 				"number_of_shards":               cfg.Shards,
 				"number_of_replicas":             cfg.Replicas,
 				"refresh_interval":               cfg.RefreshInterval,
-				"index.lifecycle.name":           cfg.IndexPrefix + "-policy",
-				"index.lifecycle.rollover_alias": cfg.IndexPrefix,
+				"index.lifecycle.name": cfg.IndexPrefix + "-policy",
+				// NOTE: no index.lifecycle.rollover_alias here — createILMPolicy uses a
+				// delete-only phase (no rollover action) because we write date-suffix
+				// indices directly, not through a rollover alias.
 			},
 			"mappings": map[string]any{
 				"dynamic_templates": []map[string]any{{
@@ -329,8 +331,10 @@ func metricTemplateMappings(cfg IndexConfig) map[string]any {
 				"number_of_shards":               cfg.Shards,
 				"number_of_replicas":             cfg.Replicas,
 				"refresh_interval":               cfg.RefreshInterval,
-				"index.lifecycle.name":           cfg.IndexPrefix + "-policy",
-				"index.lifecycle.rollover_alias": cfg.IndexPrefix,
+				"index.lifecycle.name": cfg.IndexPrefix + "-policy",
+				// NOTE: no index.lifecycle.rollover_alias here — createILMPolicy uses a
+				// delete-only phase (no rollover action) because we write date-suffix
+				// indices directly, not through a rollover alias.
 			},
 			"mappings": map[string]any{
 				"dynamic_templates": []map[string]any{{
@@ -381,8 +385,10 @@ func logTemplateMappings(cfg IndexConfig) map[string]any {
 				"number_of_shards":               cfg.Shards,
 				"number_of_replicas":             cfg.Replicas,
 				"refresh_interval":               cfg.RefreshInterval,
-				"index.lifecycle.name":           cfg.IndexPrefix + "-policy",
-				"index.lifecycle.rollover_alias": cfg.IndexPrefix,
+				"index.lifecycle.name": cfg.IndexPrefix + "-policy",
+				// NOTE: no index.lifecycle.rollover_alias here — createILMPolicy uses a
+				// delete-only phase (no rollover action) because we write date-suffix
+				// indices directly, not through a rollover alias.
 			},
 			"mappings": map[string]any{
 				"dynamic_templates": []map[string]any{{
