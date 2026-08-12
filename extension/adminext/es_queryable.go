@@ -148,6 +148,118 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 	return q.selectMultipleMetrics(ctx, allNames, labelEq, labelRe, startMS, endMS, sortSeries)
 }
 
+// selectConcreteSliced splits a large time window into concurrent QueryFlat
+// sub-queries (each ≤ maxSlice) and merges the results. This avoids ES
+// timeouts on 6h–24h windows where a single FlatQuery would time out.
+func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string, labelEq, labelRe map[string]string, startMS, endMS int64, cacheKey string, maxSlice time.Duration) ([]observabilitystorageext.MetricRawSeries, error) {
+	type sliceResult struct {
+		samples []observabilitystorageext.MetricSample
+		total   int64
+		err     error
+	}
+
+	sliceSize := int64(maxSlice / time.Millisecond)
+	slices := int((endMS-startMS)/sliceSize + 1)
+	results := make([]sliceResult, slices)
+
+	var wg sync.WaitGroup
+	for i := 0; i < slices; i++ {
+		i := i
+		sStart := startMS + int64(i)*sliceSize
+		sEnd := sStart + sliceSize
+		if sEnd > endMS {
+			sEnd = endMS
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fq := observabilitystorageext.MetricFlatQuery{
+				MetricName: metricName, Labels: labelEq, LabelMatch: labelRe,
+				TimeRange: observabilitystorageext.TimeRange{
+					Start: timestamp.Time(sStart),
+					End:   timestamp.Time(sEnd),
+				},
+				MaxDocs: 0,
+			}
+			fr, err := q.reader.QueryFlat(ctx, fq)
+			if err != nil {
+				results[i].err = err
+				return
+			}
+			if fr != nil {
+				results[i].samples = fr.Samples
+				results[i].total = fr.Total
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Merge: group all samples by label set across slices.
+	seriesMap := make(map[string]*observabilitystorageext.MetricRawSeries)
+	var flatTotal int64
+	for _, r := range results {
+		if r.err != nil {
+			q.logger.Warn("QueryFlat slice failed",
+				zap.String("metric", metricName),
+				zap.Error(r.err),
+			)
+			continue
+		}
+		flatTotal += r.total
+		for _, sm := range r.samples {
+			key := labelsToSortedString(sm.Labels)
+			series, ok := seriesMap[key]
+			if !ok {
+				labelsCopy := make(map[string]string, len(sm.Labels))
+				for k, v := range sm.Labels {
+					labelsCopy[k] = v
+				}
+				series = &observabilitystorageext.MetricRawSeries{Labels: labelsCopy}
+				seriesMap[key] = series
+			}
+			series.Samples = append(series.Samples, observabilitystorageext.MetricSample{
+				TimestampMs: sm.TimestampMs, Value: sm.Value,
+				BucketCounts: sm.BucketCounts, Bounds: sm.Bounds,
+			})
+		}
+	}
+
+	// Sort and deduplicate.
+	out := make([]observabilitystorageext.MetricRawSeries, 0, len(seriesMap))
+	totalSamples := 0
+	for _, series := range seriesMap {
+		sort.Slice(series.Samples, func(i, j int) bool {
+			return series.Samples[i].TimestampMs < series.Samples[j].TimestampMs
+		})
+		if len(series.Samples) > 1 {
+			deduped := series.Samples[:1]
+			for i := 1; i < len(series.Samples); i++ {
+				if series.Samples[i].TimestampMs != deduped[len(deduped)-1].TimestampMs {
+					deduped = append(deduped, series.Samples[i])
+				}
+			}
+			series.Samples = deduped
+		}
+		totalSamples += len(series.Samples)
+		out = append(out, *series)
+	}
+
+	q.logger.Info("Range query result (QueryFlat sliced)",
+		zap.String("metric", metricName),
+		zap.Int("series", len(out)),
+		zap.Int("total_samples", totalSamples),
+		zap.Int64("range_sec", (endMS-startMS)/1000),
+		zap.Int("slices", slices),
+		zap.Int64("flat_total", flatTotal),
+	)
+
+	if len(out) == 0 {
+		return nil, nil
+	}
+	q.qCache.set(cacheKey, out)
+	return out, nil
+}
+
 // selectConcrete fetches data for a single metric from ES, with per-Querier
 // caching to avoid duplicate ES round-trips when the engine queries the same
 // metric+timestamp combination multiple times.
@@ -168,7 +280,16 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 	// time range in a single ES call (no aggregation). Flat documents carry
 	// per-sample labels, so we group by label set in Go. This gives the
 	// PromQL engine dense enough data for rate()/delta() at any lookback.
+	//
+	// For windows > maxSliceWindow, we slice the query into concurrent
+	// sub-queries to avoid ES timeouts on large time ranges.
 	if isRange {
+		const maxSliceWindow = 2 * time.Hour
+		window := time.Duration(endMS-startMS) * time.Millisecond
+		if window > maxSliceWindow {
+			return q.selectConcreteSliced(ctx, metricName, labelEq, labelRe, startMS, endMS, cacheKey, maxSliceWindow)
+		}
+
 		flatQuery := observabilitystorageext.MetricFlatQuery{
 			MetricName: metricName, Labels: labelEq, LabelMatch: labelRe,
 			TimeRange: observabilitystorageext.TimeRange{
