@@ -50,3 +50,5 @@ compose.yaml
 k8s-manifests/
 # <<< svcgen generated <<<
 test_e2e
+openspec/
+openspec/
