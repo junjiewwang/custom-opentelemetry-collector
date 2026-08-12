@@ -113,6 +113,8 @@ const (
 
 	// ResultTypeMatrix is the Prometheus range vector (matrix) result type.
 	ResultTypeMatrix = "matrix"
+	// ResultTypeScalar is the Prometheus scalar result type.
+	ResultTypeScalar = "scalar"
 )
 
 // ── OTel Span Attribute Keys ───────────────────────

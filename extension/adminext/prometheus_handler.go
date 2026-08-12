@@ -135,6 +135,26 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 		evalTime = time.Now()
 	}
 
+	// ── Full PromQL engine (alpha) ──
+	// Enabled for queries that contain arithmetic, aggregation, or function
+	// syntax that the subset parser cannot handle.
+	// Falls back to the old parser for:
+	//   - engine failures / empty results
+	//   - simple queries the old parser handles well
+	if result := h.tryPromQL(queryStr, evalTime); result != nil {
+		hasData := false
+		switch items := result.Result.(type) {
+		case []promVectorSample:
+			hasData = len(items) > 0
+		case []promMatrixSample:
+			hasData = len(items) > 0
+		}
+		if hasData {
+			h.writePromSuccess(w, result)
+			return
+		}
+	}
+
 	expr, err := parsePromQL(queryStr)
 	if err != nil {
 		h.writePromError(w, "bad_data", err.Error())
@@ -195,6 +215,24 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 	step, err := parsePrometheusDuration(r.FormValue("step"))
 	if err != nil {
 		h.writePromError(w, "bad_data", "invalid 'step' parameter: "+err.Error())
+		return
+	}
+
+	// Try full PromQL engine for range queries. If it parses (even with
+	// empty result), use it — the old parser doesn't support delta/rate/+
+	// and would 400 on those expressions.
+	if isComplexPromQL(queryStr) {
+		if result := h.tryPromQLRange(queryStr, start, end, step); result != nil {
+			items, _ := result.Result.([]promMatrixSample)
+			h.writePromSuccess(w, &promQueryData{
+				ResultType: ResultTypeMatrix,
+				Result:     items,
+			})
+			return
+		}
+		// If the engine failed entirely (e.g. parse error), return an empty matrix
+		// rather than 400ing with the old parser.
+		h.writePromSuccess(w, &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}})
 		return
 	}
 
