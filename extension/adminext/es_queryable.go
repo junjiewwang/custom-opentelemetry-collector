@@ -80,7 +80,7 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 	metricName, isRegex := q.extractMetricNameEx(matchers)
 	labelEq, labelRe := q.translateMatchers(matchers)
 
-	q.logger.Info("Select called",
+	q.logger.Debug("Select called",
 		zap.String("metricName", metricName),
 		zap.Bool("isRegex", isRegex),
 		zap.Int64("mint", q.mint),
@@ -91,7 +91,7 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 	if metricName != "" {
 		originalName := metricName
 		metricName = q.unsanitizeMetricName(metricName)
-		q.logger.Info("Select sanitization",
+		q.logger.Debug("Select sanitization",
 			zap.String("from", originalName),
 			zap.String("to", metricName),
 		)
@@ -114,7 +114,7 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 	for _, rs := range raw {
 		sampleCount += len(rs.Samples)
 	}
-	q.logger.Info("Select result", zap.String("metric", metricName), zap.Int("series", len(raw)), zap.Int("total_samples", sampleCount))
+	q.logger.Debug("Select result", zap.String("metric", metricName), zap.Int("series", len(raw)), zap.Int("total_samples", sampleCount))
 		return q.buildSeriesSet(raw, metricName, sortSeries)
 	}
 
@@ -224,7 +224,7 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 			out = append(out, *series)
 		}
 
-		q.logger.Info("Range query result (QueryFlat)",
+		q.logger.Debug("Range query result (QueryFlat)",
 			zap.String("metric", metricName),
 			zap.Int("series", len(out)),
 			zap.Int("total_samples", totalSamples),

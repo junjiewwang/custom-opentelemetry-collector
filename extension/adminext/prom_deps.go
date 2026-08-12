@@ -119,7 +119,7 @@ func (h *promHandlers) tryPromQL(queryStr string, evalTime time.Time) *promQuery
 		)
 		return nil
 	}
-	h.logger.Info("promql engine result",
+	h.logger.Debug("promql engine result",
 		zap.String("query", queryStr),
 		zap.String("type", fmt.Sprintf("%v", res.Value.Type())),
 	)
@@ -138,7 +138,7 @@ func (h *promHandlers) tryPromQL(queryStr string, evalTime time.Time) *promQuery
 				Value:  []any{float64(s.T) / 1000, fmt.Sprintf("%f", s.F)},
 			})
 		}
-		h.logger.Info("promql vector result",
+		h.logger.Debug("promql vector result",
 			zap.String("query", queryStr),
 			zap.Int("items", len(vectors)),
 		)
