@@ -1168,7 +1168,7 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
-	flatResult, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
+	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
 		h.logger.Error("prom query_flat failed", zap.Error(err))
 		return nil
@@ -1248,7 +1248,7 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 	}
 
-	flatResult, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
+	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
 		h.logger.Error("prom query_flat failed", zap.Error(err))
 		return nil
@@ -1347,7 +1347,7 @@ func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promq
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 	}
 
-	result, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
+	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
 		h.logger.Error("histogram_quantile query_flat failed", zap.Error(err))
 		return nil
@@ -1446,7 +1446,7 @@ func (h *promHandlers) execHistogramBucketRange(r *http.Request, expr *promqlExp
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
-	result, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
+	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
 		h.logger.Error("histogram bucket range query_flat failed", zap.Error(err))
 		return nil
@@ -1586,7 +1586,7 @@ func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlE
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 	}
 
-	result, err := h.concurrentQueryFlat(r.Context(), flatQuery, h.logger)
+	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
 	if err != nil {
 		h.logger.Error("histogram_quantile range query_flat failed", zap.Error(err))
 		return nil

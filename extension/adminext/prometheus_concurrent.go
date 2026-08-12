@@ -5,8 +5,10 @@ package adminext
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.uber.org/zap"
@@ -226,6 +228,88 @@ func (h *promHandlers) concurrentQueryFlat(
 		Total:   totalDocs,
 	}, nil
 }
+
+// slicedQueryFlat splits a time window >2h into concurrent 2h QueryFlat
+// sub-queries to avoid ES document truncation on long time ranges.
+func (h *promHandlers) slicedQueryFlat(
+	ctx context.Context,
+	flatQuery observabilitystorageext.MetricFlatQuery,
+	logger *zap.Logger,
+) (*observabilitystorageext.MetricFlatResult, error) {
+	const maxSlice = 2 * time.Hour
+	start := flatQuery.TimeRange.Start
+	end := flatQuery.TimeRange.End
+	window := end.Sub(start)
+	if window <= maxSlice {
+		return h.concurrentQueryFlat(ctx, flatQuery, logger)
+	}
+
+	slices := int(window / maxSlice)
+	if window%maxSlice != 0 {
+		slices++
+	}
+
+	type sliceResult struct {
+		samples []observabilitystorageext.MetricSample
+		total   int64
+		err     error
+	}
+	results := make([]sliceResult, slices)
+	var wg sync.WaitGroup
+
+	for i := 0; i < slices; i++ {
+		i := i
+		sStart := start.Add(time.Duration(i) * maxSlice)
+		sEnd := sStart.Add(maxSlice)
+		if sEnd.After(end) {
+			sEnd = end
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			subQuery := observabilitystorageext.MetricFlatQuery{
+				MetricName:    flatQuery.MetricName,
+				Labels:        flatQuery.Labels,
+				LabelMatch:    flatQuery.LabelMatch,
+				LabelNot:      flatQuery.LabelNot,
+				LabelNotMatch: flatQuery.LabelNotMatch,
+				ServiceName:   flatQuery.ServiceName,
+				TimeRange:     observabilitystorageext.TimeRange{Start: sStart, End: sEnd},
+				MaxDocs:       0,
+			}
+			result, err := h.concurrentQueryFlat(ctx, subQuery, logger)
+			if err != nil {
+				results[i] = sliceResult{err: err}
+				return
+			}
+			if result != nil {
+				results[i] = sliceResult{samples: result.Samples, total: result.Total}
+			}
+		}()
+	}
+	wg.Wait()
+
+	var allSamples []observabilitystorageext.MetricSample
+	var totalDocs int64
+	for _, r := range results {
+		if r.err != nil {
+			logger.Warn("slicedQueryFlat: sub-query failed", zap.Error(r.err))
+			continue
+		}
+		allSamples = append(allSamples, r.samples...)
+		totalDocs += r.total
+	}
+
+	if len(allSamples) == 0 && len(results) > 0 {
+		return nil, fmt.Errorf("slicedQueryFlat: all %d sub-queries failed or returned empty", slices)
+	}
+
+	return &observabilitystorageext.MetricFlatResult{
+		Samples: allSamples,
+		Total:   totalDocs,
+	}, nil
+}
+
 
 // cloneLabelMatchWithSingleTerm returns a copy of labelMatch with the given key
 // set to the single termValue (as a literal regex pattern, not an exact label).
