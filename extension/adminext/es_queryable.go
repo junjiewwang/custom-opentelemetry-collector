@@ -483,10 +483,16 @@ func (q *esQuerier) LabelNames(ctx context.Context, _ *storage.LabelHints, match
 
 func (q *esQuerier) Close() error { return nil }
 
-// expandHistogramBuckets converts OTel histogram samples into:
-//   a) Per-bucket series with "le" labels — for sum by (le) (rate(...))
-//   b) Raw-sum gauge series (no le) — for increase()/rate() on the sum
-//       value, preserving backward compat with existing Grafana panels
+// expandHistogramBuckets converts OTel histogram samples into per-bucket
+// series with "le" labels so that sum by (le) (rate(...)) and histogram_quantile
+// work correctly in Grafana Metrics Drilldown heatmaps.
+//
+// Each bucket (bounds[i], bucket_counts[i]) becomes its own series with
+// cumulative count as Value. Non-histogram series pass through unchanged.
+//
+// IMPORTANT: This only runs in the PromQL engine path (isComplexPromQL=true).
+// Simple queries without rate()/delta()/deriv() (e.g. plain gauge reads,
+// avg(), sum()) go through the subset parser and are unaffected.
 func (q *esQuerier) expandHistogramBuckets(series []observabilitystorageext.MetricRawSeries) []observabilitystorageext.MetricRawSeries {
 	hasHistogram := false
 	for _, s := range series {
@@ -531,14 +537,6 @@ func (q *esQuerier) expandHistogramBuckets(series []observabilitystorageext.Metr
 			}
 		}
 		out = append(out, perBucket...)
-
-		// Emit raw-sum gauge series (no le label).
-		sumSeries := observabilitystorageext.MetricRawSeries{Labels: s.Labels}
-		for _, sm := range s.Samples {
-			sumSeries.Samples = append(sumSeries.Samples,
-				observabilitystorageext.MetricSample{TimestampMs: sm.TimestampMs, Value: sm.Value})
-		}
-		out = append(out, sumSeries)
 	}
 	return out
 }
