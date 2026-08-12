@@ -257,7 +257,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 		return nil, nil
 	}
 	out = q.expandHistogramBuckets(out)
-		q.qCache.set(cacheKey, out)
+	q.qCache.set(cacheKey, out)
 	return out, nil
 }
 
@@ -483,48 +483,40 @@ func (q *esQuerier) LabelNames(ctx context.Context, _ *storage.LabelHints, match
 
 func (q *esQuerier) Close() error { return nil }
 
-
-// expandHistogramBuckets converts histogram samples into per-bucket samples
-// with "le" labels so that sum by (le) (rate(...)) works in Grafana.
+// expandHistogramBuckets converts OTel histogram samples into:
+//   a) Per-bucket series with "le" labels — for sum by (le) (rate(...))
+//   b) Raw-sum gauge series (no le) — for increase()/rate() on the sum
+//       value, preserving backward compat with existing Grafana panels
 func (q *esQuerier) expandHistogramBuckets(series []observabilitystorageext.MetricRawSeries) []observabilitystorageext.MetricRawSeries {
 	hasHistogram := false
-	var sampleLen int
 	for _, s := range series {
-		if len(s.Samples) > 0 {
-			bc := s.Samples[0].BucketCounts
-			if len(bc) > 0 {
-				sampleLen = len(s.Samples)
-				hasHistogram = true
-				break
-			}
+		if len(s.Samples) > 0 && len(s.Samples[0].BucketCounts) > 0 {
+			hasHistogram = true
+			break
 		}
 	}
 	if !hasHistogram {
-		q.logger.Debug("expandHistogramBuckets: no histogram in series",
-			zap.Int("series_count", len(series)))
 		return series
 	}
-	q.logger.Info("expandHistogramBuckets: expanding histogram buckets",
-		zap.Int("series_count", len(series)),
-		zap.Int("samples", sampleLen),
-		zap.Int("num_buckets", len(series[0].Samples[0].BucketCounts)))
 
-	// Rebuild: for each original series with histogram data, emit one series per bucket.
 	var out []observabilitystorageext.MetricRawSeries
 	for _, s := range series {
 		if len(s.Samples) == 0 || len(s.Samples[0].BucketCounts) == 0 {
 			out = append(out, s)
 			continue
 		}
-		numBuckets := len(s.Samples[0].BucketCounts) // +Inf
-		perBucket := make([]observabilitystorageext.MetricRawSeries, numBuckets)
+		bc := s.Samples[0].BucketCounts
+		bds := s.Samples[0].Bounds
+
+		// Emit per-bucket series with "le" labels.
+		perBucket := make([]observabilitystorageext.MetricRawSeries, len(bc))
 		for i := range perBucket {
 			lbls := make(map[string]string, len(s.Labels)+1)
 			for k, v := range s.Labels {
 				lbls[k] = v
 			}
-			if i < len(s.Samples[0].Bounds) {
-				lbls["le"] = strconv.FormatFloat(s.Samples[0].Bounds[i], 'f', -1, 64)
+			if i < len(bds) {
+				lbls["le"] = strconv.FormatFloat(bds[i], 'f', -1, 64)
 			} else {
 				lbls["le"] = "+Inf"
 			}
@@ -537,12 +529,16 @@ func (q *esQuerier) expandHistogramBuckets(series []observabilitystorageext.Metr
 				perBucket[bi].Samples = append(perBucket[bi].Samples,
 					observabilitystorageext.MetricSample{TimestampMs: sm.TimestampMs, Value: cum})
 			}
-			last := numBuckets - 1
-			cum += float64(sm.BucketCounts[len(sm.BucketCounts)-1])
-			perBucket[last].Samples = append(perBucket[last].Samples,
-				observabilitystorageext.MetricSample{TimestampMs: sm.TimestampMs, Value: cum})
 		}
 		out = append(out, perBucket...)
+
+		// Emit raw-sum gauge series (no le label).
+		sumSeries := observabilitystorageext.MetricRawSeries{Labels: s.Labels}
+		for _, sm := range s.Samples {
+			sumSeries.Samples = append(sumSeries.Samples,
+				observabilitystorageext.MetricSample{TimestampMs: sm.TimestampMs, Value: sm.Value})
+		}
+		out = append(out, sumSeries)
 	}
 	return out
 }
