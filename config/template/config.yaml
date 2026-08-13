@@ -239,7 +239,7 @@ extensions:
       # queries (>2h). Reads route to the rollup tier only when this is true;
       # when false (default) all reads stay on the raw tier.
       # Requires: storage_extension + redis_name (claim/watermark coordination).
-      rollup_enabled: false
+      rollup_enabled: true
 
   # Control plane extension - Agent interaction interface
   # Handles: Agent registration, heartbeat, task execution, status reporting
