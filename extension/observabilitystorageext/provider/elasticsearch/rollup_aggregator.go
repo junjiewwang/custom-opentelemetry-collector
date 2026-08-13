@@ -175,18 +175,22 @@ type sampleGroup struct {
 	max       float64
 	first     float64
 	last      float64
-	bucketSum []int64 // histogram bucket_counts element-wise sum
+	bucketSum []int64   // histogram bucket_counts element-wise sum
+	bounds    []float64 // histogram explicit_bounds (copied from first sample)
 }
 
 // add folds one sample into the group according to metric type semantics.
 func (g *sampleGroup) add(sm MetricSample) {
-	// Histogram: accumulate bucket counts element-wise.
+	// Histogram: accumulate bucket counts element-wise, retain explicit_bounds.
 	if len(sm.BucketCounts) > 0 {
 		if g.bucketSum == nil {
 			g.bucketSum = make([]int64, len(sm.BucketCounts))
 		}
 		for i, bc := range sm.BucketCounts {
 			g.bucketSum[i] += bc
+		}
+		if g.bounds == nil && len(sm.Bounds) > 0 {
+			g.bounds = append([]float64(nil), sm.Bounds...)
 		}
 		g.count++
 		return
@@ -234,8 +238,9 @@ func (g *sampleGroup) toDoc(name, appID, unit string) storedmodel.StoredMetricDa
 		doc.Sum = g.sum
 		doc.Value = g.sum
 	case "histogram":
-		// histogram: merged bucket_counts, no scalar value.
+		// histogram: merged bucket_counts + retained explicit_bounds.
 		doc.BucketCounts = uint64Slice(g.bucketSum)
+		doc.ExplicitBounds = g.bounds
 		doc.Count = int64(g.count)
 	default:
 		// gauge / summary / unknown: value = avg, plus min/max/sum.

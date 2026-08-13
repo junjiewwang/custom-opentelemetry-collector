@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/lifecycle"
@@ -140,10 +141,18 @@ func (e *RollupEngine) tick(ctx context.Context) {
 		return
 	}
 
+	// Rollup tier prefix must be excluded from source enumeration: the raw
+	// pattern "{prefix}-*" also matches "{prefix}-rollup-5m-*", which would
+	// cause the engine to re-rollup already-aggregated data.
+	rollupMarker := rawPrefix + "-rollup-"
+
 	// Group indices by (appID, date), filter to ready ones. Each date expands
 	// into 24 hour-slices so replicas can claim individual hours in parallel.
 	byKey := make(map[string]*rollupWorkItem)
 	for _, idx := range indices {
+		if strings.HasPrefix(idx, rollupMarker) {
+			continue // skip rollup-tier indices (already aggregated)
+		}
 		date, ok := extractIndexDate(idx, e.writer.config.Metrics.IndexDateFormat)
 		if !ok {
 			continue
