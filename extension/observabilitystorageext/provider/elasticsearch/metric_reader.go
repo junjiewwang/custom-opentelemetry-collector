@@ -1077,7 +1077,11 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
+	indexPattern := query.IndexPattern
+	if indexPattern == "" {
+		indexPattern = r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End)
+	}
+	resp, err := r.searcher.Search(ctx, indexPattern, searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("metric flat query failed: %w", err)
 	}

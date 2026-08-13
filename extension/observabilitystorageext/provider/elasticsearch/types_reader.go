@@ -326,6 +326,9 @@ type MetricFlatQuery struct {
 	ServiceName   string
 	TimeRange     TimeRange
 	MaxDocs       int // max documents to return, default 10000
+	// IndexPattern overrides the auto-derived index pattern (rollup reads
+	// exact source indices).
+	IndexPattern string
 }
 
 // MetricFlatResult holds flat query results.

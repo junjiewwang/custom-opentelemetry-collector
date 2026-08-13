@@ -149,6 +149,11 @@ func (e *RollupEngine) tick(ctx context.Context) {
 
 	// Process each work item: claim → aggregate → write → watermark.
 	for _, item := range byKey {
+		e.logger.Info("rollup processing slice",
+			zap.String("appID", item.appID),
+			zap.Time("date", item.date),
+			zap.Int("indices", len(item.indices)),
+		)
 		if err := e.processItem(ctx, item); err != nil {
 			e.logger.Warn("rollup item failed",
 				zap.String("appID", item.appID),
@@ -179,10 +184,13 @@ func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem) er
 		defer e.lock.ReleaseClaimSlice(ctx, RollupTier5m, item.appID, dateStr)
 	}
 
-	// Aggregate the full day into 5m buckets.
+	// Aggregate the full day into 5m buckets. The end bound is exclusive
+	// (23:59:59.999) so that IndexPatternForRange's ±1-day pad never spills
+	// into a future index (e.g. day=08.12 → pad reaches 08.14 which does not
+	// exist, causing ES index_not_found 404).
 	start := item.date
-	end := item.date.Add(24 * time.Hour)
-	points, err := e.aggregator.AggregateSlice(ctx, item.appID, start, end)
+	end := item.date.Add(24*time.Hour - time.Millisecond)
+	points, err := e.aggregator.AggregateSlice(ctx, item.appID, item.indices, start, end)
 	if err != nil {
 		return fmt.Errorf("aggregate slice: %w", err)
 	}

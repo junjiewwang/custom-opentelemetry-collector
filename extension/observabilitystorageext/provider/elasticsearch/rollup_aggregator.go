@@ -8,6 +8,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
@@ -37,7 +38,10 @@ const bucketWidth = 5 * time.Minute
 
 // AggregateSlice aggregates all metrics for appID over [start, end) into
 // 5m rollup points. Each point carries a deterministic DocID.
-func (a *RollupAggregator) AggregateSlice(ctx context.Context, appID string, start, end time.Time) ([]rollupPoint, error) {
+// indices is the exact list of source indices to read from — passing them
+// avoids IndexPatternForRange's ±1-day pad hitting non-existent indices for
+// sparse app/day combinations.
+func (a *RollupAggregator) AggregateSlice(ctx context.Context, appID string, indices []string, start, end time.Time) ([]rollupPoint, error) {
 	tr := TimeRange{Start: start, End: end}
 
 	names, err := a.reader.ListMetricNames(ctx, tr)
@@ -51,10 +55,12 @@ func (a *RollupAggregator) AggregateSlice(ctx context.Context, appID string, sta
 		types = nil // fall through; treat as gauge
 	}
 
+	indexPattern := strings.Join(indices, ",")
+
 	var allPoints []rollupPoint
 	for _, name := range names {
 		meta := types[name]
-		points, err := a.aggregateMetric(ctx, appID, name, meta, tr)
+		points, err := a.aggregateMetric(ctx, appID, name, meta, tr, indexPattern)
 		if err != nil {
 			a.logger.Warn("rollup metric failed", zap.String("metric", name), zap.Error(err))
 			continue
@@ -65,39 +71,50 @@ func (a *RollupAggregator) AggregateSlice(ctx context.Context, appID string, sta
 }
 
 // aggregateMetric aggregates one metric name over the slice time range.
-func (a *RollupAggregator) aggregateMetric(ctx context.Context, appID, name string, meta storedmodel.MetricMeta, tr TimeRange) ([]rollupPoint, error) {
-	flat, err := a.reader.QueryFlat(ctx, MetricFlatQuery{
-		AppID:      appID,
-		MetricName: name,
-		TimeRange:  tr,
-		MaxDocs:    0, // adaptive
-	})
-	if err != nil {
-		return nil, fmt.Errorf("query flat: %w", err)
-	}
-	if flat == nil || len(flat.Samples) == 0 {
-		return nil, nil
-	}
-
-	// Group samples by (labelset, bucketStart).
+// It time-slices the QueryFlat into 1h windows so each ES search stays under
+// the index.max_result_window=10000 limit (a full 24h day at ~2000 docs/h
+// would otherwise request Size=48000 and be rejected).
+func (a *RollupAggregator) aggregateMetric(ctx context.Context, appID, name string, meta storedmodel.MetricMeta, tr TimeRange, indexPattern string) ([]rollupPoint, error) {
+	// Group samples by (labelset, bucketStart) across hourly slices.
 	type groupKey struct {
 		labels      string
 		bucketStart int64
 	}
 	groups := make(map[groupKey]*sampleGroup)
-	for _, sm := range flat.Samples {
-		bs := bucketStartFor(sm.TimestampMs)
-		gk := groupKey{labels: labelsKey(sm.Labels), bucketStart: bs}
-		g, ok := groups[gk]
-		if !ok {
-			g = &sampleGroup{
-				labels:     sm.Labels,
-				bucketMs:   bs,
-				metricType: meta.Type,
-			}
-			groups[gk] = g
+
+	const sliceHour = 1 * time.Hour
+	for s := tr.Start; s.Before(tr.End); s = s.Add(sliceHour) {
+		e := s.Add(sliceHour)
+		if e.After(tr.End) {
+			e = tr.End
 		}
-		g.add(sm)
+		flat, err := a.reader.QueryFlat(ctx, MetricFlatQuery{
+			AppID:        appID,
+			MetricName:   name,
+			TimeRange:    TimeRange{Start: s, End: e},
+			MaxDocs:      0, // adaptive: 1h → 2000, well under ES 10000 window
+			IndexPattern: indexPattern,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("query flat: %w", err)
+		}
+		if flat == nil || len(flat.Samples) == 0 {
+			continue
+		}
+		for _, sm := range flat.Samples {
+			bs := bucketStartFor(sm.TimestampMs)
+			gk := groupKey{labels: labelsKey(sm.Labels), bucketStart: bs}
+			g, ok := groups[gk]
+			if !ok {
+				g = &sampleGroup{
+					labels:     sm.Labels,
+					bucketMs:   bs,
+					metricType: meta.Type,
+				}
+				groups[gk] = g
+			}
+			g.add(sm)
+		}
 	}
 
 	// Emit one rollup point per group.

@@ -371,6 +371,10 @@ type MetricFlatQuery struct {
 	// MaxDocs is the hard cap on documents returned (default 10000).
 	// Prevents unbounded memory usage on large time ranges.
 	MaxDocs int `json:"maxDocs,omitempty"`
+	// IndexPattern overrides the auto-derived index pattern (used by rollup to
+	// read exact source indices, avoiding IndexPatternForRange's ±1-day pad
+	// that can hit non-existent indices for sparse app/day combinations).
+	IndexPattern string `json:"indexPattern,omitempty"`
 }
 
 // MetricFlatResult holds flat query results without ES-side grouping.
