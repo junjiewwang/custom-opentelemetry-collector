@@ -15,13 +15,16 @@ import (
 // without a live ES cluster.
 //
 // Callers populate Responses (in call order) before invoking the reader.
-// Each response may be either a *SearchResponse (used directly) or a
-// JSON-serializable map/struct (marshaled then unmarshaled into a
-// *SearchResponse, which is how ES results actually arrive as RawMessage
-// aggregations).
+// Each response may be:
+//   - a *SearchResponse (used directly)
+//   - a JSON-serializable map/struct (marshaled then unmarshaled into a
+//     *SearchResponse, which is how ES results actually arrive as RawMessage
+//     aggregations)
+//   - an error (returned as-is, so a test can make the first call fail — e.g.
+//     the meta lookup — and a later call succeed)
 type fakeSearcher struct {
 	mu        sync.Mutex
-	Responses []any // []any, each is *SearchResponse or JSON-serializable
+	Responses []any // []any, each is *SearchResponse, JSON-serializable, or error
 	calls     int
 	Err       error
 
@@ -51,6 +54,8 @@ func (f *fakeSearcher) Search(ctx context.Context, indexPattern string, req *Sea
 	f.calls++
 
 	switch v := resp.(type) {
+	case error:
+		return nil, v
 	case *SearchResponse:
 		return v, nil
 	default:

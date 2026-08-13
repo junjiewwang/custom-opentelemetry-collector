@@ -6,6 +6,7 @@ package elasticsearch
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
@@ -16,28 +17,34 @@ import (
 // MetricWriter implements storage.MetricWriter for Elasticsearch.
 // It converts pmetric.Metrics to ES documents and buffers them for bulk indexing.
 type MetricWriter struct {
-	buffer *bulkBuffer
-	config *Config
-	logger *zap.Logger
+	buffer    *bulkBuffer
+	metaBuf   *bulkBuffer // singleton {prefix}-meta index, separated from data buffer
+	metaCache *metaCache  // process-local dedup of metadata upserts
+	config    *Config
+	logger    *zap.Logger
 }
 
 // NewMetricWriter creates a new ES metric writer.
 func NewMetricWriter(client *Client, config *Config, logger *zap.Logger) *MetricWriter {
 	return &MetricWriter{
-		buffer: newBulkBuffer(client, config, logger, "metric"),
-		config: config,
-		logger: logger.Named("metric-writer"),
+		buffer:    newBulkBuffer(client, config, logger, "metric"),
+		metaBuf:   newBulkBuffer(client, config, logger, "metric-meta"),
+		metaCache: newMetaCache(),
+		config:    config,
+		logger:    logger.Named("metric-writer"),
 	}
 }
 
 // Start begins the background flush loop.
 func (w *MetricWriter) Start() {
 	w.buffer.Start()
+	w.metaBuf.Start()
 }
 
 // Stop stops the background flush loop.
 func (w *MetricWriter) Stop() {
 	w.buffer.Stop()
+	w.metaBuf.Stop()
 }
 
 // WriteMetrics converts OTLP metrics to StoredMetricDataPoint documents.
@@ -76,6 +83,7 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 					if err := w.buffer.Add(ctx, indexName, pt); err != nil {
 						return fmt.Errorf("failed to buffer metric document: %w", err)
 					}
+					w.writeMetaForPoint(ctx, pt)
 				}
 			}
 		}
@@ -94,13 +102,24 @@ func (w *MetricWriter) WriteMetricPoints(ctx context.Context, points []storedmod
 		if err := w.buffer.Add(ctx, indexName, dp); err != nil {
 			return fmt.Errorf("failed to buffer metric document: %w", err)
 		}
+		w.writeMetaForPoint(ctx, dp)
 	}
 	return nil
 }
 
 // Flush forces any buffered metric data to be written to ES.
+// Data is flushed first so it is visible before its metadata; a meta flush
+// failure does not invalidate the data write (read-path fallback covers it).
 func (w *MetricWriter) Flush(ctx context.Context) error {
-	return w.buffer.Flush(ctx)
+	if err := w.buffer.Flush(ctx); err != nil {
+		return err
+	}
+	if err := w.metaBuf.Flush(ctx); err != nil {
+		// Non-fatal: the data is durable; metadata reads fall back to the
+		// aggregation path until the next successful flush.
+		w.logger.Warn("metadata flush failed (data already flushed)", zap.Error(err))
+	}
+	return nil
 }
 
 // WriteRollupPoints writes pre-aggregated rollup documents to the 5m rollup
@@ -137,6 +156,57 @@ type rollupPoint struct {
 	BucketMs int64
 	DocID    string
 	Doc      storedmodel.StoredMetricDataPoint
+}
+
+// writeMetaForPoint buffers a metadata upsert for the given data point, unless
+// the process-local cache indicates the metric's label set is already recorded.
+// It is best-effort: an upsert failure is logged, not returned, because the data
+// write (which already succeeded into the data buffer) must not be failed by a
+// metadata side-channel error — the read path falls back to aggregation when the
+// meta index is missing or incomplete.
+func (w *MetricWriter) writeMetaForPoint(ctx context.Context, pt storedmodel.StoredMetricDataPoint) {
+	if w.metaBuf == nil || w.metaCache == nil {
+		return
+	}
+	doc := buildMetaDoc(pt)
+	if !w.metaCache.shouldUpsert(doc, time.Now()) {
+		return
+	}
+	indexName := metaIndexName(w.config.Metrics.IndexPrefix)
+	body := metaScriptedUpsert(doc)
+	if err := w.metaBuf.AddScriptedUpsert(ctx, indexName, metaDocID(doc.AppID, doc.Name), body); err != nil {
+		w.logger.Warn("failed to buffer metadata upsert", zap.String("metric", doc.Name), zap.Error(err))
+	}
+}
+
+// buildMetaDoc derives a MetaDoc from a StoredMetricDataPoint. The label keys
+// come from the point's Labels map — already underscore-normalized by
+// pcommonMapToFlatMetric — so meta labelKeys and the data-index `labels` field
+// agree. service_name is promoted to a top-level field on the point, not a
+// label, so it is added to ServiceNames explicitly.
+func buildMetaDoc(pt storedmodel.StoredMetricDataPoint) MetaDoc {
+	labelKeys := make([]string, 0, len(pt.Labels)+1)
+	for k := range pt.Labels {
+		labelKeys = append(labelKeys, k)
+	}
+	// Deterministic order so the cache's set is stable across points.
+	sort.Strings(labelKeys)
+
+	serviceNames := make([]string, 0, 1)
+	if pt.ServiceName != "" {
+		serviceNames = append(serviceNames, pt.ServiceName)
+	}
+
+	return MetaDoc{
+		Name:         pt.Name,
+		AppID:        pt.AppID,
+		Type:         pt.Type,
+		Unit:         pt.Unit,
+		LabelKeys:    labelKeys,
+		ServiceNames: serviceNames,
+		LastSeenAt:   pt.TimeUnixMilli,
+		DocCount:     1,
+	}
 }
 
 // gaugeToDoc, sumToDoc, histogramToDoc, summaryToDoc, metricToDocs removed —

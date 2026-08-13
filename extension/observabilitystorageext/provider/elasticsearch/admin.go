@@ -50,6 +50,9 @@ func (a *Admin) InitSchema(ctx context.Context) error {
 	if err := a.createMetricTemplate(ctx); err != nil {
 		return fmt.Errorf("failed to create metric index template: %w", err)
 	}
+	if err := a.createMetaTemplate(ctx); err != nil {
+		return fmt.Errorf("failed to create metric metadata index template: %w", err)
+	}
 	if err := a.createRollupTemplate(ctx); err != nil {
 		return fmt.Errorf("failed to create metric rollup index template: %w", err)
 	}
@@ -384,6 +387,59 @@ func rollupTemplateMappings(cfg IndexConfig) map[string]any {
 					"last":           map[string]any{"type": "double"},
 					FieldMetricBucketCounts:   map[string]any{"type": "long"},
 					FieldMetricExplicitBounds: map[string]any{"type": "double"},
+				},
+			},
+		},
+	}
+}
+
+// createMetaTemplate creates the singleton metadata index template.
+// It must run BEFORE any write (it is called from InitSchema, ahead of the
+// write path): if a scripted upsert triggers ES auto-create first, the meta
+// index would inherit the raw metric template (wrong mapping + delete ILM).
+func (a *Admin) createMetaTemplate(ctx context.Context) error {
+	cfg := a.config.Metrics
+	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix+"-meta", metaTemplateMappings(cfg))
+}
+
+// metaTemplateMappings builds the singleton metadata index template body.
+//
+// Two things distinguish it from the raw metric template:
+//
+//  1. "index.lifecycle.name": null — the raw template's pattern "{prefix}-*"
+//     matches "{prefix}-meta" and carries a delete-phase ILM policy. Without an
+//     explicit null here, the meta index would be deleted when the retention
+//     elapses (ES composable templates merge settings by key with higher
+//     priority winning). The meta index is intentionally NOT ILM-managed; its
+//     only cleanup is CleanStaleMetadata (Phase 4).
+//
+//  2. labelKeys/serviceNames are explicitly mapped as keyword arrays and
+//     "dynamic": false is set — no dynamic mapping can turn a single-value vs
+//     array write into a mapping conflict, and unknown fields are rejected
+//     rather than silently indexed.
+func metaTemplateMappings(cfg IndexConfig) map[string]any {
+	return map[string]any{
+		"index_patterns": []string{cfg.IndexPrefix + "-meta"},
+		// Higher than rollup (100) and raw (0) so the exact singleton name wins.
+		"priority": 200,
+		"template": map[string]any{
+			"settings": map[string]any{
+				"number_of_shards":    1,
+				"number_of_replicas":  cfg.Replicas,
+				"refresh_interval":    cfg.RefreshInterval,
+				"index.lifecycle.name": nil,
+			},
+			"mappings": map[string]any{
+				"dynamic": false,
+				"properties": map[string]any{
+					FieldName:             map[string]any{"type": "keyword"},
+					FieldAppID:            map[string]any{"type": "keyword"},
+					FieldMetricType:       map[string]any{"type": "keyword"},
+					FieldMetricUnit:       map[string]any{"type": "keyword"},
+					FieldMetaLabelKeys:    map[string]any{"type": "keyword"},
+					FieldMetaServiceNames: map[string]any{"type": "keyword"},
+					FieldMetaLastSeenAt:   map[string]any{"type": "date", "format": "epoch_millis"},
+					FieldMetaDocCount:     map[string]any{"type": "long"},
 				},
 			},
 		},

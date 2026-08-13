@@ -59,6 +59,20 @@ const (
 	FieldMetricExplicitBounds    = "explicit_bounds"
 )
 
+// ═══════════════════════ Metric Metadata Fields (MetaDoc) ═══════════════════════
+//
+// These constants define the field names of the singleton metadata index
+// ({prefix}-meta), which stores per-metric type/unit/labelKeys to let metadata
+// listing (ListMetricNames/Types/LabelNames) query a small table instead of a
+// terms aggregation over the full data index (the ES 429 fielddata trigger).
+
+const (
+	FieldMetaLastSeenAt   = "lastSeenAt"
+	FieldMetaLabelKeys    = "labelKeys"
+	FieldMetaServiceNames = "serviceNames"
+	FieldMetaDocCount     = "docCount"
+)
+
 // ═══════════════════════ Shared Fields ═══════════════════════
 
 const (

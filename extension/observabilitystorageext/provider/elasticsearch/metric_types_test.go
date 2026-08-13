@@ -37,11 +37,17 @@ func TestListMetricTypes_UsesNewestNotMostFrequent(t *testing.T) {
     }`
 
 	fake := &fakeSearcher{
-		Responses: []any{&SearchResponse{
-			Aggregations: map[string]json.RawMessage{
-				"metric_names": json.RawMessage(aggResponse),
+		// First call (meta lookup) returns index-not-found so the method falls
+		// back to the terms+top_hits aggregation under test; second call is the
+		// aggregation response.
+		Responses: []any{
+			ErrESIndexNotFound,
+			&SearchResponse{
+				Aggregations: map[string]json.RawMessage{
+					"metric_names": json.RawMessage(aggResponse),
+				},
 			},
-		}},
+		},
 	}
 	r := &MetricReader{searcher: fake, config: &Config{}, logger: zap.NewNop()}
 

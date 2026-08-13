@@ -212,7 +212,19 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 }
 
 // ListMetricNames returns all available metric names within the time range.
+//
+// Prefers the singleton metadata index ({prefix}-meta): reading a small table
+// is O(metric count) and does not touch the fielddata that a terms aggregation
+// over the full data index requires (the ES 429 circuit_breaker trigger). When
+// the meta index does not exist (fresh deployment, or the write path has not
+// yet populated it), falls back to the terms aggregation.
 func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error) {
+	if names, ok, err := r.listMetricNamesFromMeta(ctx); ok {
+		return names, err
+	} else if err != nil {
+		r.logger.Warn("meta metric names lookup failed, falling back to aggregation", zap.Error(err))
+	}
+
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),
 		Size:  0,
@@ -242,6 +254,42 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 	return names, nil
 }
 
+// metaSearchAll runs a match-all search over the singleton meta index and
+// returns the parsed hits. A missing index yields (nil, ErrESIndexNotFound);
+// the caller distinguishes that from a genuine error to decide fallback.
+func (r *MetricReader) metaSearchAll(ctx context.Context, source []string) (*SearchResponse, error) {
+	req := &SearchRequest{
+		Query:  map[string]any{"match_all": map[string]any{}},
+		Size:   10000, // meta docs are low-cardinality; one page is enough
+		Source: source,
+	}
+	return r.searcher.Search(ctx, metaIndexName(r.config.Metrics.IndexPrefix), req)
+}
+
+func (r *MetricReader) listMetricNamesFromMeta(ctx context.Context) ([]string, bool, error) {
+	resp, err := r.metaSearchAll(ctx, []string{FieldName})
+	if err != nil {
+		return nil, false, err
+	}
+	seen := make(map[string]struct{}, len(resp.Hits.Hits))
+	names := make([]string, 0, len(resp.Hits.Hits))
+	for _, hit := range resp.Hits.Hits {
+		var doc struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(hit.Source, &doc); err != nil || doc.Name == "" {
+			continue
+		}
+		if _, dup := seen[doc.Name]; dup {
+			continue
+		}
+		seen[doc.Name] = struct{}{}
+		names = append(names, doc.Name)
+	}
+	sort.Strings(names)
+	return names, true, nil
+}
+
 // ListMetricTypes returns each metric name mapped to its stored OTel-derived
 // type ("gauge", "counter", "histogram", "summary").
 //
@@ -257,6 +305,12 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 // jvm.thread.count in rate(). Grafana sends no start/end to /metadata, so the
 // query spans all history and the stale majority always won.
 func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange) (map[string]storedmodel.MetricMeta, error) {
+	if types, ok, err := r.listMetricTypesFromMeta(ctx); ok {
+		return types, err
+	} else if err != nil {
+		r.logger.Warn("meta metric types lookup failed, falling back to aggregation", zap.Error(err))
+	}
+
 	searchReq := &SearchRequest{
 		Query: r.timeRangeQuery(timeRange),
 		Size:  0,
@@ -319,9 +373,45 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 	return out, nil
 }
 
+// listMetricTypesFromMeta reads type/unit from the meta index. It is the
+// preferred path over the terms+top_hits aggregation: the meta doc stores the
+// last-writer-wins type/unit, which is exactly the "newest data point" semantics
+// ListMetricTypes documents, without scanning the data index.
+func (r *MetricReader) listMetricTypesFromMeta(ctx context.Context) (map[string]storedmodel.MetricMeta, bool, error) {
+	resp, err := r.metaSearchAll(ctx, []string{FieldName, FieldMetricType, FieldMetricUnit})
+	if err != nil {
+		return nil, false, err
+	}
+	out := make(map[string]storedmodel.MetricMeta, len(resp.Hits.Hits))
+	for _, hit := range resp.Hits.Hits {
+		var doc struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+			Unit string `json:"unit"`
+		}
+		if err := json.Unmarshal(hit.Source, &doc); err != nil || doc.Name == "" {
+			continue
+		}
+		out[doc.Name] = storedmodel.MetricMeta{Type: doc.Type, Unit: doc.Unit}
+	}
+	return out, true, nil
+}
+
 // ListLabelNames returns label names for the specified metric within the time range.
 // If metricName is empty, all label names across all metrics are returned.
+//
+// Prefers the meta index, which stores the exact label-key union per metric
+// (scoped: a term query on name) or across all metrics (unscoped: union of all
+// docs). This is strictly more accurate than sampling 2000 data documents and
+// avoids the fielddata scan. Falls back to the sample when the meta index is
+// absent.
 func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, metricName string) ([]string, error) {
+	if names, ok, err := r.listLabelNamesFromMeta(ctx, metricName); ok {
+		return names, err
+	} else if err != nil {
+		r.logger.Warn("meta label names lookup failed, falling back to sample", zap.Error(err))
+	}
+
 	// Sampling the newest documents is a heuristic, not an exhaustive scan: the
 	// label set is the union of whatever these hits happen to carry. Keep the
 	// sample large, because the unscoped call competes across every metric and
@@ -377,6 +467,48 @@ func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange TimeRange, 
 		names = append(names, k)
 	}
 	return names, nil
+}
+
+// listLabelNamesFromMeta reads label keys from the meta index. When metricName
+// is empty it unions labelKeys across all meta docs; otherwise it scopes to
+// that metric name. The scoped path is a term query on name, not a single
+// GetDocument, because ListLabelNames has no appID — the same metric name may
+// exist under multiple appIDs and their label keys must be unioned.
+func (r *MetricReader) listLabelNamesFromMeta(ctx context.Context, metricName string) ([]string, bool, error) {
+	query := map[string]any{"match_all": map[string]any{}}
+	if metricName != "" {
+		query = map[string]any{
+			"term": map[string]any{FieldName: metricName},
+		}
+	}
+	req := &SearchRequest{
+		Query:  query,
+		Size:   10000,
+		Source: []string{FieldMetaLabelKeys},
+	}
+	resp, err := r.searcher.Search(ctx, metaIndexName(r.config.Metrics.IndexPrefix), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	labelSet := make(map[string]struct{})
+	for _, hit := range resp.Hits.Hits {
+		var doc struct {
+			LabelKeys []string `json:"labelKeys"`
+		}
+		if err := json.Unmarshal(hit.Source, &doc); err != nil {
+			continue
+		}
+		for _, k := range doc.LabelKeys {
+			labelSet[k] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(labelSet))
+	for k := range labelSet {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names, true, nil
 }
 
 // ListLabelValues returns values for a specific label within the time range,
@@ -485,21 +617,29 @@ func (r *MetricReader) indexPatternForRange(appID string, start, end time.Time) 
 }
 
 // rawIndexPatternForRange is like indexPatternForRange but EXCLUDES rollup-tier
-// indices via ES negative index patterns. Metadata listing (ListMetricNames /
-// ListMetricTypes) must only scan raw indices: including rollup indices in a
-// terms-aggregation over the wildcard "{prefix}-*-{date}" blew ES fielddata
-// (429 circuit_breaker_exception, ~1.4GB > 1.3GB limit) because rollup indices
-// carry the same "name" field and were being aggregated again.
+// indices and the metadata index via ES negative index patterns. Metadata
+// listing (ListMetricNames / ListMetricTypes) must only scan raw indices:
+// including rollup indices in a terms-aggregation over the wildcard
+// "{prefix}-*-{date}" blew ES fielddata (429 circuit_breaker_exception, ~1.4GB
+// > 1.3GB limit) because rollup indices carry the same "name" field and were
+// being aggregated again.
+//
+// The meta exclusion is a safety net for the zero-time fallback: when start or
+// end is zero, indexPatternForRange degrades to the bare wildcard "{prefix}-*",
+// which would match "{prefix}-meta". (The date-partitioned patterns emitted for
+// a real range never match the meta index, since "-meta" is not a date suffix.)
 func (r *MetricReader) rawIndexPatternForRange(start, end time.Time) string {
 	base := r.indexPatternForRange("", start, end)
 	if base == "" {
 		return base
 	}
-	// Append a negative pattern for rollup indices. ES excludes indices matching
-	// a "-" prefixed pattern. The rollup index format is
-	// "{prefix}-rollup-{tier}-{appID}-{date}" (see getRollupIndexName).
-	rollupPrefix := r.config.Metrics.IndexPrefix + "-rollup-"
-	return base + ",-" + rollupPrefix + "*"
+	// Append negative patterns for rollup indices and the metadata index. ES
+	// excludes indices matching a "-" prefixed pattern. The rollup index format
+	// is "{prefix}-rollup-{tier}-{appID}-{date}" (see getRollupIndexName), and
+	// the metadata index is the singleton "{prefix}-meta" (see metaIndexName).
+	prefix := r.config.Metrics.IndexPrefix
+	exclude := "-" + prefix + "-rollup-*,-" + prefix + "-meta"
+	return base + "," + exclude
 }
 
 // routeIndexPattern selects the rollup tier based on query time span, then

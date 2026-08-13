@@ -68,6 +68,41 @@ func (b *bulkBuffer) AddWithID(ctx context.Context, indexName, docID string, doc
 	return b.addInternal(ctx, indexName, docID, doc)
 }
 
+// AddScriptedUpsert buffers a scripted-upsert "update" action. body must be the
+// NDJSON payload following the action line — the map produced by
+// metaScriptedUpsert (script + scripted_upsert + upsert doc). The action line is
+// built here with the update verb and deterministic _id so re-running converges.
+func (b *bulkBuffer) AddScriptedUpsert(ctx context.Context, indexName, docID string, body map[string]any) error {
+	action := map[string]any{
+		"update": map[string]any{
+			"_index": indexName,
+			"_id":    docID,
+		},
+	}
+	actionBytes, err := json.Marshal(action)
+	if err != nil {
+		return fmt.Errorf("failed to marshal update action: %w", err)
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("failed to marshal upsert body: %w", err)
+	}
+
+	b.mu.Lock()
+	b.buf.Write(actionBytes)
+	b.buf.WriteByte('\n')
+	b.buf.Write(bodyBytes)
+	b.buf.WriteByte('\n')
+	b.count++
+	shouldFlush := b.count >= b.config.BatchSize
+	b.mu.Unlock()
+
+	if shouldFlush {
+		return b.Flush(ctx)
+	}
+	return nil
+}
+
 func (b *bulkBuffer) addInternal(ctx context.Context, indexName, docID string, doc any) error {
 	indexMeta := map[string]any{
 		"_index": indexName,
@@ -150,14 +185,20 @@ func (b *bulkBuffer) Flush(ctx context.Context) error {
 		if resp.Errors {
 			errorCount := 0
 			for _, item := range resp.Items {
-				if item.Index != nil && item.Index.Error != nil {
-					errorCount++
-					if errorCount <= 3 {
-						b.logger.Warn("Bulk item error",
-							zap.String("signal", b.signal),
-							zap.String("error_type", item.Index.Error.Type),
-							zap.String("reason", item.Index.Error.Reason),
-						)
+				// A bulk item is exactly one action, so at most one of these is
+				// non-nil. Check all of them — checking only Index would swallow
+				// failures from scripted-upsert "update" actions (their Index
+				// field is nil).
+				for _, res := range []*BulkItemResponse{item.Index, item.Update, item.Create, item.Delete} {
+					if res != nil && res.Error != nil {
+						errorCount++
+						if errorCount <= 3 {
+							b.logger.Warn("Bulk item error",
+								zap.String("signal", b.signal),
+								zap.String("error_type", res.Error.Type),
+								zap.String("reason", res.Error.Reason),
+							)
+						}
 					}
 				}
 			}

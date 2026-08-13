@@ -38,11 +38,22 @@ func (c *Client) BulkIndex(ctx context.Context, actions []byte) (*BulkResponse, 
 
 // BulkResponse represents the response from an ES bulk request.
 type BulkResponse struct {
-	Took   int  `json:"took"`
-	Errors bool `json:"errors"`
-	Items  []struct {
-		Index *BulkItemResponse `json:"index,omitempty"`
-	} `json:"items"`
+	Took   int        `json:"took"`
+	Errors bool       `json:"errors"`
+	Items  []BulkItem `json:"items"`
+}
+
+// BulkItem is the per-item response for a single bulk action.
+type BulkItem struct {
+	// Index carries the per-item response for "index" actions; Update for
+	// "update" actions (scripted upserts). The two are mutually exclusive
+	// per item — a bulk item is exactly one action. Flush must check both,
+	// otherwise an update-action failure is silently swallowed (the item's
+	// Index field is nil for update actions).
+	Index  *BulkItemResponse `json:"index,omitempty"`
+	Update *BulkItemResponse `json:"update,omitempty"`
+	Create *BulkItemResponse `json:"create,omitempty"`
+	Delete *BulkItemResponse `json:"delete,omitempty"`
 }
 
 // BulkItemResponse represents the response for a single item in a bulk request.

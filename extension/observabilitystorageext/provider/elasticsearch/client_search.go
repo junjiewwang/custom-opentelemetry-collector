@@ -6,10 +6,16 @@ package elasticsearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 )
+
+// ErrESIndexNotFound indicates the target index does not exist (ES returns 404
+// with error.type == "index_not_found_exception"). Callers that read the meta
+// index use this to fall back to the aggregation path on a fresh deployment.
+var ErrESIndexNotFound = errors.New("elasticsearch index not found")
 
 // SearchRequest represents an ES _search request body.
 type SearchRequest struct {
@@ -65,6 +71,13 @@ func (c *Client) Search(ctx context.Context, indexPattern string, req *SearchReq
 	}
 
 	if resp.StatusCode >= 400 {
+		// A concrete (non-wildcard) index that does not exist returns 404 with
+		// error.type == "index_not_found_exception". Translate it to the sentinel
+		// so readers can fall back via errors.Is. (A wildcard matching nothing
+		// returns 200 with empty hits, so this only fires for a named index.)
+		if resp.StatusCode == http.StatusNotFound && esIndexNotFound(respBody) {
+			return nil, ErrESIndexNotFound
+		}
 		return nil, fmt.Errorf("search returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -121,4 +134,15 @@ func (c *Client) MultiSearch(ctx context.Context, requests []MultiSearchItem) ([
 type MultiSearchItem struct {
 	Index string
 	Body  *SearchRequest
+}
+
+// esIndexNotFound reports whether an ES error body carries the
+// index_not_found_exception type (a named index that does not exist).
+func esIndexNotFound(body []byte) bool {
+	var e struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &e) == nil && e.Error.Type == "index_not_found_exception"
 }

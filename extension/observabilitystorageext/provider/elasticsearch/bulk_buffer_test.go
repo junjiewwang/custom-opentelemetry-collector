@@ -278,9 +278,7 @@ func TestBulkBuffer_BulkResponseWithErrors(t *testing.T) {
 		resp := BulkResponse{
 			Took:   5,
 			Errors: true,
-			Items: []struct {
-				Index *BulkItemResponse `json:"index,omitempty"`
-			}{
+			Items: []BulkItem{
 				{
 					Index: &BulkItemResponse{
 						ID:     "1",
