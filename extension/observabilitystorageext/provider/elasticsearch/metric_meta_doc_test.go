@@ -96,15 +96,17 @@ func TestMetaScriptedUpsert_Shape(t *testing.T) {
 	script := body["script"].(map[string]any)
 	assert.Equal(t, "painless", script["lang"])
 	src := script["source"].(string)
-	// The script must union labelKeys, union serviceNames (capped), max lastSeenAt.
+	// The script must union labelKeys, union serviceNames (capped), guard lastSeenAt.
 	for _, want := range []string{
 		"labelKeys",
 		"serviceNames",
-		"Math.max",
+		"lastSeenAt",
 		"serviceCap",
 	} {
 		assert.True(t, strings.Contains(src, want), "script source must reference %q", want)
 	}
+	// "type" is a Painless reserved word — must use ctx._source.put('type', ...).
+	assert.True(t, strings.Contains(src, "ctx._source.put('type'"), "script must use put() for reserved 'type'")
 
 	params := script["params"].(metaUpsertParams)
 	assert.Equal(t, []string{"area", "pool"}, params.LabelKeys)

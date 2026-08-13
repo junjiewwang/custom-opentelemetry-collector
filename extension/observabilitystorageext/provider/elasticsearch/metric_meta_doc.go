@@ -61,6 +61,18 @@ const metaServiceNameCap = 20
 // document created by the raw metric template (or an empty doc) may have null
 // labelKeys/serviceNames, and ctx._source.docCount is absent on the very first
 // script run against an auto-created doc.
+//
+// Note: "type" is a Painless reserved word, so it can NOT be written via
+// ctx._source.type / ctx._source['type'] = params['type'] — both fail to
+// compile ("unexpected token ['ctx']") because the reserved word poisons the
+// parser. Use ctx._source.put('type', ...) instead. put() is an expression
+// statement, so it MUST be terminated with a semicolon or the next line is
+// swallowed into it.
+//
+// Note: lastSeenAt is a date field. Painless's Math.max on it fails at runtime
+// (date_time_parse_exception) when the field is null on a first-seen doc, so
+// use an explicit null-guarded comparison instead — which also preserves the
+// "keep max lastSeenAt" clock-skew semantics.
 const metaUpsertScript = `
 if (ctx._source.labelKeys == null) { ctx._source.labelKeys = [] }
 for (int i = 0; i < params.labelKeys.length; i++) {
@@ -74,11 +86,11 @@ for (int i = 0; i < params.serviceNames.length; i++) {
     ctx._source.serviceNames.add(s)
   }
 }
-ctx._source.lastSeenAt = Math.max(ctx._source.lastSeenAt, params.lastSeenAt)
-ctx._source.type = params.type
-ctx._source.unit = params.unit
+if (ctx._source.lastSeenAt == null || params.lastSeenAt > ctx._source.lastSeenAt) { ctx._source.lastSeenAt = params.lastSeenAt }
+ctx._source.put('type', params['type']);
+ctx._source.unit = params.unit;
 if (ctx._source.docCount == null) { ctx._source.docCount = 0 }
-ctx._source.docCount = ctx._source.docCount + params.increment
+ctx._source.docCount = ctx._source.docCount + params.increment;
 `
 
 // metaUpsertParams carries the per-upsert script parameters.
