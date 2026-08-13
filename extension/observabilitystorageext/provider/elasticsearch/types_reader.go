@@ -332,6 +332,9 @@ type MetricFlatQuery struct {
 type MetricFlatResult struct {
 	Samples []MetricSample
 	Total   int64 // total matching docs (for truncation detection)
+	// Truncated is true when ES reports more matching docs than returned
+	// (Hits.Total.Relation == "gte"), meaning the result was capped by MaxDocs.
+	Truncated bool
 }
 
 // ── Trace Metrics Types ────────────────────────────

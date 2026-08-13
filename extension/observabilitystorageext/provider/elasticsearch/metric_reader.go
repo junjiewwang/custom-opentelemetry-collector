@@ -1096,8 +1096,9 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 	}
 
 	return &MetricFlatResult{
-		Samples: samples,
-		Total:   total,
+		Samples:   samples,
+		Total:     total,
+		Truncated: resp.Hits.Total.Relation == "gte",
 	}, nil
 }
 

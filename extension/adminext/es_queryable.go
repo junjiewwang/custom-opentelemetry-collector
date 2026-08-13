@@ -307,6 +307,22 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 			return nil, nil
 		}
 
+		// Truncation guard: QueryFlat caps documents at adaptiveFlatMaxDocs
+		// (floor 10000). High-cardinality metrics (e.g. traces_spanmetrics_*
+		// with 100+ label combos) can exceed this even in a 1h window. When
+		// ES reports the result was capped (Hits.Total.Relation == "gte"),
+		// re-query with fine time-slicing (15m slices, each well under the
+		// cap) so no series is silently cut short.
+		if flatResult.Truncated {
+			q.logger.Info("QueryFlat truncated, re-querying with fine time-slicing",
+				zap.String("metric", metricName),
+				zap.Int64("total", flatResult.Total),
+				zap.Int("returned", len(flatResult.Samples)),
+				zap.Int64("range_ms", endMS-startMS),
+			)
+			return q.selectConcreteSliced(ctx, metricName, labelEq, labelRe, startMS, endMS, cacheKey, 15*time.Minute)
+		}
+
 		// Group samples by label set.
 		seriesMap := make(map[string]*observabilitystorageext.MetricRawSeries)
 		for _, sm := range flatResult.Samples {

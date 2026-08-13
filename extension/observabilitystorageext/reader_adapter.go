@@ -513,8 +513,9 @@ func (a *metricReaderAdapter) QueryFlat(ctx context.Context, query MetricFlatQue
 		}
 	}
 	return &MetricFlatResult{
-		Samples: samples,
-		Total:   flatResult.Total,
+		Samples:   samples,
+		Total:     flatResult.Total,
+		Truncated: flatResult.Truncated,
 	}, nil
 }
 

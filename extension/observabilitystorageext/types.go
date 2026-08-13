@@ -377,6 +377,9 @@ type MetricFlatQuery struct {
 type MetricFlatResult struct {
 	Samples []MetricSample `json:"samples"`
 	Total   int64          `json:"total"` // total matching docs in ES (for truncation detection)
+	// Truncated is true when ES reports more matching docs than returned
+	// (Hits.Total.Relation == "gte"), meaning the result was capped by MaxDocs.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // ═══════════════════════════════════════════════════
