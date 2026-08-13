@@ -1,0 +1,236 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package elasticsearch
+
+import (
+	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
+	"time"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.uber.org/zap"
+)
+
+// RollupAggregator performs metric-type-aware aggregation of raw metric
+// samples into 5m rollup buckets. It reads via MetricReader.QueryFlat (which
+// returns raw samples with bucket_counts/labels) and aggregates in Go — the
+// same Go-side grouping pattern used by the PromQL query path, keeping the
+// aggregation logic testable and ES-independent.
+type RollupAggregator struct {
+	reader *MetricReader
+	logger *zap.Logger
+}
+
+// NewRollupAggregator creates a RollupAggregator.
+func NewRollupAggregator(reader *MetricReader, logger *zap.Logger) *RollupAggregator {
+	return &RollupAggregator{reader: reader, logger: logger.Named("rollup-aggregator")}
+}
+
+// RollupTier5m is the 5-minute rollup tier identifier.
+const RollupTier5m = "5m"
+
+// bucketWidth is the fixed rollup window.
+const bucketWidth = 5 * time.Minute
+
+// AggregateSlice aggregates all metrics for appID over [start, end) into
+// 5m rollup points. Each point carries a deterministic DocID.
+func (a *RollupAggregator) AggregateSlice(ctx context.Context, appID string, start, end time.Time) ([]rollupPoint, error) {
+	tr := TimeRange{Start: start, End: end}
+
+	names, err := a.reader.ListMetricNames(ctx, tr)
+	if err != nil {
+		return nil, fmt.Errorf("list metric names: %w", err)
+	}
+
+	// Metric type + unit determine aggregation semantics.
+	types, err := a.reader.ListMetricTypes(ctx, tr)
+	if err != nil {
+		types = nil // fall through; treat as gauge
+	}
+
+	var allPoints []rollupPoint
+	for _, name := range names {
+		meta := types[name]
+		points, err := a.aggregateMetric(ctx, appID, name, meta, tr)
+		if err != nil {
+			a.logger.Warn("rollup metric failed", zap.String("metric", name), zap.Error(err))
+			continue
+		}
+		allPoints = append(allPoints, points...)
+	}
+	return allPoints, nil
+}
+
+// aggregateMetric aggregates one metric name over the slice time range.
+func (a *RollupAggregator) aggregateMetric(ctx context.Context, appID, name string, meta storedmodel.MetricMeta, tr TimeRange) ([]rollupPoint, error) {
+	flat, err := a.reader.QueryFlat(ctx, MetricFlatQuery{
+		AppID:      appID,
+		MetricName: name,
+		TimeRange:  tr,
+		MaxDocs:    0, // adaptive
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query flat: %w", err)
+	}
+	if flat == nil || len(flat.Samples) == 0 {
+		return nil, nil
+	}
+
+	// Group samples by (labelset, bucketStart).
+	type groupKey struct {
+		labels      string
+		bucketStart int64
+	}
+	groups := make(map[groupKey]*sampleGroup)
+	for _, sm := range flat.Samples {
+		bs := bucketStartFor(sm.TimestampMs)
+		gk := groupKey{labels: labelsKey(sm.Labels), bucketStart: bs}
+		g, ok := groups[gk]
+		if !ok {
+			g = &sampleGroup{
+				labels:     sm.Labels,
+				bucketMs:   bs,
+				metricType: meta.Type,
+			}
+			groups[gk] = g
+		}
+		g.add(sm)
+	}
+
+	// Emit one rollup point per group.
+	points := make([]rollupPoint, 0, len(groups))
+	for _, g := range groups {
+		doc := g.toDoc(name, appID, meta.Unit)
+		points = append(points, rollupPoint{
+			AppID:    appID,
+			BucketMs: g.bucketMs,
+			DocID:    rollupDocID(RollupTier5m, name, labelsKey(g.labels), g.bucketMs),
+			Doc:      doc,
+		})
+	}
+	return points, nil
+}
+
+// sampleGroup accumulates samples for one (labelset, bucket).
+type sampleGroup struct {
+	labels     map[string]string
+	bucketMs   int64
+	metricType string
+
+	count     int
+	sum       float64
+	min       float64
+	max       float64
+	first     float64
+	last      float64
+	bucketSum []int64 // histogram bucket_counts element-wise sum
+}
+
+// add folds one sample into the group according to metric type semantics.
+func (g *sampleGroup) add(sm MetricSample) {
+	// Histogram: accumulate bucket counts element-wise.
+	if len(sm.BucketCounts) > 0 {
+		if g.bucketSum == nil {
+			g.bucketSum = make([]int64, len(sm.BucketCounts))
+		}
+		for i, bc := range sm.BucketCounts {
+			g.bucketSum[i] += bc
+		}
+		g.count++
+		return
+	}
+
+	// Number sample.
+	g.count++
+	g.sum += sm.Value
+	if g.count == 1 {
+		g.min = sm.Value
+		g.max = sm.Value
+		g.first = sm.Value
+		g.last = sm.Value
+	} else {
+		if sm.Value < g.min {
+			g.min = sm.Value
+		}
+		if sm.Value > g.max {
+			g.max = sm.Value
+		}
+		g.last = sm.Value
+	}
+}
+
+// toDoc builds a StoredMetricDataPoint with type-appropriate rollup fields.
+func (g *sampleGroup) toDoc(name, appID, unit string) storedmodel.StoredMetricDataPoint {
+	doc := storedmodel.StoredMetricDataPoint{
+		TimeUnixMilli: g.bucketMs,
+		Name:          name,
+		Type:          g.metricType,
+		AppID:         appID,
+		Unit:          unit,
+		Tier:          RollupTier5m,
+		Labels:        stringMapToAny(g.labels),
+		Count:         int64(g.count),
+	}
+
+	switch g.metricType {
+	case "counter":
+		// counter: first/last for rate restoration, sum for totals. NOT avg.
+		// Value carries the window sum so QueryRange aggregations can still
+		// read a meaningful magnitude (rate/increase use first/last instead).
+		doc.First = g.first
+		doc.Last = g.last
+		doc.Sum = g.sum
+		doc.Value = g.sum
+	case "histogram":
+		// histogram: merged bucket_counts, no scalar value.
+		doc.BucketCounts = uint64Slice(g.bucketSum)
+		doc.Count = int64(g.count)
+	default:
+		// gauge / summary / unknown: value = avg, plus min/max/sum.
+		if g.count > 0 {
+			doc.Value = g.sum / float64(g.count)
+		}
+		doc.Min = g.min
+		doc.Max = g.max
+		doc.Sum = g.sum
+	}
+
+	return doc
+}
+
+// ── helpers ───────────────────────────────────────────
+
+// bucketStartFor floors a timestamp (ms) to the 5m bucket boundary.
+func bucketStartFor(tsMs int64) int64 {
+	return tsMs - (tsMs % int64(bucketWidth/time.Millisecond))
+}
+
+// rollupDocID builds a deterministic _id: {tier}:{metric}:{labelsHash}:{bucketMs}.
+func rollupDocID(tier, name, labelsStr string, bucketMs int64) string {
+	h := md5.Sum([]byte(labelsStr))
+	return fmt.Sprintf("%s:%s:%s:%d", tier, name, hex.EncodeToString(h[:8]), bucketMs)
+}
+
+// stringMapToAny converts map[string]string to map[string]any for ES doc labels.
+func stringMapToAny(m map[string]string) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// uint64Slice converts []int64 to []uint64 (storedmodel histogram field type).
+func uint64Slice(in []int64) []uint64 {
+	out := make([]uint64, len(in))
+	for i, v := range in {
+		out[i] = uint64(v)
+	}
+	return out
+}

@@ -60,6 +60,10 @@ type ObservabilityStorage struct {
 	// Lifecycle management
 	scheduler      *lifecycle.LifecycleScheduler
 	retentionStore lifecycle.RetentionStore
+
+	// Rollup engine (5m metric downsampling). Only non-nil when enabled and
+	// running against the Elasticsearch provider.
+	rollupEngine *elasticsearch.RollupEngine
 }
 
 // Ensure the extension implements the required interfaces.
@@ -121,11 +125,26 @@ func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) e
 		e.logger.Info("Lifecycle scheduler started")
 	}
 
+	// Start metric rollup engine if enabled (ES provider only).
+	if e.config.Scheduler.RollupEnabled {
+		if engine := e.buildRollupEngine(host); engine != nil {
+			engine.Start(ctx)
+			e.rollupEngine = engine
+			e.logger.Info("Metric rollup engine started")
+		}
+	}
+
 	return nil
 }
 
 // Shutdown gracefully stops the storage provider.
 func (e *ObservabilityStorage) Shutdown(ctx context.Context) error {
+	// Stop metric rollup engine first (it depends on provider + Redis).
+	if e.rollupEngine != nil {
+		e.rollupEngine.Stop()
+		e.logger.Info("Metric rollup engine stopped")
+	}
+
 	// Stop lifecycle scheduler first (it depends on provider)
 	if e.scheduler != nil {
 		e.scheduler.Stop()
@@ -361,6 +380,7 @@ func (e *ObservabilityStorage) convertESConfig() *elasticsearch.Config {
 			Retention:       src.Logs.Retention,
 			RefreshInterval: src.Logs.RefreshInterval,
 		},
+		RollupEnabled: e.config.Scheduler.RollupEnabled,
 	}
 }
 
@@ -761,6 +781,82 @@ func (e *ObservabilityStorage) buildRedisLeaderElector(host component.Host, node
 	}
 
 	return lifecycle.NewRedisLeaderElector(redisClient, nodeID, e.logger)
+}
+
+// buildRollupEngine builds the 5m metric rollup engine when the provider is
+// Elasticsearch and Redis is available. Returns nil if either prerequisite is
+// missing (rollup silently disabled).
+func (e *ObservabilityStorage) buildRollupEngine(host component.Host) *elasticsearch.RollupEngine {
+	if e.esProvider == nil {
+		e.logger.Warn("Rollup enabled but provider is not elasticsearch, disabling rollup")
+		return nil
+	}
+
+	// Obtain Redis client for claim/watermark coordination.
+	redisClient := e.getRedisClient(host)
+	if redisClient == nil {
+		e.logger.Warn("Rollup enabled but Redis unavailable, disabling rollup")
+		return nil
+	}
+
+	nodeID := e.config.Scheduler.NodeID
+	if nodeID == "" {
+		nodeID = fmt.Sprintf("node-%d", time.Now().UnixNano())
+	}
+
+	client := e.esProvider.GetClient()
+	reader := e.esProvider.MetricReader()
+	writer := e.esProvider.MetricWriter()
+	if client == nil || reader == nil || writer == nil {
+		e.logger.Warn("Rollup enabled but ES provider components not ready, disabling rollup")
+		return nil
+	}
+
+	lock := lifecycle.NewRollupLock(redisClient, nodeID, e.logger)
+	agg := elasticsearch.NewRollupAggregator(reader, e.logger)
+
+	cfg := elasticsearch.RollupEngineConfig{
+		Enabled:      true,
+		TickInterval: e.config.Scheduler.Interval,
+		ReadyAfter:   24 * time.Hour,
+	}
+	cfg.ApplyDefaults()
+
+	return elasticsearch.NewRollupEngine(cfg, client, agg, writer, lock, e.logger)
+}
+
+// getRedisClient returns a Redis client from the configured storage extension,
+// or nil if unavailable. Shared by leader election and rollup coordination.
+func (e *ObservabilityStorage) getRedisClient(host component.Host) redis.UniversalClient {
+	storageExtName := e.config.Scheduler.StorageExtension
+	if storageExtName == "" {
+		return nil
+	}
+	storageType := component.MustNewType(storageExtName)
+	var storage storageext.Storage
+	for id, ext := range host.GetExtensions() {
+		if id.Type() == storageType {
+			if s, ok := ext.(storageext.Storage); ok {
+				storage = s
+				break
+			}
+		}
+	}
+	if storage == nil {
+		return nil
+	}
+	redisName := e.config.Scheduler.RedisName
+	var redisClient redis.UniversalClient
+	var err error
+	if redisName == "" || redisName == "default" {
+		redisClient, err = storage.GetDefaultRedis()
+	} else {
+		redisClient, err = storage.GetRedis(redisName)
+	}
+	if err != nil {
+		return nil
+	}
+	return redisClient
 }
 
 // GetLifecycleScheduler returns the lifecycle scheduler for API access (usage trends, etc.).

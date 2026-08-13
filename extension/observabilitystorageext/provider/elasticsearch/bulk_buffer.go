@@ -58,10 +58,25 @@ func (b *bulkBuffer) Stop() {
 // triggered flush (previously this dropped the caller's context and flushed with
 // context.Background(), which could write data the caller had already cancelled).
 func (b *bulkBuffer) Add(ctx context.Context, indexName string, doc any) error {
+	return b.addInternal(ctx, indexName, "", doc)
+}
+
+// AddWithID adds a document with a deterministic _id. Used by rollup to ensure
+// idempotent writes: the same (index, _id) always overwrites the same document,
+// so re-running a rollup slice converges even if two replicas race.
+func (b *bulkBuffer) AddWithID(ctx context.Context, indexName, docID string, doc any) error {
+	return b.addInternal(ctx, indexName, docID, doc)
+}
+
+func (b *bulkBuffer) addInternal(ctx context.Context, indexName, docID string, doc any) error {
+	indexMeta := map[string]any{
+		"_index": indexName,
+	}
+	if docID != "" {
+		indexMeta["_id"] = docID
+	}
 	action := map[string]any{
-		"index": map[string]any{
-			"_index": indexName,
-		},
+		"index": indexMeta,
 	}
 
 	actionBytes, err := json.Marshal(action)

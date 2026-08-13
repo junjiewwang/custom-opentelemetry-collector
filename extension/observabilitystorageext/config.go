@@ -100,6 +100,11 @@ type SchedulerConfig struct {
 
 	// NodeID: unique identifier for this node. Auto-generated if empty.
 	NodeID string `mapstructure:"node_id"`
+
+	// RollupEnabled enables the 5m metric rollup engine. When true, raw 1m
+	// metric indices older than 24h are aggregated into 5m rollup tier indices.
+	// Requires Redis for distributed claim/watermark coordination.
+	RollupEnabled bool `mapstructure:"rollup_enabled"`
 }
 
 // RetentionConfig holds the platform-level retention defaults and constraints.

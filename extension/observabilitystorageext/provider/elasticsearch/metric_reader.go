@@ -178,7 +178,7 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 		Aggregations: aggs,
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
+	resp, err := r.searcher.Search(ctx, r.routeIndexPattern(query.AppID, query.TimeRange.Start, query.TimeRange.End), searchReq)
 	if err != nil {
 		if strings.Contains(err.Error(), "too_many_buckets") {
 			return nil, fmt.Errorf("metric range query: time range too large for the given step, try a larger step or shorter time range")
@@ -481,6 +481,22 @@ func (r *MetricReader) indexPattern(appID ...string) string {
 // [start,end]. See esq.IndexPatternForRange — avoids scanning every historical
 // day's shards for a short-range query (the ES heap OOM trigger).
 func (r *MetricReader) indexPatternForRange(appID string, start, end time.Time) string {
+	return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix, appID, start, end)
+}
+
+// routeIndexPattern selects the rollup tier based on query time span, then
+// narrows to daily partitions. Windows >2h query the 5m rollup tier (which has
+// pre-aggregated docs), windows ≤2h query the raw tier. The rollup tier uses
+// the same appID/date partition structure under a "-rollup-5m-" prefix.
+//
+// This routing is transparent to the PromQL layer — the same reader methods
+// (QueryRange/QueryFlat) call routeIndexPattern instead of indexPatternForRange,
+// and the ES responses are shape-compatible.
+func (r *MetricReader) routeIndexPattern(appID string, start, end time.Time) string {
+	const rollupThreshold = 2 * time.Hour
+	if r.config.RollupEnabled && end.Sub(start) > rollupThreshold {
+		return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix+"-rollup-5m", appID, start, end)
+	}
 	return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix, appID, start, end)
 }
 

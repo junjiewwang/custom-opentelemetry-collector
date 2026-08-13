@@ -50,6 +50,9 @@ func (a *Admin) InitSchema(ctx context.Context) error {
 	if err := a.createMetricTemplate(ctx); err != nil {
 		return fmt.Errorf("failed to create metric index template: %w", err)
 	}
+	if err := a.createRollupTemplate(ctx); err != nil {
+		return fmt.Errorf("failed to create metric rollup index template: %w", err)
+	}
 	if err := a.createLogTemplate(ctx); err != nil {
 		return fmt.Errorf("failed to create log index template: %w", err)
 	}
@@ -319,6 +322,72 @@ func traceTemplateMappings(cfg IndexConfig) map[string]any {
 func (a *Admin) createMetricTemplate(ctx context.Context) error {
 	cfg := a.config.Metrics
 	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix, metricTemplateMappings(cfg))
+}
+
+// createRollupTemplate creates the 5m rollup tier index template.
+// The rollup index pattern is "{prefix}-rollup-5m-*", a more specific pattern
+// than the raw "{prefix}-*", so it is given a higher `order` to win template
+// matching. It reuses the same ILM policy as raw metrics (retention = max_metric).
+func (a *Admin) createRollupTemplate(ctx context.Context) error {
+	cfg := a.config.Metrics
+	return a.client.PutIndexTemplate(ctx, cfg.IndexPrefix+"-rollup-5m", rollupTemplateMappings(cfg))
+}
+
+// rollupTemplateMappings builds the 5m rollup index template body. It extends
+// the raw metric mapping with rollup-specific fields (count/min/max/sum/first/
+// last/_tier) and sets a higher order than the raw template so the more specific
+// rollup pattern wins.
+func rollupTemplateMappings(cfg IndexConfig) map[string]any {
+	return map[string]any{
+		"index_patterns": []string{cfg.IndexPrefix + "-rollup-5m-*"},
+		// Higher priority than the raw metric template (order defaults to 0).
+		"priority": 100,
+		"template": map[string]any{
+			"settings": map[string]any{
+				"number_of_shards":   cfg.Shards,
+				"number_of_replicas": cfg.Replicas,
+				"refresh_interval":   cfg.RefreshInterval,
+				"index.lifecycle.name": cfg.IndexPrefix + "-policy",
+			},
+			"mappings": map[string]any{
+				"dynamic_templates": []map[string]any{{
+					"strings_as_keyword": map[string]any{
+						"match_mapping_type": "string",
+						"mapping": map[string]any{
+							"type": "text",
+							"fields": map[string]any{
+								"keyword": map[string]any{
+									"type":         "keyword",
+									"ignore_above": 256,
+								},
+							},
+						},
+					},
+				}},
+				"properties": map[string]any{
+					FieldMetricTimeUnixMilli:  map[string]any{"type": "date", "format": "epoch_millis"},
+					FieldName:                 map[string]any{"type": "keyword"},
+					FieldMetricType:           map[string]any{"type": "keyword"},
+					FieldMetricValue:          map[string]any{"type": "double"},
+					FieldServiceName:          map[string]any{"type": "keyword"},
+					FieldAppID:                map[string]any{"type": "keyword"},
+					FieldMetricUnit:           map[string]any{"type": "keyword"},
+					FieldMetricLabels:         map[string]any{"type": "object", "dynamic": true},
+					FieldResource:             map[string]any{"type": "object", "dynamic": true},
+					// Rollup-specific fields.
+					"_tier":          map[string]any{"type": "keyword"},
+					"count":          map[string]any{"type": "long"},
+					"min":            map[string]any{"type": "double"},
+					"max":            map[string]any{"type": "double"},
+					"sum":            map[string]any{"type": "double"},
+					"first":          map[string]any{"type": "double"},
+					"last":           map[string]any{"type": "double"},
+					FieldMetricBucketCounts:   map[string]any{"type": "long"},
+					FieldMetricExplicitBounds: map[string]any{"type": "double"},
+				},
+			},
+		},
+	}
 }
 
 // metricTemplateMappings builds the metric index template body. See

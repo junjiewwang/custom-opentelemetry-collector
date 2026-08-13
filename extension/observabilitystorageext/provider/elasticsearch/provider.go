@@ -247,6 +247,11 @@ func (p *Provider) MetricReader() *MetricReader {
 	return p.metricReader
 }
 
+// MetricWriter returns the metric writer instance.
+func (p *Provider) MetricWriter() *MetricWriter {
+	return p.metricWriter
+}
+
 // LogReader returns the log reader instance.
 func (p *Provider) LogReader() *LogReader {
 	return p.logReader

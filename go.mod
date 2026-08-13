@@ -19,6 +19,7 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/attributesprocessor v0.120.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.120.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver v0.120.0
+	github.com/prometheus/prometheus v0.300.1
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/stretchr/testify v1.11.1
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.72
@@ -175,7 +176,6 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.62.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
-	github.com/prometheus/prometheus v0.300.1 // indirect
 	github.com/rs/cors v1.11.1 // indirect
 	github.com/shirou/gopsutil/v4 v4.25.1 // indirect
 	github.com/spf13/cast v1.7.1 // indirect

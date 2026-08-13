@@ -103,6 +103,42 @@ func (w *MetricWriter) Flush(ctx context.Context) error {
 	return w.buffer.Flush(ctx)
 }
 
+// WriteRollupPoints writes pre-aggregated rollup documents to the 5m rollup
+// tier index with deterministic _id. The _id is "{tier}:{metric}:{labelsHash}:{bucketMs}"
+// so re-running a rollup slice overwrites the same document (idempotent).
+func (w *MetricWriter) WriteRollupPoints(ctx context.Context, tier string, points []rollupPoint) error {
+	for _, p := range points {
+		if p.AppID == "" {
+			return fmt.Errorf("app_id is required for rollup data")
+		}
+		indexName := w.getRollupIndexName(tier, p.AppID, time.UnixMilli(p.BucketMs))
+		if err := w.buffer.AddWithID(ctx, indexName, p.DocID, p.Doc); err != nil {
+			return fmt.Errorf("failed to buffer rollup document: %w", err)
+		}
+	}
+	return nil
+}
+
+// getRollupIndexName returns the rollup tier index name for a bucket timestamp.
+// Format: {prefix}-rollup-{tier}-{app_id}-{date}, e.g., "otel-metrics-rollup-5m-app001-2026.08.13".
+func (w *MetricWriter) getRollupIndexName(tier, appID string, t time.Time) string {
+	return fmt.Sprintf("%s-rollup-%s-%s-%s",
+		w.config.Metrics.IndexPrefix,
+		tier,
+		appID,
+		t.UTC().Format(w.config.Metrics.IndexDateFormat),
+	)
+}
+
+// rollupPoint is a single pre-aggregated rollup document, carrying its bucket
+// timestamp, deterministic doc ID, and the document to write.
+type rollupPoint struct {
+	AppID    string
+	BucketMs int64
+	DocID    string
+	Doc      storedmodel.StoredMetricDataPoint
+}
+
 // gaugeToDoc, sumToDoc, histogramToDoc, summaryToDoc, metricToDocs removed —
 // replaced by storedmodel.ConvertOTLPMetric().
 

@@ -27,6 +27,21 @@ type StoredMetricDataPoint struct {
 	// Histogram-specific fields (present only when Type="histogram").
 	BucketCounts  []uint64  `json:"bucket_counts,omitempty"`
 	ExplicitBounds []float64 `json:"explicit_bounds,omitempty"`
+
+	// Rollup-specific fields (present only in rollup tier documents).
+	// Tier identifies the rollup resolution ("5m"), empty for raw docs.
+	Tier string `json:"_tier,omitempty"`
+	// Count is the number of raw samples aggregated into this rollup bucket.
+	Count int64 `json:"count,omitempty"`
+	// Min/Max are the window min/max for gauge-type metrics.
+	Min float64 `json:"min,omitempty"`
+	Max float64 `json:"max,omitempty"`
+	// Sum is the sum of raw values in the window (used for avg recomputation).
+	Sum float64 `json:"sum,omitempty"`
+	// First/Last are the window boundary values for counter-type metrics.
+	// rate()/increase() on counters MUST use first/last, never avg.
+	First float64 `json:"first,omitempty"`
+	Last  float64 `json:"last,omitempty"`
 }
 
 // MetricMeta holds a metric's stored type and unit, returned by ListMetricTypes.

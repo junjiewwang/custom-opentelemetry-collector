@@ -34,6 +34,11 @@ type Config struct {
 
 	// Logs holds log index configuration.
 	Logs IndexConfig
+
+	// RollupEnabled enables tier-aware read routing to the 5m rollup index.
+	// When false (default), all reads go to the raw tier — the rollup index is
+	// never queried, preserving pre-rollup behavior.
+	RollupEnabled bool
 }
 
 // IndexConfig holds configuration for a single signal's index.
