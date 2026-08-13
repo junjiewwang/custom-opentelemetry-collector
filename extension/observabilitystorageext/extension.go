@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
@@ -48,9 +49,10 @@ type internalProvider interface {
 // ObservabilityStorage is the extension that manages the observability data storage provider.
 // It holds a provider instance and exposes Writer/Admin interfaces to other components.
 type ObservabilityStorage struct {
-	config   *Config
-	logger   *zap.Logger
-	provider internalProvider
+	config        *Config
+	logger        *zap.Logger
+	meterProvider metric.MeterProvider
+	provider      internalProvider
 
 	// Concrete providers (only one is non-nil based on config.Type)
 	esProvider     *elasticsearch.Provider
@@ -79,8 +81,9 @@ func newObservabilityStorageExtension(
 	config *Config,
 ) (*ObservabilityStorage, error) {
 	return &ObservabilityStorage{
-		config: config,
-		logger: set.Logger,
+		config:        config,
+		logger:        set.Logger,
+		meterProvider: set.TelemetrySettings.MeterProvider,
 	}, nil
 }
 
@@ -822,7 +825,16 @@ func (e *ObservabilityStorage) buildRollupEngine(host component.Host) *elasticse
 	}
 	cfg.ApplyDefaults()
 
-	return elasticsearch.NewRollupEngine(cfg, client, agg, writer, lock, e.logger)
+	engine := elasticsearch.NewRollupEngine(cfg, client, agg, writer, lock, e.logger)
+
+	// Wire rollup self-monitoring instruments via the collector's MeterProvider.
+	// When nil (no telemetry configured), NewRollupMetrics falls back to a no-op
+	// meter and the engine's nil-guards make instrumentation a no-op.
+	if e.meterProvider != nil {
+		engine.SetMetrics(elasticsearch.NewRollupMetrics(e.meterProvider.Meter("otelcol/rollup")))
+	}
+
+	return engine
 }
 
 // getRedisClient returns a Redis client from the configured storage extension,

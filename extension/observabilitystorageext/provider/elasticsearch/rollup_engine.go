@@ -47,6 +47,7 @@ type RollupEngine struct {
 	writer     *MetricWriter
 	lock       *lifecycle.RollupLock
 	logger     *zap.Logger
+	metrics    *rollupMetrics
 
 	stopCh chan struct{}
 	doneCh chan struct{}
@@ -64,6 +65,13 @@ func NewRollupEngine(cfg RollupEngineConfig, client *Client, agg *RollupAggregat
 		stopCh:     make(chan struct{}),
 		doneCh:     make(chan struct{}),
 	}
+}
+
+// SetMetrics injects the rollup self-monitoring instruments into the engine and
+// aggregator (nil-safe).
+func (e *RollupEngine) SetMetrics(m *rollupMetrics) {
+	e.metrics = m
+	e.aggregator.setMetrics(m)
 }
 
 // Start launches the background rollup loop.
@@ -205,17 +213,30 @@ func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem) er
 	// Aggregate this single hour into 5m buckets (12 buckets/hour).
 	hourStart := item.date.Add(time.Duration(item.hour) * time.Hour)
 	hourEnd := hourStart.Add(time.Hour - time.Millisecond)
+	startTime := time.Now()
 	points, err := e.aggregator.AggregateSlice(ctx, item.appID, item.indices, hourStart, hourEnd)
 	if err != nil {
+		if e.metrics != nil {
+			e.metrics.recordSlice(ctx, item.appID, 0, true, time.Since(startTime))
+		}
 		return fmt.Errorf("aggregate slice: %w", err)
 	}
 	if len(points) == 0 {
 		e.logger.Debug("no data to rollup", zap.String("appID", item.appID), zap.String("slice", slice))
+		if e.metrics != nil {
+			e.metrics.recordSlice(ctx, item.appID, 0, false, time.Since(startTime))
+		}
 		return nil
 	}
 
 	if err := e.writer.WriteRollupPoints(ctx, RollupTier5m, points); err != nil {
+		if e.metrics != nil {
+			e.metrics.recordSlice(ctx, item.appID, 0, true, time.Since(startTime))
+		}
 		return fmt.Errorf("write rollup points: %w", err)
+	}
+	if e.metrics != nil {
+		e.metrics.recordSlice(ctx, item.appID, len(points), false, time.Since(startTime))
 	}
 	e.logger.Info("rolled up metric slice",
 		zap.String("appID", item.appID),

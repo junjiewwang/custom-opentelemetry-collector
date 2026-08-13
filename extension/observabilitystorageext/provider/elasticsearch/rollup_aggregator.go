@@ -22,13 +22,19 @@ import (
 // same Go-side grouping pattern used by the PromQL query path, keeping the
 // aggregation logic testable and ES-independent.
 type RollupAggregator struct {
-	reader *MetricReader
-	logger *zap.Logger
+	reader  *MetricReader
+	logger  *zap.Logger
+	metrics *rollupMetrics
 }
 
 // NewRollupAggregator creates a RollupAggregator.
 func NewRollupAggregator(reader *MetricReader, logger *zap.Logger) *RollupAggregator {
 	return &RollupAggregator{reader: reader, logger: logger.Named("rollup-aggregator")}
+}
+
+// setMetrics injects the rollup self-monitoring instruments (nil-safe).
+func (a *RollupAggregator) setMetrics(m *rollupMetrics) {
+	a.metrics = m
 }
 
 // RollupTier5m is the 5-minute rollup tier identifier.
@@ -79,7 +85,13 @@ func (a *RollupAggregator) AggregateSlice(ctx context.Context, appID string, ind
 			points, err := a.aggregateMetric(ctx, appID, name, meta, tr, indexPattern)
 			if err != nil {
 				a.logger.Warn("rollup metric failed", zap.String("metric", name), zap.Error(err))
+				if a.metrics != nil {
+					a.metrics.recordMetric(ctx, appID, true)
+				}
 				return
+			}
+			if a.metrics != nil {
+				a.metrics.recordMetric(ctx, appID, false)
 			}
 			mu.Lock()
 			allPoints = append(allPoints, points...)
