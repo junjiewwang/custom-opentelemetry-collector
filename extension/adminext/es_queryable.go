@@ -119,7 +119,15 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 	}
 
 	// Slow path: resolve metric names from ES, select each concurrently.
-	tr := observabilitystorageext.TimeRange{Start: timestamp.Time(q.mint), End: timestamp.Time(q.maxt)}
+	// Cap the metadata lookback to 2h ending at maxt: metric names are stable
+	// and low-cardinality, so a bounded window avoids the 429 that a wide
+	// [mint, maxt] (e.g. a 7-day regex query) would trigger on ListMetricNames.
+	const metaLookback = 2 * time.Hour
+	metaStart := q.maxt - int64(metaLookback/time.Millisecond)
+	if metaStart < q.mint {
+		metaStart = q.mint
+	}
+	tr := observabilitystorageext.TimeRange{Start: timestamp.Time(metaStart), End: timestamp.Time(q.maxt)}
 	allNames, err := q.reader.ListMetricNames(ctx, tr)
 	if err != nil {
 		return storage.ErrSeriesSet(fmt.Errorf("list metric names: %w", err))
@@ -674,8 +682,13 @@ func buildGlobalReverseMap(reader observabilitystorageext.MetricReader, logger *
 	}
 	lastReverseBuildAttempt = time.Now()
 
+	// Use a short lookback window (2h, not 24h) to keep the ListMetricNames
+	// terms aggregation bounded. Metric names are stable and low-cardinality:
+	// a 2h window discovers every currently-active metric, while a 24h window
+	// scanned ~10M documents and triggered ES 429 circuit_breaker (fielddata
+	// >1.3GB). See Obsidian: custom-otel-collector metadata query design.
 	tr := observabilitystorageext.TimeRange{
-		Start: time.Now().Add(-24 * time.Hour),
+		Start: time.Now().Add(-2 * time.Hour),
 		End:   time.Now(),
 	}
 	names, err := reader.ListMetricNames(context.Background(), tr)
