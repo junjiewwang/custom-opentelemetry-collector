@@ -71,6 +71,12 @@ func (c *Client) DeleteByQuery(ctx context.Context, indexPattern string, query m
 	}
 
 	if resp.StatusCode >= 400 {
+		// A named index that does not exist returns 404 with
+		// index_not_found_exception. Translate it to the sentinel so meta cleanup
+		// is idempotent on a fresh deployment (no meta index yet).
+		if resp.StatusCode == http.StatusNotFound && esIndexNotFound(respBody) {
+			return 0, ErrESIndexNotFound
+		}
 		return 0, fmt.Errorf("delete by query returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 

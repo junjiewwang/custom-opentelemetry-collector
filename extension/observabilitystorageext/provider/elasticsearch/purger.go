@@ -62,8 +62,15 @@ func (p *Purger) PurgeExpired(ctx context.Context, signal lifecycle.SignalType, 
 			zap.Error(err),
 		)
 		// Strategy 2: Fallback to delete_by_query
-		return p.deleteByQuery(ctx, pattern, signal, before, start)
+		result, derr := p.deleteByQuery(ctx, pattern, signal, before, start)
+		p.cleanStaleMetadataForMetric(ctx, signal, before)
+		return result, derr
 	}
+
+	// The singleton metadata index is not date-partitioned and not ILM-managed,
+	// so the index-deletion strategy above never touches it. Prune stale meta
+	// docs (metric signal only) with the same retention cutoff.
+	p.cleanStaleMetadataForMetric(ctx, signal, before)
 
 	return &lifecycle.PurgeResult{
 		Signal:       signal,
@@ -72,6 +79,19 @@ func (p *Purger) PurgeExpired(ctx context.Context, signal lifecycle.SignalType, 
 		Duration:     time.Since(start),
 		Message:      fmt.Sprintf("deleted %d expired indices matching %s", deletedIndices, pattern),
 	}, nil
+}
+
+// cleanStaleMetadataForMetric prunes stale meta docs when the signal is metric.
+// It is best-effort: a failure is logged, not returned, because the primary
+// purge (data indices) already succeeded and must not be failed by a metadata
+// side-channel. Runs after both the index-deletion and delete_by_query paths.
+func (p *Purger) cleanStaleMetadataForMetric(ctx context.Context, signal lifecycle.SignalType, before time.Time) {
+	if signal != lifecycle.SignalMetric {
+		return
+	}
+	if _, err := cleanStaleMetadata(ctx, p.client, p.config.Metrics.IndexPrefix, before.UnixMilli(), p.logger); err != nil {
+		p.logger.Warn("stale metric metadata cleanup failed", zap.Error(err))
+	}
 }
 
 // PurgeByApp removes expired data scoped to a specific application.
