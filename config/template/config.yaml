@@ -233,6 +233,14 @@ extensions:
       # Unique node ID (auto-generated from POD_NAME/hostname if empty)
       node_id: ""
 
+      # ─── Metric 5m Rollup (downsampling) ───
+      # When enabled, raw 1m metric indices older than 24h are aggregated into
+      # 5m rollup tier indices (otel-metrics-rollup-5m-*) for faster long-range
+      # queries (>2h). Reads route to the rollup tier only when this is true;
+      # when false (default) all reads stay on the raw tier.
+      # Requires: storage_extension + redis_name (claim/watermark coordination).
+      rollup_enabled: false
+
   # Control plane extension - Agent interaction interface
   # Handles: Agent registration, heartbeat, task execution, status reporting
   controlplane:
