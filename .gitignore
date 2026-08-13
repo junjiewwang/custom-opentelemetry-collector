@@ -50,5 +50,5 @@ compose.yaml
 k8s-manifests/
 # <<< svcgen generated <<<
 test_e2e
-openspec/
+# OpenSpec change artifacts are local planning docs, not source.
 openspec/
