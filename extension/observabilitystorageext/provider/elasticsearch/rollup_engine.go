@@ -99,15 +99,24 @@ func (e *RollupEngine) loop() {
 	}
 }
 
-// rollupWorkItem is one (appID, date) slice to roll up.
+// rollupWorkItem is one (appID, date, hour) slice to roll up.
+// Hour granularity lets different replicas claim different hours of the same
+// app/day, so rollup work genuinely parallelizes across replicas (each hour
+// is an independent 5m-bucket aggregation).
 type rollupWorkItem struct {
 	appID   string
 	date    time.Time
+	hour    int       // 0..23 (UTC hour of the day)
 	indices []string
 }
 
+// sliceKey builds the deterministic claim-slice identifier for a work item.
+func (w *rollupWorkItem) sliceKey() string {
+	return fmt.Sprintf("%s:%02d", w.date.Format("2006.01.02"), w.hour)
+}
+
 // tick runs one rollup cycle: list ready raw indices, aggregate each pending
-// slice, write rollup docs, advance watermark.
+// hour slice, write rollup docs, advance watermark.
 func (e *RollupEngine) tick(ctx context.Context) {
 	start := time.Now()
 	defer func() {
@@ -123,7 +132,8 @@ func (e *RollupEngine) tick(ctx context.Context) {
 		return
 	}
 
-	// Group indices by (appID, date), filter to ready ones.
+	// Group indices by (appID, date), filter to ready ones. Each date expands
+	// into 24 hour-slices so replicas can claim individual hours in parallel.
 	byKey := make(map[string]*rollupWorkItem)
 	for _, idx := range indices {
 		date, ok := extractIndexDate(idx, e.writer.config.Metrics.IndexDateFormat)
@@ -147,72 +157,71 @@ func (e *RollupEngine) tick(ctx context.Context) {
 		return
 	}
 
-	// Process each work item: claim → aggregate → write → watermark.
-	for _, item := range byKey {
-		e.logger.Info("rollup processing slice",
-			zap.String("appID", item.appID),
-			zap.Time("date", item.date),
-			zap.Int("indices", len(item.indices)),
-		)
+	// Expand each (appID, date) into 24 hour work items and process them.
+	var work []*rollupWorkItem
+	for _, day := range byKey {
+		for hour := 0; hour < 24; hour++ {
+			work = append(work, &rollupWorkItem{
+				appID:   day.appID,
+				date:    day.date,
+				hour:    hour,
+				indices: day.indices,
+			})
+		}
+	}
+
+	for _, item := range work {
 		if err := e.processItem(ctx, item); err != nil {
 			e.logger.Warn("rollup item failed",
 				zap.String("appID", item.appID),
 				zap.Time("date", item.date),
+				zap.Int("hour", item.hour),
 				zap.Error(err),
 			)
 		}
 	}
 }
 
-// processItem aggregates one (appID, date) slice and writes rollup docs.
+// processItem aggregates one (appID, date, hour) slice and writes rollup docs.
 func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem) error {
-	dateStr := item.date.Format("2006.01.02")
+	slice := item.sliceKey()
 
-	// Claim the slice. If another replica owns it, skip.
+	// Claim the hour slice. If another replica owns it, skip.
 	if e.lock != nil {
-		claimed, err := e.lock.TryClaimSlice(ctx, RollupTier5m, item.appID, dateStr, 2*e.config.TickInterval)
+		claimed, err := e.lock.TryClaimSlice(ctx, RollupTier5m, item.appID, slice, 2*e.config.TickInterval)
 		if err != nil {
 			return fmt.Errorf("claim slice: %w", err)
 		}
 		if !claimed {
 			e.logger.Debug("slice already claimed by another node, skipping",
 				zap.String("appID", item.appID),
-				zap.String("date", dateStr),
+				zap.String("slice", slice),
 			)
 			return nil
 		}
-		defer e.lock.ReleaseClaimSlice(ctx, RollupTier5m, item.appID, dateStr)
+		defer e.lock.ReleaseClaimSlice(ctx, RollupTier5m, item.appID, slice)
 	}
 
-	// Aggregate the full day into 5m buckets. The end bound is exclusive
-	// (23:59:59.999) so that IndexPatternForRange's ±1-day pad never spills
-	// into a future index (e.g. day=08.12 → pad reaches 08.14 which does not
-	// exist, causing ES index_not_found 404).
-	start := item.date
-	end := item.date.Add(24*time.Hour - time.Millisecond)
-	points, err := e.aggregator.AggregateSlice(ctx, item.appID, item.indices, start, end)
+	// Aggregate this single hour into 5m buckets (12 buckets/hour).
+	hourStart := item.date.Add(time.Duration(item.hour) * time.Hour)
+	hourEnd := hourStart.Add(time.Hour - time.Millisecond)
+	points, err := e.aggregator.AggregateSlice(ctx, item.appID, item.indices, hourStart, hourEnd)
 	if err != nil {
 		return fmt.Errorf("aggregate slice: %w", err)
 	}
 	if len(points) == 0 {
-		e.logger.Debug("no data to rollup", zap.String("appID", item.appID), zap.String("date", dateStr))
-	} else {
-		if err := e.writer.WriteRollupPoints(ctx, RollupTier5m, points); err != nil {
-			return fmt.Errorf("write rollup points: %w", err)
-		}
-		e.logger.Info("rolled up metric slice",
-			zap.String("appID", item.appID),
-			zap.String("date", dateStr),
-			zap.Int("points", len(points)),
-		)
+		e.logger.Debug("no data to rollup", zap.String("appID", item.appID), zap.String("slice", slice))
+		return nil
 	}
 
-	// Advance watermark to end of day.
-	if e.lock != nil {
-		if err := e.lock.SetWatermark(ctx, RollupTier5m, item.appID, end.UnixMilli()); err != nil {
-			return fmt.Errorf("set watermark: %w", err)
-		}
+	if err := e.writer.WriteRollupPoints(ctx, RollupTier5m, points); err != nil {
+		return fmt.Errorf("write rollup points: %w", err)
 	}
+	e.logger.Info("rolled up metric slice",
+		zap.String("appID", item.appID),
+		zap.String("slice", slice),
+		zap.Int("points", len(points)),
+	)
 	return nil
 }
 

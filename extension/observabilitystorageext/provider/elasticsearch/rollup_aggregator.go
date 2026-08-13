@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
@@ -57,16 +58,35 @@ func (a *RollupAggregator) AggregateSlice(ctx context.Context, appID string, ind
 
 	indexPattern := strings.Join(indices, ",")
 
-	var allPoints []rollupPoint
+	// Aggregate metrics concurrently with a bounded worker pool. The concurrency
+	// is capped at 4 to leave headroom in ES's MaxConnsPerHost=20 pool for live
+	// read/write traffic. Each metric's aggregation is independent (its own
+	// QueryFlat + Go-side grouping), so results are safe to append under a mutex.
+	const rollupMetricConcurrency = 4
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, rollupMetricConcurrency)
+		allPoints []rollupPoint
+	)
 	for _, name := range names {
 		meta := types[name]
-		points, err := a.aggregateMetric(ctx, appID, name, meta, tr, indexPattern)
-		if err != nil {
-			a.logger.Warn("rollup metric failed", zap.String("metric", name), zap.Error(err))
-			continue
-		}
-		allPoints = append(allPoints, points...)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			points, err := a.aggregateMetric(ctx, appID, name, meta, tr, indexPattern)
+			if err != nil {
+				a.logger.Warn("rollup metric failed", zap.String("metric", name), zap.Error(err))
+				return
+			}
+			mu.Lock()
+			allPoints = append(allPoints, points...)
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
 	return allPoints, nil
 }
 

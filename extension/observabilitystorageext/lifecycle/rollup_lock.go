@@ -33,9 +33,12 @@ func NewRollupLock(client redis.UniversalClient, nodeID string, logger *zap.Logg
 	return &RollupLock{client: client, nodeID: nodeID, logger: logger}
 }
 
-// claimKey builds the Redis key for a per-slice claim lock.
-func (l *RollupLock) claimKey(tier, appID, date string) string {
-	return fmt.Sprintf("otel:rollup:claim:%s:%s:%s", tier, appID, date)
+// claimKey builds the Redis key for a per-slice claim lock. The `slice`
+// parameter is an opaque string identifying the work unit — for hour-granular
+// rollup it is "{date}:{hour}", so different replicas can claim different
+// hours of the same app/day in parallel.
+func (l *RollupLock) claimKey(tier, appID, slice string) string {
+	return fmt.Sprintf("otel:rollup:claim:%s:%s:%s", tier, appID, slice)
 }
 
 // watermarkKey builds the Redis key holding the per-app watermark hash for a tier.
@@ -52,11 +55,11 @@ end
 return 0
 `)
 
-// TryClaimSlice attempts to acquire the claim lock for one (tier, appID, date)
-// slice. Returns true if this node owns the lock (newly acquired or re-acquired
-// after a restart where it was already the holder).
-func (l *RollupLock) TryClaimSlice(ctx context.Context, tier, appID, date string, ttl time.Duration) (bool, error) {
-	key := l.claimKey(tier, appID, date)
+// TryClaimSlice attempts to acquire the claim lock for one (tier, appID, slice)
+// work unit. Returns true if this node owns the lock (newly acquired or
+// re-acquired after a restart where it was already the holder).
+func (l *RollupLock) TryClaimSlice(ctx context.Context, tier, appID, slice string, ttl time.Duration) (bool, error) {
+	key := l.claimKey(tier, appID, slice)
 	ok, err := l.client.SetNX(ctx, key, l.nodeID, ttl).Result()
 	if err != nil {
 		return false, fmt.Errorf("rollup claim SET NX: %w", err)
@@ -74,8 +77,8 @@ func (l *RollupLock) TryClaimSlice(ctx context.Context, tier, appID, date string
 }
 
 // ReleaseClaimSlice releases a claim lock (only if this node holds it).
-func (l *RollupLock) ReleaseClaimSlice(ctx context.Context, tier, appID, date string) error {
-	key := l.claimKey(tier, appID, date)
+func (l *RollupLock) ReleaseClaimSlice(ctx context.Context, tier, appID, slice string) error {
+	key := l.claimKey(tier, appID, slice)
 	_, err := releaseClaimScript.Run(ctx, l.client, []string{key}, l.nodeID).Int()
 	if err != nil {
 		return fmt.Errorf("rollup release claim: %w", err)
