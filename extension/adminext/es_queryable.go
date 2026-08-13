@@ -645,18 +645,20 @@ func (q *esQuerier) unsanitizeMetricName(safeName string) string {
 	}
 	muReverseBuild.Unlock()
 
-	// Last resort: try the simplest heuristic — replace all underscores
-	// back to dots. This is correct for metric names where every underscore
-	// came from a dot replacement (the common case for OTel dotted names).
-	// Not safe for names like "traces_spanmetrics_calls_total" (mixed),
-	// but these will be cached correctly on the first ListMetricNames pass.
-	heuristic := strings.ReplaceAll(safeName, "_", ".")
-	return heuristic
+	// Last resort: return the name unchanged. The old heuristic of replacing
+	// every underscore with a dot is WRONG for underscore-native names like
+	// "traces_spanmetrics_calls_total" (→ "traces.spanmetrics.calls.total",
+	// which does not exist in ES). Dotted OTel names are already covered by
+	// metricNameReverseMap and the global reverse map; if neither has the name,
+	// it is safest to treat the sanitized name as already being the storage
+	// name rather than guessing.
+	return safeName
 }
 
 var (
 	muReverseBuild         sync.Mutex
 	globalMetricReverseMap map[string]string
+	lastReverseBuildAttempt time.Time
 )
 
 func buildGlobalReverseMap(reader observabilitystorageext.MetricReader, logger *zap.Logger) {
@@ -665,14 +667,24 @@ func buildGlobalReverseMap(reader observabilitystorageext.MetricReader, logger *
 	if globalMetricReverseMap != nil {
 		return
 	}
+	// Throttle retries: if a build recently failed (e.g. ES 429), don't hammer
+	// ES on every incoming query — wait a short interval before retrying.
+	if !lastReverseBuildAttempt.IsZero() && time.Since(lastReverseBuildAttempt) < 30*time.Second {
+		return
+	}
+	lastReverseBuildAttempt = time.Now()
+
 	tr := observabilitystorageext.TimeRange{
 		Start: time.Now().Add(-24 * time.Hour),
 		End:   time.Now(),
 	}
 	names, err := reader.ListMetricNames(context.Background(), tr)
 	if err != nil {
-		logger.Warn("failed to build global metric reverse map", zap.Error(err))
-		globalMetricReverseMap = make(map[string]string)
+		// Keep globalMetricReverseMap nil on failure so a later Querier call
+		// retries the build (after the throttle interval). Setting it to an
+		// empty map here would permanently disable the reverse map and make
+		// unsanitizeMetricName fall through to the (now safe) identity fallback.
+		logger.Warn("failed to build global metric reverse map (will retry)", zap.Error(err))
 		return
 	}
 	globalMetricReverseMap = make(map[string]string, len(names))

@@ -226,7 +226,7 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange)
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
+	resp, err := r.searcher.Search(ctx, r.rawIndexPatternForRange(timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list metric names failed: %w", err)
 	}
@@ -279,7 +279,7 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange TimeRange)
 		},
 	}
 
-	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
+	resp, err := r.searcher.Search(ctx, r.rawIndexPatternForRange(timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
 		return nil, fmt.Errorf("list metric types failed: %w", err)
 	}
@@ -482,6 +482,24 @@ func (r *MetricReader) indexPattern(appID ...string) string {
 // day's shards for a short-range query (the ES heap OOM trigger).
 func (r *MetricReader) indexPatternForRange(appID string, start, end time.Time) string {
 	return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix, appID, start, end)
+}
+
+// rawIndexPatternForRange is like indexPatternForRange but EXCLUDES rollup-tier
+// indices via ES negative index patterns. Metadata listing (ListMetricNames /
+// ListMetricTypes) must only scan raw indices: including rollup indices in a
+// terms-aggregation over the wildcard "{prefix}-*-{date}" blew ES fielddata
+// (429 circuit_breaker_exception, ~1.4GB > 1.3GB limit) because rollup indices
+// carry the same "name" field and were being aggregated again.
+func (r *MetricReader) rawIndexPatternForRange(start, end time.Time) string {
+	base := r.indexPatternForRange("", start, end)
+	if base == "" {
+		return base
+	}
+	// Append a negative pattern for rollup indices. ES excludes indices matching
+	// a "-" prefixed pattern. The rollup index format is
+	// "{prefix}-rollup-{tier}-{appID}-{date}" (see getRollupIndexName).
+	rollupPrefix := r.config.Metrics.IndexPrefix + "-rollup-"
+	return base + ",-" + rollupPrefix + "*"
 }
 
 // routeIndexPattern selects the rollup tier based on query time span, then
