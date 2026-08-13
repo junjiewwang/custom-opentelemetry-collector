@@ -647,12 +647,25 @@ func (r *MetricReader) rawIndexPatternForRange(start, end time.Time) string {
 // pre-aggregated docs), windows ≤2h query the raw tier. The rollup tier uses
 // the same appID/date partition structure under a "-rollup-5m-" prefix.
 //
+// Routing coherence invariant: a window must ONLY route to the rollup tier if
+// its ENTIRE span is "stabilized" (rollup data is guaranteed to exist). The
+// rollup engine only aggregates indices older than RollupReadyAfter (default
+// 24h), so today's raw index has no rollup counterpart yet. A window whose end
+// is within now-RollupReadyAfter must therefore fall back to raw, otherwise a
+// 6h window on today routes to a rollup index that does not exist → empty.
+//
 // This routing is transparent to the PromQL layer — the same reader methods
 // (QueryRange/QueryFlat) call routeIndexPattern instead of indexPatternForRange,
 // and the ES responses are shape-compatible.
 func (r *MetricReader) routeIndexPattern(appID string, start, end time.Time) string {
 	const rollupThreshold = 2 * time.Hour
-	if r.config.RollupEnabled && end.Sub(start) > rollupThreshold {
+	readyAfter := r.config.RollupReadyAfter
+	if readyAfter <= 0 {
+		readyAfter = 24 * time.Hour // match RollupEngine's default
+	}
+	// Only route to rollup when the window is fully stabilized (its end is at
+	// least RollupReadyAfter in the past). Otherwise fall back to raw.
+	if r.config.RollupEnabled && end.Sub(start) > rollupThreshold && end.Before(time.Now().Add(-readyAfter)) {
 		return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix+"-rollup-5m", appID, start, end)
 	}
 	return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix, appID, start, end)

@@ -102,9 +102,16 @@ type SchedulerConfig struct {
 	NodeID string `mapstructure:"node_id"`
 
 	// RollupEnabled enables the 5m metric rollup engine. When true, raw 1m
-	// metric indices older than 24h are aggregated into 5m rollup tier indices.
-	// Requires Redis for distributed claim/watermark coordination.
+	// metric indices older than RollupReadyAfter are aggregated into 5m rollup
+	// tier indices. Requires Redis for distributed claim/watermark coordination.
 	RollupEnabled bool `mapstructure:"rollup_enabled"`
+
+	// RollupReadyAfter is the age at which a raw metric index is considered
+	// "stabilized" and safe to roll up (and to read from the rollup tier).
+	// Default 24h. Applied to BOTH the rollup engine (skip indices newer than
+	// this) and read routing (fall back to raw for windows whose end is more
+	// recent than now-RollupReadyAfter), keeping the two coherent.
+	RollupReadyAfter time.Duration `mapstructure:"rollup_ready_after"`
 }
 
 // RetentionConfig holds the platform-level retention defaults and constraints.

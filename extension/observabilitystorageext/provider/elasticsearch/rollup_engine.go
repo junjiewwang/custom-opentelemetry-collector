@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -124,6 +125,17 @@ func (w *rollupWorkItem) sliceKey() string {
 	return fmt.Sprintf("%s:%02d", w.date.Format("2006.01.02"), w.hour)
 }
 
+// sliceStartMs returns the hour start in unix millis (UTC).
+func (w *rollupWorkItem) sliceStartMs() int64 {
+	return w.date.Add(time.Duration(w.hour) * time.Hour).UnixMilli()
+}
+
+// sliceEndMs returns the hour end (exclusive) in unix millis (UTC): the start of
+// the next hour. A watermark >= sliceEndMs means the entire hour is done.
+func (w *rollupWorkItem) sliceEndMs() int64 {
+	return w.sliceStartMs() + int64(time.Hour/time.Millisecond)
+}
+
 // tick runs one rollup cycle: list ready raw indices, aggregate each pending
 // hour slice, write rollup docs, advance watermark.
 func (e *RollupEngine) tick(ctx context.Context) {
@@ -174,7 +186,10 @@ func (e *RollupEngine) tick(ctx context.Context) {
 		return
 	}
 
-	// Expand each (appID, date) into 24 hour work items and process them.
+	// Expand each (appID, date) into 24 hour work items and process them in
+	// chronological order. Ordering matters: the watermark records the last
+	// CONTIGUOUS completed hour per app, so hours must be attempted oldest-first
+	// or the watermark could skip an unprocessed earlier hour.
 	var work []*rollupWorkItem
 	for _, day := range byKey {
 		for hour := 0; hour < 24; hour++ {
@@ -186,9 +201,27 @@ func (e *RollupEngine) tick(ctx context.Context) {
 			})
 		}
 	}
+	sort.Slice(work, func(i, j int) bool {
+		if work[i].date.Equal(work[j].date) {
+			if work[i].appID == work[j].appID {
+				return work[i].hour < work[j].hour
+			}
+			return work[i].appID < work[j].appID
+		}
+		return work[i].date.Before(work[j].date)
+	})
+
+	// Load per-app watermarks once and skip hours that are already durably
+	// rolled up (lastBucketMs >= this hour's end). Without this the engine
+	// re-aggregates every already-processed hour on every tick forever, so it
+	// never advances to newer data.
+	watermarks, _ := e.lock.GetAllWatermarks(ctx, RollupTier5m)
 
 	for _, item := range work {
-		if err := e.processItem(ctx, item); err != nil {
+		if wm, ok := watermarks[item.appID]; ok && wm >= item.sliceEndMs() {
+			continue
+		}
+		if err := e.processItem(ctx, item, watermarks); err != nil {
 			e.logger.Warn("rollup item failed",
 				zap.String("appID", item.appID),
 				zap.Time("date", item.date),
@@ -200,12 +233,16 @@ func (e *RollupEngine) tick(ctx context.Context) {
 }
 
 // processItem aggregates one (appID, date, hour) slice and writes rollup docs.
-func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem) error {
+// It takes the per-app watermark map (from tick) to decide whether the slice's
+// completion may advance the durable watermark.
+func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem, watermarks map[string]int64) error {
 	slice := item.sliceKey()
 
 	// Claim the hour slice. If another replica owns it, skip.
+	claimed := true
 	if e.lock != nil {
-		claimed, err := e.lock.TryClaimSlice(ctx, RollupTier5m, item.appID, slice, 2*e.config.TickInterval)
+		var err error
+		claimed, err = e.lock.TryClaimSlice(ctx, RollupTier5m, item.appID, slice, 2*e.config.TickInterval)
 		if err != nil {
 			return fmt.Errorf("claim slice: %w", err)
 		}
@@ -216,7 +253,16 @@ func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem) er
 			)
 			return nil
 		}
-		defer e.lock.ReleaseClaimSlice(ctx, RollupTier5m, item.appID, slice)
+	}
+
+	// Only release the claim on failure so another replica can retry sooner than
+	// the TTL. On success we deliberately leave it to expire (the watermark is
+	// the durable "done" marker, not the claim) — releasing it here would let the
+	// next tick re-claim and re-aggregate the same slice forever.
+	release := func() {
+		if e.lock != nil {
+			_ = e.lock.ReleaseClaimSlice(ctx, RollupTier5m, item.appID, slice)
+		}
 	}
 
 	// Aggregate this single hour into 5m buckets (12 buckets/hour).
@@ -225,34 +271,86 @@ func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem) er
 	startTime := time.Now()
 	points, err := e.aggregator.AggregateSlice(ctx, item.appID, item.indices, hourStart, hourEnd)
 	if err != nil {
+		release()
 		if e.metrics != nil {
 			e.metrics.recordSlice(ctx, item.appID, 0, true, time.Since(startTime))
 		}
 		return fmt.Errorf("aggregate slice: %w", err)
 	}
-	if len(points) == 0 {
-		e.logger.Debug("no data to rollup", zap.String("appID", item.appID), zap.String("slice", slice))
-		if e.metrics != nil {
-			e.metrics.recordSlice(ctx, item.appID, 0, false, time.Since(startTime))
+
+	if len(points) > 0 {
+		if err := e.writer.WriteRollupPoints(ctx, RollupTier5m, points); err != nil {
+			release()
+			if e.metrics != nil {
+				e.metrics.recordSlice(ctx, item.appID, 0, true, time.Since(startTime))
+			}
+			return fmt.Errorf("write rollup points: %w", err)
 		}
-		return nil
 	}
 
-	if err := e.writer.WriteRollupPoints(ctx, RollupTier5m, points); err != nil {
-		if e.metrics != nil {
-			e.metrics.recordSlice(ctx, item.appID, 0, true, time.Since(startTime))
-		}
-		return fmt.Errorf("write rollup points: %w", err)
-	}
 	if e.metrics != nil {
 		e.metrics.recordSlice(ctx, item.appID, len(points), false, time.Since(startTime))
 	}
-	e.logger.Info("rolled up metric slice",
-		zap.String("appID", item.appID),
-		zap.String("slice", slice),
-		zap.Int("points", len(points)),
-	)
+	if len(points) == 0 {
+		e.logger.Debug("no data to rollup", zap.String("appID", item.appID), zap.String("slice", slice))
+	} else {
+		e.logger.Info("rolled up metric slice",
+			zap.String("appID", item.appID),
+			zap.String("slice", slice),
+			zap.Int("points", len(points)),
+		)
+	}
+
+	// Advance the watermark for the completed hour. Contiguous-only: the
+	// watermark means "all hours up to and including this one are durably rolled
+	// up", so we may only advance it when this hour is the next one after the
+	// current watermark (or it's the very first). Advancing on a non-contiguous
+	// hour would let the tick skip an earlier, un-processed hour.
+	e.advanceWatermark(ctx, item, watermarks)
 	return nil
+}
+
+// advanceWatermark sets the durable per-app watermark to the END of this hour
+// only when the hour is contiguous with the current watermark. Contiguity means
+// the watermark is 0 (first hour ever) or equals this hour's start (the prior
+// hour ended exactly here). Non-contiguous completions are left to the claim
+// TTL for dedup; the watermark does not jump past a gap.
+//
+// On success it writes the new watermark back into the shared map so subsequent
+// hours in the same tick chain their contiguity check against the fresh value.
+func (e *RollupEngine) advanceWatermark(ctx context.Context, item *rollupWorkItem, watermarks map[string]int64) {
+	if e.lock == nil {
+		return
+	}
+	current := int64(0)
+	if watermarks != nil {
+		current = watermarks[item.appID]
+	}
+	hourStartMs := item.sliceStartMs()
+	hourEndMs := item.sliceEndMs()
+
+	// Contiguous only.
+	if !watermarkContiguous(current, hourStartMs) {
+		// Not contiguous — do not advance (leave claim TTL as the dedup).
+		return
+	}
+	if err := e.lock.SetWatermark(ctx, RollupTier5m, item.appID, hourEndMs); err != nil {
+		e.logger.Warn("set rollup watermark failed", zap.String("appID", item.appID), zap.Error(err))
+		return
+	}
+	if watermarks != nil {
+		watermarks[item.appID] = hourEndMs
+	}
+}
+
+// watermarkContiguous reports whether an hour starting at hourStartMs may
+// advance a watermark whose current value is `current`. The watermark means
+// "all hours up to and including this one are done", so it may only advance to
+// an hour that immediately follows it: current==0 (first hour ever) or
+// current==hourStartMs (the prior hour ended exactly here). Any other value
+// means there is a gap and advancing would skip an un-processed hour.
+func watermarkContiguous(current, hourStartMs int64) bool {
+	return current == 0 || current == hourStartMs
 }
 
 // ── index name parsing helpers ────────────────────────

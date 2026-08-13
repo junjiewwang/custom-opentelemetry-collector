@@ -39,6 +39,13 @@ type Config struct {
 	// When false (default), all reads go to the raw tier — the rollup index is
 	// never queried, preserving pre-rollup behavior.
 	RollupEnabled bool
+
+	// RollupReadyAfter is the age at which a raw metric index is considered
+	// "stabilized" and therefore safe to read from the rollup tier. Reads whose
+	// window end is more recent than now-RollupReadyAfter fall back to raw,
+	// because the rollup index for that recent period may not exist yet. It must
+	// equal the RollupEngine's ReadyAfter so routing and rollup stay coherent.
+	RollupReadyAfter time.Duration
 }
 
 // IndexConfig holds configuration for a single signal's index.

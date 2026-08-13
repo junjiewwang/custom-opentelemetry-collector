@@ -383,7 +383,8 @@ func (e *ObservabilityStorage) convertESConfig() *elasticsearch.Config {
 			Retention:       src.Logs.Retention,
 			RefreshInterval: src.Logs.RefreshInterval,
 		},
-		RollupEnabled: e.config.Scheduler.RollupEnabled,
+		RollupEnabled:    e.config.Scheduler.RollupEnabled,
+		RollupReadyAfter: e.config.Scheduler.RollupReadyAfter,
 	}
 }
 
@@ -822,6 +823,9 @@ func (e *ObservabilityStorage) buildRollupEngine(host component.Host) *elasticse
 		Enabled:      true,
 		TickInterval: e.config.Scheduler.Interval,
 		ReadyAfter:   24 * time.Hour,
+	}
+	if e.config.Scheduler.RollupReadyAfter > 0 {
+		cfg.ReadyAfter = e.config.Scheduler.RollupReadyAfter
 	}
 	cfg.ApplyDefaults()
 
