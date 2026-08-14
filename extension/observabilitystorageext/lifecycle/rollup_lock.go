@@ -111,6 +111,14 @@ func (l *RollupLock) SetWatermark(ctx context.Context, tier, appID string, lastB
 
 // GetAllWatermarks returns the full {appID -> lastBucketMs} map for a tier,
 // used by the leader during planning to skip already-processed slices.
+//
+// It defensively rejects values that are NOT whole-hour boundaries (i.e.
+// ms % 3600000 != 0). The hour-granular engine stores watermarks at whole-hour
+// edges (e.g. 1785891600000); a value ending in 999999 is a stale/legacy
+// "end-of-day minus 1ms" seed that would otherwise deadlock the contiguity
+// check in advanceWatermark (strict equality against a whole-hour boundary
+// fails by 1ms, so the watermark never advances). Treating such values as
+// absent (0) lets the engine restart cleanly and self-heal.
 func (l *RollupLock) GetAllWatermarks(ctx context.Context, tier string) (map[string]int64, error) {
 	raw, err := l.client.HGetAll(ctx, l.watermarkKey(tier)).Result()
 	if err != nil {
@@ -121,6 +129,11 @@ func (l *RollupLock) GetAllWatermarks(ctx context.Context, tier string) (map[str
 		ms, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			l.logger.Warn("skip invalid watermark", zap.String("appID", appID), zap.String("value", v), zap.Error(err))
+			continue
+		}
+		if ms%int64(time.Hour/time.Millisecond) != 0 {
+			l.logger.Warn("skip non-hour-aligned watermark (stale/legacy seed)",
+				zap.String("appID", appID), zap.Int64("value_ms", ms))
 			continue
 		}
 		out[appID] = ms

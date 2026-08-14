@@ -266,8 +266,11 @@ func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem, wa
 	}
 
 	// Aggregate this single hour into 5m buckets (12 buckets/hour).
+	// hourEnd is exclusive: aggregateMetric iterates `s.Before(tr.End)`, so the
+	// window is [hourStart, hourStart+1h). The prior `-time.Millisecond` was a
+	// fencepost error that needlessly cut off the final millisecond of each hour.
 	hourStart := item.date.Add(time.Duration(item.hour) * time.Hour)
-	hourEnd := hourStart.Add(time.Hour - time.Millisecond)
+	hourEnd := hourStart.Add(time.Hour)
 	startTime := time.Now()
 	points, err := e.aggregator.AggregateSlice(ctx, item.appID, item.indices, hourStart, hourEnd)
 	if err != nil {
