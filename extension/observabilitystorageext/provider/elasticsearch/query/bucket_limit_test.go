@@ -301,31 +301,35 @@ func TestSafeInterval_FlatCap_LongRangeNotClamped(t *testing.T) {
 	}
 }
 
-// TestSafeInterval_GroupedCap_AvoidsTooManyBuckets verifies Phase 1.1: a grouped
-// query caps the time axis at ESHardMaxBuckets/seriesLimit so the per-shard
-// bucket count (seriesLimit × time_buckets) never exceeds ES's 65535 limit,
-// turning a too_many_buckets ERROR into a (visible) clamp.
-func TestSafeInterval_GroupedCap_AvoidsTooManyBuckets(t *testing.T) {
-	seriesLimit := 100
-	cap := ESHardMaxBuckets / seriesLimit // 655
-	// 7d @ 10s = 60480 time buckets > 655 → must clamp (not error).
+// TestSafeInterval_GroupedCap_UsesFullFlatLimit verifies the empirically-correct
+// behavior: a grouped (composite + date_histogram) query uses the full flat
+// 65535 time-axis cap, because ES counts the nested date_histogram buckets per
+// composite key, NOT as seriesLimit × time_buckets. This means 24h@60s (1441
+// buckets) must NOT be clamped, while 7d@1s (604800 buckets) IS clamped.
+func TestSafeInterval_GroupedCap_UsesFullFlatLimit(t *testing.T) {
+	// 24h @ 60s = 1440 time buckets < 65535 → must NOT clamp.
 	interval, clamped := SafeInterval(BucketParams{
-		Duration:   7 * 24 * time.Hour,
-		Step:        10 * time.Second,
-		MaxBuckets: cap,
+		Duration:   24 * time.Hour,
+		Step:       60 * time.Second,
+		MaxBuckets: DefaultMaxBucketsFlat,
 	})
-	if !clamped {
-		t.Fatalf("expected clamped=true for 7d@10s under grouped cap %d, got interval=%q", cap, interval)
+	if clamped {
+		t.Fatalf("24h@60s should NOT clamp under flat cap %d, got interval=%q", DefaultMaxBucketsFlat, interval)
 	}
-	// Resulting time buckets must fit under seriesLimit×cap ≤ ESHardMaxBuckets.
-	parsed, err := time.ParseDuration(interval)
-	if err != nil {
-		t.Fatalf("unparseable interval %q: %v", interval, err)
+	// durationToIntervalString renders 60s as "1m" — both are 60s, the key
+	// assertion is that it was NOT clamped to a coarser interval.
+	if interval != "60s" && interval != "1m" {
+		t.Errorf("24h@60s: want 60s (or 1m), got %q", interval)
 	}
-	timeBuckets := EstimateBucketCount(7*24*time.Hour, parsed)
-	if total := seriesLimit * timeBuckets; total > ESHardMaxBuckets {
-		t.Errorf("grouped total buckets %d×%d = %d exceeds ES limit %d",
-			seriesLimit, timeBuckets, total, ESHardMaxBuckets)
+
+	// 7d @ 1s = 604800 time buckets > 65535 → must clamp.
+	_, clamped2 := SafeInterval(BucketParams{
+		Duration:   7 * 24 * time.Hour,
+		Step:       1 * time.Second,
+		MaxBuckets: DefaultMaxBucketsFlat,
+	})
+	if !clamped2 {
+		t.Errorf("7d@1s should clamp under flat cap %d", DefaultMaxBucketsFlat)
 	}
 }
 

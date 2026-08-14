@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	// DefaultMaxBuckets is the safe upper bound for ES date_histogram buckets
-	// when the aggregation is NESTED under a composite (group-by) aggregation.
-	// Per-shard bucket count = seriesLimit × time_buckets, so the time axis must
-	// stay well below ES's max_buckets (65535) divided by the series fan-out.
+	// DefaultMaxBuckets is a conservative bucket cap used by log stats
+	// aggregations (see log_reader.go). It is NOT the correct cap for metric
+	// composite + date_histogram range queries — those use DefaultMaxBucketsFlat,
+	// because ES counts the nested date_histogram buckets per composite key, not
+	// as composite.size × time_buckets (empirically verified on the live cluster).
 	DefaultMaxBuckets = 10000
 
 	// DefaultMaxBucketsFlat is the upper bound for a NON-grouped range query,

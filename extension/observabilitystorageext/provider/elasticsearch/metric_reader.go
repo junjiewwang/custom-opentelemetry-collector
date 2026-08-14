@@ -145,22 +145,21 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 	esQuery := filterResult.Query
 
 	// 3. Calculate interval for date_histogram.
-	// Size the bucket cap for the aggregation shape: a non-grouped query has a
-	// single top-level date_histogram (per-shard buckets == time_buckets), so it
-	// can use ES's full max_buckets. A grouped query nests date_histogram under
-	// a composite, so per-shard buckets = seriesLimit × time_buckets; cap the time
-	// axis at ESHardMaxBuckets/seriesLimit to avoid too_many_buckets.
+	// The time-axis bucket cap is ESHardMaxBuckets (65535) for BOTH grouped and
+	// flat queries. Empirically verified against the real ES cluster: a composite
+	// aggregation with a nested date_histogram counts buckets PER composite key
+	// (at most 65535 time buckets per key), NOT as composite.size × time_buckets
+	// as previously assumed. The prior `maxBuckets = ESHardMaxBuckets/seriesLimit`
+	// (65535/100 = 655) was based on that false accumulation model and caused
+	// point-collapse for >6h windows (a 24h@60s query was clamped to 132s step,
+	// returning 655 pts instead of 1441).
+	//
+	// NOTE: seriesLimit (the composite `size`) is the hard cap on returned series
+	// per request (parseGroupedResult has no after_key pagination). It is
+	// orthogonal to the time-axis bucket cap and is NOT used here. Metrics with
+	// >100 series are silently truncated at seriesLimit — a separate, pre-existing
+	// limitation that this fix intentionally leaves untouched.
 	maxBuckets := esq.DefaultMaxBucketsFlat
-	if len(query.GroupBy) > 0 {
-		seriesLimit := query.SeriesLimit
-		if seriesLimit <= 0 {
-			seriesLimit = 100
-		}
-		maxBuckets = esq.ESHardMaxBuckets / seriesLimit
-		if maxBuckets < 1 {
-			maxBuckets = 1
-		}
-	}
 	interval := r.calculateInterval(query.TimeRange, query.Step, maxBuckets)
 
 	// 4. Determine min_doc_count based on fill strategy.
@@ -877,11 +876,10 @@ func (r *MetricReader) timeRangeQuery(tr TimeRange) map[string]any {
 // Delegates to esq.SafeInterval which implements clamping when a user-
 // specified step would produce too many buckets.
 //
-// maxBuckets caps the TIME-axis bucket count. Callers must size it for the
-// aggregation shape: a non-grouped query (single date_histogram) can use
-// esq.DefaultMaxBucketsFlat (65535); a grouped query nests date_histogram
-// under a composite, so per-shard buckets = seriesLimit × time_buckets and
-// maxBuckets must be ESHardMaxBuckets/seriesLimit to avoid too_many_buckets.
+// maxBuckets caps the TIME-axis bucket count (per composite key). It is
+// ESHardMaxBuckets (65535) for both grouped and flat queries — ES counts the
+// nested date_histogram buckets per composite key, not as seriesLimit ×
+// time_buckets. See QueryRange for the empirical verification.
 func (r *MetricReader) calculateInterval(tr TimeRange, step time.Duration, maxBuckets int) string {
 	duration := time.Duration(0)
 	if !tr.Start.IsZero() && !tr.End.IsZero() {
