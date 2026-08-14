@@ -44,8 +44,18 @@ func IndexPatternForRange(prefix, appID string, start, end time.Time) string {
 	// D and starting 00:01 on day D still only touches day D; a window crossing
 	// midnight touches both. Add a 1-day pad on each side defensively in case
 	// the writer's UTC bucketing is slightly off from the stored timestamp.
+	//
+	// The end pad must NOT extend past "today": an appID-scoped pattern emits an
+	// exact index name per day ({prefix}-{appID}-{date}), and a future date has
+	// no index yet — ES returns index_not_found (404) for an explicitly-named
+	// missing index, failing the whole query. The wildcard form ({prefix}-*-{date})
+	// is immune (matches nothing → empty), so this only bit appID-scoped queries.
 	sDay := start.UTC().Add(-24 * time.Hour).Truncate(24 * time.Hour)
 	eDay := end.UTC().Add(24 * time.Hour).Truncate(24 * time.Hour)
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	if eDay.After(today) {
+		eDay = today
+	}
 
 	var patterns []string
 	for d := sDay; !d.After(eDay); d = d.Add(24 * time.Hour) {

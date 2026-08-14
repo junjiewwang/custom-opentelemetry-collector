@@ -78,7 +78,7 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 	}
 
 	metricName, isRegex := q.extractMetricNameEx(matchers)
-	labelEq, labelRe := q.translateMatchers(matchers)
+	labelEq, labelRe, appID := q.translateMatchers(matchers)
 
 	q.logger.Debug("Select called",
 		zap.String("metricName", metricName),
@@ -105,7 +105,7 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 
 	// Fast path: single concrete metric name
 	if metricName != "" && !isRegex {
-		raw, err := q.selectConcrete(ctx, metricName, labelEq, labelRe, startMS, endMS)
+		raw, err := q.selectConcrete(ctx, metricName, labelEq, labelRe, appID, startMS, endMS)
 		if err != nil {
 			q.logger.Error("select concrete failed", zap.String("metric", metricName), zap.Error(err))
 			return storage.ErrSeriesSet(err)
@@ -153,13 +153,13 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 		return storage.EmptySeriesSet()
 	}
 
-	return q.selectMultipleMetrics(ctx, allNames, labelEq, labelRe, startMS, endMS, sortSeries)
+	return q.selectMultipleMetrics(ctx, allNames, labelEq, labelRe, appID, startMS, endMS, sortSeries)
 }
 
 // selectConcreteSliced splits a large time window into concurrent QueryFlat
 // sub-queries (each ≤ maxSlice) and merges the results. This avoids ES
 // timeouts on 6h–24h windows where a single FlatQuery would time out.
-func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string, labelEq, labelRe map[string]string, startMS, endMS int64, cacheKey string, maxSlice time.Duration) ([]observabilitystorageext.MetricRawSeries, error) {
+func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, cacheKey string, maxSlice time.Duration) ([]observabilitystorageext.MetricRawSeries, error) {
 	type sliceResult struct {
 		samples []observabilitystorageext.MetricSample
 		total   int64
@@ -188,6 +188,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 					End:   timestamp.Time(sEnd),
 				},
 				MaxDocs: 0,
+				AppID:   appID,
 			}
 			fr, err := q.reader.QueryFlat(ctx, fq)
 			if err != nil {
@@ -272,7 +273,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 // selectConcrete fetches data for a single metric from ES, with per-Querier
 // caching to avoid duplicate ES round-trips when the engine queries the same
 // metric+timestamp combination multiple times.
-func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, labelEq, labelRe map[string]string, startMS, endMS int64) ([]observabilitystorageext.MetricRawSeries, error) {
+func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64) ([]observabilitystorageext.MetricRawSeries, error) {
 	// Lazy-init per-Querier cache
 	if q.qCache == nil {
 		q.qCache = &queryCache{}
@@ -296,7 +297,7 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 		const maxSliceWindow = 2 * time.Hour
 		window := time.Duration(endMS-startMS) * time.Millisecond
 		if window > maxSliceWindow {
-			return q.selectConcreteSliced(ctx, metricName, labelEq, labelRe, startMS, endMS, cacheKey, maxSliceWindow)
+			return q.selectConcreteSliced(ctx, metricName, labelEq, labelRe, appID, startMS, endMS, cacheKey, maxSliceWindow)
 		}
 
 		flatQuery := observabilitystorageext.MetricFlatQuery{
@@ -306,6 +307,7 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 				End:   timestamp.Time(endMS),
 			},
 			MaxDocs: 0, // use adaptive default (floor 10000, ceiling 50000)
+			AppID:   appID,
 		}
 		flatResult, err := q.reader.QueryFlat(ctx, flatQuery)
 		if err != nil {
@@ -328,7 +330,7 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 				zap.Int("returned", len(flatResult.Samples)),
 				zap.Int64("range_ms", endMS-startMS),
 			)
-			return q.selectConcreteSliced(ctx, metricName, labelEq, labelRe, startMS, endMS, cacheKey, 15*time.Minute)
+			return q.selectConcreteSliced(ctx, metricName, labelEq, labelRe, appID, startMS, endMS, cacheKey, 15*time.Minute)
 		}
 
 		// Group samples by label set.
@@ -421,7 +423,7 @@ func joinLabels(labels map[string]string) string {
 
 // selectMultipleMetrics concurrently fetches data for each metric name and
 // merges the results into a single SeriesSet.
-func (q *esQuerier) selectMultipleMetrics(ctx context.Context, names []string, labelEq, labelRe map[string]string, startMS, endMS int64, sortSeries bool) storage.SeriesSet {
+func (q *esQuerier) selectMultipleMetrics(ctx context.Context, names []string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, sortSeries bool) storage.SeriesSet {
 	var (
 		mu     sync.Mutex
 		series []storage.Series
@@ -437,7 +439,7 @@ func (q *esQuerier) selectMultipleMetrics(ctx context.Context, names []string, l
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			raw, err := q.selectConcrete(ctx, name, labelEq, labelRe, startMS, endMS)
+			raw, err := q.selectConcrete(ctx, name, labelEq, labelRe, appID, startMS, endMS)
 			if err != nil {
 				q.logger.Debug("select metric skipped", zap.String("metric", name), zap.Error(err))
 				return
@@ -598,13 +600,19 @@ func (q *esQuerier) extractMetricNameEx(matchers []*labels.Matcher) (name string
 	return "", false
 }
 
-func (q *esQuerier) translateMatchers(matchers []*labels.Matcher) (eq, re map[string]string) {
+func (q *esQuerier) translateMatchers(matchers []*labels.Matcher) (eq, re map[string]string, appID string) {
 	eq, re = make(map[string]string), make(map[string]string)
 	for _, m := range matchers {
 		if m.Name == labels.MetricName { continue }
 		// Skip Grafana-internal labels (__ignore_usage__, __grafana__,
 		// etc.) that don't exist as real metric labels in storage.
 		if strings.HasPrefix(m.Name, "__") { continue }
+		// app_id/appId is a ROUTING label (index name segment), not a data label.
+		// Extract it as the appID and don't filter on a non-existent label field.
+		if (m.Name == "app_id" || m.Name == "appId") && m.Type == labels.MatchEqual {
+			appID = m.Value
+			continue
+		}
 		switch m.Type {
 		case labels.MatchEqual:
 			eq[m.Name] = m.Value

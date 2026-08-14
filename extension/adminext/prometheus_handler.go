@@ -107,6 +107,7 @@ type promqlExpr struct {
 	IsBottomK     bool              // true = bottomk (smallest K), false = topk (largest K)
 	IsScalarProbe bool              // Grafana health/connectivity probe (e.g. "1+1")
 	ScalarValue   float64           // evaluated value of the probe
+	AppID         string            // appID scoping (extracted from app_id/appId label) for index routing
 }
 
 // ── Handler: query ─────────────────────────────────
@@ -160,6 +161,9 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 		h.writePromError(w, "bad_data", err.Error())
 		return
 	}
+
+	// Extract appID scoping from app_id/appId label (routes to app-scoped index).
+	expr.AppID, expr.Labels = extractAppID(expr.Labels)
 
 	// Attach PromQL expression details to the OTel span for observability
 	span := trace.SpanFromContext(r.Context())
@@ -230,10 +234,10 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 			})
 			return
 		}
-		// If the engine failed entirely (e.g. parse error), return an empty matrix
-		// rather than 400ing with the old parser.
-		h.writePromSuccess(w, &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}})
-		return
+		// If the engine failed (e.g. parse error on a non-standard selector like
+		// Grafana Explore Metrics' {"metric.name", app_id="X"}), fall through to
+		// the subset parser instead of returning an empty matrix — the subset
+		// parser handles the bare-quoted metric name form the engine rejects.
 	}
 
 	expr, err := parsePromQL(queryStr)
@@ -241,6 +245,9 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 		h.writePromError(w, "bad_data", err.Error())
 		return
 	}
+
+	// Extract appID scoping from app_id/appId label (routes to app-scoped index).
+	expr.AppID, expr.Labels = extractAppID(expr.Labels)
 
 	// Attach PromQL expression details to the OTel span for observability
 	span := trace.SpanFromContext(r.Context())
@@ -723,11 +730,13 @@ func (h *promHandlers) handlePromSeries(w http.ResponseWriter, r *http.Request) 
 		}
 		names, matchAllNames := plan.Names, plan.MatchAllNames
 
+		appID, planLabels := extractAppID(plan.Labels)
 		query := observabilitystorageext.MetricQuery{
-			Labels:        plan.Labels,
+			Labels:        planLabels,
 			LabelMatch:    plan.LabelMatch,
 			LabelNot:      plan.LabelNot,
 			LabelNotMatch: plan.LabelNotMatch,
+			AppID:         appID,
 			Time:          tr.End,
 		}
 		if query.Time.IsZero() {
@@ -937,6 +946,7 @@ func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, e
 			LabelMatch:    labelMatch,
 			LabelNot:      expr.LabelNot,
 			LabelNotMatch: expr.LabelNotMatch,
+			AppID:         expr.AppID,
 			Time:          evalTime,
 		}
 
@@ -1093,6 +1103,7 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 		Aggregation:   expr.Aggregation,
 		GroupBy:       expr.GroupBy,
 		MissingBucket: bareMetric, // bare-metric: include all series; explicit by(): drop missing
+		AppID:         expr.AppID,
 	}
 	if query.Aggregation == "" {
 		query.Aggregation = AggAvg
@@ -1166,6 +1177,7 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 		LabelNot:      expr.LabelNot,
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
+		AppID:         expr.AppID,
 	}
 
 	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1246,6 +1258,7 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 		LabelNot:      expr.LabelNot,
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
+		AppID:         expr.AppID,
 	}
 
 	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1345,6 +1358,7 @@ func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promq
 		LabelNot:      expr.LabelNot,
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
+		AppID:         expr.AppID,
 	}
 
 	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1444,6 +1458,7 @@ func (h *promHandlers) execHistogramBucketRange(r *http.Request, expr *promqlExp
 		LabelNot:      expr.LabelNot,
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
+		AppID:         expr.AppID,
 	}
 
 	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1584,6 +1599,7 @@ func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlE
 		LabelNot:      expr.LabelNot,
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
+		AppID:         expr.AppID,
 	}
 
 	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -2712,6 +2728,29 @@ func filterInternalLabels(labels map[string]string) map[string]string {
 		}
 	}
 	return filtered
+}
+
+// extractAppID pulls the appID scoping label out of a label map and returns it
+// along with the map minus that label. The appID is stored as a TOP-LEVEL field
+// and is encoded in the index name ({prefix}-{appID}-{date}) for routing, NOT as
+// a data label under labels.*. So a PromQL filter app_id="X" must scope the ES
+// index to that app, not filter on a non-existent labels.app_id.keyword field.
+//
+// It recognizes both underscore ("app_id", Grafana's form) and camelCase
+// ("appId"). When neither key is present it returns ("", labels) unchanged.
+func extractAppID(labels map[string]string) (appID string, remaining map[string]string) {
+	if labels == nil {
+		return "", nil
+	}
+	if v, ok := labels["app_id"]; ok && v != "" {
+		delete(labels, "app_id")
+		return v, labels
+	}
+	if v, ok := labels["appId"]; ok && v != "" {
+		delete(labels, "appId")
+		return v, labels
+	}
+	return "", labels
 }
 
 // ── Error helpers ──────────────────────────────────
