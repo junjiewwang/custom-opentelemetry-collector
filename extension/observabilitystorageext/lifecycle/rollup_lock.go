@@ -55,6 +55,26 @@ end
 return 0
 `)
 
+// setWatermarkIfGreaterScript atomically advances a watermark hash field to the
+// proposed value ONLY when it is strictly greater than the current value (or the
+// field is absent). This makes the watermark monotonic at the Redis layer, so a
+// stale in-memory snapshot (or a slower replica) cannot overwrite a newer value
+// already written by an operator or a faster replica. Returns the value that
+// ends up stored (the proposed value on a successful advance, or the existing
+// value when the write is blocked).
+var setWatermarkIfGreaterScript = redis.NewScript(`
+local current = redis.call("HGET", KEYS[1], ARGV[1])
+if current == false then
+    redis.call("HSET", KEYS[1], ARGV[1], ARGV[2])
+    return ARGV[2]
+end
+if tonumber(ARGV[2]) > tonumber(current) then
+    redis.call("HSET", KEYS[1], ARGV[1], ARGV[2])
+    return ARGV[2]
+end
+return current
+`)
+
 // TryClaimSlice attempts to acquire the claim lock for one (tier, appID, slice)
 // work unit. Returns true if this node owns the lock (newly acquired or
 // re-acquired after a restart where it was already the holder).
@@ -103,10 +123,29 @@ func (l *RollupLock) GetWatermark(ctx context.Context, tier, appID string) (int6
 	return ms, nil
 }
 
-// SetWatermark advances the watermark for (tier, appID) to lastBucketMs.
-// Uses HSET (not SETNX) because the watermark always moves forward.
+// SetWatermark advances the watermark for (tier, appID) to lastBucketMs. It is
+// monotonic: the write only succeeds when lastBucketMs is strictly greater than
+// the current value (or the field is absent). A stale in-memory snapshot or a
+// slower replica therefore cannot overwrite a newer value — the newer value
+// wins. The watermark always moves forward.
 func (l *RollupLock) SetWatermark(ctx context.Context, tier, appID string, lastBucketMs int64) error {
-	return l.client.HSet(ctx, l.watermarkKey(tier), appID, strconv.FormatInt(lastBucketMs, 10)).Err()
+	res, err := setWatermarkIfGreaterScript.Run(ctx, l.client,
+		[]string{l.watermarkKey(tier)}, appID, strconv.FormatInt(lastBucketMs, 10)).Text()
+	if err != nil {
+		return fmt.Errorf("rollup set watermark: %w", err)
+	}
+	stored, err := strconv.ParseInt(res, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse set-watermark result %q: %w", res, err)
+	}
+	if stored > lastBucketMs {
+		l.logger.Debug("rollup watermark advance blocked by newer value",
+			zap.String("appID", appID),
+			zap.Int64("proposed_ms", lastBucketMs),
+			zap.Int64("existing_ms", stored),
+		)
+	}
+	return nil
 }
 
 // GetAllWatermarks returns the full {appID -> lastBucketMs} map for a tier,
