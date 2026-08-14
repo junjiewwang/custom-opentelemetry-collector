@@ -105,7 +105,9 @@ func TestWatermarkContiguous(t *testing.T) {
 func TestRouteTierDecision(t *testing.T) {
 	r := newRouteReader(true, 24*time.Hour)
 	now := time.Now()
-	split := now.Add(-24 * time.Hour)
+	// splitPoint = now - (ReadyAfter + TickInterval). ReadyAfter=24h, TickInterval
+	// defaults to 1h (RollupTickInterval unset in newRouteReader), so = now-25h.
+	split := now.Add(-25 * time.Hour)
 
 	t.Run("fully recent → raw", func(t *testing.T) {
 		d := r.routeTierDecision(now.Add(-6*time.Hour), now)
@@ -113,19 +115,19 @@ func TestRouteTierDecision(t *testing.T) {
 	})
 
 	t.Run("fully stabilized → rollup", func(t *testing.T) {
-		d := r.routeTierDecision(now.Add(-48*time.Hour), now.Add(-25*time.Hour))
+		d := r.routeTierDecision(now.Add(-48*time.Hour), now.Add(-26*time.Hour))
 		assert.Equal(t, "rollup", d.tier)
 	})
 
 	t.Run("crosses boundary → mixed", func(t *testing.T) {
 		d := r.routeTierDecision(now.Add(-7*24*time.Hour), now)
 		assert.Equal(t, "mixed", d.tier)
-		assert.WithinDuration(t, split, d.splitPoint, time.Second, "splitPoint should be now-24h")
+		assert.WithinDuration(t, split, d.splitPoint, time.Second, "splitPoint should be now-(ReadyAfter+TickInterval)")
 	})
 
 	t.Run("rollup disabled → raw always", func(t *testing.T) {
 		disabled := newRouteReader(false, 24*time.Hour)
-		d := disabled.routeTierDecision(now.Add(-48*time.Hour), now.Add(-25*time.Hour))
+		d := disabled.routeTierDecision(now.Add(-48*time.Hour), now.Add(-26*time.Hour))
 		assert.Equal(t, "raw", d.tier)
 	})
 }

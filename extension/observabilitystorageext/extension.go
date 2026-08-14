@@ -383,8 +383,9 @@ func (e *ObservabilityStorage) convertESConfig() *elasticsearch.Config {
 			Retention:       src.Logs.Retention,
 			RefreshInterval: src.Logs.RefreshInterval,
 		},
-		RollupEnabled:    e.config.Scheduler.RollupEnabled,
-		RollupReadyAfter: e.config.Scheduler.RollupReadyAfter,
+		RollupEnabled:      e.config.Scheduler.RollupEnabled,
+		RollupReadyAfter:   e.config.Scheduler.RollupReadyAfter,
+		RollupTickInterval: e.config.Scheduler.Interval,
 	}
 }
 

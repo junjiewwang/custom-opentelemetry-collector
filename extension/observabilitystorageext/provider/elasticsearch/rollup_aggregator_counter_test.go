@@ -39,6 +39,34 @@ func TestSampleGroup_ToDocCounter_ValueIsLast(t *testing.T) {
 	assert.Equal(t, int64(5), doc.Count)
 }
 
+// TestSampleGroup_ToDoc_ServiceNamePromoted verifies the rollup fix that
+// extracts service_name from the labels map into the top-level ServiceName
+// field (matching raw docs). Without this, rollup docs have an empty top-level
+// serviceName while the composite grouping sees a different label than raw,
+// breaking the rollup+raw merge for mixed queries.
+func TestSampleGroup_ToDoc_ServiceNamePromoted(t *testing.T) {
+	g := &sampleGroup{
+		metricType: "gauge",
+		bucketMs:   1700000000000,
+		labels: map[string]string{
+			"service_name": "customcol",
+			"span_name":    "/v1/logs",
+		},
+	}
+	g.add(MetricSample{Value: 42})
+
+	doc := g.toDoc("traces_spanmetrics_calls_total", "app", "1")
+
+	// service_name must be promoted to the top-level ServiceName field.
+	assert.Equal(t, "customcol", doc.ServiceName)
+
+	// And it must be REMOVED from labels (no duplicate / no wrong field).
+	labels := doc.Labels
+	_, hasServiceName := labels["service_name"]
+	assert.False(t, hasServiceName, "service_name must not remain in labels")
+	assert.Equal(t, "/v1/logs", labels["span_name"])
+}
+
 // TestSampleGroup_ToDocGauge_ValueIsAvg guards that the gauge path is unchanged:
 // gauge value = avg, not last/sum.
 func TestSampleGroup_ToDocGauge_ValueIsAvg(t *testing.T) {

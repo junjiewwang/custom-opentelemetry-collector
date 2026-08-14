@@ -217,6 +217,24 @@ func (g *sampleGroup) add(sm MetricSample) {
 
 // toDoc builds a StoredMetricDataPoint with type-appropriate rollup fields.
 func (g *sampleGroup) toDoc(name, appID, unit string) storedmodel.StoredMetricDataPoint {
+	// service_name is stored as a TOP-LEVEL serviceName field (matching raw
+	// docs), NOT inside the labels object. The raw read path (hitToSample →
+	// mergeServiceName) promotes serviceName onto labels as "service_name", so it
+	// arrives here inside g.labels. Extract it back to the top-level field and
+	// drop it from labels, otherwise rollup docs would have an empty top-level
+	// serviceName while the composite grouping (which groups on the top-level
+	// serviceName field) sees a DIFFERENT label than raw — breaking the
+	// rollup+raw merge for mixed queries.
+	serviceName := ""
+	labels := make(map[string]string, len(g.labels))
+	for k, v := range g.labels {
+		if k == "service_name" {
+			serviceName = v
+			continue
+		}
+		labels[k] = v
+	}
+
 	doc := storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli: g.bucketMs,
 		Name:          name,
@@ -224,7 +242,8 @@ func (g *sampleGroup) toDoc(name, appID, unit string) storedmodel.StoredMetricDa
 		AppID:         appID,
 		Unit:          unit,
 		Tier:          RollupTier5m,
-		Labels:        stringMapToAny(g.labels),
+		ServiceName:   serviceName,
+		Labels:        stringMapToAny(labels),
 		Count:         int64(g.count),
 	}
 

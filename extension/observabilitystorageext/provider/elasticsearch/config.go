@@ -46,6 +46,13 @@ type Config struct {
 	// because the rollup index for that recent period may not exist yet. It must
 	// equal the RollupEngine's ReadyAfter so routing and rollup stay coherent.
 	RollupReadyAfter time.Duration
+
+	// RollupTickInterval is how often the rollup engine runs a cycle. The read
+	// routing boundary must lag the engine's guaranteed rollup horizon by this
+	// interval: the engine can only roll up an hour H once a tick fires after
+	// H.end + ReadyAfter, so the worst-case completion is H.end + ReadyAfter +
+	// TickInterval. The router therefore splits at now-(ReadyAfter+TickInterval).
+	RollupTickInterval time.Duration
 }
 
 // IndexConfig holds configuration for a single signal's index.

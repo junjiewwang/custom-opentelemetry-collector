@@ -750,14 +750,13 @@ type tierDecision struct {
 // crosses the stabilization boundary (mixed).
 //
 // The rollup engine only aggregates raw hours older than RollupReadyAfter
-// (default 2h), so data newer than now-RollupReadyAfter exists only in raw. A
-// window whose END is older than the boundary is fully in rollup; a window whose
-// START is newer than the boundary is fully in raw; otherwise it crosses and must
-// be read from both tiers (rollup for the old part, raw for the recent part).
-//
-// The prior 2h threshold is removed: with ReadyAfter=2h the boundary IS ~2h, so
-// a >2h query naturally splits at now-2h — rollup for the old part, raw for the
-// recent 2h. The old "2h threshold" heuristic is subsumed by this boundary.
+// (default 2h), but it runs on a periodic tick, so the GUARANTEED rollup
+// horizon is now-(ReadyAfter+TickInterval). The boundary is therefore
+// now-(ReadyAfter+TickInterval): data older than that is fully in rollup; data
+// newer is fully in raw; a window crossing it is mixed (rollup for the old
+// part, raw for the recent part). This keeps the routing boundary conservative
+// relative to the engine's actual progress, so a query never claims rollup data
+// the engine has not yet produced (the sliding-window invariant).
 func (r *MetricReader) routeTierDecision(start, end time.Time) tierDecision {
 	if !r.config.RollupEnabled {
 		return tierDecision{tier: "raw"}
@@ -766,7 +765,17 @@ func (r *MetricReader) routeTierDecision(start, end time.Time) tierDecision {
 	if readyAfter <= 0 {
 		readyAfter = 2 * time.Hour // match RollupEngine's default
 	}
-	splitPoint := time.Now().Add(-readyAfter)
+	// The routing boundary must lag the engine's GUARANTEED rollup horizon by
+	// the tick interval: an hour H is only rolled up once a tick fires after
+	// H.end + ReadyAfter, so worst-case completion is H.end + ReadyAfter +
+	// TickInterval. If splitPoint used only ReadyAfter, the boundary would claim
+	// rollup data for hours the engine hasn't produced yet (a ~TickInterval gap),
+	// leaving the oldest portion of a query empty.
+	tickInterval := r.config.RollupTickInterval
+	if tickInterval <= 0 {
+		tickInterval = time.Hour // match RollupEngine's default
+	}
+	splitPoint := time.Now().Add(-(readyAfter + tickInterval))
 
 	if end.Before(splitPoint) || end.Equal(splitPoint) {
 		// Fully stabilized: rollup has complete data up to (and including) end.
