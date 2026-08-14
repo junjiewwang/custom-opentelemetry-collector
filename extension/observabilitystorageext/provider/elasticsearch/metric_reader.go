@@ -171,6 +171,11 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 	// 5. Build ES aggregations (with or without groupBy).
 	aggs := r.buildAggregation(query.GroupBy, interval, aggFunc, minDocCount, query.SeriesLimit, query.MissingBucket)
 
+	// 5a. Route: mixed (crosses raw/rollup boundary) needs two searches.
+	if decision := r.routeTierDecision(query.TimeRange.Start, query.TimeRange.End); decision.tier == "mixed" {
+		return r.queryRangeMixed(ctx, query, decision.splitPoint, filterResult, aggFunc, interval, minDocCount, len(query.GroupBy) > 0)
+	}
+
 	searchReq := &SearchRequest{
 		Query:        esQuery,
 		Size:         0,
@@ -207,6 +212,86 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 		}
 	}
 
+	return result, nil
+}
+
+// queryRangeMixed executes a range query whose window crosses the raw/rollup
+// stabilization boundary. It issues TWO searches — rollup for [start, splitPoint)
+// and raw for [splitPoint, end] — reusing the same aggregation shape (interval,
+// aggFunc, groupBy) so both return identically-gridded buckets over disjoint
+// time ranges, then merges by label set. It shares the post-parse pipeline
+// (post-filter + fill + label-normalize) with QueryRange.
+func (r *MetricReader) queryRangeMixed(ctx context.Context, query MetricRangeQuery, splitPoint time.Time, filterResult metricFilterResult, aggFunc *AggregationFunc, interval string, minDocCount int, grouped bool) (*MetricRangeResult, error) {
+	aggs := r.buildAggregation(query.GroupBy, interval, aggFunc, minDocCount, query.SeriesLimit, query.MissingBucket)
+
+	// Clone the query for each sub-range and rebuild the time-scoped filter.
+	oldQuery := query
+	oldQuery.TimeRange = TimeRange{Start: query.TimeRange.Start, End: splitPoint}
+	oldFilter := r.buildQueryFilter(oldQuery)
+
+	recentQuery := query
+	recentQuery.TimeRange = TimeRange{Start: splitPoint, End: query.TimeRange.End}
+	recentFilter := r.buildQueryFilter(recentQuery)
+
+	oldPattern := esq.IndexPatternForRange(r.config.Metrics.IndexPrefix+"-rollup-5m", query.AppID, query.TimeRange.Start, splitPoint)
+	recentPattern := esq.IndexPatternForRange(r.config.Metrics.IndexPrefix, query.AppID, splitPoint, query.TimeRange.End)
+
+	oldReq := &SearchRequest{Query: oldFilter.Query, Size: 0, Aggregations: aggs}
+	recentReq := &SearchRequest{Query: recentFilter.Query, Size: 0, Aggregations: aggs}
+
+	// Execute both searches concurrently; a failure on either is fatal.
+	type searchResult struct {
+		resp *SearchResponse
+		err  error
+	}
+	oldCh := make(chan searchResult, 1)
+	recentCh := make(chan searchResult, 1)
+	go func() {
+		resp, err := r.searcher.Search(ctx, oldPattern, oldReq)
+		oldCh <- searchResult{resp, err}
+	}()
+	go func() {
+		resp, err := r.searcher.Search(ctx, recentPattern, recentReq)
+		recentCh <- searchResult{resp, err}
+	}()
+
+	oldRes := <-oldCh
+	if oldRes.err != nil {
+		if strings.Contains(oldRes.err.Error(), "too_many_buckets") {
+			return nil, fmt.Errorf("metric range query: time range too large for the given step, try a larger step or shorter time range")
+		}
+		return nil, fmt.Errorf("metric range query (rollup) failed: %w", oldRes.err)
+	}
+	recentRes := <-recentCh
+	if recentRes.err != nil {
+		if strings.Contains(recentRes.err.Error(), "too_many_buckets") {
+			return nil, fmt.Errorf("metric range query: time range too large for the given step, try a larger step or shorter time range")
+		}
+		return nil, fmt.Errorf("metric range query (raw) failed: %w", recentRes.err)
+	}
+
+	oldParsed, err := r.parseQueryRangeResult(oldRes.resp, grouped, aggFunc)
+	if err != nil {
+		return nil, err
+	}
+	recentParsed, err := r.parseQueryRangeResult(recentRes.resp, grouped, aggFunc)
+	if err != nil {
+		return nil, err
+	}
+
+	result := mergeRangeResults(oldParsed, recentParsed)
+
+	// Post-filter: the regex post-filters are time-independent; apply once.
+	result.Data = postFilterSeries(result.Data, filterResult.PostFilters)
+
+	// Fill + normalize.
+	fillFn := GetFillStrategy(query.Fill)
+	for i := range result.Data {
+		result.Data[i].Values = fillFn(result.Data[i].Values)
+		if result.Data[i].Labels == nil {
+			result.Data[i].Labels = make(map[string]string)
+		}
+	}
 	return result, nil
 }
 
@@ -641,30 +726,58 @@ func (r *MetricReader) rawIndexPatternForRange(start, end time.Time) string {
 	return base + "," + exclude
 }
 
-// routeIndexPattern selects the rollup tier based on query time span, then
-// narrows to daily partitions. Windows >2h query the 5m rollup tier (which has
-// pre-aggregated docs), windows ≤2h query the raw tier. The rollup tier uses
-// the same appID/date partition structure under a "-rollup-5m-" prefix.
+// tierDecision is the outcome of routing a range query across raw vs rollup tiers.
+type tierDecision struct {
+	// tier is one of "raw", "rollup", "mixed".
+	tier string
+	// splitPoint is the boundary between the rollup (older) and raw (recent)
+	// portions. Valid only when tier == "mixed".
+	splitPoint time.Time
+}
+
+// routeTierDecision determines which tier(s) a range query must read, based on
+// whether the window is entirely recent (raw), entirely stabilized (rollup), or
+// crosses the stabilization boundary (mixed).
 //
-// Routing coherence invariant: a window must ONLY route to the rollup tier if
-// its ENTIRE span is "stabilized" (rollup data is guaranteed to exist). The
-// rollup engine only aggregates indices older than RollupReadyAfter (default
-// 24h), so today's raw index has no rollup counterpart yet. A window whose end
-// is within now-RollupReadyAfter must therefore fall back to raw, otherwise a
-// 6h window on today routes to a rollup index that does not exist → empty.
+// The rollup engine only aggregates raw indices older than RollupReadyAfter
+// (default 24h), so data newer than now-RollupReadyAfter exists only in raw. A
+// window whose END is older than the boundary is fully in rollup; a window whose
+// START is newer than the boundary is fully in raw; otherwise it crosses and must
+// be read from both tiers (rollup for the old part, raw for the recent part).
 //
-// This routing is transparent to the PromQL layer — the same reader methods
-// (QueryRange/QueryFlat) call routeIndexPattern instead of indexPatternForRange,
-// and the ES responses are shape-compatible.
-func (r *MetricReader) routeIndexPattern(appID string, start, end time.Time) string {
-	const rollupThreshold = 2 * time.Hour
+// The prior 2h threshold is removed: it was a heuristic that made rollup
+// effectively unreachable for live Grafana queries (end=now never satisfied
+// end.Before(now-24h)), forcing even a 7d query to scan 7d of 1m raw data.
+func (r *MetricReader) routeTierDecision(start, end time.Time) tierDecision {
+	if !r.config.RollupEnabled {
+		return tierDecision{tier: "raw"}
+	}
 	readyAfter := r.config.RollupReadyAfter
 	if readyAfter <= 0 {
 		readyAfter = 24 * time.Hour // match RollupEngine's default
 	}
-	// Only route to rollup when the window is fully stabilized (its end is at
-	// least RollupReadyAfter in the past). Otherwise fall back to raw.
-	if r.config.RollupEnabled && end.Sub(start) > rollupThreshold && end.Before(time.Now().Add(-readyAfter)) {
+	splitPoint := time.Now().Add(-readyAfter)
+
+	if end.Before(splitPoint) || end.Equal(splitPoint) {
+		// Fully stabilized: rollup has complete data up to (and including) end.
+		return tierDecision{tier: "rollup"}
+	}
+	if !start.Before(splitPoint) {
+		// Fully recent: everything is newer than the boundary → raw only.
+		return tierDecision{tier: "raw"}
+	}
+	// Crosses the boundary: rollup for [start, splitPoint), raw for [splitPoint, end].
+	return tierDecision{tier: "mixed", splitPoint: splitPoint}
+}
+
+// routeIndexPattern selects a single index pattern for a range query. It is a
+// convenience wrapper over routeTierDecision for the non-mixed cases; mixed
+// queries are handled by queryRangeMixed (two searches) rather than a single
+// pattern. When a mixed decision is returned, this falls back to raw so callers
+// that can only issue one search never read an incomplete rollup index.
+func (r *MetricReader) routeIndexPattern(appID string, start, end time.Time) string {
+	decision := r.routeTierDecision(start, end)
+	if decision.tier == "rollup" {
 		return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix+"-rollup-5m", appID, start, end)
 	}
 	return esq.IndexPatternForRange(r.config.Metrics.IndexPrefix, appID, start, end)
@@ -764,6 +877,54 @@ func (r *MetricReader) parseQueryRangeResult(resp *SearchResponse, grouped bool,
 		return r.parseGroupedResult(resp, aggFunc)
 	}
 	return r.parseSimpleResult(resp, aggFunc)
+}
+
+// mergeRangeResults merges two MetricRangeResult values that cover DISJOINT time
+// ranges (a = older rollup portion, b = newer raw portion) into one result. It
+// keys series by label set: a series present in both gets b's values appended to
+// a's (both are already time-ascending, so concatenation is time-ordered); a
+// series present in only one side is carried through with its partial range.
+// The fill strategy (applied by the caller after merge) handles any gaps.
+func mergeRangeResults(a, b *MetricRangeResult) *MetricRangeResult {
+	merged := &MetricRangeResult{}
+	if a == nil {
+		a = &MetricRangeResult{}
+	}
+	if b == nil {
+		b = &MetricRangeResult{}
+	}
+
+	byKey := make(map[string]*MetricSeries, len(a.Data)+len(b.Data))
+	for i := range a.Data {
+		s := &a.Data[i]
+		byKey[labelsKey(s.Labels)] = s
+	}
+	for i := range b.Data {
+		s := &b.Data[i]
+		key := labelsKey(s.Labels)
+		if existing, ok := byKey[key]; ok {
+			existing.Values = append(existing.Values, s.Values...)
+		} else {
+			byKey[key] = s
+		}
+	}
+
+	// Preserve a stable order: append in first-seen order (a first, then new b).
+	for i := range a.Data {
+		merged.Data = append(merged.Data, *byKey[labelsKey(a.Data[i].Labels)])
+	}
+	seen := make(map[string]bool, len(a.Data))
+	for i := range a.Data {
+		seen[labelsKey(a.Data[i].Labels)] = true
+	}
+	for i := range b.Data {
+		key := labelsKey(b.Data[i].Labels)
+		if !seen[key] {
+			merged.Data = append(merged.Data, *byKey[key])
+			seen[key] = true
+		}
+	}
+	return merged
 }
 
 // parseSimpleResult parses a non-grouped date_histogram aggregation.

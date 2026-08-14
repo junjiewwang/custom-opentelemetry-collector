@@ -231,12 +231,16 @@ func (g *sampleGroup) toDoc(name, appID, unit string) storedmodel.StoredMetricDa
 	switch g.metricType {
 	case "counter":
 		// counter: first/last for rate restoration, sum for totals. NOT avg.
-		// Value carries the window sum so QueryRange aggregations can still
-		// read a meaningful magnitude (rate/increase use first/last instead).
+		// Value carries the window's LAST raw sample (the instantaneous monotonic
+		// reading at window-end), NOT the sum. The read path (QueryRange) applies
+		// avg/sum/max/etc. directly to `value`; a counter's `sum` over a 5m window
+		// is ~5× the magnitude and varies with per-window sample count, which made
+		// bare counter queries render as non-monotonic (seemingly decreasing) lines.
+		// last is the only value whose avg/sum keeps counter semantics correct.
 		doc.First = g.first
 		doc.Last = g.last
 		doc.Sum = g.sum
-		doc.Value = g.sum
+		doc.Value = g.last
 	case "histogram":
 		// histogram: merged bucket_counts + retained explicit_bounds.
 		doc.BucketCounts = uint64Slice(g.bucketSum)

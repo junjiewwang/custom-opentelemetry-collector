@@ -99,3 +99,77 @@ func TestWatermarkContiguous(t *testing.T) {
 	// Watermark ahead of the hour (would go backwards): watermark = h3, hour = h1.
 	assert.False(t, watermarkContiguous(h3, h1))
 }
+
+// ── routeTierDecision ──────────────────────────────────────────────────
+
+func TestRouteTierDecision(t *testing.T) {
+	r := newRouteReader(true, 24*time.Hour)
+	now := time.Now()
+	split := now.Add(-24 * time.Hour)
+
+	t.Run("fully recent → raw", func(t *testing.T) {
+		d := r.routeTierDecision(now.Add(-6*time.Hour), now)
+		assert.Equal(t, "raw", d.tier)
+	})
+
+	t.Run("fully stabilized → rollup", func(t *testing.T) {
+		d := r.routeTierDecision(now.Add(-48*time.Hour), now.Add(-25*time.Hour))
+		assert.Equal(t, "rollup", d.tier)
+	})
+
+	t.Run("crosses boundary → mixed", func(t *testing.T) {
+		d := r.routeTierDecision(now.Add(-7*24*time.Hour), now)
+		assert.Equal(t, "mixed", d.tier)
+		assert.WithinDuration(t, split, d.splitPoint, time.Second, "splitPoint should be now-24h")
+	})
+
+	t.Run("rollup disabled → raw always", func(t *testing.T) {
+		disabled := newRouteReader(false, 24*time.Hour)
+		d := disabled.routeTierDecision(now.Add(-48*time.Hour), now.Add(-25*time.Hour))
+		assert.Equal(t, "raw", d.tier)
+	})
+}
+
+// ── mergeRangeResults ──────────────────────────────────────────────────
+
+func TestMergeRangeResults(t *testing.T) {
+	ts := func(v float64) time.Time { return time.UnixMilli(int64(v) * 1000) }
+	dp := func(v float64) MetricDataPoint { return MetricDataPoint{Time: ts(v), Value: v} }
+
+	// a = older rollup portion (labels {a:1}, {b:2}), b = newer raw portion.
+	a := &MetricRangeResult{Data: []MetricSeries{
+		{Labels: map[string]string{"k": "1"}, Values: []MetricDataPoint{dp(100), dp(110)}},
+		{Labels: map[string]string{"k": "2"}, Values: []MetricDataPoint{dp(200)}},
+	}}
+	b := &MetricRangeResult{Data: []MetricSeries{
+		{Labels: map[string]string{"k": "1"}, Values: []MetricDataPoint{dp(120), dp(130)}},
+		{Labels: map[string]string{"k": "3"}, Values: []MetricDataPoint{dp(300)}},
+	}}
+
+	merged := mergeRangeResults(a, b)
+
+	assert.Len(t, merged.Data, 3, "3 distinct label sets across both")
+
+	// Find each series by label.
+	byKey := map[string]*MetricSeries{}
+	for i := range merged.Data {
+		byKey[merged.Data[i].Labels["k"]] = &merged.Data[i]
+	}
+
+	// k=1 appears in both → values concatenated (a then b, time-ascending).
+	assert.Equal(t, 4, len(byKey["1"].Values), "k=1 merged values")
+	assert.Equal(t, float64(100), byKey["1"].Values[0].Value)
+	assert.Equal(t, float64(130), byKey["1"].Values[3].Value)
+
+	// k=2 only in a, k=3 only in b.
+	assert.Equal(t, 1, len(byKey["2"].Values))
+	assert.Equal(t, 1, len(byKey["3"].Values))
+}
+
+func TestMergeRangeResults_NilInputs(t *testing.T) {
+	merged := mergeRangeResults(nil, &MetricRangeResult{Data: []MetricSeries{
+		{Labels: map[string]string{"k": "1"}, Values: []MetricDataPoint{{Value: 1}}},
+	}})
+	assert.Len(t, merged.Data, 1)
+	assert.Equal(t, float64(1), merged.Data[0].Values[0].Value)
+}
