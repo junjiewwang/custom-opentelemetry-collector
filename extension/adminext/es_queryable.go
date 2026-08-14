@@ -156,19 +156,76 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 	return q.selectMultipleMetrics(ctx, allNames, labelEq, labelRe, appID, startMS, endMS, sortSeries)
 }
 
+// esFlatSliceResult is the per-slice aggregation of a QueryFlat sub-query in
+// the PromQL engine's raw-doc read path.
+type esFlatSliceResult struct {
+	samples   []observabilitystorageext.MetricSample
+	total     int64
+	truncated bool
+	err       error
+}
+
+// esFlatSliceFloor is the minimum slice width for bisectFlatSlice. A 1m window
+// is ~4 raw samples for a 15s scrape — never worth splitting further.
+const esFlatSliceFloor = time.Minute
+
+// bisectFlatSlice fetches raw samples for [startMS, endMS) via QueryFlat. If the
+// result is truncated by MaxDocs (Hits.Total.Relation == "gte"), it recursively
+// halves the window (down to esFlatSliceFloor) and merges, so no series is
+// silently cut short. This is the "divide-on-truncation" strategy: a
+// high-cardinality metric (100+ series × 15s scrape) exceeds the
+// adaptiveFlatMaxDocs cap inside a 2h slice (~48000 docs vs 10000), and a naive
+// single 2h query would silently drop the tail — the 90-minute gap in
+// rate() output.
+func (q *esQuerier) bisectFlatSlice(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64) esFlatSliceResult {
+	fq := observabilitystorageext.MetricFlatQuery{
+		MetricName: metricName, Labels: labelEq, LabelMatch: labelRe,
+		TimeRange: observabilitystorageext.TimeRange{
+			Start: timestamp.Time(startMS),
+			End:   timestamp.Time(endMS),
+		},
+		MaxDocs: 0,
+		AppID:   appID,
+	}
+	fr, err := q.reader.QueryFlat(ctx, fq)
+	if err != nil {
+		return esFlatSliceResult{err: err}
+	}
+	if fr == nil {
+		return esFlatSliceResult{}
+	}
+
+	// Not truncated — return as-is.
+	if !fr.Truncated {
+		return esFlatSliceResult{samples: fr.Samples, total: fr.Total, truncated: false}
+	}
+
+	// Truncated: halve the window and recurse, unless we've hit the floor.
+	spanMS := endMS - startMS
+	if spanMS <= esFlatSliceFloor.Milliseconds() {
+		// Cannot split further — keep what we have and retain the flag so the
+		// caller still logs a truncation warning.
+		return esFlatSliceResult{samples: fr.Samples, total: fr.Total, truncated: true}
+	}
+
+	midMS := startMS + spanMS/2
+	left := q.bisectFlatSlice(ctx, metricName, labelEq, labelRe, appID, startMS, midMS)
+	right := q.bisectFlatSlice(ctx, metricName, labelEq, labelRe, appID, midMS, endMS)
+
+	return esFlatSliceResult{
+		samples:   append(left.samples, right.samples...),
+		total:     left.total + right.total,
+		truncated: left.truncated || right.truncated,
+	}
+}
+
 // selectConcreteSliced splits a large time window into concurrent QueryFlat
 // sub-queries (each ≤ maxSlice) and merges the results. This avoids ES
 // timeouts on 6h–24h windows where a single FlatQuery would time out.
 func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, cacheKey string, maxSlice time.Duration) ([]observabilitystorageext.MetricRawSeries, error) {
-	type sliceResult struct {
-		samples []observabilitystorageext.MetricSample
-		total   int64
-		err     error
-	}
-
 	sliceSize := int64(maxSlice / time.Millisecond)
 	slices := int((endMS-startMS)/sliceSize + 1)
-	results := make([]sliceResult, slices)
+	results := make([]esFlatSliceResult, slices)
 
 	var wg sync.WaitGroup
 	for i := 0; i < slices; i++ {
@@ -181,24 +238,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			fq := observabilitystorageext.MetricFlatQuery{
-				MetricName: metricName, Labels: labelEq, LabelMatch: labelRe,
-				TimeRange: observabilitystorageext.TimeRange{
-					Start: timestamp.Time(sStart),
-					End:   timestamp.Time(sEnd),
-				},
-				MaxDocs: 0,
-				AppID:   appID,
-			}
-			fr, err := q.reader.QueryFlat(ctx, fq)
-			if err != nil {
-				results[i].err = err
-				return
-			}
-			if fr != nil {
-				results[i].samples = fr.Samples
-				results[i].total = fr.Total
-			}
+			results[i] = q.bisectFlatSlice(ctx, metricName, labelEq, labelRe, appID, sStart, sEnd)
 		}()
 	}
 	wg.Wait()
@@ -206,6 +246,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 	// Merge: group all samples by label set across slices.
 	seriesMap := make(map[string]*observabilitystorageext.MetricRawSeries)
 	var flatTotal int64
+	anyTruncated := false
 	for _, r := range results {
 		if r.err != nil {
 			q.logger.Warn("QueryFlat slice failed",
@@ -215,6 +256,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 			continue
 		}
 		flatTotal += r.total
+		anyTruncated = anyTruncated || r.truncated
 		for _, sm := range r.samples {
 			key := labelsToSortedString(sm.Labels)
 			series, ok := seriesMap[key]
@@ -260,6 +302,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 		zap.Int64("range_sec", (endMS-startMS)/1000),
 		zap.Int("slices", slices),
 		zap.Int64("flat_total", flatTotal),
+		zap.Bool("any_truncated", anyTruncated),
 	)
 
 	if len(out) == 0 {

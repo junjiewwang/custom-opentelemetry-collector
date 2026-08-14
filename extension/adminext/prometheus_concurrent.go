@@ -162,9 +162,10 @@ func (h *promHandlers) concurrentQueryFlat(
 
 	// Launch concurrent sub-queries, one per term value.
 	type subResult struct {
-		samples []observabilitystorageext.MetricSample
-		total   int64
-		err     error
+		samples   []observabilitystorageext.MetricSample
+		total     int64
+		truncated bool
+		err       error
 	}
 
 	results := make([]subResult, numTerms)
@@ -183,12 +184,16 @@ func (h *promHandlers) concurrentQueryFlat(
 			subLabelMatch := cloneLabelMatchWithSingleTerm(flatQuery.LabelMatch, candidate.Key, termValue)
 
 			subQuery := observabilitystorageext.MetricFlatQuery{
-				MetricName:  flatQuery.MetricName,
-				Labels:      flatQuery.Labels, // unchanged — same exact-match constraints
-				LabelMatch:  subLabelMatch,
-				ServiceName: flatQuery.ServiceName,
-				TimeRange:   flatQuery.TimeRange,
-				MaxDocs:     flatQuery.MaxDocs,
+				AppID:        flatQuery.AppID,
+				MetricName:   flatQuery.MetricName,
+				Labels:       flatQuery.Labels, // unchanged — same exact-match constraints
+				LabelMatch:   subLabelMatch,
+				LabelNot:     flatQuery.LabelNot,
+				LabelNotMatch: flatQuery.LabelNotMatch,
+				ServiceName:  flatQuery.ServiceName,
+				TimeRange:    flatQuery.TimeRange,
+				MaxDocs:      flatQuery.MaxDocs,
+				IndexPattern: flatQuery.IndexPattern,
 			}
 
 			result, err := h.metricReader.QueryFlat(ctx, subQuery)
@@ -197,7 +202,7 @@ func (h *promHandlers) concurrentQueryFlat(
 				return
 			}
 			if result != nil {
-				results[idx] = subResult{samples: result.Samples, total: result.Total}
+				results[idx] = subResult{samples: result.Samples, total: result.Total, truncated: result.Truncated}
 			}
 		}(i, value)
 	}
@@ -207,6 +212,7 @@ func (h *promHandlers) concurrentQueryFlat(
 	// Merge results.
 	var allSamples []observabilitystorageext.MetricSample
 	var totalDocs int64
+	anyTruncated := false
 	for _, r := range results {
 		if r.err != nil {
 			// If any sub-query fails, return the first error.
@@ -214,6 +220,7 @@ func (h *promHandlers) concurrentQueryFlat(
 		}
 		allSamples = append(allSamples, r.samples...)
 		totalDocs += r.total
+		anyTruncated = anyTruncated || r.truncated
 	}
 
 	if len(allSamples) == 0 {
@@ -224,89 +231,154 @@ func (h *promHandlers) concurrentQueryFlat(
 	}
 
 	return &observabilitystorageext.MetricFlatResult{
-		Samples: allSamples,
-		Total:   totalDocs,
+		Samples:   allSamples,
+		Total:     totalDocs,
+		Truncated: anyTruncated,
 	}, nil
 }
 
-// slicedQueryFlat splits a time window >2h into concurrent 2h QueryFlat
-// sub-queries to avoid ES document truncation on long time ranges.
+// flatSliceInitial is the initial time-slice width for slicedQueryFlat. Windows
+// longer than this are split into concurrent sub-queries (matching the ES
+// index.max_result_window=10000 limit for a single-series ~15s scrape over 2h).
+const flatSliceInitial = 2 * time.Hour
+
+// flatSliceFloor is the minimum slice width for bisectFlatQuery. A 1m window is
+// ~4 raw samples for a 15s scrape — never worth splitting further.
+const flatSliceFloor = time.Minute
+
+// flatSliceResult is the internal per-slice aggregation of a QueryFlat sub-query.
+type flatSliceResult struct {
+	samples   []observabilitystorageext.MetricSample
+	total     int64
+	truncated bool
+}
+
+// slicedQueryFlat splits a time window >flatSliceInitial into concurrent
+// flatSliceInitial-wide QueryFlat sub-queries, then for any sub-query that ES
+// reports truncated (more docs matched than MaxDocs returned), recursively
+// bisects that slice down to flatSliceFloor. This is the "divide-on-truncation"
+// strategy: high-cardinality metrics (100+ series × 15s scrape) exceed the
+// adaptiveFlatMaxDocs cap inside a 2h slice, and a naive single 2h query would
+// silently drop the tail — a 90-minute gap in rate() output.
 func (h *promHandlers) slicedQueryFlat(
 	ctx context.Context,
 	flatQuery observabilitystorageext.MetricFlatQuery,
 	logger *zap.Logger,
 ) (*observabilitystorageext.MetricFlatResult, error) {
-	const maxSlice = 2 * time.Hour
 	start := flatQuery.TimeRange.Start
 	end := flatQuery.TimeRange.End
 	window := end.Sub(start)
-	if window <= maxSlice {
+	if window <= flatSliceInitial {
 		return h.concurrentQueryFlat(ctx, flatQuery, logger)
 	}
 
-	slices := int(window / maxSlice)
-	if window%maxSlice != 0 {
+	slices := int(window / flatSliceInitial)
+	if window%flatSliceInitial != 0 {
 		slices++
 	}
 
-	type sliceResult struct {
-		samples []observabilitystorageext.MetricSample
-		total   int64
-		err     error
-	}
-	results := make([]sliceResult, slices)
+	results := make([]flatSliceResult, slices)
 	var wg sync.WaitGroup
 
 	for i := 0; i < slices; i++ {
 		i := i
-		sStart := start.Add(time.Duration(i) * maxSlice)
-		sEnd := sStart.Add(maxSlice)
+		sStart := start.Add(time.Duration(i) * flatSliceInitial)
+		sEnd := sStart.Add(flatSliceInitial)
 		if sEnd.After(end) {
 			sEnd = end
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			subQuery := observabilitystorageext.MetricFlatQuery{
-				MetricName:    flatQuery.MetricName,
-				Labels:        flatQuery.Labels,
-				LabelMatch:    flatQuery.LabelMatch,
-				LabelNot:      flatQuery.LabelNot,
-				LabelNotMatch: flatQuery.LabelNotMatch,
-				ServiceName:   flatQuery.ServiceName,
-				TimeRange:     observabilitystorageext.TimeRange{Start: sStart, End: sEnd},
-				MaxDocs:       0,
-			}
-			result, err := h.concurrentQueryFlat(ctx, subQuery, logger)
-			if err != nil {
-				results[i] = sliceResult{err: err}
-				return
-			}
-			if result != nil {
-				results[i] = sliceResult{samples: result.Samples, total: result.Total}
-			}
+			res := h.bisectFlatQuery(ctx, flatQuery, sStart, sEnd, logger)
+			results[i] = res
 		}()
 	}
 	wg.Wait()
 
-	var allSamples []observabilitystorageext.MetricSample
-	var totalDocs int64
-	for _, r := range results {
-		if r.err != nil {
-			logger.Warn("slicedQueryFlat: sub-query failed", zap.Error(r.err))
-			continue
-		}
-		allSamples = append(allSamples, r.samples...)
-		totalDocs += r.total
+	return mergeFlatResults(results, slices)
+}
+
+// bisectFlatQuery fetches raw samples for [start, end) using concurrentQueryFlat
+// (which itself may split a multi-term regex across parallel queries). If the
+// result is truncated by MaxDocs, it recursively halves the window (down to
+// flatSliceFloor) and merges, so no series is silently cut short.
+func (h *promHandlers) bisectFlatQuery(
+	ctx context.Context,
+	flatQuery observabilitystorageext.MetricFlatQuery,
+	start, end time.Time,
+	logger *zap.Logger,
+) flatSliceResult {
+	subQuery := observabilitystorageext.MetricFlatQuery{
+		AppID:         flatQuery.AppID,
+		MetricName:    flatQuery.MetricName,
+		Labels:        flatQuery.Labels,
+		LabelMatch:    flatQuery.LabelMatch,
+		LabelNot:      flatQuery.LabelNot,
+		LabelNotMatch: flatQuery.LabelNotMatch,
+		ServiceName:   flatQuery.ServiceName,
+		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
+		MaxDocs:       0,
+		IndexPattern:  flatQuery.IndexPattern,
 	}
 
-	if len(allSamples) == 0 && len(results) > 0 {
+	result, err := h.concurrentQueryFlat(ctx, subQuery, logger)
+	if err != nil {
+		logger.Warn("bisectFlatQuery: sub-query failed",
+			zap.Error(err),
+			zap.Time("start", start),
+			zap.Time("end", end),
+		)
+		return flatSliceResult{truncated: false}
+	}
+	if result == nil {
+		return flatSliceResult{}
+	}
+
+	// Not truncated — return as-is.
+	if !result.Truncated {
+		return flatSliceResult{samples: result.Samples, total: result.Total, truncated: false}
+	}
+
+	// Truncated: halve the window and recurse, unless we've hit the floor.
+	span := end.Sub(start)
+	if span <= flatSliceFloor {
+		// Cannot split further — return what we have and keep the truncated flag
+		// so the caller still logs a warning.
+		return flatSliceResult{samples: result.Samples, total: result.Total, truncated: true}
+	}
+
+	mid := start.Add(span / 2)
+	left := h.bisectFlatQuery(ctx, flatQuery, start, mid, logger)
+	right := h.bisectFlatQuery(ctx, flatQuery, mid, end, logger)
+
+	return flatSliceResult{
+		samples:   append(left.samples, right.samples...),
+		total:     left.total + right.total,
+		truncated: left.truncated || right.truncated,
+	}
+}
+
+// mergeFlatResults aggregates per-slice results into a single flat result,
+// preserving the truncated flag (OR across slices) for truncation warning.
+func mergeFlatResults(results []flatSliceResult, slices int) (*observabilitystorageext.MetricFlatResult, error) {
+	var allSamples []observabilitystorageext.MetricSample
+	var totalDocs int64
+	anyTruncated := false
+	for _, r := range results {
+		allSamples = append(allSamples, r.samples...)
+		totalDocs += r.total
+		anyTruncated = anyTruncated || r.truncated
+	}
+
+	if len(allSamples) == 0 && slices > 0 {
 		return nil, fmt.Errorf("slicedQueryFlat: all %d sub-queries failed or returned empty", slices)
 	}
 
 	return &observabilitystorageext.MetricFlatResult{
-		Samples: allSamples,
-		Total:   totalDocs,
+		Samples:   allSamples,
+		Total:     totalDocs,
+		Truncated: anyTruncated,
 	}, nil
 }
 

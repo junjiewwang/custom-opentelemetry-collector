@@ -1734,13 +1734,24 @@ func groupMetricSamplesByLabels(samples []observabilitystorageext.MetricSample) 
 			})
 		}
 	}
+	// Defensive sort: concurrentQueryFlat / slicedQueryFlat merge sub-query
+	// results unordered, and bisectFlatQuery appends left-then-right slices.
+	// rate()/bracketWindow assume samples are ascending by TimestampMs, so
+	// sort each group's samples to guarantee monotonic time.
+	for i := range groups {
+		sort.SliceStable(groups[i].Samples, func(a, b int) bool {
+			return groups[i].Samples[a].TimestampMs < groups[i].Samples[b].TimestampMs
+		})
+	}
 	return groups
 }
 
-// checkFlatTruncation logs a warning if QueryFlat returned fewer documents
-// than matched in ES (indicating data was truncated by MaxDocs limit).
+// checkFlatTruncation logs a warning if QueryFlat reported the result was
+// capped by MaxDocs (Hits.Total.Relation == "gte"). This is distinct from the
+// Total>len(Samples) heuristic: ES reports Total as the capped count when the
+// relation is "gte", so comparing Total against len(Samples) can under-report.
 func (h *promHandlers) checkFlatTruncation(result *observabilitystorageext.MetricFlatResult) {
-	if result.Total > int64(len(result.Samples)) {
+	if result.Truncated {
 		h.logger.Warn("QueryFlat data truncated by MaxDocs limit",
 			zap.Int64("total_matching_in_es", result.Total),
 			zap.Int("returned", len(result.Samples)),
