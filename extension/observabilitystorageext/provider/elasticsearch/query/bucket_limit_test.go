@@ -306,30 +306,49 @@ func TestSafeInterval_FlatCap_LongRangeNotClamped(t *testing.T) {
 // 65535 time-axis cap, because ES counts the nested date_histogram buckets per
 // composite key, NOT as seriesLimit × time_buckets. This means 24h@60s (1441
 // buckets) must NOT be clamped, while 7d@1s (604800 buckets) IS clamped.
-func TestSafeInterval_GroupedCap_UsesFullFlatLimit(t *testing.T) {
-	// 24h @ 60s = 1440 time buckets < 65535 → must NOT clamp.
+func TestGroupedSafeMaxBuckets(t *testing.T) {
+	cases := []struct {
+		seriesLimit int
+		want        int
+	}{
+		{100, 500},   // GroupedBucketBudget/100 = 500
+		{0, 500},     // 0 → default 100 → 500
+		{-1, 500},    // negative → default 100 → 500
+		{1, 50000},   // GroupedBucketBudget/1 = 50000
+		{10, 5000},   // 50000/10
+		{500, 100},   // 50000/500
+		{1000, 60},   // 50000/1000=50 < floor 60 → 60
+		{10000, 60},  // 50000/10000=5 < floor 60 → 60
+	}
+	for _, c := range cases {
+		got := GroupedSafeMaxBuckets(c.seriesLimit)
+		if got != c.want {
+			t.Errorf("GroupedSafeMaxBuckets(%d) = %d, want %d", c.seriesLimit, got, c.want)
+		}
+	}
+}
+
+func TestSafeInterval_GroupedCap_UsesBudget(t *testing.T) {
+	// Grouped query with seriesLimit=100 → maxBuckets = 500.
+	// 24h @ 60s = 1440 time buckets > 500 → must clamp (to keep total allocated
+	// buckets ≈ 100×500 = 50000 under heap).
 	interval, clamped := SafeInterval(BucketParams{
 		Duration:   24 * time.Hour,
 		Step:       60 * time.Second,
-		MaxBuckets: DefaultMaxBucketsFlat,
+		MaxBuckets: GroupedSafeMaxBuckets(100), // 500
 	})
-	if clamped {
-		t.Fatalf("24h@60s should NOT clamp under flat cap %d, got interval=%q", DefaultMaxBucketsFlat, interval)
-	}
-	// durationToIntervalString renders 60s as "1m" — both are 60s, the key
-	// assertion is that it was NOT clamped to a coarser interval.
-	if interval != "60s" && interval != "1m" {
-		t.Errorf("24h@60s: want 60s (or 1m), got %q", interval)
+	if !clamped {
+		t.Fatalf("24h@60s under grouped budget 500 should clamp, got interval=%q", interval)
 	}
 
-	// 7d @ 1s = 604800 time buckets > 65535 → must clamp.
+	// 1h @ 60s = 60 time buckets ≤ 500 → must NOT clamp.
 	_, clamped2 := SafeInterval(BucketParams{
-		Duration:   7 * 24 * time.Hour,
-		Step:       1 * time.Second,
-		MaxBuckets: DefaultMaxBucketsFlat,
+		Duration:   time.Hour,
+		Step:       60 * time.Second,
+		MaxBuckets: GroupedSafeMaxBuckets(100),
 	})
-	if !clamped2 {
-		t.Errorf("7d@1s should clamp under flat cap %d", DefaultMaxBucketsFlat)
+	if clamped2 {
+		t.Errorf("1h@60s under grouped budget 500 should NOT clamp")
 	}
 }
 

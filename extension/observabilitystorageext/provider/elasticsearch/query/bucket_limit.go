@@ -27,7 +27,32 @@ const (
 
 	// ESHardMaxBuckets is ES's built-in per-shard aggregation bucket limit.
 	ESHardMaxBuckets = 65535
+
+	// GroupedBucketBudget is the safe ceiling on TOTAL allocated buckets for a
+	// grouped (composite + date_histogram) range query. The composite
+	// materializes seriesLimit groups simultaneously, each with its full
+	// date_histogram allocation, so total heap ≈ seriesLimit × timeBuckets ×
+	// per-bucket-overhead (~9KB). The ES parent circuit breaker fires on this
+	// PHYSICAL heap allocation (a different limiter from search.max_buckets),
+	// which the flat 65535 cap did not protect against. Budgeting 50,000 total
+	// buckets ≈ 450MB keeps ~4× headroom under the observed 1.3GB breaker.
+	GroupedBucketBudget = 50000
 )
+
+// GroupedSafeMaxBuckets returns the safe time-axis bucket cap for a grouped
+// (composite + date_histogram) query given the composite page size (seriesLimit).
+// It divides a fixed heap budget by seriesLimit so total allocated buckets stays
+// bounded, flooring at 60 (one minute of 1s data) to avoid degenerate coarsening.
+func GroupedSafeMaxBuckets(seriesLimit int) int {
+	if seriesLimit <= 0 {
+		seriesLimit = 100
+	}
+	buckets := GroupedBucketBudget / seriesLimit
+	if buckets < 60 {
+		return 60
+	}
+	return buckets
+}
 
 // BucketParams holds the inputs needed to calculate a safe histogram interval.
 type BucketParams struct {

@@ -145,21 +145,31 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 	esQuery := filterResult.Query
 
 	// 3. Calculate interval for date_histogram.
-	// The time-axis bucket cap is ESHardMaxBuckets (65535) for BOTH grouped and
-	// flat queries. Empirically verified against the real ES cluster: a composite
-	// aggregation with a nested date_histogram counts buckets PER composite key
-	// (at most 65535 time buckets per key), NOT as composite.size × time_buckets
-	// as previously assumed. The prior `maxBuckets = ESHardMaxBuckets/seriesLimit`
-	// (65535/100 = 655) was based on that false accumulation model and caused
-	// point-collapse for >6h windows (a 24h@60s query was clamped to 132s step,
-	// returning 655 pts instead of 1441).
+	// The time-axis bucket cap differs by aggregation shape:
+	//
+	//   - NON-grouped (flat): a single top-level date_histogram, so total
+	//     allocated buckets == timeBuckets. Cap at DefaultMaxBucketsFlat (65535).
+	//
+	//   - Grouped (composite + date_histogram): ES materializes seriesLimit
+	//     groups simultaneously, each with its full date_histogram, so total
+	//     heap ≈ seriesLimit × timeBuckets × ~9KB/bucket. This is enforced by
+	//     the parent CIRCUIT BREAKER (physical heap), NOT by search.max_buckets
+	//     (which counts per-aggregation-path and is the limit a flat 65535 cap
+	//     was mistakenly validated against). Cap timeBuckets at
+	//     GroupedBucketBudget/seriesLimit so total buckets stay bounded.
 	//
 	// NOTE: seriesLimit (the composite `size`) is the hard cap on returned series
-	// per request (parseGroupedResult has no after_key pagination). It is
-	// orthogonal to the time-axis bucket cap and is NOT used here. Metrics with
-	// >100 series are silently truncated at seriesLimit — a separate, pre-existing
-	// limitation that this fix intentionally leaves untouched.
+	// per request (parseGroupedResult has no after_key pagination). Metrics with
+	// >seriesLimit series are silently truncated — a separate, pre-existing
+	// limitation this fix intentionally leaves untouched.
 	maxBuckets := esq.DefaultMaxBucketsFlat
+	if len(query.GroupBy) > 0 {
+		seriesLimit := query.SeriesLimit
+		if seriesLimit <= 0 {
+			seriesLimit = 100
+		}
+		maxBuckets = esq.GroupedSafeMaxBuckets(seriesLimit)
+	}
 	interval := r.calculateInterval(query.TimeRange, query.Step, maxBuckets)
 
 	// 4. Determine min_doc_count based on fill strategy.
