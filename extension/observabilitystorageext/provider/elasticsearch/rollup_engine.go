@@ -23,8 +23,10 @@ type RollupEngineConfig struct {
 	// TickInterval is how often the rollup cycle runs (default 1h).
 	TickInterval time.Duration
 
-	// ReadyAfter skips raw indices newer than this duration (default 24h) so
-	// we only rollup closed, stable indices.
+	// ReadyAfter skips raw hours newer than this duration (default 2h) so we
+	// only rollup closed, stable hours. It must match the read-routing boundary
+	// (routeTierDecision) so a query window >2h can safely read the 5m tier for
+	// everything older than this lag.
 	ReadyAfter time.Duration
 }
 
@@ -34,7 +36,7 @@ func (c *RollupEngineConfig) ApplyDefaults() {
 		c.TickInterval = time.Hour
 	}
 	if c.ReadyAfter <= 0 {
-		c.ReadyAfter = 24 * time.Hour
+		c.ReadyAfter = 2 * time.Hour
 	}
 }
 
@@ -169,7 +171,12 @@ func (e *RollupEngine) tick(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		if !date.Before(readyBefore) {
+		// Hour-aware readiness: enumerate an index if at least its FIRST hour
+		// (ending at date+1h) is ready. The prior `date.Before(readyBefore)`
+		// gated on the DAY's midnight, so today's index was never enumerated
+		// until tomorrow — even though today's early hours finished long ago.
+		// The per-hour guard below skips any hour that is not yet ready.
+		if !date.Add(time.Hour).Before(readyBefore) {
 			continue
 		}
 		appID := extractAppID(idx, rawPrefix)
@@ -217,7 +224,15 @@ func (e *RollupEngine) tick(ctx context.Context) {
 	// never advances to newer data.
 	watermarks, _ := e.lock.GetAllWatermarks(ctx, RollupTier5m)
 
+	readyBeforeMs := readyBefore.UnixMilli()
 	for _, item := range work {
+		// Per-hour readiness guard: skip hours that are NOT yet ready (their end
+		// is within ReadyAfter of now). This is what lets the index-level gate be
+		// hour-aware — today's index enumerates, but only its completed hours are
+		// rolled up. The current in-progress hour and all future hours are skipped.
+		if item.sliceEndMs() > readyBeforeMs {
+			continue
+		}
 		if wm, ok := watermarks[item.appID]; ok && wm >= item.sliceEndMs() {
 			continue
 		}

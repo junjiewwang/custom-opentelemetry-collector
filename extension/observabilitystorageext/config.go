@@ -106,9 +106,9 @@ type SchedulerConfig struct {
 	// tier indices. Requires Redis for distributed claim/watermark coordination.
 	RollupEnabled bool `mapstructure:"rollup_enabled"`
 
-	// RollupReadyAfter is the age at which a raw metric index is considered
+	// RollupReadyAfter is the age at which a raw metric hour is considered
 	// "stabilized" and safe to roll up (and to read from the rollup tier).
-	// Default 24h. Applied to BOTH the rollup engine (skip indices newer than
+	// Default 2h. Applied to BOTH the rollup engine (skip hours newer than
 	// this) and read routing (fall back to raw for windows whose end is more
 	// recent than now-RollupReadyAfter), keeping the two coherent.
 	RollupReadyAfter time.Duration `mapstructure:"rollup_ready_after"`

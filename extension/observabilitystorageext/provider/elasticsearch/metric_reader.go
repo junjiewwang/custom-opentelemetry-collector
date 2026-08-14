@@ -749,22 +749,22 @@ type tierDecision struct {
 // whether the window is entirely recent (raw), entirely stabilized (rollup), or
 // crosses the stabilization boundary (mixed).
 //
-// The rollup engine only aggregates raw indices older than RollupReadyAfter
-// (default 24h), so data newer than now-RollupReadyAfter exists only in raw. A
+// The rollup engine only aggregates raw hours older than RollupReadyAfter
+// (default 2h), so data newer than now-RollupReadyAfter exists only in raw. A
 // window whose END is older than the boundary is fully in rollup; a window whose
 // START is newer than the boundary is fully in raw; otherwise it crosses and must
 // be read from both tiers (rollup for the old part, raw for the recent part).
 //
-// The prior 2h threshold is removed: it was a heuristic that made rollup
-// effectively unreachable for live Grafana queries (end=now never satisfied
-// end.Before(now-24h)), forcing even a 7d query to scan 7d of 1m raw data.
+// The prior 2h threshold is removed: with ReadyAfter=2h the boundary IS ~2h, so
+// a >2h query naturally splits at now-2h — rollup for the old part, raw for the
+// recent 2h. The old "2h threshold" heuristic is subsumed by this boundary.
 func (r *MetricReader) routeTierDecision(start, end time.Time) tierDecision {
 	if !r.config.RollupEnabled {
 		return tierDecision{tier: "raw"}
 	}
 	readyAfter := r.config.RollupReadyAfter
 	if readyAfter <= 0 {
-		readyAfter = 24 * time.Hour // match RollupEngine's default
+		readyAfter = 2 * time.Hour // match RollupEngine's default
 	}
 	splitPoint := time.Now().Add(-readyAfter)
 
