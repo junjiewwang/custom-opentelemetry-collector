@@ -113,7 +113,7 @@ func TestPcommonMapToFlatMetric_MultiPolymorphic(t *testing.T) {
 	assert.Equal(t, "my-app", r1["service"])
 
 	assert.Equal(t, "10.0.0.1", r2["server_address"])
-	assert.Equal(t, int64(200), r2["status_code"])
+	assert.Equal(t, "200", r2["status_code"])
 	assert.Equal(t, "my-app-svc", r2["service_name"])
 
 	assert.NotContains(t, r2, "server")
@@ -122,6 +122,27 @@ func TestPcommonMapToFlatMetric_MultiPolymorphic(t *testing.T) {
 }
 
 // ═══════════ Cross-validation: both variants coexist ═══════════
+
+// TestPcommonMapToFlatMetric_BoolAndNumericLabelsNormalizedToString guards the
+// write-side string normalization: a metric label that arrives as bool/int/
+// double must be stored as a string, so ES maps it via strings_as_keyword (with
+// a .keyword sub-field) and the query layer can aggregate it. Without this,
+// jvm.thread.count's daemon=true label became a bare boolean with no .keyword,
+// and composite grouping silently dropped the daemon dimension (0.5 decimals).
+func TestPcommonMapToFlatMetric_BoolAndNumericLabelsNormalizedToString(t *testing.T) {
+	m := pcommon.NewMap()
+	m.PutBool("jvm_thread_daemon", true)
+	m.PutInt("http_status", 200)
+	m.PutDouble("ratio", 0.5)
+	m.PutStr("name", "svc")
+
+	result := pcommonMapToFlatMetric(m)
+
+	assert.Equal(t, "true", result["jvm_thread_daemon"], "bool label must become string")
+	assert.Equal(t, "200", result["http_status"], "int label must become string")
+	assert.Equal(t, "0.5", result["ratio"], "double label must become string")
+	assert.Equal(t, "svc", result["name"], "string label passes through")
+}
 
 func TestPcommonMapToFlat_BothVariants(t *testing.T) {
 	m := pcommon.NewMap()

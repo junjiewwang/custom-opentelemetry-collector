@@ -13,6 +13,8 @@
 package storedmodel
 
 import (
+	"strconv"
+
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
@@ -203,13 +205,45 @@ func flattenMapToFlat(result map[string]any, prefix, sep string, attrs pcommon.M
 			flattenMapToFlat(result, fullKey, sep, v.Map())
 		} else {
 			if sep == "_" {
-				result[SanitizeMetricKey(fullKey)] = valueToAny(v)
+				// Metric labels: normalize every scalar to a string so the
+				// ES field is a string (→ strings_as_keyword gives it a .keyword
+				// sub-field for terms/composite aggregation). Without this, a
+				// boolean/numeric label (e.g. jvm.thread.count's daemon=true)
+				// is stored as a bare boolean/number with no .keyword, and the
+				// query layer's aggregatableField() appends ".keyword" anyway →
+				// composite grouping silently drops that dimension and
+				// avg-merges true/false into fractional values. The read path
+				// (metricLabels.UnmarshalJSON) already normalizes scalars to
+				// strings, so this makes the write side match the read side.
+				result[SanitizeMetricKey(fullKey)] = metricLabelValue(v)
 			} else {
 				result[SanitizeKey(fullKey)] = valueToAny(v)
 			}
 		}
 		return true
 	})
+}
+
+// metricLabelValue converts a pcommon.Value to its Prometheus label string for
+// metric-labels storage. Strings pass through; bool/int/double become their
+// canonical text form ("true"/"false", "200", "0.5"), and null/empty map to "".
+// This mirrors the read-side metricLabels.UnmarshalJSON normalization, keeping
+// every metric label a string-typed ES field (aggregatable via .keyword).
+func metricLabelValue(v pcommon.Value) string {
+	switch v.Type() {
+	case pcommon.ValueTypeStr:
+		return v.Str()
+	case pcommon.ValueTypeInt:
+		return strconv.FormatInt(v.Int(), 10)
+	case pcommon.ValueTypeDouble:
+		return strconv.FormatFloat(v.Double(), 'f', -1, 64)
+	case pcommon.ValueTypeBool:
+		return strconv.FormatBool(v.Bool())
+	default:
+		// Empty / bytes / slice / map: fall back to AsString (empty for null,
+		// hex-ish for bytes). Matches the read-side "null → empty string".
+		return v.AsString()
+	}
 }
 
 // valueToAny converts a pcommon.Value to a native Go type.
