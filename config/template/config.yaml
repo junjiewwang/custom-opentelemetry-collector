@@ -952,3 +952,8 @@ service:
       # (traces AND metrics AND logs) on all three pipelines. Must match the
       # seed_apps token in the controlplane config.
       token: collector-self-monitoring-token
+      # Physical host identifier so self-monitoring spans carry host.name. This
+      # lets operators distinguish multiple collector instances writing to the
+      # same backend (e.g. a stray `docker run` container vs the k8s pod) directly
+      # from the trace resource, instead of only seeing a random service.instance_id.
+      host.name: ${env:HOSTNAME}
