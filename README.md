@@ -261,6 +261,9 @@ Grafana → /loki/api/v1/query_range?query=sum by(level)(count_over_time({}[5m])
 | `/api/v1/labels` | 获取所有 label 名 |
 | `/api/v1/label/{name}/values` | 获取 label 值列表 |
 
+> **Grafana 兼容性**：兼容 Grafana Prometheus 数据源的完整使用场景，包括模板变量
+> （`label_values(metric, label)` 发送裸指标名）和多选下拉（`service=~"(svc-a|svc-b)"` 括号 regex 形式）。
+
 ---
 
 ### 3. 🧠 ControlPlane Extension — 整个系统的"大脑"
@@ -863,6 +866,8 @@ MCP Extension 对 Arthas 输出做结构化解析，AI 能真正"理解"诊断�
 ### 8. 🔄 ES 索引自动管理 — 不再半夜被 mapping 错误炸醒
 
 Template Reconciler 自动检测并修复索引模板漂移；Key Sanitization 自动处理 dotted key 导致的 mapping 冲突。
+
+此外，metric label 的 boolean/numeric 值在写入时统一转为 string，确保 ES `.keyword` 子字段始终存在、terms 聚合（即 Grafana 的 GroupBy 维度）不会因原生类型缺少子字段而静默丢失。
 
 ---
 
