@@ -1,0 +1,862 @@
+{
+  "title": "JVM Runtime Dashboard",
+  "uid": "jvm-runtime",
+  "tags": [
+    "jvm",
+    "otel"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "bfroe09bnha0wd"
+        },
+        "query": {
+          "query": "label_values(jvm.memory.used, service_name)",
+          "refId": "service"
+        },
+        "multi": true,
+        "includeAll": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Memory",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "id": 2,
+      "title": "Heap - Used vs Committed",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.memory.used{service_name=~\"$service\", jvm_memory_type=\"heap\"}",
+          "legendFormat": "{{service_name}} used - {{jvm_memory_pool_name}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.memory.committed{service_name=~\"$service\", jvm_memory_type=\"heap\"}",
+          "legendFormat": "{{service_name}} committed - {{jvm_memory_pool_name}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "unit": "bytes",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/committed/"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    5
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 3,
+      "title": "Non-Heap - Used vs Committed",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.memory.used{service_name=~\"$service\", jvm_memory_type=\"non_heap\"}",
+          "legendFormat": "{{service_name}} used - {{jvm_memory_pool_name}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.memory.committed{service_name=~\"$service\", jvm_memory_type=\"non_heap\"}",
+          "legendFormat": "{{service_name}} committed - {{jvm_memory_pool_name}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "unit": "bytes",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/committed/"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    5
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 4,
+      "title": "Heap Used %",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 0,
+        "y": 11
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.memory.used{service_name=~\"$service\", jvm_memory_type=\"heap\", jvm_memory_pool_name=\"Tenured Gen\"} / jvm.memory.limit{service_name=~\"$service\", jvm_memory_type=\"heap\", jvm_memory_pool_name=\"Tenured Gen\"} * 100",
+          "legendFormat": "{{service_name}} Tenured Gen %",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "unit": "percent",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none",
+            "min": 0,
+            "max": 100
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "Tenured Gen After GC",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 8,
+        "y": 11
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.memory.used_after_last_gc{service_name=~\"$service\", jvm_memory_pool_name=\"Tenured Gen\"}",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "unit": "bytes",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Metaspace Used",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 11
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.memory.used{service_name=~\"$service\", jvm_memory_pool_name=\"Metaspace\"}",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "unit": "bytes",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "GC",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "id": 8,
+      "title": "GC Duration (cumulative seconds)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.gc.duration{service_name=~\"$service\"}",
+          "legendFormat": "{{service_name}} {{jvm_gc_name}} {{jvm_gc_action}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "unit": "s",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "GC Rate (seconds/minute)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "rate(jvm.gc.duration{service_name=~\"$service\"}[5m]) * 60",
+          "legendFormat": "{{service_name}} {{jvm_gc_name}} {{jvm_gc_action}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "unit": "s",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Runtime",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 10
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "Thread Count (by state)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 0,
+        "y": 29
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.thread.count{service_name=~\"$service\"}",
+          "legendFormat": "{{service_name}} {{jvm_thread_daemon}} {{jvm_thread_state}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "unit": "short",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "CPU Recent Utilization",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 8,
+        "y": 29
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.cpu.recent_utilization{service_name=~\"$service\"}",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "unit": "percentunit",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none",
+            "min": 0,
+            "max": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 13,
+      "title": "CPU Core Usage (delta 5m)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 29
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "delta(jvm.cpu.time{service_name=~\"$service\"}[5m])",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "unit": "s",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none",
+            "min": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Classes",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "id": 14
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "Class Count (Loaded / Unloaded)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.class.loaded{service_name=~\"$service\"}",
+          "legendFormat": "{{service_name}} loaded",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.class.unloaded{service_name=~\"$service\"}",
+          "legendFormat": "{{service_name}} unloaded",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "unit": "short",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 16,
+      "title": "Class Load Rate (per minute)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 8,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "rate(jvm.class.loaded{service_name=~\"$service\"}[5m]) * 60",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "unit": "short",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 17,
+      "title": "CPU Cores",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfroe09bnha0wd"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfroe09bnha0wd"
+          },
+          "expr": "jvm.cpu.count{service_name=~\"$service\"}",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "unit": "short",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 3,
+            "fillOpacity": 25,
+            "spanNulls": 300000,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}
