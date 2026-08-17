@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1453,6 +1454,74 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 		Total:     total,
 		Truncated: resp.Hits.Total.Relation == "gte",
 	}, nil
+}
+
+// QueryFlatDensity returns the per-bucket doc count for a metric over a time
+// range, using a single date_histogram aggregation over the SAME filter as
+// QueryFlat. Callers use it to slice a high-cardinality window up front (one
+// cheap aggregation) instead of recursively probing QueryFlat and discarding
+// truncated results.
+//
+// The returned buckets are the exact doc set QueryFlat would return (same
+// buildMetricFilter), bucketed by FieldMetricTimeUnixMilli at a fixed width.
+// Buckets are ordered by start time ascending. Buckets with zero docs are
+// omitted (min_doc_count=0 would include empty buckets; we drop them).
+func (r *MetricReader) QueryFlatDensity(ctx context.Context, query FlatDensityQuery) ([]DensityBucket, error) {
+	filterResult := r.buildMetricFilter(query.MetricName, query.ServiceName, query.Labels, query.LabelMatch, query.TimeRange,
+		metricNegations{Not: query.LabelNot, NotMatch: query.LabelNotMatch})
+
+	widthMs := query.BucketWidthMs
+	if widthMs <= 0 {
+		widthMs = int64((time.Minute).Milliseconds())
+	}
+
+	searchReq := &SearchRequest{
+		Query: filterResult.Query,
+		Size:  0,
+		Aggregations: map[string]any{
+			"density": map[string]any{
+				"date_histogram": map[string]any{
+					"field":          FieldMetricTimeUnixMilli,
+					"fixed_interval": strconv.FormatInt(widthMs, 10) + "ms",
+					"min_doc_count":  1,
+				},
+			},
+		},
+	}
+
+	indexPattern := query.IndexPattern
+	if indexPattern == "" {
+		indexPattern = r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End)
+	}
+	resp, err := r.searcher.Search(ctx, indexPattern, searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("metric flat density query failed: %w", err)
+	}
+
+	return parseDensityAgg(resp.Aggregations)
+}
+
+// parseDensityAgg extracts per-bucket doc counts from a date_histogram
+// aggregation response.
+func parseDensityAgg(aggs map[string]json.RawMessage) ([]DensityBucket, error) {
+	raw, ok := aggs["density"]
+	if !ok {
+		return nil, nil
+	}
+	var hist struct {
+		Buckets []struct {
+			Key      int64 `json:"key"`
+			DocCount int64 `json:"doc_count"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(raw, &hist); err != nil {
+		return nil, fmt.Errorf("decode density aggregation: %w", err)
+	}
+	out := make([]DensityBucket, 0, len(hist.Buckets))
+	for _, b := range hist.Buckets {
+		out = append(out, DensityBucket{StartMs: b.Key, DocCount: b.DocCount})
+	}
+	return out, nil
 }
 
 // postFilterSamples applies application-layer regex filtering for patterns

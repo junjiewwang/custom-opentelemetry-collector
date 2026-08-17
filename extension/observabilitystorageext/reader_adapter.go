@@ -520,6 +520,31 @@ func (a *metricReaderAdapter) QueryFlat(ctx context.Context, query MetricFlatQue
 	}, nil
 }
 
+// QueryFlatDensity forwards a density probe to the ES backend.
+func (a *metricReaderAdapter) QueryFlatDensity(ctx context.Context, query FlatDensityQuery) ([]DensityBucket, error) {
+	esQuery := elasticsearch.FlatDensityQuery{
+		AppID:         query.AppID,
+		MetricName:    query.MetricName,
+		Labels:        query.Labels,
+		LabelMatch:    query.LabelMatch,
+		LabelNot:      query.LabelNot,
+		LabelNotMatch: query.LabelNotMatch,
+		ServiceName:   query.ServiceName,
+		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
+		BucketWidthMs: query.BucketWidthMs,
+		IndexPattern:  query.IndexPattern,
+	}
+	buckets, err := a.inner.QueryFlatDensity(ctx, esQuery)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DensityBucket, len(buckets))
+	for i, b := range buckets {
+		out[i] = DensityBucket{StartMs: b.StartMs, DocCount: b.DocCount}
+	}
+	return out, nil
+}
+
 func (a *metricReaderAdapter) ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error) {
 	esTimeRange := elasticsearch.TimeRange{Start: timeRange.Start, End: timeRange.End}
 	return a.inner.ListMetricNames(ctx, esTimeRange)

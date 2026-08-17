@@ -386,6 +386,36 @@ type MetricFlatResult struct {
 	Truncated bool `json:"truncated,omitempty"`
 }
 
+// DensityBucket is a single time bucket of a flat-density probe. It tells the
+// caller how many matching docs fall in a fixed-width time window, so the
+// bisection logic can decide the slice boundaries up front instead of probing
+// each candidate slice and discarding truncated results.
+type DensityBucket struct {
+	// StartMs is the inclusive bucket start (epoch milliseconds).
+	StartMs int64 `json:"startMs"`
+	// DocCount is the number of matching documents in [StartMs, StartMs+WidthMs).
+	DocCount int64 `json:"docCount"`
+}
+
+// FlatDensityQuery describes a density probe for a metric over a time range.
+// It mirrors MetricFlatQuery's filter fields (same doc set as QueryFlat) but
+// asks for a bucketed doc-count histogram rather than raw samples.
+type FlatDensityQuery struct {
+	AppID         string            `json:"appId,omitempty"`
+	MetricName    string            `json:"metric"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
+	LabelNot      map[string]string `json:"labelNot,omitempty"`
+	LabelNotMatch map[string]string `json:"labelNotMatch,omitempty"`
+	ServiceName   string            `json:"service,omitempty"`
+	TimeRange     TimeRange         `json:"timeRange"`
+	// BucketWidthMs is the fixed width of each density bucket in milliseconds.
+	BucketWidthMs int64 `json:"bucketWidthMs"`
+	// IndexPattern overrides the auto-derived index pattern (same semantics as
+	// MetricFlatQuery.IndexPattern).
+	IndexPattern string `json:"indexPattern,omitempty"`
+}
+
 // ═══════════════════════════════════════════════════
 // Log Types — aligned with OTLP Log model
 // ═══════════════════════════════════════════════════

@@ -229,6 +229,17 @@ type MetricReader interface {
 	ListLabelValuesForMetric(ctx context.Context, label, metricName string, timeRange TimeRange) ([]string, error)
 }
 
+// FlatDensityProber is an optional capability a MetricReader may implement to
+// answer "how many matching docs fall in each fixed-width time bucket" without
+// fetching raw samples. Query-side code uses it to slice a high-cardinality
+// window up front (one cheap aggregation) instead of recursively probing and
+// discarding truncated QueryFlat results. Implementations must return the same
+// doc set as QueryFlat for the identical filter (same metric/labels/time range),
+// bucketed by start time.
+type FlatDensityProber interface {
+	QueryFlatDensity(ctx context.Context, query FlatDensityQuery) ([]DensityBucket, error)
+}
+
 // LogReader queries log data from the storage backend.
 type LogReader interface {
 	// SearchLogs searches for logs matching the query parameters.

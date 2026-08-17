@@ -340,6 +340,27 @@ type MetricFlatResult struct {
 	Truncated bool
 }
 
+// FlatDensityQuery is the ES-local density probe: same filter as MetricFlatQuery
+// but asks for a bucketed doc-count histogram rather than raw samples.
+type FlatDensityQuery struct {
+	AppID         string
+	MetricName    string
+	Labels        map[string]string
+	LabelMatch    map[string]string
+	LabelNot      map[string]string
+	LabelNotMatch map[string]string
+	ServiceName   string
+	TimeRange     TimeRange
+	BucketWidthMs int64
+	IndexPattern  string
+}
+
+// DensityBucket is a single time bucket of a flat-density probe.
+type DensityBucket struct {
+	StartMs  int64
+	DocCount int64
+}
+
 // ── Trace Metrics Types ────────────────────────────
 
 // TraceMetricsQuery is the ES-local type for a TraceQL metrics query.
