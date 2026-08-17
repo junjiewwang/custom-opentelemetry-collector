@@ -50,6 +50,21 @@ func TranslatePromQLRegex(pattern string) RegexTranslation {
 		return RegexTranslation{Strategy: StrategyUnsupported, OriginalRegex: pattern}
 	}
 
+	// Preserve the caller's original pattern for OriginalRegex (used by
+	// post-filter backtracking), even though we may strip a wrapping (...) group
+	// below for the terms/prefix detection.
+	original := pattern
+
+	// Grafana's multi-value template variables expand to a parenthesized
+	// alternation, e.g. service_name=~"(a|b|c)". A single wrapping (...) group
+	// is semantically identical to the bare alternation, but splitUnescapedPipe
+	// otherwise leaves "(a" and "c)" with unbalanced parentheses that fail the
+	// literal check and degrade to StrategyUnsupported — which then relies on
+	// post-filtering over a series' labels that may not carry the label at all
+	// (e.g. service_name lives in a top-level field), yielding 0 series. Strip
+	// one outermost wrapping group here when it spans the whole pattern.
+	pattern = stripOuterParens(pattern)
+
 	// Split by unescaped "|" (alternation) to detect multi-value patterns.
 	alternatives := splitUnescapedPipe(pattern)
 
@@ -65,33 +80,33 @@ func TranslatePromQLRegex(pattern string) RegexTranslation {
 				return RegexTranslation{
 					Strategy:      StrategyPrefix,
 					Prefix:        prefix,
-					OriginalRegex: pattern,
+					OriginalRegex: original,
 				}
 			}
 			// Mixed alternation with prefix is unsupported.
-			return RegexTranslation{Strategy: StrategyUnsupported, OriginalRegex: pattern}
+			return RegexTranslation{Strategy: StrategyUnsupported, OriginalRegex: original}
 		} else {
 			// Complex regex → unsupported.
-			return RegexTranslation{Strategy: StrategyUnsupported, OriginalRegex: pattern}
+			return RegexTranslation{Strategy: StrategyUnsupported, OriginalRegex: original}
 		}
 	}
 
 	if len(literals) == 0 {
-		return RegexTranslation{Strategy: StrategyUnsupported, OriginalRegex: pattern}
+		return RegexTranslation{Strategy: StrategyUnsupported, OriginalRegex: original}
 	}
 
 	if len(literals) == 1 {
 		return RegexTranslation{
 			Strategy:      StrategyTerm,
 			Values:        literals,
-			OriginalRegex: pattern,
+			OriginalRegex: original,
 		}
 	}
 
 	return RegexTranslation{
 		Strategy:      StrategyTerms,
 		Values:        literals,
-		OriginalRegex: pattern,
+		OriginalRegex: original,
 	}
 }
 
@@ -126,6 +141,22 @@ func PostFilterByRegex(value, promqlPattern string) bool {
 }
 
 // ── Internal helpers ─────────────────────────────────
+
+// stripOuterParens removes one outermost wrapping (...) group if, and only if,
+// the parentheses span the entire pattern and contain no further parentheses.
+// "(a|b)" → "a|b"; "(a|b)(c|d)" and "((a|b))" are left unchanged (the latter
+// still has an inner group after stripping one layer, which correctly stays
+// unsupported rather than being mis-split).
+func stripOuterParens(pattern string) string {
+	if len(pattern) < 2 || pattern[0] != '(' || pattern[len(pattern)-1] != ')' {
+		return pattern
+	}
+	inner := pattern[1 : len(pattern)-1]
+	if strings.ContainsAny(inner, "()") {
+		return pattern
+	}
+	return inner
+}
 
 // splitUnescapedPipe splits a pattern by unescaped "|" characters.
 // A pipe is escaped if preceded by an odd number of backslashes.

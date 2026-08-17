@@ -123,6 +123,27 @@ func TestTranslatePromQLRegex(t *testing.T) {
 				OriginalRegex: `grpc\.health\.v1\.Health/Check`,
 			},
 		},
+		{
+			// Grafana multi-value template variables emit a parenthesized
+			// alternation: service_name=~"(a|b|c)". Must be treated as a plain
+			// terms alternation, not StrategyUnsupported.
+			name:    "parenthesized alternation",
+			pattern: "(test-java-gateway-service|test-java-stock-service)",
+			expected: RegexTranslation{
+				Strategy: StrategyTerms,
+				Values:   []string{"test-java-gateway-service", "test-java-stock-service"},
+				OriginalRegex: "(test-java-gateway-service|test-java-stock-service)",
+			},
+		},
+		{
+			name:    "parenthesized single value",
+			pattern: "(my-service)",
+			expected: RegexTranslation{
+				Strategy:      StrategyTerm,
+				Values:        []string{"my-service"},
+				OriginalRegex: "(my-service)",
+			},
+		},
 	}
 
 	for _, tt := range tests {

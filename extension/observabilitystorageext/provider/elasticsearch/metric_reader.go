@@ -579,7 +579,7 @@ func (r *MetricReader) listLabelNamesFromMeta(ctx context.Context, metricName st
 	req := &SearchRequest{
 		Query:  query,
 		Size:   10000,
-		Source: []string{FieldMetaLabelKeys},
+		Source: []string{FieldMetaLabelKeys, FieldMetaServiceNames},
 	}
 	resp, err := r.searcher.Search(ctx, metaIndexName(r.config.Metrics.IndexPrefix), req)
 	if err != nil {
@@ -589,13 +589,23 @@ func (r *MetricReader) listLabelNamesFromMeta(ctx context.Context, metricName st
 	labelSet := make(map[string]struct{})
 	for _, hit := range resp.Hits.Hits {
 		var doc struct {
-			LabelKeys []string `json:"labelKeys"`
+			LabelKeys    []string `json:"labelKeys"`
+			ServiceNames []string `json:"serviceNames"`
 		}
 		if err := json.Unmarshal(hit.Source, &doc); err != nil {
 			continue
 		}
 		for _, k := range doc.LabelKeys {
 			labelSet[k] = struct{}{}
+		}
+		// service_name lives in the top-level serviceName field, not "labels", so
+		// labelKeys never includes it. The sampling fallback path promotes it from
+		// doc.ServiceName; mirror that here from the meta doc's ServiceNames so a
+		// bare-metric range query groups by service_name and keeps it in the
+		// series labels. Without this, multi-service panels collapse to one series
+		// and lose the service_name legend.
+		if len(doc.ServiceNames) > 0 {
+			labelSet["service_name"] = struct{}{}
 		}
 	}
 	names := make([]string, 0, len(labelSet))

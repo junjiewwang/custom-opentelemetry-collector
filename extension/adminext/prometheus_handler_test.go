@@ -136,6 +136,9 @@ func TestExtractMetricNameFromMatch(t *testing.T) {
 		{"multiple matches takes first", []string{`{__name__="metric_a"}`, `{__name__="metric_b"}`}, "metric_a"},
 		{"no name label", []string{`{server="test"}`}, ""},
 		{"empty string", []string{""}, ""},
+		// Bare metric name (no braces) — what Grafana's label_values(metric, label)
+		// template query actually sends. Must be treated as {__name__="metric"}.
+		{"bare metric name", []string{"jvm.memory.used"}, "jvm.memory.used"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

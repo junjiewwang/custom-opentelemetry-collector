@@ -459,6 +459,19 @@ type promExemplar struct {
 // instead to get individual metric names.
 func extractMetricNameFromMatch(matches []string) string {
 	for _, m := range matches {
+		// Bare metric name (e.g. match[]=jvm.memory.used): not a braced selector.
+		// Prometheus treats this as equivalent to {__name__="jvm.memory.used"}.
+		// Without this, Grafana's label_values(metric, label) template query —
+		// which sends the bare metric name — falls through to an empty match and
+		// the label-values call degrades to "all metrics", listing services that
+		// have no data for that metric.
+		if !strings.Contains(m, "{") {
+			if m == "" {
+				continue
+			}
+			return m
+		}
+
 		i := strings.Index(m, PromLabelName)
 		if i < 0 {
 			continue
