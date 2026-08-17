@@ -52,19 +52,19 @@ func newPromHandlers(e *Extension) *promHandlers {
 // tryPromQLRange executes the PromQL expression as a range query over
 // [start, end] with the given step. Returns nil on failure so the caller
 // falls back to the subset parser.
-func (h *promHandlers) tryPromQLRange(queryStr string, start, end time.Time, step time.Duration) *promQueryData {
+func (h *promHandlers) tryPromQLRange(ctx context.Context, queryStr string, start, end time.Time, step time.Duration) *promQueryData {
 	if h.engine == nil || h.queryable == nil {
 		return nil
 	}
 	queryStr = normalizeQueryForPromQL(queryStr)
 
-	q, err := h.engine.NewRangeQuery(context.Background(), h.queryable, nil, queryStr, start, end, step)
+	q, err := h.engine.NewRangeQuery(ctx, h.queryable, nil, queryStr, start, end, step)
 	if err != nil {
 		h.logger.Error("promql range query parse failed", zap.String("query", queryStr), zap.Error(err))
 		return nil
 	}
 	defer q.Close()
-	res := q.Exec(context.Background())
+	res := q.Exec(ctx)
 	if res.Err != nil {
 		h.logger.Error("promql range query exec failed", zap.String("query", queryStr), zap.Error(res.Err))
 		return nil
@@ -94,7 +94,7 @@ func (h *promHandlers) tryPromQLRange(queryStr string, start, end time.Time, ste
 // tryPromQL executes the PromQL expression via the full promql.Engine and returns
 // the serialized result. Returns nil on any error so the caller falls back to
 // the subset parsePromQL parser.
-func (h *promHandlers) tryPromQL(queryStr string, evalTime time.Time) *promQueryData {
+func (h *promHandlers) tryPromQL(ctx context.Context, queryStr string, evalTime time.Time) *promQueryData {
 	if h.engine == nil || h.queryable == nil {
 		return nil
 	}
@@ -102,13 +102,13 @@ func (h *promHandlers) tryPromQL(queryStr string, evalTime time.Time) *promQuery
 	// underscored names (jvm_memory_used) so the parser doesn't reject them.
 	queryStr = normalizeQueryForPromQL(queryStr)
 
-	q, err := h.engine.NewInstantQuery(context.Background(), h.queryable, nil, queryStr, evalTime)
+	q, err := h.engine.NewInstantQuery(ctx, h.queryable, nil, queryStr, evalTime)
 	if err != nil {
 		h.logger.Error("promql engine NewInstantQuery failed", zap.String("query", queryStr), zap.Error(err))
 		return nil
 	}
 	defer q.Close()
-	res := q.Exec(context.Background())
+	res := q.Exec(ctx)
 	if res.Err != nil {
 		h.logger.Error("promql engine Exec failed", zap.String("query", queryStr), zap.Error(res.Err))
 		return nil

@@ -142,7 +142,7 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 	// Falls back to the old parser for:
 	//   - engine failures / empty results
 	//   - simple queries the old parser handles well
-	if result := h.tryPromQL(queryStr, evalTime); result != nil {
+	if result := h.tryPromQL(r.Context(), queryStr, evalTime); result != nil {
 		hasData := false
 		switch items := result.Result.(type) {
 		case []promVectorSample:
@@ -226,7 +226,7 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 	// empty result), use it — the old parser doesn't support delta/rate/+
 	// and would 400 on those expressions.
 	if isComplexPromQL(queryStr) {
-		if result := h.tryPromQLRange(queryStr, start, end, step); result != nil {
+		if result := h.tryPromQLRange(r.Context(), queryStr, start, end, step); result != nil {
 			items, _ := result.Result.([]promMatrixSample)
 			h.writePromSuccess(w, &promQueryData{
 				ResultType: ResultTypeMatrix,
