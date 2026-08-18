@@ -48,3 +48,12 @@ func TestIsHistogramSubSeriesQuery(t *testing.T) {
 	assert.False(t, isHistogramSubSeriesQuery("rate(x_count[5m])")) // _count excluded
 	assert.False(t, isHistogramSubSeriesQuery("rate(x[5m])"))
 }
+
+func TestIsRateFunc(t *testing.T) {
+	for _, fn := range []string{"rate", "increase", "irate", "delta", "deriv", "idelta"} {
+		assert.True(t, isRateFunc(fn), "%s must be raw-only", fn)
+	}
+	for _, fn := range []string{"avg", "sum", "max", "min", "count", "", "count_over_time", "histogram_quantile"} {
+		assert.False(t, isRateFunc(fn), "%s must NOT be raw-only (gauge aggregation needs rollup)", fn)
+	}
+}

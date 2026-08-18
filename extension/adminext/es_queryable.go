@@ -121,9 +121,16 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 		if hints.End   > 0 { endMS   = minInt64(endMS,   hints.End)   }
 	}
 
+	// rate/increase/irate/delta must read ONLY raw (non-rollup) indices: rollup
+	// counter docs carry Value=last (cumulative at bucket-end) timestamped at
+	// bucket-start, which inflates the computed delta. Gauge aggregations
+	// (avg/sum/max/...) MUST read rollup too, or 2h-older data disappears — so
+	// gate raw-only on the surrounding function, not unconditionally.
+	forRateQuery := hints != nil && isRateFunc(hints.Func)
+
 	// Fast path: single concrete metric name
 	if metricName != "" && !isRegex {
-		raw, err := q.selectConcrete(ctx, metricName, labelEq, labelRe, appID, startMS, endMS)
+		raw, err := q.selectConcrete(ctx, metricName, labelEq, labelRe, appID, startMS, endMS, forRateQuery)
 		if err != nil {
 			q.logger.Error("select concrete failed", zap.String("metric", metricName), zap.Error(err))
 			return storage.ErrSeriesSet(err)
@@ -171,7 +178,7 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 		return storage.EmptySeriesSet()
 	}
 
-	return q.selectMultipleMetrics(ctx, allNames, labelEq, labelRe, appID, startMS, endMS, sortSeries)
+	return q.selectMultipleMetrics(ctx, allNames, labelEq, labelRe, appID, startMS, endMS, sortSeries, forRateQuery)
 }
 
 // esFlatSliceResult is the per-slice aggregation of a QueryFlat sub-query in
@@ -197,7 +204,7 @@ const esFlatSliceFloor = time.Minute
 // result, halve, repeat" approach, which wasted ~59% of ES work on discarded
 // probes. With density slicing, a 1h high-cardinality window goes from 7 ES
 // requests (3 discarded) to 1 density + 4 effective fetches, all parallel.
-func (q *esQuerier) bisectFlatSlice(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64) esFlatSliceResult {
+func (q *esQuerier) bisectFlatSlice(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, forRateQuery bool) esFlatSliceResult {
 	ctx, span := otel.Tracer("").Start(ctx, "bisectFlatSlice",
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(
@@ -210,11 +217,11 @@ func (q *esQuerier) bisectFlatSlice(ctx context.Context, metricName string, labe
 	// Try to slice up front via density probe.
 	if slices, ok := q.planFlatSlices(ctx, metricName, labelEq, labelRe, appID, startMS, endMS); ok {
 		span.SetAttributes(attribute.Int("planned_slices", len(slices)))
-		return q.fetchFlatSlices(ctx, metricName, labelEq, labelRe, appID, slices)
+		return q.fetchFlatSlices(ctx, metricName, labelEq, labelRe, appID, slices, forRateQuery)
 	}
 
 	// Fallback: recursive divide-on-truncation.
-	return q.bisectFlatSliceRecursive(ctx, metricName, labelEq, labelRe, appID, startMS, endMS)
+	return q.bisectFlatSliceRecursive(ctx, metricName, labelEq, labelRe, appID, startMS, endMS, forRateQuery)
 }
 
 // planFlatSlices uses a density probe to compute leaf slice boundaries such
@@ -275,11 +282,11 @@ type flatSliceRange struct {
 
 // fetchFlatSlices fetches each slice concurrently (bounded by the flat
 // semaphore) and merges results in time order.
-func (q *esQuerier) fetchFlatSlices(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, slices []flatSliceRange) esFlatSliceResult {
+func (q *esQuerier) fetchFlatSlices(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, slices []flatSliceRange, forRateQuery bool) esFlatSliceResult {
 	if len(slices) == 1 {
 		// Density already confirmed this single slice is under the cap — fetch
 		// it directly, no recursion.
-		return q.fetchOneFlat(ctx, metricName, labelEq, labelRe, appID, slices[0].start, slices[0].end)
+		return q.fetchOneFlat(ctx, metricName, labelEq, labelRe, appID, slices[0].start, slices[0].end, forRateQuery)
 	}
 
 	sem := q.flatSemaphore()
@@ -292,7 +299,7 @@ func (q *esQuerier) fetchFlatSlices(ctx context.Context, metricName string, labe
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = q.fetchOneFlat(ctx, metricName, labelEq, labelRe, appID, s.start, s.end)
+			results[i] = q.fetchOneFlat(ctx, metricName, labelEq, labelRe, appID, s.start, s.end, forRateQuery)
 		}()
 	}
 	wg.Wait()
@@ -311,7 +318,7 @@ func (q *esQuerier) fetchFlatSlices(ctx context.Context, metricName string, labe
 
 // fetchOneFlat issues a single QueryFlat for [startMS, endMS) without any
 // further bisection. It is used for density-planned leaf slices.
-func (q *esQuerier) fetchOneFlat(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64) esFlatSliceResult {
+func (q *esQuerier) fetchOneFlat(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, forRateQuery bool) esFlatSliceResult {
 	fq := observabilitystorageext.MetricFlatQuery{
 		MetricName: metricName, Labels: labelEq, LabelMatch: labelRe,
 		TimeRange: observabilitystorageext.TimeRange{
@@ -320,7 +327,7 @@ func (q *esQuerier) fetchOneFlat(ctx context.Context, metricName string, labelEq
 		},
 		MaxDocs:      0,
 		AppID:        appID,
-		ForRateQuery: true,
+		ForRateQuery: forRateQuery,
 	}
 	fr, err := q.reader.QueryFlat(ctx, fq)
 	if err != nil {
@@ -335,7 +342,7 @@ func (q *esQuerier) fetchOneFlat(ctx context.Context, metricName string, labelEq
 // bisectFlatSliceRecursive is the fallback divide-on-truncation path. It keeps
 // the original semantics (probe, halve, recurse) for readers without density
 // support and for the rare single-bucket-overflow case.
-func (q *esQuerier) bisectFlatSliceRecursive(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64) esFlatSliceResult {
+func (q *esQuerier) bisectFlatSliceRecursive(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, forRateQuery bool) esFlatSliceResult {
 	fq := observabilitystorageext.MetricFlatQuery{
 		MetricName: metricName, Labels: labelEq, LabelMatch: labelRe,
 		TimeRange: observabilitystorageext.TimeRange{
@@ -344,7 +351,7 @@ func (q *esQuerier) bisectFlatSliceRecursive(ctx context.Context, metricName str
 		},
 		MaxDocs:      0,
 		AppID:        appID,
-		ForRateQuery: true,
+		ForRateQuery: forRateQuery,
 	}
 	fr, err := q.reader.QueryFlat(ctx, fq)
 	if err != nil {
@@ -374,8 +381,8 @@ func (q *esQuerier) bisectFlatSliceRecursive(ctx context.Context, metricName str
 	)
 
 	midMS := startMS + spanMS/2
-	left := q.bisectFlatSliceRecursive(ctx, metricName, labelEq, labelRe, appID, startMS, midMS)
-	right := q.bisectFlatSliceRecursive(ctx, metricName, labelEq, labelRe, appID, midMS, endMS)
+	left := q.bisectFlatSliceRecursive(ctx, metricName, labelEq, labelRe, appID, startMS, midMS, forRateQuery)
+	right := q.bisectFlatSliceRecursive(ctx, metricName, labelEq, labelRe, appID, midMS, endMS, forRateQuery)
 
 	return esFlatSliceResult{
 		samples:   append(left.samples, right.samples...),
@@ -387,7 +394,7 @@ func (q *esQuerier) bisectFlatSliceRecursive(ctx context.Context, metricName str
 // selectConcreteSliced splits a large time window into concurrent QueryFlat
 // sub-queries (each ≤ maxSlice) and merges the results. This avoids ES
 // timeouts on 6h–24h windows where a single FlatQuery would time out.
-func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, cacheKey string, maxSlice time.Duration) ([]observabilitystorageext.MetricRawSeries, error) {
+func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, cacheKey string, maxSlice time.Duration, forRateQuery bool) ([]observabilitystorageext.MetricRawSeries, error) {
 	sliceSize := int64(maxSlice / time.Millisecond)
 	slices := int((endMS-startMS)/sliceSize + 1)
 	results := make([]esFlatSliceResult, slices)
@@ -403,7 +410,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = q.bisectFlatSlice(ctx, metricName, labelEq, labelRe, appID, sStart, sEnd)
+			results[i] = q.bisectFlatSlice(ctx, metricName, labelEq, labelRe, appID, sStart, sEnd, forRateQuery)
 		}()
 	}
 	wg.Wait()
@@ -481,13 +488,13 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 // selectConcrete fetches data for a single metric from ES, with per-Querier
 // caching to avoid duplicate ES round-trips when the engine queries the same
 // metric+timestamp combination multiple times.
-func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64) ([]observabilitystorageext.MetricRawSeries, error) {
+func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, forRateQuery bool) ([]observabilitystorageext.MetricRawSeries, error) {
 	// Lazy-init per-Querier cache
 	if q.qCache == nil {
 		q.qCache = &queryCache{}
 	}
 
-	cacheKey := fmt.Sprintf("%s|%s|%d|%d", metricName, joinLabels(labelEq), startMS, endMS)
+	cacheKey := fmt.Sprintf("%s|%s|%d|%d|raw=%v", metricName, joinLabels(labelEq), startMS, endMS, forRateQuery)
 	if cached := q.qCache.get(cacheKey); cached != nil {
 		return cached, nil
 	}
@@ -505,7 +512,7 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 		const maxSliceWindow = 2 * time.Hour
 		window := time.Duration(endMS-startMS) * time.Millisecond
 		if window > maxSliceWindow {
-			return q.selectConcreteSliced(ctx, metricName, labelEq, labelRe, appID, startMS, endMS, cacheKey, maxSliceWindow)
+			return q.selectConcreteSliced(ctx, metricName, labelEq, labelRe, appID, startMS, endMS, cacheKey, maxSliceWindow, forRateQuery)
 		}
 
 		// ≤2h: fetch via bisectFlatSlice — the same divide-on-truncation path
@@ -516,7 +523,7 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 		// rather than silently dropping the tail. Previously this branch used a
 		// one-shot QueryFlat with a fixed 15m fallback, which was neither
 		// adaptive nor shared with the >2h path.
-		res := q.bisectFlatSlice(ctx, metricName, labelEq, labelRe, appID, startMS, endMS)
+		res := q.bisectFlatSlice(ctx, metricName, labelEq, labelRe, appID, startMS, endMS, forRateQuery)
 		if res.err != nil {
 			return nil, fmt.Errorf("query flat %s: %w", metricName, res.err)
 		}
@@ -630,7 +637,7 @@ func joinLabels(labels map[string]string) string {
 
 // selectMultipleMetrics concurrently fetches data for each metric name and
 // merges the results into a single SeriesSet.
-func (q *esQuerier) selectMultipleMetrics(ctx context.Context, names []string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, sortSeries bool) storage.SeriesSet {
+func (q *esQuerier) selectMultipleMetrics(ctx context.Context, names []string, labelEq, labelRe map[string]string, appID string, startMS, endMS int64, sortSeries bool, forRateQuery bool) storage.SeriesSet {
 	var (
 		mu     sync.Mutex
 		series []storage.Series
@@ -646,7 +653,7 @@ func (q *esQuerier) selectMultipleMetrics(ctx context.Context, names []string, l
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			raw, err := q.selectConcrete(ctx, name, labelEq, labelRe, appID, startMS, endMS)
+			raw, err := q.selectConcrete(ctx, name, labelEq, labelRe, appID, startMS, endMS, forRateQuery)
 			if err != nil {
 				q.logger.Debug("select metric skipped", zap.String("metric", name), zap.Error(err))
 				return
@@ -1013,4 +1020,18 @@ func (it *esSeriesIterator) Err() error { return nil }
 
 func maxInt64(a, b int64) int64 { if a < b { return b }; return a }
 func minInt64(a, b int64) int64 { if a > b { return b }; return a }
+
+// isRateFunc reports whether a PromQL engine hints.Func denotes a range-vector
+// counter function whose flat read must be raw-only (rollup's Value=last is
+// cumulative-at-bucket-end and would inflate the delta). Gauge aggregations
+// (avg/sum/max/min/count) and everything else return false so they still read
+// rollup tier and don't lose >2h-old data.
+func isRateFunc(fn string) bool {
+	switch fn {
+	case "rate", "increase", "irate", "delta", "deriv", "idelta":
+		return true
+	}
+	return false
+}
+
 var _ = math.MaxFloat64

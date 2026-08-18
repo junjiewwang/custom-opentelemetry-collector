@@ -105,7 +105,7 @@ func TestBisectFlatSlice_DensityPlansUpFront(t *testing.T) {
 	start := time.UnixMilli(1_700_000_000_000)
 	end := start.Add(1 * time.Hour)
 
-	res := q.bisectFlatSlice(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli())
+	res := q.bisectFlatSlice(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), false)
 
 	assert.False(t, res.truncated)
 	// 60 one-minute buckets → 60 samples, all fetched (no drop).
@@ -143,7 +143,7 @@ func TestBisectFlatSlice_NotTruncatedReturnsAsIs(t *testing.T) {
 	start := time.UnixMilli(1_700_000_000_000)
 	end := start.Add(1 * time.Hour) // below truncateAbove
 
-	res := q.bisectFlatSlice(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli())
+	res := q.bisectFlatSlice(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), false)
 
 	assert.False(t, res.truncated)
 	assert.Len(t, res.samples, 4) // 1h @ 15m granularity
@@ -155,7 +155,7 @@ func TestBisectFlatSlice_TruncatedBisectsAndMerges(t *testing.T) {
 	start := time.UnixMilli(1_700_000_000_000)
 	end := start.Add(4 * time.Hour) // 4h > 1h truncateAbove
 
-	res := q.bisectFlatSlice(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli())
+	res := q.bisectFlatSlice(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), false)
 
 	// After bisection, every leaf ≤1h → not truncated.
 	assert.False(t, res.truncated)
@@ -168,7 +168,7 @@ func TestBisectFlatSlice_TruncatedAtFloorKeepsFlag(t *testing.T) {
 	start := time.UnixMilli(1_700_000_000_000)
 	end := start.Add(30 * time.Second) // below 1m floor
 
-	res := q.bisectFlatSlice(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli())
+	res := q.bisectFlatSlice(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), false)
 
 	assert.True(t, res.truncated, "floor-clamped truncation must stay flagged")
 }
@@ -181,7 +181,7 @@ func TestSelectConcreteSliced_EndToEnd(t *testing.T) {
 	start := time.UnixMilli(1_700_000_000_000)
 	end := start.Add(4 * time.Hour)
 
-	series, err := q.selectConcreteSliced(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), "cache-key", 2*time.Hour)
+	series, err := q.selectConcreteSliced(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), "cache-key", 2*time.Hour, false)
 
 	require.NoError(t, err)
 	require.Len(t, series, 1, "single label set → one series")
@@ -204,7 +204,7 @@ func TestSelectConcreteSliced_DedupAcrossBisection(t *testing.T) {
 	start := time.UnixMilli(1_700_000_000_000)
 	end := start.Add(2 * time.Hour)
 
-	series, err := q.selectConcreteSliced(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), "cache-key", 2*time.Hour)
+	series, err := q.selectConcreteSliced(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), "cache-key", 2*time.Hour, false)
 
 	require.NoError(t, err)
 	require.Len(t, series, 1)
@@ -222,7 +222,7 @@ func TestSelectConcrete_Sub2hTruncatedBisects(t *testing.T) {
 	start := time.UnixMilli(1_700_000_000_000)
 	end := start.Add(90 * time.Minute) // ≤2h but >1h truncateAbove
 
-	series, err := q.selectConcrete(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli())
+	series, err := q.selectConcrete(context.Background(), "traces_spanmetrics_calls_total", nil, nil, "app", start.UnixMilli(), end.UnixMilli(), false)
 
 	require.NoError(t, err)
 	require.Len(t, series, 1)
