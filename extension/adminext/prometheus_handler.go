@@ -987,7 +987,7 @@ func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, e
 
 			name := expr.MetricName
 			if expr.HistogramSub != "" {
-				name = expr.BaseMetric + "_" + expr.HistogramSub
+				name = expr.BaseMetric
 			}
 			m := promMetric{PromLabelName: name}
 			for k, v := range dp.Labels {
@@ -1216,7 +1216,7 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 		// Reconstruct Prometheus metric name with _sum/_bucket suffix if applicable.
 		name := expr.MetricName
 		if expr.HistogramSub != "" {
-			name = expr.BaseMetric + "_" + expr.HistogramSub
+			name = expr.BaseMetric
 		}
 		m := promMetric{PromLabelName: name}
 		for k, v := range sg.Labels {
@@ -1297,7 +1297,7 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 		// Reconstruct Prometheus metric name with _sum/_bucket suffix if applicable.
 		name := expr.MetricName
 		if expr.HistogramSub != "" {
-			name = expr.BaseMetric + "_" + expr.HistogramSub
+			name = expr.BaseMetric
 		}
 		m := promMetric{PromLabelName: name}
 		for k, v := range sg.Labels {
