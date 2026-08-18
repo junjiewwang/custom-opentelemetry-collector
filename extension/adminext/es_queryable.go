@@ -768,10 +768,30 @@ func (q *esQuerier) expandHistogramBuckets(series []observabilitystorageext.Metr
 			}
 			perBucket[i].Labels = lbls
 		}
+
+		// The collector's self-telemetry histogram is exported with DELTA
+		// temporality (the framework's lowMemory selector): each 60s export
+		// carries the per-interval bucket increments, NOT a cumulative count.
+		// Prometheus rate()/histogram_quantile expect a cumulative histogram, so
+		// accumulate bucket_counts ACROSS samples (in time order) to reconstruct
+		// the monotonic cumulative distribution. The old code reset cum=0 per
+		// sample, which collapsed every le series to "single-hit" values and made
+		// sum by (le) (rate(...)) return 0.
+		//
+		// BucketCounts[i] is the per-bucket increment (delta). The emitted value
+		// for le=bounds[i] must be the CUMULATIVE count ≤bounds[i], i.e. the
+		// running sum of all buckets up to i.
+		cumCounts := make([]float64, len(bc))
 		for _, sm := range s.Samples {
-			cum := float64(0)
 			for bi := range sm.BucketCounts {
-				cum += float64(sm.BucketCounts[bi])
+				if bi >= len(cumCounts) {
+					break
+				}
+				cumCounts[bi] += float64(sm.BucketCounts[bi])
+			}
+			cum := float64(0)
+			for bi := range cumCounts {
+				cum += cumCounts[bi]
 				perBucket[bi].Samples = append(perBucket[bi].Samples,
 					observabilitystorageext.MetricSample{TimestampMs: sm.TimestampMs, Value: cum})
 			}
