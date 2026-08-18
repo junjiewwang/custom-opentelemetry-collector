@@ -4,7 +4,9 @@
 package adminext
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -56,4 +58,17 @@ func TestIsRateFunc(t *testing.T) {
 	for _, fn := range []string{"avg", "sum", "max", "min", "count", "", "count_over_time", "histogram_quantile"} {
 		assert.False(t, isRateFunc(fn), "%s must NOT be raw-only (gauge aggregation needs rollup)", fn)
 	}
+}
+
+// TestTryPromQL_HistogramSubSeriesShortCircuits verifies tryPromQL returns nil
+// immediately (without invoking the engine) for _bucket/_sum queries, so the
+// instant path no longer logs a wasted parse ERROR for every histogram_quantile
+// sub-query before falling through to the subset parser.
+func TestTryPromQL_HistogramSubSeriesShortCircuits(t *testing.T) {
+	h := &promHandlers{engine: nil, queryable: nil} // nil engine: would panic if it tried to use it
+	// A histogram_quantile over _bucket — must short-circuit before NewInstantQuery.
+	result := h.tryPromQL(context.Background(),
+		`histogram_quantile(.9, sum(rate(traces_spanmetrics_latency_bucket{span_name=~"opentelemetry\\.proto\\.collector\\.logs\\.v1\\.LogsService/Export"}[3600s])) by (le))`,
+		time.Now())
+	assert.Nil(t, result, "histogram _bucket query must short-circuit without calling the engine")
 }

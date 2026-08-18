@@ -102,6 +102,17 @@ func (h *promHandlers) tryPromQL(ctx context.Context, queryStr string, evalTime 
 	// underscored names (jvm_memory_used) so the parser doesn't reject them.
 	queryStr = normalizeQueryForPromQL(queryStr)
 
+	// Short-circuit histogram _bucket/_sum sub-series: ES stores the buckets on
+	// the base metric document, not as separate series, so esQuerier.Select can
+	// never resolve them — the engine would parse (or fail on Grafana's \\. regex
+	// escaping) and return empty, then we'd fall through anyway. Skipping keeps
+	// the instant path consistent with isComplexPromQL (which already bypasses the
+	// engine for _bucket/_sum on the range path) and avoids a wasted ERROR log per
+	// histogram_quantile sub-query.
+	if isHistogramSubSeriesQuery(queryStr) {
+		return nil
+	}
+
 	q, err := h.engine.NewInstantQuery(ctx, h.queryable, nil, queryStr, evalTime)
 	if err != nil {
 		h.logger.Error("promql engine NewInstantQuery failed", zap.String("query", queryStr), zap.Error(err))
