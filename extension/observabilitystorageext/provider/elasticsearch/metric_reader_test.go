@@ -490,3 +490,45 @@ func TestBuildAggregation_NoGroupByUsesSimpleHistogram(t *testing.T) {
 	assert.True(t, hasTimeSeries, "no groupBy → simple time_series aggregation")
 	assert.False(t, hasByGroup, "no groupBy → no composite")
 }
+
+// TestQueryFlat_ForRateQueryExcludesRollup verifies that a flat query with
+// ForRateQuery=true appends negative patterns for rollup and meta indices so
+// rate()/increase()/irate() only read raw counter samples (whose Value is the
+// cumulative value AT the timestamp, not rollup's bucket-end `last`).
+func TestQueryFlat_ForRateQueryExcludesRollup(t *testing.T) {
+	fake := &fakeSearcher{Responses: []any{&SearchResponse{}}}
+	r := newTestMetricReaderForQuery(fake)
+
+	start := time.UnixMilli(1700000000000)
+	end := time.UnixMilli(1700003600000)
+
+	_, err := r.QueryFlat(t.Context(), MetricFlatQuery{
+		MetricName:   "kafka.consumer.bytes_consumed_total",
+		TimeRange:    TimeRange{Start: start, End: end},
+		ForRateQuery: true,
+	})
+	require.NoError(t, err)
+
+	pat := fake.LastIndexPattern
+	assert.Contains(t, pat, "otel-metrics-rollup-*", "must exclude rollup indices")
+	assert.Contains(t, pat, "otel-metrics-meta", "must exclude meta index")
+}
+
+// TestQueryFlat_NonRateIncludesRollup verifies a non-rate flat query does NOT
+// append the rollup/meta exclusions (histogram_quantile still reads rollup).
+func TestQueryFlat_NonRateIncludesRollup(t *testing.T) {
+	fake := &fakeSearcher{Responses: []any{&SearchResponse{}}}
+	r := newTestMetricReaderForQuery(fake)
+
+	start := time.UnixMilli(1700000000000)
+	end := time.UnixMilli(1700003600000)
+
+	_, err := r.QueryFlat(t.Context(), MetricFlatQuery{
+		MetricName: "some.histogram",
+		TimeRange:  TimeRange{Start: start, End: end},
+	})
+	require.NoError(t, err)
+
+	pat := fake.LastIndexPattern
+	assert.NotContains(t, pat, "otel-metrics-rollup-*", "non-rate flat query must not exclude rollup")
+}

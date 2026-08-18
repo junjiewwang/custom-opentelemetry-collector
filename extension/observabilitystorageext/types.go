@@ -375,6 +375,12 @@ type MetricFlatQuery struct {
 	// read exact source indices, avoiding IndexPatternForRange's ±1-day pad
 	// that can hit non-existent indices for sparse app/day combinations).
 	IndexPattern string `json:"indexPattern,omitempty"`
+	// ForRateQuery restricts the index scan to raw (non-rollup) indices. Must be
+	// true for rate/increase/irate queries: rollup counter docs have Value = last
+	// (cumulative at bucket-end) but are timestamped at bucket-start, making them
+	// semantically incompatible with raw cumulative-at-timestamp docs. Mixing both
+	// tiers in one flat query inflates rate() when a window brackets across tiers.
+	ForRateQuery bool `json:"forRateQuery,omitempty"`
 }
 
 // MetricFlatResult holds flat query results without ES-side grouping.

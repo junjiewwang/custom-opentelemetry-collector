@@ -1440,6 +1440,15 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 	indexPattern := query.IndexPattern
 	if indexPattern == "" {
 		indexPattern = r.indexPatternForRange(query.AppID, query.TimeRange.Start, query.TimeRange.End)
+		if query.ForRateQuery {
+			// rate/increase/irate must read ONLY raw indices: rollup counter docs
+			// carry Value = last (cumulative at bucket-end) timestamped at
+			// bucket-start, so mixing them into a flat query inflates the computed
+			// delta. rawIndexPatternForRange drops the app scope, so inline the
+			// exclusion here to preserve query.AppID routing.
+			prefix := r.config.Metrics.IndexPrefix
+			indexPattern += ",-" + prefix + "-rollup-*,-" + prefix + "-meta"
+		}
 	}
 	resp, err := r.searcher.Search(ctx, indexPattern, searchReq)
 	if err != nil {

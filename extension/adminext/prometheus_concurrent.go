@@ -194,6 +194,7 @@ func (h *promHandlers) concurrentQueryFlat(
 				TimeRange:    flatQuery.TimeRange,
 				MaxDocs:      flatQuery.MaxDocs,
 				IndexPattern: flatQuery.IndexPattern,
+				ForRateQuery: flatQuery.ForRateQuery,
 			}
 
 			result, err := h.metricReader.QueryFlat(ctx, subQuery)
@@ -320,6 +321,7 @@ func (h *promHandlers) bisectFlatQuery(
 		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
 		MaxDocs:       0,
 		IndexPattern:  flatQuery.IndexPattern,
+		ForRateQuery:  flatQuery.ForRateQuery,
 	}
 
 	result, err := h.concurrentQueryFlat(ctx, subQuery, logger)

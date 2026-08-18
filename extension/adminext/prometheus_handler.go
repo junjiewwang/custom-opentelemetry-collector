@@ -1227,6 +1227,7 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 		AppID:         expr.AppID,
+		ForRateQuery:  true,
 	}
 
 	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1315,6 +1316,7 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 		AppID:         expr.AppID,
+		ForRateQuery:  true,
 	}
 
 	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)

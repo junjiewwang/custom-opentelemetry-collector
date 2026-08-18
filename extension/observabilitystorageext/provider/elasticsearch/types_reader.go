@@ -329,6 +329,10 @@ type MetricFlatQuery struct {
 	// IndexPattern overrides the auto-derived index pattern (rollup reads
 	// exact source indices).
 	IndexPattern string
+	// ForRateQuery restricts the scan to raw (non-rollup) indices. Set for
+	// rate/increase/irate queries: rollup counter Value=last is cumulative at
+	// bucket-end but timestamped at bucket-start, incompatible with raw docs.
+	ForRateQuery bool
 }
 
 // MetricFlatResult holds flat query results.

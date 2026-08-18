@@ -318,8 +318,9 @@ func (q *esQuerier) fetchOneFlat(ctx context.Context, metricName string, labelEq
 			Start: timestamp.Time(startMS),
 			End:   timestamp.Time(endMS),
 		},
-		MaxDocs: 0,
-		AppID:   appID,
+		MaxDocs:      0,
+		AppID:        appID,
+		ForRateQuery: true,
 	}
 	fr, err := q.reader.QueryFlat(ctx, fq)
 	if err != nil {
@@ -341,8 +342,9 @@ func (q *esQuerier) bisectFlatSliceRecursive(ctx context.Context, metricName str
 			Start: timestamp.Time(startMS),
 			End:   timestamp.Time(endMS),
 		},
-		MaxDocs: 0,
-		AppID:   appID,
+		MaxDocs:      0,
+		AppID:        appID,
+		ForRateQuery: true,
 	}
 	fr, err := q.reader.QueryFlat(ctx, fq)
 	if err != nil {

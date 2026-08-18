@@ -498,6 +498,7 @@ func (a *metricReaderAdapter) QueryFlat(ctx context.Context, query MetricFlatQue
 		TimeRange:     elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
 		MaxDocs:       query.MaxDocs,
 		IndexPattern:  query.IndexPattern,
+		ForRateQuery:  query.ForRateQuery,
 	}
 	flatResult, err := a.inner.QueryFlat(ctx, esQuery)
 	if err != nil {
