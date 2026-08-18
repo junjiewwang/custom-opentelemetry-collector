@@ -21,10 +21,12 @@ func TestDetectHistogramSub(t *testing.T) {
 	}{
 		{"traces_service_graph_request_server_seconds_sum", HistogramSubSum, true},
 		{"traces_service_graph_request_server_seconds_bucket", HistogramSubBucket, true},
+		{"traces_service_graph_request_server_seconds_count", HistogramSubCount, true},
 		{"traces_spanmetrics_calls_total", "", false},
 		{"traces_service_graph_request_total", "", false},
 		{"traces_service_graph_request_server_seconds", "", false},
 		{"my_custom_summary", "", false},
+		{"jvm_thread_count", HistogramSubCount, true}, // non-histogram _count — resolved by BucketCounts-empty fallback at dispatch time
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -39,6 +41,7 @@ func TestStripHistogramSuffix(t *testing.T) {
 	tests := []struct{ input, want string }{
 		{"t_s_seconds_sum", "t_s_seconds"},
 		{"t_s_seconds_bucket", "t_s_seconds"},
+		{"t_s_seconds_count", "t_s_seconds"},
 		{"t_s_seconds", "t_s_seconds"},
 	}
 	for _, tt := range tests {
@@ -83,6 +86,50 @@ func TestResolveHistogramBucket(t *testing.T) {
 		expr := &promqlExpr{Labels: map[string]string{PromLabelLe: "abc"}}
 		v := resolveHistogramBucket(dp, expr)
 		assert.Equal(t, float64(0), v)
+	})
+}
+
+func TestExpandHistogramBucketSamples(t *testing.T) {
+	dp := observabilitystorageext.MetricDataPoint{
+		Value:          100.0,
+		ExplicitBounds: []float64{5, 10, 25},
+		BucketCounts:   []int64{2, 3, 0}, // DELTA: 2 in (0,5], 3 in (5,10], 0 in (10,25]
+		Labels:         map[string]string{"service_name": "svc-a"},
+	}
+
+	t.Run("no filter expands all bounds cumulative plus +Inf", func(t *testing.T) {
+		got := expandHistogramBucketSamples(dp, "m_bucket", 123.0, "")
+		require.Len(t, got, 4) // 3 bounds + +Inf
+
+		// le="5" → 2, le="10" → 5, le="25" → 5, +Inf → 5
+		byLe := map[string]string{}
+		for _, s := range got {
+			byLe[s.Metric[PromLabelLe]] = s.Value[1].(string)
+		}
+		assert.Equal(t, "2", byLe["5"])
+		assert.Equal(t, "5", byLe["10"])
+		assert.Equal(t, "5", byLe["25"])
+		assert.Equal(t, "5", byLe["+Inf"])
+
+		// __name__ restored with _bucket suffix; dimension labels preserved.
+		for _, s := range got {
+			assert.Equal(t, "m_bucket", s.Metric[PromLabelName])
+			assert.Equal(t, "svc-a", s.Metric["service_name"])
+		}
+	})
+
+	t.Run("le filter narrows to single bound and suppresses +Inf", func(t *testing.T) {
+		got := expandHistogramBucketSamples(dp, "m_bucket", 123.0, "10")
+		require.Len(t, got, 1)
+		assert.Equal(t, "10", got[0].Metric[PromLabelLe])
+		assert.Equal(t, "5", got[0].Value[1].(string))
+	})
+
+	t.Run("le filter +Inf returns only +Inf", func(t *testing.T) {
+		got := expandHistogramBucketSamples(dp, "m_bucket", 123.0, "+Inf")
+		require.Len(t, got, 1)
+		assert.Equal(t, "+Inf", got[0].Metric[PromLabelLe])
+		assert.Equal(t, "5", got[0].Value[1].(string))
 	})
 }
 

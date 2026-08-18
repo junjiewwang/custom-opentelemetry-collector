@@ -953,9 +953,18 @@ func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, e
 		}
 	} else {
 		// Plain instant query.
+		// `le` is a histogram-expansion dimension, NOT a stored ES label. A
+		// le="x" selector must narrow the EXPANDED buckets (done in
+		// expandHistogramBucketSamples via leFilter), not filter ES documents
+		// on a labels.le.keyword field that does not exist — which would drop
+		// every document and return empty.
+		esLabels := filterInternalLabels(labels)
+		if expr.HistogramSub == HistogramSubBucket {
+			delete(esLabels, PromLabelLe)
+		}
 		query := observabilitystorageext.MetricQuery{
 			MetricName:    expr.MetricName,
-			Labels:        filterInternalLabels(labels),
+			Labels:        esLabels,
 			LabelMatch:    labelMatch,
 			LabelNot:      expr.LabelNot,
 			LabelNotMatch: expr.LabelNotMatch,
@@ -978,33 +987,60 @@ func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, e
 
 		vectors = make([]promVectorSample, 0, len(result.Data))
 		for _, dp := range result.Data {
-			var val float64
-			if expr.HistogramSub == HistogramSubBucket {
-				val = resolveHistogramBucket(dp, expr)
-			} else {
-				val = dp.Value
+			ts := float64(parseTimeUnixMilli(dp.TimeUnixMilli)) / 1000.0
+			switch expr.HistogramSub {
+			case HistogramSubBucket:
+				// Expand one histogram document into one series per explicit bound
+				// (cumulative) plus a +Inf bucket. leFilter narrows to a single bound
+				// when the query carried le="x".
+				leFilter := expr.Labels[PromLabelLe]
+				vectors = append(vectors, expandHistogramBucketSamples(dp, expr.BaseMetric, ts, leFilter)...)
+				continue
+			case HistogramSubCount:
+				// _count = total observation count = Σ delta bucket_counts.
+				var total float64
+				for _, c := range dp.BucketCounts {
+					total += float64(c)
+				}
+				name := expr.BaseMetric
+				val := total
+				if len(dp.BucketCounts) == 0 {
+					// Not actually a histogram (e.g. a gauge that ends in _count like
+					// jvm_thread_count). Preserve the original value rather than
+					// reporting a bogus zero count.
+					val = dp.Value
+				}
+				m := promMetric{PromLabelName: name}
+				for k, v := range dp.Labels {
+					m[translateLabelToPromQL(k)] = v
+				}
+				vectors = append(vectors, promVectorSample{
+					Metric: m,
+					Value:  []any{ts, formatPromValue(val)},
+				})
+				continue
+			case HistogramSubSum:
+				// _sum = the stored `value` field (sum of observations).
+				name := expr.BaseMetric
+				m := promMetric{PromLabelName: name}
+				for k, v := range dp.Labels {
+					m[translateLabelToPromQL(k)] = v
+				}
+				vectors = append(vectors, promVectorSample{
+					Metric: m,
+					Value:  []any{ts, formatPromValue(dp.Value)},
+				})
+				continue
 			}
 
-			name := expr.MetricName
-			if expr.HistogramSub != "" {
-				name = expr.BaseMetric
-			}
-			m := promMetric{PromLabelName: name}
+			// Non-histogram (no suffix).
+			m := promMetric{PromLabelName: expr.MetricName}
 			for k, v := range dp.Labels {
-				if expr.HistogramSub == HistogramSubBucket && k == PromLabelLe {
-					continue
-				}
 				m[translateLabelToPromQL(k)] = v
-			}
-			// For _bucket: preserve the le label from the query.
-			if expr.HistogramSub == HistogramSubBucket {
-				if le, ok := expr.Labels[PromLabelLe]; ok {
-					m[PromLabelLe] = le
-				}
 			}
 			vectors = append(vectors, promVectorSample{
 				Metric: m,
-				Value:  []any{float64(parseTimeUnixMilli(dp.TimeUnixMilli)) / 1000.0, formatPromValue(val)},
+				Value:  []any{ts, formatPromValue(dp.Value)},
 			})
 		}
 	}
@@ -1257,6 +1293,13 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 	// Note: Quantile's zero value is 0.0, not NaN, so it cannot itself gate this.
 	if expr.Aggregation == AggHistogramQuantile {
 		return h.execHistogramQuantileInstant(r, expr, evalTime, labels, labelMatch)
+	}
+
+	// Heatmap instant: `sum by (le) (rate(m[5m]))`. Mirrors the range path's
+	// execHistogramBucketRange — the plain rate path below would group by a label
+	// ES does not store and collapse every bucket into one series, dropping `le`.
+	if expr.HistogramSub == HistogramSubBucket && groupsByLe(expr.GroupBy) {
+		return h.execHistogramBucketInstant(r, expr, evalTime, labels, labelMatch)
 	}
 
 	// For instant query, look back from evalTime by the range duration.
@@ -1564,6 +1607,111 @@ func (h *promHandlers) execHistogramBucketRange(r *http.Request, expr *promqlExp
 	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
 }
 
+// execHistogramBucketInstant handles the instant form `sum by (le) (rate(m[5m]))`.
+// It is the single-timestamp counterpart to execHistogramBucketRange: the same
+// delta-aware rate (aggregate window delta bucket_counts, divide by window
+// seconds, synthesize cumulative le series) but evaluated at one point.
+func (h *promHandlers) execHistogramBucketInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) []promVectorSample {
+	lookbackStart := evalTime.Add(-expr.RangeDuration)
+
+	flatQuery := observabilitystorageext.MetricFlatQuery{
+		MetricName:    expr.MetricName,
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
+		AppID:         expr.AppID,
+	}
+
+	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
+	if err != nil {
+		h.logger.Error("histogram bucket instant query_flat failed", zap.Error(err))
+		return nil
+	}
+	if result == nil || len(result.Samples) == 0 {
+		return nil
+	}
+	h.checkFlatTruncation(result)
+
+	// Non-le grouping dimensions requested alongside le, e.g. sum by (le, service).
+	extraGroupBy := make([]string, 0, len(expr.GroupBy))
+	for _, g := range expr.GroupBy {
+		if g != PromLabelLe {
+			extraGroupBy = append(extraGroupBy, g)
+		}
+	}
+
+	// Merge the raw per-series groups down to the requested grouping.
+	type bucketGroup struct {
+		labels  map[string]string
+		samples []HistogramSample
+	}
+	merged := make(map[string]*bucketGroup)
+	for _, samples := range groupSamplesByLabels(result.Samples) {
+		if len(samples) == 0 {
+			continue
+		}
+		projected := make(map[string]string, len(extraGroupBy))
+		for _, g := range extraGroupBy {
+			for k, v := range samples[0].Labels {
+				if translateLabelToPromQL(k) == g {
+					projected[g] = v
+					break
+				}
+			}
+		}
+		key := sortedLabelKey(projected)
+		g, ok := merged[key]
+		if !ok {
+			g = &bucketGroup{labels: projected}
+			merged[key] = g
+		}
+		g.samples = append(g.samples, samples...)
+	}
+
+	rangeMs := expr.RangeDuration.Milliseconds()
+	rangeSecs := expr.RangeDuration.Seconds()
+	if rangeSecs <= 0 {
+		return nil
+	}
+	evalMs := evalTime.UnixMilli()
+
+	// One output vector sample per (group, le) pair.
+	var out []promVectorSample
+	for _, g := range merged {
+		hb := AggregateHistogramSamples(g.samples, evalMs-rangeMs, evalMs)
+		if hb.TotalCount == 0 || len(hb.Bounds) == 0 {
+			continue
+		}
+
+		var cumulative int64
+		for i, bound := range hb.Bounds {
+			if i < len(hb.BucketCounts) {
+				cumulative += hb.BucketCounts[i]
+			}
+			m := promMetric{PromLabelLe: formatPromFloat(bound)}
+			for k, v := range g.labels {
+				m[k] = v
+			}
+			out = append(out, promVectorSample{
+				Metric: m,
+				Value:  []any{float64(evalMs) / 1000.0, formatPromValue(float64(cumulative) / rangeSecs)},
+			})
+		}
+		m := promMetric{PromLabelLe: "+Inf"}
+		for k, v := range g.labels {
+			m[k] = v
+		}
+		out = append(out, promVectorSample{
+			Metric: m,
+			Value:  []any{float64(evalMs) / 1000.0, formatPromValue(float64(hb.TotalCount) / rangeSecs)},
+		})
+	}
+
+	return out
+}
+
 // groupsByLe reports whether a `by (...)` clause includes the le dimension,
 // which marks the query as a histogram bucket (heatmap) query.
 func groupsByLe(groupBy []string) bool {
@@ -1598,6 +1746,64 @@ func addBucketPoint(series map[bucketSeriesKey]*promMatrixSample, order *[]bucke
 // the shortest representation that round-trips.
 func formatPromFloat(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
+// expandHistogramBucketSamples expands a single histogram MetricDataPoint (one ES
+// document with DELTA bucket_counts + explicit_bounds) into one promVectorSample
+// per explicit bound (cumulative) plus a +Inf bucket — the Prometheus _bucket
+// shape. baseMetricName is the metric name WITH the _bucket suffix restored
+// (expr.BaseMetric). ts is the sample timestamp in Unix seconds.
+//
+// leFilter, when non-empty, narrows the output to the single matching bound
+// (matching the query's le="x" selector); "+Inf" is a valid leFilter value and
+// suppresses the non-Inf bounds.
+//
+// DELTA → cumulative: Prometheus _bucket values are cumulative, but ES stores
+// per-bucket (delta) counts, so each bound's value is the running sum of all
+// bucket_counts up to and including it.
+func expandHistogramBucketSamples(dp observabilitystorageext.MetricDataPoint, baseMetricName string, ts float64, leFilter string) []promVectorSample {
+	if len(dp.ExplicitBounds) == 0 {
+		// Malformed histogram (bounds present without counts, or neither). Fall
+		// back to a single series with no le label so the query isn't silently empty.
+		m := promMetric{PromLabelName: baseMetricName}
+		for k, v := range dp.Labels {
+			m[translateLabelToPromQL(k)] = v
+		}
+		return []promVectorSample{{Metric: m, Value: []any{ts, formatPromValue(dp.Value)}}}
+	}
+
+	total := float64(0)
+	for _, c := range dp.BucketCounts {
+		total += float64(c)
+	}
+
+	out := make([]promVectorSample, 0, len(dp.ExplicitBounds)+1)
+	var cumulative float64
+	for i, bound := range dp.ExplicitBounds {
+		if i < len(dp.BucketCounts) {
+			cumulative += float64(dp.BucketCounts[i])
+		}
+		le := formatPromFloat(bound)
+		if leFilter != "" && leFilter != le {
+			continue
+		}
+		m := promMetric{PromLabelName: baseMetricName, PromLabelLe: le}
+		for k, v := range dp.Labels {
+			m[translateLabelToPromQL(k)] = v
+		}
+		out = append(out, promVectorSample{Metric: m, Value: []any{ts, formatPromValue(cumulative)}})
+	}
+
+	// +Inf carries the total count; Prometheus always emits it.
+	if leFilter == "" || leFilter == "+Inf" {
+		m := promMetric{PromLabelName: baseMetricName, PromLabelLe: "+Inf"}
+		for k, v := range dp.Labels {
+			m[translateLabelToPromQL(k)] = v
+		}
+		out = append(out, promVectorSample{Metric: m, Value: []any{ts, formatPromValue(total)}})
+	}
+
+	return out
 }
 
 // execHistogramQuantileRange handles histogram_quantile(θ, rate(_bucket[...]))

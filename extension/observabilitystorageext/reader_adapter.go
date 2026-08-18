@@ -678,9 +678,11 @@ func convertMetricResult(src *elasticsearch.MetricResult) *MetricResult {
 	data := make([]MetricDataPoint, len(src.Data))
 	for i, d := range src.Data {
 		data[i] = MetricDataPoint{
-			Labels:        d.Labels,
-			Value:         d.Value,
-			TimeUnixMilli: TimeToUnixMilli(d.Time),
+			Labels:         d.Labels,
+			Value:          d.Value,
+			TimeUnixMilli:  TimeToUnixMilli(d.Time),
+			BucketCounts:   d.BucketCounts,
+			ExplicitBounds: d.ExplicitBounds,
 		}
 	}
 	return &MetricResult{Data: data}

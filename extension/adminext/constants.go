@@ -95,11 +95,17 @@ const (
 	// HistogramSubBucket is the _bucket suffix for histogram bucket time series.
 	HistogramSubBucket = "bucket"
 
+	// HistogramSubCount is the _count suffix for histogram count time series.
+	HistogramSubCount = "count"
+
 	// HistogramSuffixSum is the literal "_sum" suffix used in metric name detection.
 	HistogramSuffixSum = "_sum"
 
 	// HistogramSuffixBucket is the literal "_bucket" suffix used in metric name detection.
 	HistogramSuffixBucket = "_bucket"
+
+	// HistogramSuffixCount is the literal "_count" suffix used in metric name detection.
+	HistogramSuffixCount = "_count"
 
 	// HistogramSuffixTotal is checked to avoid matching "_sum" inside "_total".
 	HistogramSuffixTotal = "_total"

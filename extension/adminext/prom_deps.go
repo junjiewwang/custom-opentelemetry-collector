@@ -171,6 +171,20 @@ func (h *promHandlers) tryPromQL(ctx context.Context, queryStr string, evalTime 
 // the only categories that go to the full engine. sum/max/avg and basic
 // arithmetic are still routed to the old parser to preserve existing tests.
 func isComplexPromQL(q string) bool {
+	// Histogram sub-series (_bucket/_sum) must bypass the engine: esQuerier.Select
+	// cannot resolve the suffix back to the base metric name, so the engine
+	// returns an empty matrix — which tryPromQLRange treats as "success", shadowing
+	// the subset parser's correct delta-aware expansion (execHistogramBucketRange).
+	// _bucket/_sum have ZERO collision in the ES storage layer (unlike _count,
+	// which collides with jvm_thread_count etc.), so routing them to the subset
+	// parser is unambiguous. _count is deliberately NOT included here: it must
+	// still reach the engine so unsanitizeMetricName can map jvm_thread_count →
+	// jvm.thread.count for the gauges that legitimately end in _count.
+	// See openspec change fix-histogram-bucket-le-expansion.
+	if isHistogramSubSeriesQuery(q) {
+		return false
+	}
+
 	lower := strings.ToLower(q)
 	// Range vector functions
 	for _, fn := range []string{"rate(", "delta(", "deriv(", "idelta(", "irate("} {
@@ -183,6 +197,14 @@ func isComplexPromQL(q string) bool {
 		return true
 	}
 	return false
+}
+
+// isHistogramSubSeriesQuery reports whether the query references a histogram
+// _bucket or _sum sub-series. These suffixes never appear in the storage layer's
+// metric names, so their presence always denotes a Prometheus histogram
+// sub-series the engine cannot resolve. (_count is excluded — see isComplexPromQL.)
+func isHistogramSubSeriesQuery(q string) bool {
+	return strings.Contains(q, HistogramSuffixBucket) || strings.Contains(q, HistogramSuffixSum)
 }
 
 // normalizeQueryForPromQL uses a regex-based approach that handles all

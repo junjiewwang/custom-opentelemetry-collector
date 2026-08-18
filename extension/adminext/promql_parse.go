@@ -201,11 +201,12 @@ func exploreMetricsGroupByLabels(expr *promqlExpr) {
 }
 
 // detectHistogramSub detects Prometheus histogram sub-series suffixes.
-// Returns ("sum", true) for _sum suffixes and ("bucket", true) for _bucket suffixes.
+// Returns ("sum", true) for _sum suffixes, ("bucket", true) for _bucket
+// suffixes, and ("count", true) for _count suffixes.
 //
-// Both _sum and _bucket are standard Prometheus histogram sub-series suffixes.
-// When detected, the suffix is stripped so the ES query uses the base metric name
-// (e.g. "traces_service_graph_request_server_seconds").
+// _sum, _bucket and _count are standard Prometheus histogram sub-series
+// suffixes. When detected, the suffix is stripped so the ES query uses the
+// base metric name (e.g. "traces_service_graph_request_server_seconds").
 //
 // For histogram_quantile queries, only the _bucket suffix is relevant because
 // quantile computation requires bucket data.
@@ -215,6 +216,9 @@ func detectHistogramSub(name string) (string, bool) {
 	}
 	if strings.HasSuffix(name, HistogramSuffixBucket) {
 		return HistogramSubBucket, true
+	}
+	if strings.HasSuffix(name, HistogramSuffixCount) {
+		return HistogramSubCount, true
 	}
 	return "", false
 }
@@ -226,6 +230,9 @@ func stripHistogramSuffix(name string) string {
 	}
 	if strings.HasSuffix(name, HistogramSuffixBucket) {
 		return name[:len(name)-len(HistogramSuffixBucket)]
+	}
+	if strings.HasSuffix(name, HistogramSuffixCount) {
+		return name[:len(name)-len(HistogramSuffixCount)]
 	}
 	return name
 }

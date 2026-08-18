@@ -601,8 +601,13 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 	for _, dp := range result.Data {
 		tsMs, _ := strconv.ParseInt(dp.TimeUnixMilli, 10, 64)
 		out = append(out, observabilitystorageext.MetricRawSeries{
-			Labels:  dp.Labels,
-			Samples: []observabilitystorageext.MetricSample{{TimestampMs: tsMs, Value: dp.Value}},
+			Labels: dp.Labels,
+			Samples: []observabilitystorageext.MetricSample{{
+				TimestampMs:  tsMs,
+				Value:        dp.Value,
+				BucketCounts: dp.BucketCounts,
+				Bounds:       dp.ExplicitBounds,
+			}},
 		})
 	}
 	q.qCache.set(cacheKey, out)
