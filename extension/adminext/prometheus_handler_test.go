@@ -606,6 +606,19 @@ func TestParsePromQL_AggByWhitespaceForms(t *testing.T) {
 	}
 }
 
+// TestParsePromQL_GroupByBreakdown proves Grafana Metrics Drilldown's "breakdown"
+// syntax — group by (labels) (selector) — parses to GroupBy + bare selector with
+// no aggregation, so dispatchInstantQuery routes it to label exploration instead
+// of rejecting it as an unsupported expression.
+func TestParsePromQL_GroupByBreakdown(t *testing.T) {
+	expr, err := parsePromQL(`group by (client, connection_type, server) (traces_service_graph_request_total)`)
+	require.NoError(t, err)
+	assert.Equal(t, "", expr.Aggregation, "group by must not set an aggregation")
+	assert.Equal(t, "", expr.Function, "group by must not set a function")
+	assert.Equal(t, []string{"client", "connection_type", "server"}, expr.GroupBy)
+	assert.Equal(t, "traces_service_graph_request_total", expr.MetricName)
+}
+
 // ── scalar probe (Grafana health check) tests ─────────
 
 func TestEvalScalarProbe(t *testing.T) {

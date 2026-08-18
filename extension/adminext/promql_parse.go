@@ -99,6 +99,16 @@ func parsePromQL(s string) (*promqlExpr, error) {
 		}
 	}
 
+	// Grafana Metrics Drilldown "breakdown" syntax: group by (labels) (selector).
+	// This is NOT standard PromQL (standard uses sum/avg by (...)); it means
+	// "show the raw series grouped by these labels", i.e. no aggregation, just a
+	// GroupBy + bare selector — the shape dispatchInstantQuery's label-explore
+	// branch already consumes (GroupBy set, Aggregation=="", Function=="").
+	if inner, groupBy := parseGroupByWrapper(s); inner != "" {
+		expr.GroupBy = groupBy
+		s = inner
+	}
+
 	// Check for function wrapper: rate(...), increase(...), irate(...)
 	if fn, inner, dur := parseFuncWrapper(s); fn != "" {
 		expr.Function = fn
@@ -262,6 +272,42 @@ func resolveHistogramBucket(dp observabilitystorageext.MetricDataPoint, expr *pr
 func parsePromQLSelector(s string) (*promqlExpr, error) {
 	s = strings.TrimSpace(s)
 	return parsePromQL(s)
+}
+
+// parseGroupByWrapper parses Grafana Metrics Drilldown's "breakdown" syntax:
+//
+//	group by (client, connection_type, server) (metric_name)
+//
+// This is NOT standard PromQL — it means "show the raw metric series grouped by
+// these labels", i.e. no aggregation, just a GroupBy plus a bare selector. It
+// returns (inner_selector, groupBy_labels); inner is "" when the input is not
+// this syntax (so the caller falls through to other parsers).
+func parseGroupByWrapper(s string) (inner string, groupBy []string) {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	// Match "group by" / "group by(" — the breakdown builder emits both forms.
+	rest := ""
+	switch {
+	case strings.HasPrefix(lower, "group by "):
+		rest = strings.TrimSpace(s[len("group by "):])
+	case strings.HasPrefix(lower, "group by("):
+		rest = strings.TrimSpace(s[len("group by"):]) // keep "(" for label list parse
+	default:
+		return "", nil
+	}
+	if rest == "" || rest[0] != '(' {
+		return "", nil
+	}
+	j := strings.IndexByte(rest, ')')
+	if j < 0 {
+		return "", nil
+	}
+	groupBy = parseLabelList(rest[1:j])
+	remainder := strings.TrimSpace(rest[j+1:])
+	// Strip the outer grouping parens around the selector: "({sel})" → "{sel}".
+	if strings.HasPrefix(remainder, "(") && strings.HasSuffix(remainder, ")") {
+		remainder = strings.TrimSpace(remainder[1 : len(remainder)-1])
+	}
+	return remainder, groupBy
 }
 
 // parseAggWrapper parses aggregation wrappers.
