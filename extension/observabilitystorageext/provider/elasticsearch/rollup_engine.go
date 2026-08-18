@@ -143,7 +143,11 @@ func (w *rollupWorkItem) sliceEndMs() int64 {
 func (e *RollupEngine) tick(ctx context.Context) {
 	start := time.Now()
 	defer func() {
-		e.logger.Debug("rollup cycle complete", zap.Duration("elapsed", time.Since(start)))
+		dur := time.Since(start)
+		e.logger.Debug("rollup cycle complete", zap.Duration("elapsed", dur))
+		if e.metrics != nil {
+			e.metrics.recordTick(ctx, dur)
+		}
 	}()
 
 	// Enumerate ready raw metric indices older than ReadyAfter.
@@ -225,6 +229,33 @@ func (e *RollupEngine) tick(ctx context.Context) {
 	watermarks, _ := e.lock.GetAllWatermarks(ctx, RollupTier5m)
 
 	readyBeforeMs := readyBefore.UnixMilli()
+
+	// Snapshot the per-app backlog before processing: how many ready hours are
+	// still unprocessed (not covered by the watermark). This is the observable
+	// "are we caught up, or backfilling history?" signal — 0 means caught up,
+	// a large value means the engine is re-rolling a gap. Reported together with
+	// the watermark so Grafana can show both "where we are" and "how far behind".
+	//
+	// Every app with a watermark is reported, including backlog=0, so a healthy
+	// caught-up engine emits an explicit 0 rather than dropping the series —
+	// otherwise "no data" is indistinguishable from "caught up".
+	if e.metrics != nil {
+		pendingByApp := make(map[string]int, len(watermarks))
+		for appID := range watermarks {
+			pendingByApp[appID] = 0
+		}
+		for _, item := range work {
+			if item.sliceEndMs() > readyBeforeMs {
+				continue
+			}
+			if wm, ok := watermarks[item.appID]; ok && wm >= item.sliceEndMs() {
+				continue
+			}
+			pendingByApp[item.appID]++
+		}
+		e.metrics.recordWatermarks(ctx, watermarks, pendingByApp)
+	}
+
 	for _, item := range work {
 		// Per-hour readiness guard: skip hours that are NOT yet ready (their end
 		// is within ReadyAfter of now). This is what lets the index-level gate be

@@ -15,6 +15,12 @@ import (
 // All fields are optional (nil-safe): when the extension has no MeterProvider,
 // a no-op meter is used so callers never need to nil-check.
 type rollupMetrics struct {
+	// nodeAttr is the fixed node_id attribute applied to every instrument. It
+	// lets a distributed deployment tell which replica is doing the work —
+	// node_id is the same identifier held in Redis claim/watermark records, so
+	// metrics can be cross-referenced against the coordination store.
+	nodeAttr attribute.KeyValue
+
 	// slicesProcessed counts completed hour-slice aggregations (success only).
 	slicesProcessed metric.Int64Counter
 	// slicesFailed counts hour-slice aggregations that errored.
@@ -27,11 +33,27 @@ type rollupMetrics struct {
 	pointsWritten metric.Int64Counter
 	// sliceDuration records per-hour-slice aggregation latency.
 	sliceDuration metric.Int64Histogram
+
+	// watermarkMs reports, per app, the durable rollup watermark (unix ms) —
+	// "everything older than this is durably rolled up". Reported once per tick
+	// from the same GetAllWatermarks snapshot the planner already read, so it
+	// costs nothing extra. `time()*1000 - watermark_ms` is the catch-up lag.
+	watermarkMs metric.Int64Gauge
+	// backlogSlices reports, per app, how many ready-but-unprocessed hour slices
+	// remain at the start of a tick. 0 = caught up; 24 = one full day behind.
+	backlogSlices metric.Int64Gauge
+	// tickDuration records the wall-clock duration of a full rollup tick. It
+	// balloons while the engine is catching up a backlog, so it is a direct
+	// signal of "is this a normal 1-slice tick or a multi-slice backfill".
+	tickDuration metric.Int64Histogram
 }
 
 // NewRollupMetrics builds rollup self-monitoring instruments from the meter.
-func NewRollupMetrics(meter metric.Meter) *rollupMetrics {
+// nodeID is the replica identifier (same as the Redis claim/watermark holder),
+// applied as a fixed attribute on every metric.
+func NewRollupMetrics(meter metric.Meter, nodeID string) *rollupMetrics {
 	rm := &rollupMetrics{}
+	rm.nodeAttr = attribute.String("node_id", nodeID)
 	rm.slicesProcessed, _ = meter.Int64Counter(
 		"otelcol_rollup_slices_processed",
 		metric.WithDescription("Number of 5m rollup hour-slices aggregated successfully"),
@@ -57,6 +79,19 @@ func NewRollupMetrics(meter metric.Meter) *rollupMetrics {
 		metric.WithDescription("Rollup hour-slice aggregation latency"),
 		metric.WithUnit("ms"),
 	)
+	rm.watermarkMs, _ = meter.Int64Gauge(
+		"otelcol_rollup_watermark_ms",
+		metric.WithDescription("Per-app rollup watermark (unix ms): everything older is durably rolled up"),
+	)
+	rm.backlogSlices, _ = meter.Int64Gauge(
+		"otelcol_rollup_backlog_slices",
+		metric.WithDescription("Per-app count of ready-but-unprocessed hour slices at tick start"),
+	)
+	rm.tickDuration, _ = meter.Int64Histogram(
+		"otelcol_rollup_tick_duration",
+		metric.WithDescription("Wall-clock duration of a full rollup tick"),
+		metric.WithUnit("ms"),
+	)
 	return rm
 }
 
@@ -67,22 +102,41 @@ func attrAppID(appID string) attribute.KeyValue {
 
 // recordSlice records the outcome of one hour-slice aggregation.
 func (m *rollupMetrics) recordSlice(ctx context.Context, appID string, points int, failed bool, dur time.Duration) {
-	attr := attrAppID(appID)
+	attrs := metric.WithAttributes(attrAppID(appID), m.nodeAttr)
 	if failed {
-		m.slicesFailed.Add(ctx, 1, metric.WithAttributes(attr))
+		m.slicesFailed.Add(ctx, 1, attrs)
 		return
 	}
-	m.slicesProcessed.Add(ctx, 1, metric.WithAttributes(attr))
-	m.pointsWritten.Add(ctx, int64(points), metric.WithAttributes(attr))
-	m.sliceDuration.Record(ctx, dur.Milliseconds(), metric.WithAttributes(attr))
+	m.slicesProcessed.Add(ctx, 1, attrs)
+	m.pointsWritten.Add(ctx, int64(points), attrs)
+	m.sliceDuration.Record(ctx, dur.Milliseconds(), attrs)
 }
 
 // recordMetric records the outcome of one metric-name aggregation.
 func (m *rollupMetrics) recordMetric(ctx context.Context, appID string, failed bool) {
-	attr := attrAppID(appID)
+	attrs := metric.WithAttributes(attrAppID(appID), m.nodeAttr)
 	if failed {
-		m.metricsFailed.Add(ctx, 1, metric.WithAttributes(attr))
+		m.metricsFailed.Add(ctx, 1, attrs)
 		return
 	}
-	m.metricsAggregated.Add(ctx, 1, metric.WithAttributes(attr))
+	m.metricsAggregated.Add(ctx, 1, attrs)
+}
+
+// recordWatermarks reports, per app, the current watermark and the pending
+// (ready-but-unprocessed) hour-slice count. Both are tick-start snapshots taken
+// from the planner's own GetAllWatermarks result, so this adds no extra I/O.
+func (m *rollupMetrics) recordWatermarks(ctx context.Context, watermarks map[string]int64, pendingByApp map[string]int) {
+	for appID, wm := range watermarks {
+		attrs := metric.WithAttributes(attrAppID(appID), m.nodeAttr)
+		m.watermarkMs.Record(ctx, wm, attrs)
+	}
+	for appID, n := range pendingByApp {
+		attrs := metric.WithAttributes(attrAppID(appID), m.nodeAttr)
+		m.backlogSlices.Record(ctx, int64(n), attrs)
+	}
+}
+
+// recordTick records the wall-clock duration of a full rollup tick.
+func (m *rollupMetrics) recordTick(ctx context.Context, dur time.Duration) {
+	m.tickDuration.Record(ctx, dur.Milliseconds(), metric.WithAttributes(m.nodeAttr))
 }

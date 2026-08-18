@@ -836,7 +836,7 @@ func (e *ObservabilityStorage) buildRollupEngine(host component.Host) *elasticse
 	// When nil (no telemetry configured), NewRollupMetrics falls back to a no-op
 	// meter and the engine's nil-guards make instrumentation a no-op.
 	if e.meterProvider != nil {
-		engine.SetMetrics(elasticsearch.NewRollupMetrics(e.meterProvider.Meter("otelcol/rollup")))
+		engine.SetMetrics(elasticsearch.NewRollupMetrics(e.meterProvider.Meter("otelcol/rollup"), nodeID))
 	}
 
 	return engine
