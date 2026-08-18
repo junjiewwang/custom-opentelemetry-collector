@@ -28,6 +28,8 @@ func TestIsComplexPromQL_HistogramSubSeriesBypass(t *testing.T) {
 		{"rate count still engine", "rate(jvm_thread_count[5m])", true},
 		// Non-histogram rate still engine.
 		{"plain rate", "rate(otelcol_rollup_slices_processed[5m])", true},
+		{"increase", "increase(kafka_consumer_bytes_consumed_total[5m])", true},
+		{"increase wrapped", "sum(increase(kafka_consumer_bytes_consumed_total[5m]))", true},
 		{"division", "a / b", true},
 		// No range function, no division, no suffix → subset parser.
 		{"plain selector", "otelcol_rollup_slices_processed", false},

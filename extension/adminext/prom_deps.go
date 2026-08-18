@@ -186,8 +186,11 @@ func isComplexPromQL(q string) bool {
 	}
 
 	lower := strings.ToLower(q)
-	// Range vector functions
-	for _, fn := range []string{"rate(", "delta(", "deriv(", "idelta(", "irate("} {
+	// Range vector functions. increase is included: it must route to the PromQL
+	// engine exactly like rate/irate — the subset parser's execRateRange returns
+	// empty for increase (a pre-existing data-fetch gap), while the engine
+	// computes it correctly (verified: instant increase works via the engine).
+	for _, fn := range []string{"rate(", "delta(", "deriv(", "idelta(", "irate(", "increase("} {
 		if strings.Contains(lower, fn) {
 			return true
 		}
