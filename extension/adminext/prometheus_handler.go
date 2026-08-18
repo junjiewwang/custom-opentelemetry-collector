@@ -1215,6 +1215,12 @@ func flattenLabels(labels map[string]string) []string {
 // execRateRange handles rate/increase/irate range queries.
 // Uses QueryFlat (flat ES search, no top_hits limit) instead of QueryRaw
 // to avoid ES max_inner_result_window constraint on long time windows.
+//
+// NOTE on reachability: since commit 4e960d5, isComplexPromQL routes every
+// function that can set expr.Function (rate/increase/irate/delta/deriv/idelta)
+// to the PromQL engine, so this function is NOT reached for those in normal
+// operation — the engine's selectConcrete handles them. It remains as the
+// subset-parser fallback for engine failure/empty paths, so do NOT delete it.
 func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
 	// Extend time range back by the range duration for lookback.
 	lookbackStart := start.Add(-expr.RangeDuration)
@@ -1282,6 +1288,11 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 }
 
 // execRateInstant handles rate/increase/irate instant queries.
+//
+// NOTE on reachability: this is the subset-parser fallback. The instant handler
+// (handlePromQuery) tries the PromQL engine first and only falls through here
+// when the engine fails or returns empty, so this path is still LIVE — do NOT
+// delete it or treat it as dead code.
 func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTime time.Time, labels, labelMatch map[string]string) []promVectorSample {
 	// histogram_quantile → aggregate bucket_counts and compute the quantile.
 	// Gated on the aggregation marker, not on a _bucket name suffix: ES stores
