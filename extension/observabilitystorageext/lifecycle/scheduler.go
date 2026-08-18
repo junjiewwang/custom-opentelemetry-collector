@@ -106,7 +106,12 @@ func NewScheduler(opts ...SchedulerOption) *LifecycleScheduler {
 	// Apply config defaults
 	s.config.ApplyDefaults()
 
-	// Initialize nodeID from config or generate one
+	// Initialize nodeID from config. In production the caller
+	// (observabilitystorageext.Start) pre-resolves the node identity via
+	// identity.ResolveUniqueNodeID and passes it through SchedulerConfig.NodeID,
+	// so this branch normally hits the non-empty path. The random fallback is a
+	// belt-and-suspenders for direct/standalone/tests construction of the
+	// scheduler without going through the extension.
 	if s.config.NodeID != "" {
 		s.nodeID = s.config.NodeID
 	} else {

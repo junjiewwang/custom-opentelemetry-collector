@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/hybrid"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
+	"go.opentelemetry.io/collector/custom/identity"
 	"go.opentelemetry.io/collector/custom/taskengine"
 )
 
@@ -62,6 +63,12 @@ type ObservabilityStorage struct {
 	// Lifecycle management
 	scheduler      *lifecycle.LifecycleScheduler
 	retentionStore lifecycle.RetentionStore
+
+	// resolvedNodeID is the effective node identity, resolved once at Start via
+	// identity.ResolveUniqueNodeID. All distributed-coordination components
+	// (rollup lock/watermark, leader elector, scheduler) share this value so the
+	// node_id is meaningful (POD_NAME/hostname) rather than a random nanosecond.
+	resolvedNodeID string
 
 	// Rollup engine (5m metric downsampling). Only non-nil when enabled and
 	// running against the Elasticsearch provider.
@@ -120,6 +127,13 @@ func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) e
 	e.logger.Info("Observability storage extension started successfully",
 		zap.String("provider", provider.Name()),
 	)
+
+	// Resolve the node identity once, before any distributed-coordination
+	// component (rollup lock/watermark, leader elector, scheduler) is built, so
+	// they all share a meaningful, unique node_id (POD_NAME/hostname in k8s,
+	// random suffix elsewhere) instead of independent nanosecond timestamps.
+	e.resolvedNodeID = identity.ResolveUniqueNodeID(e.config.Scheduler.NodeID)
+	e.logger.Info("Resolved node identity", zap.String("node_id", e.resolvedNodeID))
 
 	// Start lifecycle scheduler if enabled
 	if e.config.Scheduler.Enabled {
@@ -567,7 +581,7 @@ func (e *ObservabilityStorage) buildLifecycleScheduler(host component.Host) *lif
 		MaxRetries:           e.config.Scheduler.MaxRetries,
 		VerifyTimeout:        e.config.Scheduler.VerifyTimeout,
 		VerifyPollInterval:   e.config.Scheduler.VerifyPollInterval,
-		NodeID:               e.config.Scheduler.NodeID,
+		NodeID:               e.resolvedNodeID,
 	}
 
 	// Build the scheduler options (functional options pattern)
@@ -607,10 +621,7 @@ func (e *ObservabilityStorage) buildLifecycleScheduler(host component.Host) *lif
 	if e.config.Scheduler.Distributed {
 		engine := e.resolveEngine(host)
 		if engine != nil {
-			nodeID := e.config.Scheduler.NodeID
-			if nodeID == "" {
-				nodeID = fmt.Sprintf("node-%d", time.Now().UnixNano())
-			}
+			nodeID := e.resolvedNodeID
 			var elector lifecycle.LeaderElector = lifecycle.NewLocalLeaderElector()
 			// Try Redis-based leader elector if storage is available
 			if redisElector := e.buildRedisLeaderElector(host, nodeID); redisElector != nil {
@@ -804,10 +815,7 @@ func (e *ObservabilityStorage) buildRollupEngine(host component.Host) *elasticse
 		return nil
 	}
 
-	nodeID := e.config.Scheduler.NodeID
-	if nodeID == "" {
-		nodeID = fmt.Sprintf("node-%d", time.Now().UnixNano())
-	}
+	nodeID := e.resolvedNodeID
 
 	client := e.esProvider.GetClient()
 	reader := e.esProvider.MetricReader()
