@@ -95,9 +95,17 @@ func NewRollupMetrics(meter metric.Meter, nodeID string) *rollupMetrics {
 	return rm
 }
 
-// attrAppID returns the appID attribute used on all rollup metrics.
+// attrAppID returns the "target app" attribute used on all rollup metrics.
+//
+// It is named rollup_target_app_id (NOT app_id) on purpose: the value is the
+// app whose slice the engine is currently processing — a work dimension, not
+// the resource identity. Naming it app_id collides with the OTel resource
+// attribute app_id (which tokenauth injects as the collector's OWN app and
+// which routes the doc to a per-app ES index). That collision made every
+// rollup self-monitoring doc land in the collector-self index regardless of the
+// target app, and made `sum by (app_id)` show phantom data for all apps.
 func attrAppID(appID string) attribute.KeyValue {
-	return attribute.String("app_id", appID)
+	return attribute.String("rollup_target_app_id", appID)
 }
 
 // recordSlice records the outcome of one hour-slice aggregation.

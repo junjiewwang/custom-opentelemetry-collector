@@ -66,7 +66,7 @@ func TestNewRollupMetrics_RegistersAllInstruments(t *testing.T) {
 }
 
 // TestNewRollupMetrics_NodeIDAttribute verifies node_id is attached to recorded
-// points and that app_id is preserved.
+// points and that the rollup_target_app_id (target-app work dimension) is preserved.
 func TestNewRollupMetrics_NodeIDAttribute(t *testing.T) {
 	mr := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(mr))
@@ -103,12 +103,12 @@ func TestNewRollupMetrics_NodeIDAttribute(t *testing.T) {
 		if v, ok := attrs.Value(attribute.Key("node_id")); ok && v.AsString() == "node-abc" {
 			foundNode = true
 		}
-		if v, ok := attrs.Value(attribute.Key("app_id")); ok && v.AsString() == "app-a" {
+		if v, ok := attrs.Value(attribute.Key("rollup_target_app_id")); ok && v.AsString() == "app-a" {
 			foundApp = true
 		}
 	}
 	assert.True(t, foundNode, "node_id attribute must be present")
-	assert.True(t, foundApp, "app_id attribute must be present")
+	assert.True(t, foundApp, "rollup_target_app_id attribute must be present")
 }
 
 // TestRollupMetrics_RecordWatermarks_BacklogValue verifies the backlog gauge
@@ -134,7 +134,7 @@ func TestRollupMetrics_RecordWatermarks_BacklogValue(t *testing.T) {
 	backlogByApp := map[string]int64{}
 	if g, ok := backlog.Data.(metricdata.Gauge[int64]); ok {
 		for _, dp := range g.DataPoints {
-			app, _ := dp.Attributes.Value(attribute.Key("app_id"))
+			app, _ := dp.Attributes.Value(attribute.Key("rollup_target_app_id"))
 			backlogByApp[app.AsString()] = dp.Value
 		}
 	}
