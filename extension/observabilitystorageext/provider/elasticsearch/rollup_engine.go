@@ -253,7 +253,7 @@ func (e *RollupEngine) tick(ctx context.Context) {
 			}
 			pendingByApp[item.appID]++
 		}
-		e.metrics.recordWatermarks(ctx, watermarks, pendingByApp)
+		e.metrics.recordWatermarks(ctx, start, watermarks, pendingByApp)
 	}
 
 	for _, item := range work {

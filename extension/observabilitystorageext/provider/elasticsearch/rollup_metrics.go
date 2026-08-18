@@ -39,6 +39,12 @@ type rollupMetrics struct {
 	// from the same GetAllWatermarks snapshot the planner already read, so it
 	// costs nothing extra. `time()*1000 - watermark_ms` is the catch-up lag.
 	watermarkMs metric.Int64Gauge
+	// watermarkLagMinutes reports, per app, how far the watermark is BEHIND now
+	// in minutes (now - watermark_ms, clamped to ≥0). Unlike watermark_ms (an
+	// absolute unix-ms timestamp that needs a `time()*1000 - ...` expression to
+	// interpret), this is directly readable: 0 = caught up, ~120 = normal (the
+	// ReadyAfter horizon), large = backfilling a gap.
+	watermarkLagMinutes metric.Int64Gauge
 	// backlogSlices reports, per app, how many ready-but-unprocessed hour slices
 	// remain at the start of a tick. 0 = caught up; 24 = one full day behind.
 	backlogSlices metric.Int64Gauge
@@ -82,6 +88,10 @@ func NewRollupMetrics(meter metric.Meter, nodeID string) *rollupMetrics {
 	rm.watermarkMs, _ = meter.Int64Gauge(
 		"otelcol_rollup_watermark_ms",
 		metric.WithDescription("Per-app rollup watermark (unix ms): everything older is durably rolled up"),
+	)
+	rm.watermarkLagMinutes, _ = meter.Int64Gauge(
+		"otelcol_rollup_watermark_lag_minutes",
+		metric.WithDescription("How far the rollup watermark is behind now, in minutes (0 = caught up)"),
 	)
 	rm.backlogSlices, _ = meter.Int64Gauge(
 		"otelcol_rollup_backlog_slices",
@@ -133,10 +143,17 @@ func (m *rollupMetrics) recordMetric(ctx context.Context, appID string, failed b
 // recordWatermarks reports, per app, the current watermark and the pending
 // (ready-but-unprocessed) hour-slice count. Both are tick-start snapshots taken
 // from the planner's own GetAllWatermarks result, so this adds no extra I/O.
-func (m *rollupMetrics) recordWatermarks(ctx context.Context, watermarks map[string]int64, pendingByApp map[string]int) {
+// now is the tick start time, used to compute the human-readable lag in minutes.
+func (m *rollupMetrics) recordWatermarks(ctx context.Context, now time.Time, watermarks map[string]int64, pendingByApp map[string]int) {
+	nowMs := now.UnixMilli()
 	for appID, wm := range watermarks {
 		attrs := metric.WithAttributes(attrAppID(appID), m.nodeAttr)
 		m.watermarkMs.Record(ctx, wm, attrs)
+		lagMinutes := int64(0)
+		if wm < nowMs {
+			lagMinutes = (nowMs - wm) / 60000
+		}
+		m.watermarkLagMinutes.Record(ctx, lagMinutes, attrs)
 	}
 	for appID, n := range pendingByApp {
 		attrs := metric.WithAttributes(attrAppID(appID), m.nodeAttr)

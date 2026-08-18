@@ -43,7 +43,7 @@ func TestNewRollupMetrics_RegistersAllInstruments(t *testing.T) {
 	ctx := context.Background()
 	// Record one value on each instrument so it materializes in collection.
 	// (OTel SDK only collects instruments that have emitted at least one point.)
-	rm.recordWatermarks(ctx, map[string]int64{"app-a": 1700000000000}, map[string]int{"app-a": 5})
+	rm.recordWatermarks(ctx, time.UnixMilli(1700000000000+5*60000), map[string]int64{"app-a": 1700000000000}, map[string]int{"app-a": 5})
 	rm.recordTick(ctx, 1500*time.Millisecond)
 	rm.recordSlice(ctx, "app-a", 42, false, 10*time.Millisecond)
 	rm.recordMetric(ctx, "app-a", false)
@@ -73,6 +73,7 @@ func TestNewRollupMetrics_NodeIDAttribute(t *testing.T) {
 	rm := NewRollupMetrics(mp.Meter("otelcol/rollup"), "node-abc")
 
 	rm.recordWatermarks(context.Background(),
+		time.UnixMilli(1700000000000+5*60000),
 		map[string]int64{"app-a": 1700000000000},
 		map[string]int{"app-a": 5},
 	)
@@ -122,6 +123,7 @@ func TestRollupMetrics_RecordWatermarks_BacklogValue(t *testing.T) {
 
 	// app-a has 7 pending slices; app-b is caught up (watermark present, 0 pending).
 	rm.recordWatermarks(context.Background(),
+		time.UnixMilli(1700000000000+5*60000),
 		map[string]int64{"app-a": 1700000000000, "app-b": 1700000000000},
 		map[string]int{"app-a": 7, "app-b": 0},
 	)
@@ -140,4 +142,36 @@ func TestRollupMetrics_RecordWatermarks_BacklogValue(t *testing.T) {
 	}
 	assert.Equal(t, int64(7), backlogByApp["app-a"], "app-a backlog must be 7")
 	assert.Equal(t, int64(0), backlogByApp["app-b"], "app-b (caught up) must report an explicit 0")
+}
+
+// TestRollupMetrics_WatermarkLagMinutes verifies the lag gauge reports
+// now - watermark in minutes, clamped to 0 when the watermark is in the future
+// (e.g. an operator set an ahead-of-time watermark).
+func TestRollupMetrics_WatermarkLagMinutes(t *testing.T) {
+	mr := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(mr))
+	rm := NewRollupMetrics(mp.Meter("otelcol/rollup"), "node-1")
+
+	// now = 1700000000000 (unix ms). app-a watermark 10 minutes behind; app-b
+	// watermark 1 minute in the FUTURE (clamped to 0).
+	now := time.UnixMilli(1700000000000)
+	rm.recordWatermarks(context.Background(), now,
+		map[string]int64{"app-a": 1700000000000 - 10*60000, "app-b": 1700000000000 + 60000},
+		map[string]int{"app-a": 0, "app-b": 0},
+	)
+
+	metrics := collectMetrics(t, mr)
+
+	lag, ok := metrics["otelcol_rollup_watermark_lag_minutes"]
+	require.True(t, ok, "watermark_lag_minutes must be registered")
+
+	lagByApp := map[string]int64{}
+	if g, ok := lag.Data.(metricdata.Gauge[int64]); ok {
+		for _, dp := range g.DataPoints {
+			app, _ := dp.Attributes.Value(attribute.Key("rollup_target_app_id"))
+			lagByApp[app.AsString()] = dp.Value
+		}
+	}
+	assert.Equal(t, int64(10), lagByApp["app-a"], "app-a lag must be 10 minutes")
+	assert.Equal(t, int64(0), lagByApp["app-b"], "app-b (future watermark) must clamp to 0")
 }
