@@ -61,6 +61,11 @@ const (
 	// ("cumulative"/"delta"), written by storedmodel and read back to let the
 	// query layer distinguish delta counters/histograms from cumulative ones.
 	FieldMetricAggregationTemporality = "aggregation_temporality"
+	// FieldMetricCount is the histogram observation total (dp.Count()) and, for
+	// rollup gauge/counter docs, the number of raw samples folded into the bucket.
+	// QueryFlat must project it or hitToSample reads Count=0, which zeroes the
+	// rollup histogram's observation count (rollup_aggregator last-first / Σ).
+	FieldMetricCount = "count"
 )
 
 // ═══════════════════════ Metric Metadata Fields (MetaDoc) ═══════════════════════
