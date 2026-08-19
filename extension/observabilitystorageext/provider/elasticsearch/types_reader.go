@@ -312,6 +312,8 @@ type MetricSample struct {
 	BucketCounts []int64           // histogram: per-sample bucket counts
 	Bounds       []float64         // histogram: per-sample explicit bounds
 	Labels       map[string]string // labels from the source document (for flat queries)
+	Temporality  string            // histogram aggregation temporality ("cumulative"/"delta"); empty = legacy (cumulative)
+	Count        int64             // histogram observation count (dp.Count()); 0 for non-histogram
 }
 
 // MetricFlatQuery holds parameters for a flat document query.

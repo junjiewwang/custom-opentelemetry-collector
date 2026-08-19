@@ -27,11 +27,19 @@ type StoredMetricDataPoint struct {
 	// Histogram-specific fields (present only when Type="histogram").
 	BucketCounts  []uint64  `json:"bucket_counts,omitempty"`
 	ExplicitBounds []float64 `json:"explicit_bounds,omitempty"`
+	// AggregationTemporality records the histogram's aggregation temporality
+	// ("cumulative" or "delta"). Empty for non-histogram metrics and for
+	// documents written before this field existed (treated as cumulative on read).
+	// It is read at the metric level (pmetric.Histogram.AggregationTemporality),
+	// NOT the data-point level, because temporality is a metric-level property.
+	AggregationTemporality string `json:"aggregation_temporality,omitempty"`
 
 	// Rollup-specific fields (present only in rollup tier documents).
 	// Tier identifies the rollup resolution ("5m"), empty for raw docs.
 	Tier string `json:"_tier,omitempty"`
-	// Count is the number of raw samples aggregated into this rollup bucket.
+	// Count is type-dependent: for histogram docs it is the observation count
+	// (dp.Count()); for rollup gauge/counter docs it is the number of raw samples
+	// folded into the bucket.
 	Count int64 `json:"count,omitempty"`
 	// Min/Max are the window min/max for gauge-type metrics.
 	Min float64 `json:"min,omitempty"`
@@ -83,7 +91,7 @@ func ConvertOTLPMetric(metric pmetric.Metric, resource pcommon.Resource) []Store
 		}
 		return convertNumberPoints(metric.Sum().DataPoints(), "gauge", base)
 	case pmetric.MetricTypeHistogram:
-		return convertHistogramPoints(metric.Histogram().DataPoints(), base)
+		return convertHistogramPoints(metric.Histogram().DataPoints(), base, temporalityString(metric.Histogram().AggregationTemporality()))
 	case pmetric.MetricTypeSummary:
 		return convertSummaryPoints(metric.Summary().DataPoints(), base)
 	default:
@@ -116,7 +124,7 @@ func convertNumberPoints(dps any, kind string, base StoredMetricDataPoint) []Sto
 	return result
 }
 
-func convertHistogramPoints(dps pmetric.HistogramDataPointSlice, base StoredMetricDataPoint) []StoredMetricDataPoint {
+func convertHistogramPoints(dps pmetric.HistogramDataPointSlice, base StoredMetricDataPoint, temporality string) []StoredMetricDataPoint {
 	result := make([]StoredMetricDataPoint, dps.Len())
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
@@ -124,6 +132,8 @@ func convertHistogramPoints(dps pmetric.HistogramDataPointSlice, base StoredMetr
 		pt.TimeUnixMilli = int64(dp.Timestamp()) / 1e6
 		pt.Type = "histogram"
 		pt.Labels = pcommonMapToFlatMetric(dp.Attributes())
+		pt.AggregationTemporality = temporality
+		pt.Count = int64(dp.Count())
 		if dp.HasSum() {
 			pt.Value = dp.Sum()
 		}
@@ -132,6 +142,20 @@ func convertHistogramPoints(dps pmetric.HistogramDataPointSlice, base StoredMetr
 		result[i] = pt
 	}
 	return result
+}
+
+// temporalityString maps pmetric.AggregationTemporality to the storage string
+// ("cumulative"/"delta"). Returns "" for Unspecified (treated as cumulative on
+// read for backward compatibility).
+func temporalityString(at pmetric.AggregationTemporality) string {
+	switch at {
+	case pmetric.AggregationTemporalityCumulative:
+		return "cumulative"
+	case pmetric.AggregationTemporalityDelta:
+		return "delta"
+	default:
+		return ""
+	}
 }
 
 func convertSummaryPoints(dps pmetric.SummaryDataPointSlice, base StoredMetricDataPoint) []StoredMetricDataPoint {

@@ -32,7 +32,7 @@ func TestConvertHistogramPoints_BucketFields(t *testing.T) {
 		Name: "test_histogram",
 	}
 
-	result := convertHistogramPoints(dps, base)
+	result := convertHistogramPoints(dps, base, "cumulative")
 	require.Len(t, result, 1)
 
 	pt := result[0]
@@ -41,6 +41,8 @@ func TestConvertHistogramPoints_BucketFields(t *testing.T) {
 	assert.Equal(t, 42.0, pt.Value)
 	assert.Equal(t, []uint64{1, 2}, pt.BucketCounts)
 	assert.Equal(t, []float64{0.005, 0.1}, pt.ExplicitBounds)
+	assert.Equal(t, "cumulative", pt.AggregationTemporality)
+	assert.Equal(t, int64(3), pt.Count)
 }
 
 func TestConvertHistogramPoints_EmptyBuckets(t *testing.T) {
@@ -54,11 +56,12 @@ func TestConvertHistogramPoints_EmptyBuckets(t *testing.T) {
 		Name: "test",
 	}
 
-	result := convertHistogramPoints(dps, base)
+	result := convertHistogramPoints(dps, base, "delta")
 	require.Len(t, result, 1)
 
 	pt := result[0]
 	assert.Equal(t, 10.0, pt.Value)
 	assert.Empty(t, pt.BucketCounts)
 	assert.Empty(t, pt.ExplicitBounds)
+	assert.Equal(t, "delta", pt.AggregationTemporality)
 }

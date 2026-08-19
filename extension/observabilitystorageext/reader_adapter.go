@@ -476,6 +476,8 @@ func (a *metricReaderAdapter) QueryRaw(ctx context.Context, query MetricRawQuery
 				BucketCounts: sm.BucketCounts,
 				Bounds:       sm.Bounds,
 				Labels:       sm.Labels,
+				Temporality:  sm.Temporality,
+				Count:        sm.Count,
 			}
 		}
 		result[i] = MetricRawSeries{
@@ -512,6 +514,8 @@ func (a *metricReaderAdapter) QueryFlat(ctx context.Context, query MetricFlatQue
 			BucketCounts: sm.BucketCounts,
 			Bounds:       sm.Bounds,
 			Labels:       sm.Labels,
+			Temporality:  sm.Temporality,
+			Count:        sm.Count,
 		}
 	}
 	return &MetricFlatResult{
