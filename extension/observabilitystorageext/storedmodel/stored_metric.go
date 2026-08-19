@@ -78,7 +78,7 @@ func ConvertOTLPMetric(metric pmetric.Metric, resource pcommon.Resource) []Store
 
 	switch metric.Type() {
 	case pmetric.MetricTypeGauge:
-		return convertNumberPoints(metric.Gauge().DataPoints(), "gauge", base)
+		return convertNumberPoints(metric.Gauge().DataPoints(), "gauge", base, "")
 	case pmetric.MetricTypeSum:
 		// Only a monotonic Sum is a counter. A non-monotonic Sum is an OTel
 		// UpDownCounter (jvm.memory.used, jvm.thread.count, ...), which can
@@ -87,9 +87,10 @@ func ConvertOTLPMetric(metric pmetric.Metric, resource pcommon.Resource) []Store
 		// Metrics Drilldown wrap them in rate(), which is meaningless for a
 		// value that goes up and down.
 		if metric.Sum().IsMonotonic() {
-			return convertNumberPoints(metric.Sum().DataPoints(), "counter", base)
+			return convertNumberPoints(metric.Sum().DataPoints(), "counter", base,
+				temporalityString(metric.Sum().AggregationTemporality()))
 		}
-		return convertNumberPoints(metric.Sum().DataPoints(), "gauge", base)
+		return convertNumberPoints(metric.Sum().DataPoints(), "gauge", base, "")
 	case pmetric.MetricTypeHistogram:
 		return convertHistogramPoints(metric.Histogram().DataPoints(), base, temporalityString(metric.Histogram().AggregationTemporality()))
 	case pmetric.MetricTypeSummary:
@@ -99,7 +100,7 @@ func ConvertOTLPMetric(metric pmetric.Metric, resource pcommon.Resource) []Store
 	}
 }
 
-func convertNumberPoints(dps any, kind string, base StoredMetricDataPoint) []StoredMetricDataPoint {
+func convertNumberPoints(dps any, kind string, base StoredMetricDataPoint, temporality string) []StoredMetricDataPoint {
 	var result []StoredMetricDataPoint
 	switch pts := dps.(type) {
 	case pmetric.NumberDataPointSlice:
@@ -110,6 +111,7 @@ func convertNumberPoints(dps any, kind string, base StoredMetricDataPoint) []Sto
 			pt.TimeUnixMilli = int64(dp.Timestamp()) / 1e6
 			pt.Type = kind
 			pt.Labels = pcommonMapToFlatMetric(dp.Attributes())
+			pt.AggregationTemporality = temporality
 			switch dp.ValueType() {
 			case pmetric.NumberDataPointValueTypeDouble:
 				pt.Value = dp.DoubleValue()

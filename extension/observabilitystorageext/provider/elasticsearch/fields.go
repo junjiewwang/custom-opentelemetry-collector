@@ -57,6 +57,10 @@ const (
 	FieldMetricLabels            = "labels"
 	FieldMetricBucketCounts      = "bucket_counts"
 	FieldMetricExplicitBounds    = "explicit_bounds"
+	// FieldMetricAggregationTemporality is the metric's aggregation temporality
+	// ("cumulative"/"delta"), written by storedmodel and read back to let the
+	// query layer distinguish delta counters/histograms from cumulative ones.
+	FieldMetricAggregationTemporality = "aggregation_temporality"
 )
 
 // ═══════════════════════ Metric Metadata Fields (MetaDoc) ═══════════════════════

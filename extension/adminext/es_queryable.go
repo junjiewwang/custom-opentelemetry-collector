@@ -443,6 +443,7 @@ func (q *esQuerier) selectConcreteSliced(ctx context.Context, metricName string,
 			series.Samples = append(series.Samples, observabilitystorageext.MetricSample{
 				TimestampMs: sm.TimestampMs, Value: sm.Value,
 				BucketCounts: sm.BucketCounts, Bounds: sm.Bounds,
+				Temporality: sm.Temporality, Count: sm.Count,
 			})
 		}
 	}
@@ -558,6 +559,7 @@ func (q *esQuerier) selectConcrete(ctx context.Context, metricName string, label
 			series.Samples = append(series.Samples, observabilitystorageext.MetricSample{
 				TimestampMs: sm.TimestampMs, Value: sm.Value,
 				BucketCounts: sm.BucketCounts, Bounds: sm.Bounds,
+				Temporality: sm.Temporality, Count: sm.Count,
 			})
 		}
 
