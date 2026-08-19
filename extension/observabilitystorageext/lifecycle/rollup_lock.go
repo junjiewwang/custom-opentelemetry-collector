@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -104,6 +106,119 @@ func (l *RollupLock) ReleaseClaimSlice(ctx context.Context, tier, appID, slice s
 		return fmt.Errorf("rollup release claim: %w", err)
 	}
 	return nil
+}
+
+// Lease is a held distributed claim lock with a background heartbeat goroutine
+// that periodically refreshes the TTL, so a live holder never loses the lock to
+// a slow-but-alive aggregation. The caller MUST call Release when the work
+// completes (defer lease.Release() is the recommended pattern) — it is
+// idempotent and stops the heartbeat goroutine before CAS-releasing the key.
+//
+// Lease is deliberately tied to a single (tier, appID, slice) claim; the key and
+// owner are opaque to the caller, so the same mechanism serves 5m rollup today
+// and a future 1h rollup (or any other tier) unchanged.
+type Lease struct {
+	key    string
+	owner  string
+	client redis.UniversalClient
+	logger *zap.Logger
+
+	cancel context.CancelFunc // stops the heartbeat goroutine
+	done   chan struct{}      // closed when the heartbeat goroutine exits
+	stolen atomic.Int32       // 1 = heartbeat detected the lock was lost
+	once   sync.Once         // makes Release idempotent
+}
+
+// AcquireWithLease attempts to claim a slice and, on success, starts a background
+// heartbeat goroutine that refreshes the TTL every heartbeatInterval. Returns
+// (nil, nil) when another node already holds the slice; a non-nil error when the
+// claim could not be performed (e.g. Redis unreachable).
+//
+// The heartbeat goroutine runs on its own context (independent of ctx) so a
+// cancelled request context cannot silently kill the heartbeat and let the lock
+// expire mid-aggregation. Its lifetime is controlled entirely by Lease.Release.
+func (l *RollupLock) AcquireWithLease(ctx context.Context, tier, appID, slice string, ttl, heartbeatInterval time.Duration) (*Lease, error) {
+	key := l.claimKey(tier, appID, slice)
+
+	claimed, err := l.TryClaimSlice(ctx, tier, appID, slice, ttl)
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, nil
+	}
+
+	hbCtx, cancel := context.WithCancel(context.Background())
+	lease := &Lease{
+		key:    key,
+		owner:  l.nodeID,
+		client: l.client,
+		logger: l.logger,
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	go lease.heartbeatLoop(hbCtx, ttl, heartbeatInterval)
+	return lease, nil
+}
+
+// heartbeatLoop periodically refreshes the claim TTL until the lease is released
+// (hbCtx cancelled) or the lock is lost. If PExpire reports the key no longer
+// exists (another node stole it after our TTL lapsed), it marks the lease stolen
+// and stops — there is no point continuing to refresh a key we no longer own.
+func (lease *Lease) heartbeatLoop(hbCtx context.Context, ttl, interval time.Duration) {
+	defer close(lease.done)
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-hbCtx.Done():
+			return
+		case <-ticker.C:
+			if !lease.refresh(ttl) {
+				lease.stolen.Store(1)
+				lease.logger.Warn("rollup claim lease lost (stolen or expired)",
+					zap.String("key", lease.key))
+				return
+			}
+		}
+	}
+}
+
+// refresh extends the claim TTL. Returns false when the key no longer exists
+// (lost the lock), true otherwise.
+func (lease *Lease) refresh(ttl time.Duration) bool {
+	ok, err := lease.client.Expire(context.Background(), lease.key, ttl).Result()
+	if err != nil {
+		// Transient Redis error — do not mark stolen; the next tick retries.
+		lease.logger.Warn("rollup claim lease refresh failed", zap.String("key", lease.key), zap.Error(err))
+		return true
+	}
+	return ok
+}
+
+// Release stops the heartbeat goroutine and releases the lock (CAS: only if this
+// node still holds it). It is idempotent and safe to call multiple times. It uses
+// a detached context with a short timeout so a cancelled parent context (e.g.
+// graceful shutdown) does not make the release a no-op and leak the lock.
+func (lease *Lease) Release() {
+	lease.once.Do(func() {
+		lease.cancel()
+		<-lease.done
+		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = releaseClaimScript.Run(rctx, lease.client, []string{lease.key}, lease.owner).Int()
+	})
+}
+
+// IsStolen reports whether the heartbeat detected the lock was lost (stolen or
+// expired) mid-aggregation. Callers that care about lock integrity may check it
+// before a critical section; rollup treats it as advisory because writes are
+// idempotent, so a stolen lease yields a duplicate aggregation at worst.
+func (lease *Lease) IsStolen() bool {
+	return lease.stolen.Load() == 1
 }
 
 // GetWatermark returns the last processed bucket timestamp (unix ms) for
