@@ -350,6 +350,13 @@ type MetricSample struct {
 	BucketCounts []int64           `json:"bc,omitempty"`     // histogram bucket counts per sample
 	Bounds       []float64         `json:"bd,omitempty"`     // histogram explicit bounds per sample
 	Labels       map[string]string `json:"labels,omitempty"` // optional labels for flat queries
+	// Temporality is the histogram aggregation temporality ("cumulative" or
+	// "delta"). Empty for non-histogram samples and legacy docs (treated as
+	// cumulative on read). Used by the rollup aggregator to decide accumulate
+	// (delta) vs first/last diff (cumulative).
+	Temporality string `json:"temporality,omitempty"`
+	// Count is the histogram observation count (dp.Count()); 0 for non-histogram.
+	Count int64 `json:"count,omitempty"`
 }
 
 // MetricFlatQuery defines parameters for a flat document query.

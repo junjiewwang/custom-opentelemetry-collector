@@ -206,9 +206,37 @@ func isComplexPromQL(q string) bool {
 			return true
 		}
 	}
-	// Division (old parser doesn't reliably handle it)
-	if strings.Contains(q, "/") {
+	// Division (old parser doesn't reliably handle it). Only a `/` OUTSIDE
+	// string literals denotes the binary division operator — a `/` inside a
+	// label value (e.g. span_name="GET /order/mockGenerated") is data, not an
+	// operator, and must not route the query to the engine.
+	if hasDivisionOperator(q) {
 		return true
+	}
+	return false
+}
+
+// hasDivisionOperator reports whether q contains a `/` outside string literals.
+// PromQL string literals are double-quoted ("...") or backtick raw strings
+// (`...`); a `/` inside either is a data character, not the division operator.
+func hasDivisionOperator(q string) bool {
+	inDouble := false
+	inBacktick := false
+	for i := 0; i < len(q); i++ {
+		switch q[i] {
+		case '"':
+			if !inBacktick {
+				inDouble = !inDouble
+			}
+		case '`':
+			if !inDouble {
+				inBacktick = !inBacktick
+			}
+		case '/':
+			if !inDouble && !inBacktick {
+				return true
+			}
+		}
 	}
 	return false
 }

@@ -175,24 +175,56 @@ type sampleGroup struct {
 	max       float64
 	first     float64
 	last      float64
-	bucketSum []int64   // histogram bucket_counts element-wise sum
+	bucketSum []int64   // histogram bucket_counts element-wise sum (delta accumulation)
 	bounds    []float64 // histogram explicit_bounds (copied from first sample)
+	histCount int64     // histogram observation total (Σ sm.Count for delta inputs)
+
+	// Cumulative-histogram first/last snapshots: cumulative bucket_counts grow
+	// monotonically over the window (until a reset), so the window's delta is
+	// last - first, NOT the element-wise sum. We retain both endpoints.
+	firstBuckets []int64
+	lastBuckets  []int64
+	firstValue   float64
+	lastValue    float64
+	firstCount   int64
+	lastCount    int64
 }
 
 // add folds one sample into the group according to metric type semantics.
 func (g *sampleGroup) add(sm MetricSample) {
-	// Histogram: accumulate bucket counts element-wise, retain explicit_bounds.
+	// Histogram: accumulate or snapshot bucket counts by temporality.
 	if len(sm.BucketCounts) > 0 {
-		if g.bucketSum == nil {
-			g.bucketSum = make([]int64, len(sm.BucketCounts))
+		// Delta temporality: bucket_counts are per-interval increments.
+		if sm.Temporality == "delta" {
+			if g.bucketSum == nil {
+				g.bucketSum = make([]int64, len(sm.BucketCounts))
+			}
+			for i, bc := range sm.BucketCounts {
+				g.bucketSum[i] += bc
+			}
+			g.sum += sm.Value
+			g.histCount += sm.Count
+			if g.bounds == nil && len(sm.Bounds) > 0 {
+				g.bounds = append([]float64(nil), sm.Bounds...)
+			}
+			return
 		}
-		for i, bc := range sm.BucketCounts {
-			g.bucketSum[i] += bc
+
+		// Cumulative temporality: snapshot first/last endpoints. The window delta
+		// is last - first (summing cumulative values would multiply the magnitude
+		// by the number of samples in the window). Legacy docs without a
+		// temporality field are treated as cumulative for safety.
+		if g.firstBuckets == nil {
+			g.firstBuckets = append([]int64(nil), sm.BucketCounts...)
+			g.firstValue = sm.Value
+			g.firstCount = sm.Count
+			if len(sm.Bounds) > 0 {
+				g.bounds = append([]float64(nil), sm.Bounds...)
+			}
 		}
-		if g.bounds == nil && len(sm.Bounds) > 0 {
-			g.bounds = append([]float64(nil), sm.Bounds...)
-		}
-		g.count++
+		g.lastBuckets = append([]int64(nil), sm.BucketCounts...)
+		g.lastValue = sm.Value
+		g.lastCount = sm.Count
 		return
 	}
 
@@ -261,10 +293,33 @@ func (g *sampleGroup) toDoc(name, appID, unit string) storedmodel.StoredMetricDa
 		doc.Sum = g.sum
 		doc.Value = g.last
 	case "histogram":
-		// histogram: merged bucket_counts + retained explicit_bounds.
-		doc.BucketCounts = uint64Slice(g.bucketSum)
-		doc.ExplicitBounds = g.bounds
-		doc.Count = int64(g.count)
+		// histogram: bucket_counts/value/count normalized to the 5m window's
+		// DELTA. Delta-temporality inputs were already accumulated in add();
+		// cumulative-temporality inputs (and legacy docs) are reduced to a
+		// last-minus-first diff, because summing cumulative bucket_counts would
+		// inflate the magnitude ~(samples-in-window)×. The emitted doc is always
+		// a delta histogram, matching what the read path expects.
+		if g.firstBuckets != nil {
+			// cumulative: diff last - first (element-wise).
+			bc := make([]int64, len(g.lastBuckets))
+			for i := range g.lastBuckets {
+				if i < len(g.firstBuckets) {
+					bc[i] = g.lastBuckets[i] - g.firstBuckets[i]
+				} else {
+					bc[i] = g.lastBuckets[i]
+				}
+			}
+			doc.BucketCounts = uint64Slice(bc)
+			doc.ExplicitBounds = g.bounds
+			doc.Value = g.lastValue - g.firstValue
+			doc.Count = g.lastCount - g.firstCount
+		} else {
+			// delta: accumulated sums.
+			doc.BucketCounts = uint64Slice(g.bucketSum)
+			doc.ExplicitBounds = g.bounds
+			doc.Value = g.sum
+			doc.Count = g.histCount
+		}
 	default:
 		// gauge / summary / unknown: value = avg, plus min/max/sum.
 		if g.count > 0 {
@@ -304,9 +359,15 @@ func stringMapToAny(m map[string]string) map[string]any {
 }
 
 // uint64Slice converts []int64 to []uint64 (storedmodel histogram field type).
+// Negative values are clamped to 0: a cumulative histogram that resets within
+// the window yields a negative last-first diff for some buckets, and bucket
+// counts cannot be negative.
 func uint64Slice(in []int64) []uint64 {
 	out := make([]uint64, len(in))
 	for i, v := range in {
+		if v < 0 {
+			v = 0
+		}
 		out[i] = uint64(v)
 	}
 	return out

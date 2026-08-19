@@ -233,14 +233,19 @@ func (e *RollupEngine) tick(ctx context.Context) {
 	// Snapshot the per-app backlog before processing: how many ready hours are
 	// still unprocessed (not covered by the watermark). This is the observable
 	// "are we caught up, or backfilling history?" signal — 0 means caught up,
-	// a large value means the engine is re-rolling a gap. Reported together with
-	// the watermark so Grafana can show both "where we are" and "how far behind".
+	// a large value means the engine is re-rolling a gap.
 	//
 	// Every app with a watermark is reported, including backlog=0, so a healthy
 	// caught-up engine emits an explicit 0 rather than dropping the series —
 	// otherwise "no data" is indistinguishable from "caught up".
+	//
+	// NOTE: backlog is computed from the PRE-processing watermark snapshot (the
+	// true "how much work remains" at tick start). The watermark/lag metrics,
+	// however, are reported AFTER the processing loop (below) so they reflect
+	// the freshly-advanced watermark, not a snapshot lagging one tick behind.
+	var pendingByApp map[string]int
 	if e.metrics != nil {
-		pendingByApp := make(map[string]int, len(watermarks))
+		pendingByApp = make(map[string]int, len(watermarks))
 		for appID := range watermarks {
 			pendingByApp[appID] = 0
 		}
@@ -253,7 +258,6 @@ func (e *RollupEngine) tick(ctx context.Context) {
 			}
 			pendingByApp[item.appID]++
 		}
-		e.metrics.recordWatermarks(ctx, start, watermarks, pendingByApp)
 	}
 
 	for _, item := range work {
@@ -275,6 +279,14 @@ func (e *RollupEngine) tick(ctx context.Context) {
 				zap.Error(err),
 			)
 		}
+	}
+
+	// Report watermark/lag AFTER the processing loop so they reflect the freshly
+	// advanced watermark. watermarks is mutated in-place by advanceWatermark as
+	// each contiguous hour completes, so this snapshot is the true post-tick
+	// progress — the pre-loop call previously reported a value lagging one tick.
+	if e.metrics != nil {
+		e.metrics.recordWatermarks(ctx, start, watermarks, pendingByApp)
 	}
 }
 

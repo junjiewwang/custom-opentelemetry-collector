@@ -26,6 +26,8 @@ type HistogramSample struct {
 	BucketCounts []int64
 	Bounds       []float64
 	Labels       map[string]string // original labels for Go-side grouping
+	Temporality  string            // "cumulative" or "delta"; "" = legacy (cumulative)
+	Count        int64             // observation total (dp.Count()); 0 for legacy/non-histogram
 }
 
 // HistogramBucket holds the aggregated bucket data for one label group.

@@ -1191,6 +1191,8 @@ func (r *MetricReader) hitToSample(hit SearchHit) MetricSample {
 		Labels         metricLabels `json:"labels"`
 		BucketCounts   []int64      `json:"bucket_counts"`
 		ExplicitBounds []float64    `json:"explicit_bounds"`
+		AggregationTemporality string `json:"aggregation_temporality"`
+		Count          int64        `json:"count"`
 	}
 	if err := json.Unmarshal(hit.Source, &doc); err != nil {
 		r.logger.Warn("Failed to unmarshal metric hit", zap.String("id", hit.ID), zap.Error(err))
@@ -1203,6 +1205,8 @@ func (r *MetricReader) hitToSample(hit SearchHit) MetricSample {
 		BucketCounts: doc.BucketCounts,
 		Bounds:       doc.ExplicitBounds,
 		Labels:       mergeServiceName(doc.Labels, doc.ServiceName),
+		Temporality:  doc.AggregationTemporality,
+		Count:        doc.Count,
 	}
 }
 
