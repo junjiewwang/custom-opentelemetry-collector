@@ -1438,6 +1438,7 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query MetricFlatQuery) (*M
 		Source: []string{
 			FieldMetricTimeUnixMilli, FieldMetricValue,
 			FieldMetricLabels, FieldServiceName, FieldMetricBucketCounts, FieldMetricExplicitBounds,
+			FieldMetricAggregationTemporality,
 		},
 	}
 
