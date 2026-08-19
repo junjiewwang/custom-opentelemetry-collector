@@ -256,11 +256,15 @@ func log2BucketRanges() []map[string]any {
 func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[string]any {
 	switch query.Function {
 	case "rate":
-		// rate = count per bucket / bucket_seconds
-		// Use value_count which counts documents in each bucket.
+		// rate = count per bucket / bucket_seconds.
+		// Count documents via value_count on the _doc pseudo-field, NOT _id.
+		// Aggregating on _id forces ES to load every document's _id into
+		// fielddata (hundreds of MB across the cluster — the parent circuit
+		// breaker trips and bulk writes 429). _doc counts documents without
+		// any fielddata; it is the ES-canonical "count docs in bucket".
 		return map[string]any{
 			"value_count": map[string]any{
-				"field": "_id",
+				"field": "_doc",
 			},
 		}
 
@@ -299,8 +303,9 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 		}
 
 	default:
+		// See the "rate" case: value_count on _doc, never _id (fielddata blowup).
 		return map[string]any{
-			"value_count": map[string]any{"field": "_id"},
+			"value_count": map[string]any{"field": "_doc"},
 		}
 	}
 }
