@@ -1107,6 +1107,23 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 		return result
 	}
 
+	// Histogram sub-series (bare _sum/_count/_bucket without a rate/increase
+	// function). The default branch below would strip the suffix and aggregate
+	// avg(value) over the base metric — wrong for every sub-series. Route each
+	// suffix to a dedicated cumulative-value handler that reads raw samples via
+	// QueryFlat and returns Prometheus-native cumulative semantics (matching the
+	// instant-query path).
+	if expr.Function == "" && expr.HistogramSub != "" {
+		switch expr.HistogramSub {
+		case HistogramSubSum:
+			return h.execHistogramSumRange(r, expr, start, end, step, labels, labelMatch)
+		case HistogramSubCount:
+			return h.execHistogramCountRange(r, expr, start, end, step, labels, labelMatch)
+		case HistogramSubBucket:
+			return h.execHistogramBucketBareRange(r, expr, start, end, step, labels, labelMatch)
+		}
+	}
+
 	// No aggregation and no rate/increase function → a bare metric selector
 	// (e.g. "traces_service_graph_request_total" or "metric{job=\"x\"}").
 	// Return one series per distinct label set with full labels, matching
@@ -1620,6 +1637,268 @@ func (h *promHandlers) execHistogramBucketRange(r *http.Request, expr *promqlExp
 	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
 }
 
+// ── bare histogram sub-series range handlers ──────────────────────────
+//
+// Bare _sum/_count/_bucket range queries (no rate/increase function) must return
+// Prometheus-native CUMULATIVE values: each step reports the metric's cumulative
+// state up to that timestamp. These handlers read raw samples via QueryFlat
+// (ForRateQuery=true, so never the delta-normalized rollup tier) and reduce each
+// label group's samples to a per-step cumulative snapshot.
+//
+// cumulativeHistogramSamples is the shared reduction: for each step it returns
+// the cumulative HistogramBucket (sum/count/bucket_counts) as of that step, using
+// the sample's Temporality to pick "snapshot" (cumulative) vs "accumulate" (delta).
+
+// execHistogramSumRange handles the bare `metric_sum` range selector.
+func (h *promHandlers) execHistogramSumRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+	matrix := h.bareHistogramSubMatrix(r, expr, start, end, step, labels, labelMatch, func(hb HistogramBucket) float64 {
+		return hb.TotalSum
+	})
+	if matrix == nil {
+		return nil
+	}
+	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
+}
+
+// execHistogramCountRange handles the bare `metric_count` range selector.
+func (h *promHandlers) execHistogramCountRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+	matrix := h.bareHistogramSubMatrix(r, expr, start, end, step, labels, labelMatch, func(hb HistogramBucket) float64 {
+		return float64(hb.TotalCount)
+	})
+	if matrix == nil {
+		return nil
+	}
+	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
+}
+
+// execHistogramBucketBareRange handles the bare `metric_bucket` range selector,
+// expanding each step's cumulative bucket_counts into per-le series (incl. +Inf).
+func (h *promHandlers) execHistogramBucketBareRange(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+	// `le` is a histogram-expansion dimension, NOT a stored ES label. A le="x"
+	// selector must narrow the EXPANDED buckets (done via leFilter below), not
+	// filter ES documents on a labels.le.keyword field that does not exist.
+	esLabels := filterInternalLabels(labels)
+	delete(esLabels, PromLabelLe)
+
+	flatQuery := observabilitystorageext.MetricFlatQuery{
+		MetricName:    expr.MetricName,
+		Labels:        esLabels,
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
+		AppID:         expr.AppID,
+		ForRateQuery:  true,
+	}
+	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
+	if err != nil || flatResult == nil || len(flatResult.Samples) == 0 {
+		if err != nil {
+			h.logger.Error("histogram bucket bare range query_flat failed", zap.Error(err))
+		}
+		return nil
+	}
+	h.checkFlatTruncation(flatResult)
+
+	leFilter := expr.Labels[PromLabelLe]
+
+	stepMs := step.Milliseconds()
+	type bucketGroup struct {
+		labels  map[string]string
+		samples []HistogramSample
+	}
+	merged := make(map[string]*bucketGroup)
+	var order []string
+	for _, samples := range groupSamplesByLabels(flatResult.Samples) {
+		if len(samples) == 0 {
+			continue
+		}
+		proj := promMetricToLabels(samples[0].Labels)
+		key := sortedLabelKey(proj)
+		g, ok := merged[key]
+		if !ok {
+			g = &bucketGroup{labels: proj}
+			merged[key] = g
+			order = append(order, key)
+		}
+		g.samples = append(g.samples, samples...)
+	}
+
+	series := make(map[bucketSeriesKey]*promMatrixSample)
+	var seriesOrder []bucketSeriesKey
+	for _, key := range order {
+		g := merged[key]
+		sortHistogramSamplesByTime(g.samples)
+		for t := start.UnixMilli(); t <= end.UnixMilli(); t += stepMs {
+			hb := cumulativeHistogramBucketAt(g.samples, t)
+			if len(hb.Bounds) == 0 {
+				continue
+			}
+			var cumulative int64
+			for i, bound := range hb.Bounds {
+				if i < len(hb.BucketCounts) {
+					cumulative += hb.BucketCounts[i]
+				}
+				le := formatPromFloat(bound)
+				if leFilter != "" && le != leFilter {
+					continue
+				}
+				addBucketPoint(series, &seriesOrder, bucketSeriesKey{key, le},
+					g.labels, le, t, float64(cumulative))
+			}
+			if leFilter == "" || leFilter == "+Inf" {
+				addBucketPoint(series, &seriesOrder, bucketSeriesKey{key, "+Inf"},
+					g.labels, "+Inf", t, float64(hb.TotalCount))
+			}
+		}
+	}
+
+	if len(series) == 0 {
+		return nil
+	}
+	matrix := make([]promMatrixSample, 0, len(series))
+	for _, k := range seriesOrder {
+		matrix = append(matrix, *series[k])
+	}
+	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
+}
+
+// bareHistogramSubMatrix is the shared driver for _sum/_count: it fetches raw
+// samples, groups by label set, computes each step's cumulative snapshot, and
+// emits one matrix series per label group with the sub-series metric name
+// restored. snapExtract maps a per-step snapshot slice to the output value(s).
+func (h *promHandlers) bareHistogramSubMatrix(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string, snapExtract func(HistogramBucket) float64) []promMatrixSample {
+	flatQuery := observabilitystorageext.MetricFlatQuery{
+		MetricName:    expr.MetricName,
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
+		AppID:         expr.AppID,
+		ForRateQuery:  true,
+	}
+	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
+	if err != nil || flatResult == nil || len(flatResult.Samples) == 0 {
+		if err != nil {
+			h.logger.Error("bare histogram sub range query_flat failed", zap.Error(err))
+		}
+		return nil
+	}
+	h.checkFlatTruncation(flatResult)
+
+	stepMs := step.Milliseconds()
+	matrix := make([]promMatrixSample, 0)
+	for _, samples := range groupSamplesByLabels(flatResult.Samples) {
+		if len(samples) == 0 {
+			continue
+		}
+		sortHistogramSamplesByTime(samples)
+		// A metric whose name merely ends in _count/_sum but is NOT a histogram
+		// (e.g. jvm_thread_count) has no bucket_counts. Preserve its raw Value
+		// rather than reporting a bogus zero from the histogram reduction.
+		nonHistogram := len(samples[0].BucketCounts) == 0
+
+		m := promMetric{PromLabelName: expr.BaseMetric}
+		for k, v := range samples[0].Labels {
+			m[translateLabelToPromQL(k)] = v
+		}
+
+		values := make([][]any, 0)
+		for t := start.UnixMilli(); t <= end.UnixMilli(); t += stepMs {
+			if nonHistogram {
+				if v := latestValueAt(samples, t); !math.IsNaN(v) {
+					values = append(values, []any{float64(t) / 1000.0, formatPromValue(v)})
+				}
+				continue
+			}
+			hb := cumulativeHistogramBucketAt(samples, t)
+			if len(hb.Bounds) == 0 {
+				continue
+			}
+			values = append(values, []any{float64(t) / 1000.0, formatPromValue(snapExtract(hb))})
+		}
+		matrix = append(matrix, promMatrixSample{Metric: m, Values: values})
+	}
+	return matrix
+}
+
+// cumulativeHistogramBucketAt returns the cumulative histogram state as of
+// timestamp t for a time-sorted sample slice.
+//   - cumulative temporality (or legacy ""): the latest snapshot ≤ t is already
+//     the full cumulative state — return it directly.
+//   - delta temporality: accumulate increments from the slice start up to t.
+func cumulativeHistogramBucketAt(samples []HistogramSample, t int64) HistogramBucket {
+	var hb HistogramBucket
+	for _, s := range samples {
+		if s.TimestampMs > t {
+			break
+		}
+		if len(s.Bounds) > 0 && len(hb.Bounds) == 0 {
+			hb.Bounds = s.Bounds
+			hb.BucketCounts = make([]int64, len(s.Bounds))
+		}
+		if s.Temporality == "delta" {
+			// Accumulate per-interval increments.
+			hb.TotalSum += s.Value
+			if s.Count > 0 {
+				hb.TotalCount += s.Count
+			}
+			for i := 0; i < len(s.BucketCounts) && i < len(hb.BucketCounts); i++ {
+				hb.BucketCounts[i] += s.BucketCounts[i]
+			}
+			if s.Count == 0 {
+				// Legacy delta docs without Count: derive TotalCount from buckets.
+				var tc int64
+				for _, c := range s.BucketCounts {
+					tc += c
+				}
+				hb.TotalCount += tc
+			}
+		} else {
+			// Cumulative (or legacy ""): latest snapshot is the full state.
+			if s.Count > 0 {
+				hb.TotalCount = s.Count
+			} else {
+				var tc int64
+				for _, c := range s.BucketCounts {
+					tc += c
+				}
+				hb.TotalCount = tc
+			}
+			hb.TotalSum = s.Value
+			hb.BucketCounts = append([]int64(nil), s.BucketCounts...)
+		}
+	}
+	return hb
+}
+
+// latestValueAt returns the latest sample Value ≤ t, or NaN if none.
+func latestValueAt(samples []HistogramSample, t int64) float64 {
+	var last float64 = math.NaN()
+	for _, s := range samples {
+		if s.TimestampMs > t {
+			break
+		}
+		last = s.Value
+	}
+	return last
+}
+
+// sortHistogramSamplesByTime sorts samples ascending by timestamp in place.
+func sortHistogramSamplesByTime(samples []HistogramSample) {
+	sort.Slice(samples, func(i, j int) bool { return samples[i].TimestampMs < samples[j].TimestampMs })
+}
+
+// promMetricToLabels projects a sample's ES-dot labels into PromQL underscore
+// labels (used as the bare-_bucket group dimension and output labels).
+func promMetricToLabels(labels map[string]string) map[string]string {
+	out := make(map[string]string, len(labels))
+	for k, v := range labels {
+		out[translateLabelToPromQL(k)] = v
+	}
+	return out
+}
+
 // execHistogramBucketInstant handles the instant form `sum by (le) (rate(m[5m]))`.
 // It is the single-timestamp counterpart to execHistogramBucketRange: the same
 // delta-aware rate (aggregate window delta bucket_counts, divide by window
@@ -1934,6 +2213,8 @@ func groupSamplesByLabels(samples []observabilitystorageext.MetricSample) map[st
 			BucketCounts: s.BucketCounts,
 			Bounds:       s.Bounds,
 			Labels:       s.Labels,
+			Temporality:  s.Temporality,
+			Count:        s.Count,
 		})
 	}
 	return groups
