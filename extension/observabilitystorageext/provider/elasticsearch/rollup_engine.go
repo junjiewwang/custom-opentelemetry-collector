@@ -40,6 +40,23 @@ func (c *RollupEngineConfig) ApplyDefaults() {
 	}
 }
 
+// claimTTL is the TTL for a per-slice claim lock. A slice aggregation takes
+// ~10-15s, so a fixed 5-minute TTL is deliberately short: if a replica crashes
+// mid-aggregation, its claim expires quickly and another replica can take over
+// and complete the hour, rather than the watermark stalling for the old 2h TTL.
+// A live holder keeps the lock alive via the heartbeat goroutine (see
+// AcquireWithLease), so the short TTL only bounds the stale-lock window after a
+// genuine crash.
+const claimTTL = 5 * time.Minute
+
+// claimHeartbeatInterval is how often a live holder refreshes the claim TTL. It
+// is TTL/3, giving a holder two refresh attempts before the TTL would lapse —
+// enough to survive transient Redis latency/network jitter without hammering
+// Redis, and far shorter than the TTL so a healthy holder never loses the lock.
+const claimHeartbeatInterval = claimTTL / 3
+
+
+
 // RollupEngine periodically aggregates raw 1m metric documents into the 5m
 // rollup tier. It is a single-node engine: the distributed claim/watermark
 // coordination is handled by lifecycle.RollupLock so multiple replicas do not
@@ -296,31 +313,29 @@ func (e *RollupEngine) tick(ctx context.Context) {
 func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem, watermarks map[string]int64) error {
 	slice := item.sliceKey()
 
-	// Claim the hour slice. If another replica owns it, skip.
-	claimed := true
+	// Claim the hour slice with a heartbeat lease. If another replica owns it,
+	// skip. The lease's heartbeat goroutine keeps the short TTL alive while the
+	// aggregation runs, so a live-but-slow aggregation never loses the lock; a
+	// crash stops the heartbeat and the lock expires after claimTTL. defer
+	// Release() unconditionally releases on every exit path (success, failure,
+	// panic), which is safe because the write is idempotent (deterministic _id +
+	// ES index overwrite) and the watermark is the durable "done" marker that the
+	// next tick's `wm >= sliceEndMs` check uses to skip re-aggregation.
+	var lease *lifecycle.Lease
 	if e.lock != nil {
 		var err error
-		claimed, err = e.lock.TryClaimSlice(ctx, RollupTier5m, item.appID, slice, 2*e.config.TickInterval)
+		lease, err = e.lock.AcquireWithLease(ctx, RollupTier5m, item.appID, slice, claimTTL, claimHeartbeatInterval)
 		if err != nil {
 			return fmt.Errorf("claim slice: %w", err)
 		}
-		if !claimed {
+		if lease == nil {
 			e.logger.Debug("slice already claimed by another node, skipping",
 				zap.String("appID", item.appID),
 				zap.String("slice", slice),
 			)
 			return nil
 		}
-	}
-
-	// Only release the claim on failure so another replica can retry sooner than
-	// the TTL. On success we deliberately leave it to expire (the watermark is
-	// the durable "done" marker, not the claim) — releasing it here would let the
-	// next tick re-claim and re-aggregate the same slice forever.
-	release := func() {
-		if e.lock != nil {
-			_ = e.lock.ReleaseClaimSlice(ctx, RollupTier5m, item.appID, slice)
-		}
+		defer lease.Release()
 	}
 
 	// Aggregate this single hour into 5m buckets (12 buckets/hour).
@@ -332,7 +347,6 @@ func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem, wa
 	startTime := time.Now()
 	points, err := e.aggregator.AggregateSlice(ctx, item.appID, item.indices, hourStart, hourEnd)
 	if err != nil {
-		release()
 		if e.metrics != nil {
 			e.metrics.recordSlice(ctx, item.appID, 0, true, time.Since(startTime))
 		}
@@ -341,7 +355,6 @@ func (e *RollupEngine) processItem(ctx context.Context, item *rollupWorkItem, wa
 
 	if len(points) > 0 {
 		if err := e.writer.WriteRollupPoints(ctx, RollupTier5m, points); err != nil {
-			release()
 			if e.metrics != nil {
 				e.metrics.recordSlice(ctx, item.appID, 0, true, time.Since(startTime))
 			}
