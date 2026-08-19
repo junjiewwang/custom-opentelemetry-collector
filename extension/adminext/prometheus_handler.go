@@ -896,6 +896,31 @@ func promMetricType(stored string) string {
 	}
 }
 
+// isHistogramBaseMetric reports whether the metric name (already stripped of a
+// _sum/_bucket/_count suffix) refers to a histogram-typed metric in storage.
+//
+// The _count suffix is AMBIGUOUS in PromQL: it can denote a histogram's _count
+// sub-series (traces_spanmetrics_latency_count → histogram base
+// traces_spanmetrics_latency) OR a gauge whose native name merely ends in
+// "_count" (jvm_thread_count → gauge jvm.thread.count). _sum/_bucket have no
+// such collision. This helper resolves the ambiguity by asking the storage
+// layer's metric-type map: only treat the suffix as a histogram sub-series when
+// the stripped base name is actually stored as a histogram.
+func (h *promHandlers) isHistogramBaseMetric(ctx context.Context, baseName string, tr observabilitystorageext.TimeRange) bool {
+	if h.metricReader == nil {
+		return false
+	}
+	types, err := h.metricReader.ListMetricTypes(ctx, tr)
+	if err != nil || types == nil {
+		return false
+	}
+	// Direct hit: the stripped base name IS a storage name (e.g.
+	// traces_spanmetrics_latency). For gauge names that merely end in _count,
+	// the stripped base (e.g. jvm_thread) is not a storage name, so it misses.
+	meta, ok := types[baseName]
+	return ok && meta.Type == "histogram"
+}
+
 // ── Query dispatch ─────────────────────────────────
 
 // dispatchLabelExplore handles PromQL "group by" label exploration queries.
@@ -1114,6 +1139,20 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 	// QueryFlat and returns Prometheus-native cumulative semantics (matching the
 	// instant-query path).
 	if expr.Function == "" && expr.HistogramSub != "" {
+		// Resolve the _count ambiguity: only treat it as a histogram sub-series
+		// when the stripped base name is actually stored as a histogram. A gauge
+		// whose native name ends in _count (e.g. jvm_thread_count) must fall
+		// through to the normal bare-metric path instead of being stripped to a
+		// non-existent jvm_thread. _sum/_bucket have no such collision.
+		if expr.HistogramSub == HistogramSubCount {
+			tr := observabilitystorageext.TimeRange{Start: start, End: end}
+			if !h.isHistogramBaseMetric(r.Context(), expr.MetricName, tr) {
+				// Not a histogram sub-series: restore the full underscored name and
+				// let the bare-metric path (unsanitize/sanitize mapping) handle it.
+				expr.HistogramSub = ""
+				expr.MetricName = expr.BaseMetric
+			}
+		}
 		switch expr.HistogramSub {
 		case HistogramSubSum:
 			return h.execHistogramSumRange(r, expr, start, end, step, labels, labelMatch)
