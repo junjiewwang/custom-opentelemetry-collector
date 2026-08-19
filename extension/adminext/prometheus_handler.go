@@ -917,7 +917,12 @@ func (h *promHandlers) isHistogramBaseMetric(ctx context.Context, baseName strin
 	// Direct hit: the stripped base name IS a storage name (e.g.
 	// traces_spanmetrics_latency). For gauge names that merely end in _count,
 	// the stripped base (e.g. jvm_thread) is not a storage name, so it misses.
-	meta, ok := types[baseName]
+	// baseName is a Prometheus-safe underscored name (e.g. http_server_request_duration);
+	// the storage type map is keyed by the dotted OTel name, so reverse-sanitize
+	// before the lookup — otherwise a dotted histogram base (http.server.request.duration)
+	// is wrongly judged a gauge and its _count sub-series falls through to the
+	// bare-metric path, returning empty.
+	meta, ok := types[unsanitizeMetricName(baseName)]
 	return ok && meta.Type == "histogram"
 }
 
@@ -927,7 +932,7 @@ func (h *promHandlers) isHistogramBaseMetric(ctx context.Context, baseName strin
 // Uses ES terms aggregation to return unique label value combinations.
 func (h *promHandlers) dispatchLabelExplore(r *http.Request, expr *promqlExpr) *promQueryData {
 	query := observabilitystorageext.LabelCombinationsQuery{
-		MetricName: expr.MetricName,
+		MetricName: unsanitizeMetricName(expr.MetricName),
 		LabelKeys:  expr.GroupBy,
 	}
 
@@ -988,7 +993,7 @@ func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, e
 			delete(esLabels, PromLabelLe)
 		}
 		query := observabilitystorageext.MetricQuery{
-			MetricName:    expr.MetricName,
+			MetricName:    unsanitizeMetricName(expr.MetricName),
 			Labels:        esLabels,
 			LabelMatch:    labelMatch,
 			LabelNot:      expr.LabelNot,
@@ -1183,7 +1188,7 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 	bareMetric := expr.Aggregation == "" && expr.Function == "" && len(expr.GroupBy) == 0
 	if bareMetric {
 		if labelKeys, derr := h.metricReader.ListLabelNames(r.Context(),
-			observabilitystorageext.TimeRange{Start: start, End: end}, expr.MetricName); derr == nil {
+			observabilitystorageext.TimeRange{Start: start, End: end}, unsanitizeMetricName(expr.MetricName)); derr == nil {
 			groupBy := make([]string, 0, len(labelKeys))
 			for _, k := range labelKeys {
 				if promKey := translateLabelToPromQL(k); promKey != "" {
@@ -1198,7 +1203,7 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 	}
 
 	query := observabilitystorageext.MetricRangeQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1282,7 +1287,7 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1376,7 +1381,7 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 	// Use QueryFlat (same as execRateRange) to avoid ES top_hits limit and
 	// painless script hardcoded label fields. Data is grouped by labels in Go.
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1477,7 +1482,7 @@ func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promq
 	lookbackStart := evalTime.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1577,7 +1582,7 @@ func (h *promHandlers) execHistogramBucketRange(r *http.Request, expr *promqlExp
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1720,7 +1725,7 @@ func (h *promHandlers) execHistogramBucketBareRange(r *http.Request, expr *promq
 	delete(esLabels, PromLabelLe)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        esLabels,
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1807,7 +1812,7 @@ func (h *promHandlers) execHistogramBucketBareRange(r *http.Request, expr *promq
 // restored. snapExtract maps a per-step snapshot slice to the output value(s).
 func (h *promHandlers) bareHistogramSubMatrix(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string, snapExtract func(HistogramBucket) float64) []promMatrixSample {
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1946,7 +1951,7 @@ func (h *promHandlers) execHistogramBucketInstant(r *http.Request, expr *promqlE
 	lookbackStart := evalTime.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -2143,7 +2148,7 @@ func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlE
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    expr.MetricName,
+		MetricName:    unsanitizeMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
