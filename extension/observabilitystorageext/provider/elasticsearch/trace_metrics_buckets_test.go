@@ -189,7 +189,7 @@ func TestExtractMetricValues_SortIsNumeric(t *testing.T) {
 		},
 	})
 
-	got, err := r.extractMetricValues(raw, TraceMetricsQuery{
+	got, err := r.extractMetricValues(raw, 0, TraceMetricsQuery{
 		Function: "histogram_over_time",
 		Field:    "duration",
 	})
@@ -303,6 +303,18 @@ func TestBuildMetricsSubAggregation_HistogramIsBucketed(t *testing.T) {
 	assert.NotEmpty(t, rangeAgg["ranges"])
 }
 
+// TestBuildMetricsSubAggregation_RateHasNoSubAgg guards the rate/count path:
+// the histogram bucket's native doc_count is the metric, so buildMetricsSubAggregation
+// must return nil (no value_count on _id — fielddata blowup; none on _doc either —
+// ES 7.10 returns 0 for it, which silently zeroed every rate series).
+func TestBuildMetricsSubAggregation_RateHasNoSubAgg(t *testing.T) {
+	r := newTestTraceReader(&fakeSearcher{})
+	for _, fn := range []string{"rate", "count_over_time"} {
+		agg := r.buildMetricsSubAggregation(TraceMetricsQuery{Function: fn})
+		assert.Nil(t, agg, "%s must not issue a sub-aggregation (doc_count is the metric)", fn)
+	}
+}
+
 // TestParseMetricsResponse_HistogramFansOut verifies one series per duration
 // bucket, labeled __bucket in seconds, matching Tempo's heatmap contract.
 func TestParseMetricsResponse_HistogramFansOut(t *testing.T) {
@@ -388,14 +400,15 @@ func TestParseMetricsResponse_HistogramGroupedKeepsBothLabels(t *testing.T) {
 }
 
 // TestParseMetricsResponse_RateStaysSingleSeries guards against the fan-out
-// changes leaking into scalar functions.
+// changes leaking into scalar functions. Rate reads the bucket's native
+// doc_count (no "metric" sub-aggregation) and divides by the step.
 func TestParseMetricsResponse_RateStaysSingleSeries(t *testing.T) {
 	r := newTestTraceReader(&fakeSearcher{})
 	resp := &SearchResponse{}
 	resp.Aggregations = mustAggs(t, map[string]any{
 		"buckets": map[string]any{
 			"buckets": []any{
-				map[string]any{"key": float64(1_000_000_000), "metric": map[string]any{"value": float64(10)}},
+				map[string]any{"key": float64(1_000_000_000), "doc_count": float64(10)},
 			},
 		},
 	})

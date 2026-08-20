@@ -163,25 +163,32 @@ func (r *TraceReader) buildMetricsFilter(query TraceMetricsQuery) map[string]any
 func (r *TraceReader) buildMetricsAggTree(query TraceMetricsQuery, histogramAgg map[string]any, bucketAggName string) map[string]any {
 	metricsAgg := r.buildMetricsSubAggregation(query)
 
+	// bucketWithSub wraps the histogram aggregation with the metrics
+	// sub-aggregation when there is one (quantile/range functions); for
+	// doc_count functions (rate/count_over_time) metricsAgg is nil and only
+	// the histogram itself is emitted — the bucket's own doc_count is the
+	// metric.
+	bucketWithSub := func() map[string]any {
+		if metricsAgg == nil {
+			return map[string]any{"histogram": histogramAgg}
+		}
+		return map[string]any{
+			"histogram": histogramAgg,
+			"aggs": map[string]any{
+				"metric": metricsAgg,
+			},
+		}
+	}
+
 	if len(query.ByLabels) == 0 {
 		return map[string]any{
-			bucketAggName: map[string]any{
-				"histogram": histogramAgg,
-				"aggs": map[string]any{
-					"metric": metricsAgg,
-				},
-			},
+			bucketAggName: bucketWithSub(),
 		}
 	}
 
 	// Build nested terms aggregations bottom-up.
 	outerAggs := map[string]any{
-		bucketAggName: map[string]any{
-			"histogram": histogramAgg,
-			"aggs": map[string]any{
-				"metric": metricsAgg,
-			},
-		},
+		bucketAggName: bucketWithSub(),
 	}
 
 	resolver := &AttributeResolver{}
@@ -257,16 +264,12 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 	switch query.Function {
 	case "rate":
 		// rate = count per bucket / bucket_seconds.
-		// Count documents via value_count on the _doc pseudo-field, NOT _id.
-		// Aggregating on _id forces ES to load every document's _id into
-		// fielddata (hundreds of MB across the cluster — the parent circuit
-		// breaker trips and bulk writes 429). _doc counts documents without
-		// any fielddata; it is the ES-canonical "count docs in bucket".
-		return map[string]any{
-			"value_count": map[string]any{
-				"field": "_doc",
-			},
-		}
+		// No sub-aggregation: the histogram bucket's native doc_count IS the
+		// document count. (value_count on _doc returns 0 on ES 7.10 — the _doc
+		// pseudo-field is not supported there; value_count on _id works but
+		// loads every _id into fielddata, tripping the parent circuit breaker
+		// and 429ing bulk writes. doc_count needs neither.)
+		return nil
 
 	case "quantile_over_time":
 		if len(query.Percentiles) == 0 {
@@ -303,10 +306,10 @@ func (r *TraceReader) buildMetricsSubAggregation(query TraceMetricsQuery) map[st
 		}
 
 	default:
-		// See the "rate" case: value_count on _doc, never _id (fielddata blowup).
-		return map[string]any{
-			"value_count": map[string]any{"field": "_doc"},
-		}
+		// rate / count_over_time and any unknown function: same as "rate" —
+		// no sub-aggregation, the bucket's doc_count is the value. See the
+		// "rate" case for why value_count (_id / _doc) must not be used.
+		return nil
 	}
 }
 
@@ -387,6 +390,7 @@ func (r *TraceReader) parseSingleSeries(raw map[string]json.RawMessage, bucketAg
 	var agg struct {
 		Buckets []struct {
 			Key    float64         `json:"key"` // histogram returns float64 keys
+			DocCount float64       `json:"doc_count"` // native bucket doc count (the metric for rate/count)
 			Metric json.RawMessage `json:"metric"`
 		} `json:"buckets"`
 	}
@@ -417,7 +421,7 @@ func (r *TraceReader) parseSingleSeries(raw map[string]json.RawMessage, bucketAg
 		// Convert to milliseconds for Grafana consumption.
 		tsMs := int64(b.Key) / 1_000_000
 
-		vals, err := r.extractMetricValues(b.Metric, query)
+		vals, err := r.extractMetricValues(b.Metric, b.DocCount, query)
 		if err != nil {
 			r.logger.Warn("trace metrics: skip bucket value", zap.Float64("bucket_ts", b.Key), zap.Error(err))
 			continue
@@ -565,16 +569,22 @@ type metricValue struct {
 	value   float64
 }
 
-// extractMetricValues reads the metric value(s) from a sub-aggregation result.
-// The raw input is the JSON object for the "metric" sub-aggregation within a
-// time bucket, e.g. {"value": 42} for value_count,
-// {"values": {"50.0": 123, "95.0": 456}} for percentiles, or
-// {"buckets": {"1024": {"doc_count": 7}, ...}} for the keyed range aggregation.
+// extractMetricValues reads the metric value(s) for one time bucket.
+//   - rate / count_over_time / unknown: docCount (the histogram bucket's
+//     native doc_count — no sub-aggregation is issued for these functions).
+//   - quantile_over_time: raw is {"values": {"50.0": 123, ...}} (percentiles).
+//   - histogram_over_time: raw is {"buckets": {"1024": {"doc_count": 7}, ...}}
+//     (keyed range).
 //
 // quantile_over_time and histogram_over_time return one entry per sub-series;
 // scalar functions return a single entry keyed "".
-func (r *TraceReader) extractMetricValues(raw json.RawMessage, query TraceMetricsQuery) ([]metricValue, error) {
+func (r *TraceReader) extractMetricValues(raw json.RawMessage, docCount float64, query TraceMetricsQuery) ([]metricValue, error) {
 	switch query.Function {
+	case "rate", "count_over_time":
+		// The bucket's native doc_count IS the metric. raw is empty (nil) for
+		// these functions — no sub-aggregation was issued.
+		return []metricValue{{value: docCount}}, nil
+
 	case "quantile_over_time":
 		// ES percentiles returns {"values": {"50.0": 123, "95.0": 456}}.
 		// Emit one series per requested quantile, keyed by the TraceQL fraction
@@ -635,18 +645,9 @@ func (r *TraceReader) extractMetricValues(raw json.RawMessage, query TraceMetric
 		return out, nil
 
 	default:
-		// rate / count_over_time and any unknown function use value_count,
-		// which returns {"value": <number>}.
-		var result struct {
-			Value float64 `json:"value"`
-		}
-		if err := json.Unmarshal(raw, &result); err != nil {
-			if query.Function == "rate" {
-				return nil, fmt.Errorf("unmarshal value_count: %w", err)
-			}
-			return []metricValue{{value: 0}}, nil
-		}
-		return []metricValue{{value: result.Value}}, nil
+		// Unknown function: treat like count_over_time — the bucket's doc_count
+		// is the best available "how many events in this bucket" value.
+		return []metricValue{{value: docCount}}, nil
 	}
 }
 

@@ -149,15 +149,15 @@ func newTestTraceReader(s Searcher) *TraceReader {
 }
 
 // TestParseMetricsResponse_SingleSeries verifies rate() extraction:
-// value_count {"value": N} divided by step seconds.
+// the bucket's native doc_count divided by step seconds.
 func TestParseMetricsResponse_SingleSeries(t *testing.T) {
 	r := newTestTraceReader(&fakeSearcher{})
 	resp := &SearchResponse{}
 	resp.Aggregations = mustAggs(t, map[string]any{
 		"buckets": map[string]any{
 			"buckets": []any{
-				map[string]any{"key": float64(1_000_000_000), "metric": map[string]any{"value": float64(10)}},
-				map[string]any{"key": float64(16_000_000_000), "metric": map[string]any{"value": float64(20)}},
+				map[string]any{"key": float64(1_000_000_000), "doc_count": float64(10)},
+				map[string]any{"key": float64(16_000_000_000), "doc_count": float64(20)},
 			},
 		},
 	})
@@ -193,7 +193,7 @@ func TestParseMetricsResponse_GroupedSeries(t *testing.T) {
 					"key": "gateway",
 					"buckets": map[string]any{
 						"buckets": []any{
-							map[string]any{"key": float64(1_000_000_000), "metric": map[string]any{"value": float64(4)}},
+							map[string]any{"key": float64(1_000_000_000), "doc_count": float64(4)},
 						},
 					},
 				},
@@ -230,7 +230,7 @@ func TestParseMetricsResponse_GroupedSeries_NumericKey(t *testing.T) {
 					"key": float64(42),
 					"buckets": map[string]any{
 						"buckets": []any{
-							map[string]any{"key": float64(1_000_000_000), "metric": map[string]any{"value": float64(1)}},
+							map[string]any{"key": float64(1_000_000_000), "doc_count": float64(1)},
 						},
 					},
 				},
