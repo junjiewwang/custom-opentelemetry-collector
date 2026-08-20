@@ -108,7 +108,7 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 	// Convert PromQL-safe name (jvm_memory_used) → OTel dotted name (jvm.memory.used) for ES.
 	if metricName != "" {
 		originalName := metricName
-		metricName = q.unsanitizeMetricName(metricName)
+		metricName = unsanitizeMetricName(metricName)
 		q.logger.Debug("Select sanitization",
 			zap.String("from", originalName),
 			zap.String("to", metricName),
@@ -885,7 +885,12 @@ func sanitizeMetricName(otelName string) string {
 // original OTel dotted name. Uses a lazily-built complete reverse map from
 // ListMetricNames, falling back to a simple batch of underscore→dot
 // heuristics for names not yet cached.
-func (q *esQuerier) unsanitizeMetricName(safeName string) string {
+//
+// Package-level (not a method on *esQuerier) so both the PromQL engine path
+// (esQuerier.Select) and the subset-parser path (promHandlers.dispatch*Query)
+// can resolve a dotted storage name before issuing an ES term query on the
+// "name" field, which stores the dotted OTel form ("jvm.memory.used").
+func unsanitizeMetricName(safeName string) string {
 	if orig, ok := metricNameReverseMap[safeName]; ok {
 		return orig
 	}
