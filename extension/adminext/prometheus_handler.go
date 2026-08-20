@@ -119,6 +119,14 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	queryStart := time.Now()
+	route := "subset" // overwritten to "engine" when tryPromQL serves the result
+	defer func() {
+		if h.queryMetrics != nil {
+			h.queryMetrics.recordQuery(r.Context(), "prometheus", route, time.Since(queryStart))
+		}
+	}()
+
 	queryStr := h.getQueryParam(r, "query")
 	if queryStr == "" {
 		h.writePromError(w, "bad_data", "parameter 'query' is required")
@@ -151,6 +159,7 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 			hasData = len(items) > 0
 		}
 		if hasData {
+			route = "engine"
 			h.writePromSuccess(w, result)
 			return
 		}
@@ -200,6 +209,14 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	queryStart := time.Now()
+	route := "subset" // overwritten to "engine" when tryPromQLRange serves the result
+	defer func() {
+		if h.queryMetrics != nil {
+			h.queryMetrics.recordQuery(r.Context(), "prometheus", route, time.Since(queryStart))
+		}
+	}()
+
 	queryStr := h.getQueryParam(r, "query")
 	if queryStr == "" {
 		h.writePromError(w, "bad_data", "parameter 'query' is required")
@@ -228,6 +245,7 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 	if isComplexPromQL(queryStr) {
 		if result := h.tryPromQLRange(r.Context(), queryStr, start, end, step); result != nil {
 			items, _ := result.Result.([]promMatrixSample)
+			route = "engine"
 			h.writePromSuccess(w, &promQueryData{
 				ResultType: ResultTypeMatrix,
 				Result:     items,

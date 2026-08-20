@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
+	"go.opentelemetry.io/collector/custom/identity"
 )
 
 // promHandlers holds the dependencies required by the Prometheus-compatible API
@@ -28,6 +29,9 @@ type promHandlers struct {
 	// the engine cannot handle (e.g. unsupported histogram_quantile).
 	queryable *esQueryable
 	engine    *promql.Engine
+	// queryMetrics holds the self-monitoring instruments for the query layer
+	// (latency, ES request count, 429 retries). Nil-safe (no-op meter fallback).
+	queryMetrics *queryMetrics
 }
 
 func newPromHandlers(e *Extension) *promHandlers {
@@ -46,6 +50,10 @@ func newPromHandlers(e *Extension) *promHandlers {
 		logger:       e.logger,
 		queryable:    queryable,
 		engine:       engine,
+		queryMetrics: newQueryMetrics(
+			e.settings.TelemetrySettings.MeterProvider.Meter("otelcol/query"),
+			identity.ResolveUniqueNodeID(""),
+		),
 	}
 }
 
