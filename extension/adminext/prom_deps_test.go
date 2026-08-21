@@ -67,8 +67,9 @@ func TestIsRateFunc(t *testing.T) {
 func TestTryPromQL_HistogramSubSeriesShortCircuits(t *testing.T) {
 	h := &promHandlers{engine: nil, queryable: nil} // nil engine: would panic if it tried to use it
 	// A histogram_quantile over _bucket — must short-circuit before NewInstantQuery.
-	result := h.tryPromQL(context.Background(),
+	result, failReason := h.tryPromQL(context.Background(),
 		`histogram_quantile(.9, sum(rate(traces_spanmetrics_latency_bucket{span_name=~"opentelemetry\\.proto\\.collector\\.logs\\.v1\\.LogsService/Export"}[3600s])) by (le))`,
 		time.Now())
 	assert.Nil(t, result, "histogram _bucket query must short-circuit without calling the engine")
+	assert.Empty(t, failReason, "short-circuit is a shape decision, not a cancellation")
 }

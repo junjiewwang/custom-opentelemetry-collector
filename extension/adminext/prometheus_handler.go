@@ -148,9 +148,12 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 	// Enabled for queries that contain arithmetic, aggregation, or function
 	// syntax that the subset parser cannot handle.
 	// Falls back to the old parser for:
-	//   - engine failures / empty results
+	//   - engine parse failures / empty results
 	//   - simple queries the old parser handles well
-	if result := h.tryPromQL(r.Context(), queryStr, evalTime); result != nil {
+	// Does NOT fall back on context cancellation/timeout: the subset parser
+	// would re-issue the same ES scan that just timed out, doubling ES load
+	// exactly when the cluster is already under pressure.
+	if result, failReason := h.tryPromQL(r.Context(), queryStr, evalTime); result != nil {
 		hasData := false
 		switch items := result.Result.(type) {
 		case []promVectorSample:
@@ -160,9 +163,15 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		if hasData {
 			route = "engine"
+			recordEngineRouteSpan(r.Context(), queryStr, "engine", "")
 			h.writePromSuccess(w, result)
 			return
 		}
+	} else if failReason == "canceled" {
+		route = "engine"
+		recordEngineRouteSpan(r.Context(), queryStr, "engine", failReason)
+		h.writePromError(w, "execution", "promql engine query canceled or timed out")
+		return
 	}
 
 	expr, err := parsePromQL(queryStr)
@@ -243,13 +252,25 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 	// empty result), use it — the old parser doesn't support delta/rate/+
 	// and would 400 on those expressions.
 	if isComplexPromQL(queryStr) {
-		if result := h.tryPromQLRange(r.Context(), queryStr, start, end, step); result != nil {
+		if result, failReason := h.tryPromQLRange(r.Context(), queryStr, start, end, step); result != nil {
 			items, _ := result.Result.([]promMatrixSample)
 			route = "engine"
+			recordEngineRouteSpan(r.Context(), queryStr, "engine", "")
 			h.writePromSuccess(w, &promQueryData{
 				ResultType: ResultTypeMatrix,
 				Result:     items,
 			})
+			return
+		} else if failReason == "canceled" {
+			// Engine died on context cancellation/timeout. Do NOT fall back to
+			// the subset parser: it would re-issue the same sliced ES scan that
+			// just timed out (verified live: a 6h high-cardinality rate() query
+			// canceled 4 ES slices in the engine, then the fallback re-ran all 4
+			// and canceled again — double load, same outcome). Fail fast so
+			// Grafana surfaces the timeout instead of a slow second failure.
+			route = "engine"
+			recordEngineRouteSpan(r.Context(), queryStr, "engine", failReason)
+			h.writePromError(w, "execution", "promql engine query canceled or timed out")
 			return
 		}
 		// If the engine failed (e.g. parse error on a non-standard selector like

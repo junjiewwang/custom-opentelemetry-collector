@@ -5,6 +5,7 @@ package adminext
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
@@ -58,30 +61,39 @@ func newPromHandlers(e *Extension) *promHandlers {
 }
 
 // tryPromQLRange executes the PromQL expression as a range query over
-// [start, end] with the given step. Returns nil on failure so the caller
-// falls back to the subset parser.
-func (h *promHandlers) tryPromQLRange(ctx context.Context, queryStr string, start, end time.Time, step time.Duration) *promQueryData {
+// [start, end] with the given step. Returns (nil, failReason) on failure so
+// the caller can decide whether to fall back to the subset parser:
+// failReason "canceled" means the engine died on context cancellation/timeout —
+// falling back would re-issue the SAME full ES scan the engine just timed out
+// on, doubling ES load under pressure and delaying the client error. The
+// handler must return the error instead. An empty failReason marks parse or
+// unsupported-shape failures, where the subset parser handles forms the engine
+// rejects (e.g. Grafana Explore Metrics' bare-quoted metric name).
+func (h *promHandlers) tryPromQLRange(ctx context.Context, queryStr string, start, end time.Time, step time.Duration) (*promQueryData, string) {
 	if h.engine == nil || h.queryable == nil {
-		return nil
+		return nil, ""
 	}
 	queryStr = normalizeQueryForPromQL(queryStr)
 
 	q, err := h.engine.NewRangeQuery(ctx, h.queryable, nil, queryStr, start, end, step)
 	if err != nil {
 		h.logger.Error("promql range query parse failed", zap.String("query", queryStr), zap.Error(err))
-		return nil
+		return nil, ""
 	}
 	defer q.Close()
 	res := q.Exec(ctx)
 	if res.Err != nil {
 		h.logger.Error("promql range query exec failed", zap.String("query", queryStr), zap.Error(res.Err))
-		return nil
+		if isContextCancellation(res.Err) {
+			return nil, "canceled"
+		}
+		return nil, ""
 	}
 	if res.Value == nil {
-		return nil
+		return nil, ""
 	}
 	if res.Value.Type() != parser.ValueTypeMatrix {
-		return nil
+		return nil, ""
 	}
 	m, _ := res.Matrix()
 	matrix := make([]promMatrixSample, 0, len(m))
@@ -96,15 +108,80 @@ func (h *promHandlers) tryPromQLRange(ctx context.Context, queryStr string, star
 		}
 		matrix = append(matrix, promMatrixSample{Metric: metric, Values: values})
 	}
-	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
+	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}, ""
+}
+
+// isContextCancellation reports whether err is (or wraps) a context
+// cancellation or deadline error — the signature of the engine timing out or
+// the client disconnecting mid-query.
+//
+// The promql engine does NOT always wrap context.Canceled: on mid-evaluation
+// cancellation it returns the sentinel string error
+// "query was canceled in expression evaluation" (promql.Errors), which
+// errors.Is cannot see. Match that string explicitly — it is engine-stable
+// API surface (ErrQueryCanceled family) and the exact error observed live.
+func isContextCancellation(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "query was canceled") ||
+		strings.Contains(msg, context.Canceled.Error()) ||
+		strings.Contains(msg, context.DeadlineExceeded.Error())
+}
+
+// extractFirstMetricName pulls the first bare metric identifier out of a
+// (normalized) PromQL expression, e.g. "sum by (le) (rate(http_requests_total[5m]))"
+// → "http_requests_total". Best-effort for span annotation: it walks parser
+// tokens and returns the first Identifier that is not a function/aggregation
+// keyword, or "" when the expression has none (pure scalar probes).
+func extractFirstMetricName(queryStr string) string {
+	parsed, err := parser.ParseExpr(queryStr)
+	if err != nil {
+		return ""
+	}
+	var found string
+	parser.Inspect(parsed, func(node parser.Node, _ []parser.Node) error {
+		if found != "" {
+			return nil
+		}
+		if vs, ok := node.(*parser.VectorSelector); ok && vs.Name != "" {
+			found = vs.Name
+		}
+		return nil
+	})
+	return found
+}
+
+// recordEngineRouteSpan annotates the request span with the engine-path
+// routing info. The subset-parser path already sets promql.metric/group_by etc.
+// (prometheus_handler.go), but the engine path bypassed them — self-monitoring
+// traces for engine-routed queries carried no metric name, which made
+// "which metric timed out" unanswerable from the trace alone.
+func recordEngineRouteSpan(ctx context.Context, rawQuery, route, failReason string) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	span.SetAttributes(
+		attribute.String(SpanAttrPromQLRoute, route),
+		attribute.String(SpanAttrPromQLMetric, extractFirstMetricName(normalizeQueryForPromQL(rawQuery))),
+	)
+	if failReason != "" {
+		span.SetAttributes(attribute.String(SpanAttrErrorType, "engine_"+failReason))
+	}
 }
 
 // tryPromQL executes the PromQL expression via the full promql.Engine and returns
-// the serialized result. Returns nil on any error so the caller falls back to
-// the subset parsePromQL parser.
-func (h *promHandlers) tryPromQL(ctx context.Context, queryStr string, evalTime time.Time) *promQueryData {
+// the serialized result. Returns (nil, failReason) on any error so the caller can
+// decide whether to fall back to the subset parsePromQL parser — see
+// tryPromQLRange for the failReason contract ("canceled" = do not fall back).
+func (h *promHandlers) tryPromQL(ctx context.Context, queryStr string, evalTime time.Time) (*promQueryData, string) {
 	if h.engine == nil || h.queryable == nil {
-		return nil
+		return nil, ""
 	}
 	// Normalize OTel dotted metric names (jvm.memory.used) to Prometheus-safe
 	// underscored names (jvm_memory_used) so the parser doesn't reject them.
@@ -118,25 +195,28 @@ func (h *promHandlers) tryPromQL(ctx context.Context, queryStr string, evalTime 
 	// engine for _bucket/_sum on the range path) and avoids a wasted ERROR log per
 	// histogram_quantile sub-query.
 	if isHistogramSubSeriesQuery(queryStr) {
-		return nil
+		return nil, ""
 	}
 
 	q, err := h.engine.NewInstantQuery(ctx, h.queryable, nil, queryStr, evalTime)
 	if err != nil {
 		h.logger.Error("promql engine NewInstantQuery failed", zap.String("query", queryStr), zap.Error(err))
-		return nil
+		return nil, ""
 	}
 	defer q.Close()
 	res := q.Exec(ctx)
 	if res.Err != nil {
 		h.logger.Error("promql engine Exec failed", zap.String("query", queryStr), zap.Error(res.Err))
-		return nil
+		if isContextCancellation(res.Err) {
+			return nil, "canceled"
+		}
+		return nil, ""
 	}
 	if res.Value == nil {
 		h.logger.Warn("promql engine returned nil Value",
 			zap.String("query", queryStr),
 		)
-		return nil
+		return nil, ""
 	}
 	h.logger.Debug("promql engine result",
 		zap.String("query", queryStr),
@@ -161,7 +241,7 @@ func (h *promHandlers) tryPromQL(ctx context.Context, queryStr string, evalTime 
 			zap.String("query", queryStr),
 			zap.Int("items", len(vectors)),
 		)
-		return &promQueryData{ResultType: ResultTypeVector, Result: vectors}
+		return &promQueryData{ResultType: ResultTypeVector, Result: vectors}, ""
 	case parser.ValueTypeMatrix:
 		m, _ := res.Matrix()
 		matrix := make([]promMatrixSample, 0, len(m))
@@ -176,12 +256,12 @@ func (h *promHandlers) tryPromQL(ctx context.Context, queryStr string, evalTime 
 			}
 			matrix = append(matrix, promMatrixSample{Metric: metric, Values: values})
 		}
-		return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
+		return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}, ""
 	// Scalar → delegate to existing parser (writePromScalar).
 	case parser.ValueTypeScalar:
-		return nil
+		return nil, ""
 	}
-	return nil
+	return nil, ""
 }
 
 // normalizeQueryForPromQL replaces dots in OTel metric names with underscores.

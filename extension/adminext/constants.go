@@ -132,6 +132,10 @@ const (
 	// SpanAttrPromQLMetric is the span attribute key for the parsed metric name.
 	SpanAttrPromQLMetric = "promql.metric"
 
+	// SpanAttrPromQLRoute is the span attribute key for which path served the
+	// query: "engine" (full promql.Engine) or "subset" (subset parser).
+	SpanAttrPromQLRoute = "promql.route"
+
 	// SpanAttrPromQLAggregation is the span attribute key for the aggregation function.
 	SpanAttrPromQLAggregation = "promql.aggregation"
 
