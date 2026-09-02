@@ -65,7 +65,7 @@ func TestIntegration_WriteAndExportRoundTrip(t *testing.T) {
 	ts := time.Now().UnixMilli()
 	name := fmt.Sprintf("it_gauge_%d", ts)
 
-	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, newTypeRegistry(""), zap.NewNop())
+	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, zap.NewNop())
 	defer w.Stop()
 	w.ingestPoint(storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli: ts,
@@ -75,7 +75,7 @@ func TestIntegration_WriteAndExportRoundTrip(t *testing.T) {
 		AppID:         "it_app",
 		ServiceName:   "it_svc",
 		Labels:        map[string]any{"route": "/it"},
-	}, time.Now())
+	})
 	require.NoError(t, w.Flush(ctx))
 
 	// Window MUST be derived from the sample timestamp, not wall clock: the
@@ -99,8 +99,11 @@ func TestIntegration_HistogramDeltaExpansion(t *testing.T) {
 	ts := time.Now().UnixMilli()
 	base := fmt.Sprintf("it_hist_%d", ts)
 
-	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, newTypeRegistry(""), zap.NewNop())
+	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, zap.NewNop())
 	defer w.Stop()
+	// The # TYPE row must be flushed for VM's metadata to mark this family a
+	// histogram — QueryFlat's histogram branch depends on it.
+	w.noteType(base, storedmodel.MetricMeta{Type: "histogram"})
 	w.ingestPoint(storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli:          ts,
 		Name:                   base,
@@ -111,7 +114,7 @@ func TestIntegration_HistogramDeltaExpansion(t *testing.T) {
 		BucketCounts:           []uint64{1, 0, 2},
 		ExplicitBounds:         []float64{1, 5},
 		AggregationTemporality: "delta",
-	}, time.Now())
+	})
 	require.NoError(t, w.Flush(ctx))
 
 	// export the bucket series and verify cumulative semantics
@@ -137,9 +140,9 @@ func TestIntegration_QueryInstant(t *testing.T) {
 	ts := time.Now().UnixMilli()
 	name := fmt.Sprintf("it_query_%d", ts)
 
-	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, newTypeRegistry(""), zap.NewNop())
+	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, zap.NewNop())
 	defer w.Stop()
-	w.ingestPoint(storedmetricPoint(name, 99.0, ts), time.Now())
+	w.ingestPoint(storedmetricPoint(name, 99.0, ts))
 	require.NoError(t, w.Flush(ctx))
 
 	// Instant queries on a single stale sample are empty by Prometheus
@@ -181,12 +184,13 @@ func TestIntegration_ReaderFlatHistogramEndToEnd(t *testing.T) {
 
 	// Write a delta histogram, then read it back through the reader's
 	// QueryFlat histogram path (reassembly from _bucket/_sum/_count).
-	reg := newTypeRegistry("")
-	rd := newMetricReader(c, reg, zap.NewNop())
-	reg.record(base, "histogram", "s", time.Now())
+	rd := newMetricReader(c, zap.NewNop())
 
-	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, reg, zap.NewNop())
+	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, zap.NewNop())
 	defer w.Stop()
+	// The # TYPE row must be flushed for VM's metadata to mark this family a
+	// histogram — QueryFlat's histogram branch depends on it.
+	w.noteType(base, storedmodel.MetricMeta{Type: "histogram"})
 	w.ingestPoint(storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli:          ts,
 		Name:                   base,
@@ -197,7 +201,7 @@ func TestIntegration_ReaderFlatHistogramEndToEnd(t *testing.T) {
 		BucketCounts:           []uint64{1, 0, 2},
 		ExplicitBounds:         []float64{1, 5},
 		AggregationTemporality: "delta",
-	}, time.Now())
+	})
 	require.NoError(t, w.Flush(ctx))
 
 	deadline := time.Now().Add(60 * time.Second)

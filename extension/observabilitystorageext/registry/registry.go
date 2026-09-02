@@ -86,7 +86,6 @@ type VMConfigView struct {
 	ReadTimeout   time.Duration
 	MaxRetries    int
 	ExtraLabels   map[string]string
-	RegistryPath  string
 }
 
 // ConfigTranslator converts an extension-level provider config value into

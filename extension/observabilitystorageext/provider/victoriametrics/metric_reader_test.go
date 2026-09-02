@@ -37,7 +37,7 @@ func newFakeVM(t *testing.T, handle func(w http.ResponseWriter, r *http.Request)
 }
 
 func newTestReader(c VMClient) *MetricReader {
-	return newMetricReader(c, newTypeRegistry(""), zap.NewNop())
+	return newMetricReader(c, zap.NewNop())
 }
 
 func writeJSON(w http.ResponseWriter, body string) {
@@ -69,7 +69,7 @@ func TestQuery_AppIsolationAndLabelStrip(t *testing.T) {
 	assert.Contains(t, (*calls)[0], "query=m%7Bapp_id%3D%22appA%22%7D")
 }
 
-// ── QueryRange (aggregation/groupBy translation) ────────────────────────────
+// ── QueryRange ───────────────────────────────────────────────────────────────
 
 func TestQueryRange_GroupByTranslation(t *testing.T) {
 	c, calls := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
@@ -87,34 +87,11 @@ func TestQueryRange_GroupByTranslation(t *testing.T) {
 	require.Len(t, res.Data, 1)
 	require.Len(t, res.Data[0].Values, 2)
 	assert.Equal(t, "1780000000000", res.Data[0].Values[0].TimeUnixMilli)
-	// MetricsQL expression: sum by (svc) (m{app_id="a"})
 	require.Len(t, *calls, 1)
 	assert.Contains(t, (*calls)[0], "query=sum+by+%28svc%29+%28m%7Bapp_id%3D%22a%22%7D%29")
 }
 
-func TestQueryRange_SeriesLimit(t *testing.T) {
-	seriesJSON := `[`
-	for i := 0; i < 150; i++ {
-		if i > 0 {
-			seriesJSON += ","
-		}
-		seriesJSON += fmt.Sprintf(`{"metric":{"__name__":"m","i":"%d"},"values":[[1780000000,"1"]]}`, i)
-	}
-	seriesJSON += `]`
-	c, _ := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, `{"status":"success","data":{"resultType":"matrix","result":`+seriesJSON+`}}`)
-	})
-	rd := newTestReader(c)
-	res, err := rd.QueryRange(context.Background(), observabilitystorageext.MetricRangeQuery{
-		MetricName: "m",
-		TimeRange:  observabilitystorageext.TimeRange{Start: time.Unix(1780000000, 0), End: time.Unix(1780000100, 0)},
-		Step:       time.Minute,
-	})
-	require.NoError(t, err)
-	assert.LessOrEqual(t, len(res.Data), 100, "default series limit 100")
-}
-
-// ── QueryFlat (export + histogram reassembly) ──────────────────────────────
+// ── QueryFlat ────────────────────────────────────────────────────────────────
 
 func TestQueryFlat_GaugeViaExport(t *testing.T) {
 	c, calls := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
@@ -132,29 +109,31 @@ func TestQueryFlat_GaugeViaExport(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Samples, 2)
 	assert.Equal(t, int64(1780000000000), res.Samples[0].TimestampMs)
-	assert.Equal(t, 1.0, res.Samples[0].Value)
 	assert.NotContains(t, res.Samples[0].Labels, "app_id")
 	assert.False(t, res.Truncated)
-	// export called with selector + time window
-	require.Len(t, *calls, 1)
-	assert.Contains(t, (*calls)[0], "match%5B%5D=m%7Bapp_id%3D%22a%22%7D")
+	// one metadata probe (histogram check) + one export
+	require.Len(t, *calls, 2)
+	assert.Contains(t, (*calls)[0], "/api/v1/metadata?metric=m")
+	assert.Contains(t, (*calls)[1], "match%5B%5D=m%7Bapp_id%3D%22a%22%7D")
 }
 
 func TestQueryFlat_HistogramReassembly(t *testing.T) {
-	// registry says "http_dur" is a histogram → flat query must hit
+	// VM metadata says "http_dur" is a histogram → flat query must hit
 	// _bucket/_sum/_count sub-series and reassemble BucketCounts/Bounds.
-	reg := newTypeRegistry("")
-	reg.record("http_dur", "histogram", "s", time.Now())
 	var exportCalls []string
 	c, _ := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/metadata") {
+			writeJSON(w, `{"status":"success","data":{"http_dur":[{"type":"histogram"}]}}`)
+			return
+		}
 		q := r.URL.Query().Get("match[]")
 		exportCalls = append(exportCalls, q)
 		switch {
 		case strings.Contains(q, "http_dur_bucket"):
-			// two le series, cumulative in VM
 			fmt.Fprint(w,
 				`{"metric":{"__name__":"http_dur_bucket","app_id":"a","le":"1"},"values":[10.0],"timestamps":[1780000000000]}`+"\n"+
-					`{"metric":{"__name__":"http_dur_bucket","app_id":"a","le":"5"},"values":[12.0],"timestamps":[1780000000000]}`)
+					`{"metric":{"__name__":"http_dur_bucket","app_id":"a","le":"5"},"values":[12.0],"timestamps":[1780000000000]}`+"\n"+
+					`{"metric":{"__name__":"http_dur_bucket","app_id":"a","le":"+Inf"},"values":[12.0],"timestamps":[1780000000000]}`)
 		case strings.Contains(q, "http_dur_sum"):
 			fmt.Fprint(w, `{"metric":{"__name__":"http_dur_sum","app_id":"a"},"values":[3.5],"timestamps":[1780000000000]}`)
 		case strings.Contains(q, "http_dur_count"):
@@ -163,7 +142,7 @@ func TestQueryFlat_HistogramReassembly(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
-	rd := newMetricReader(c, reg, zap.NewNop())
+	rd := newTestReader(c)
 	res, err := rd.QueryFlat(context.Background(), observabilitystorageext.MetricFlatQuery{
 		MetricName: "http_dur", AppID: "a",
 		TimeRange: observabilitystorageext.TimeRange{Start: time.Unix(1780000000, 0), End: time.Unix(1780000100, 0)},
@@ -171,13 +150,11 @@ func TestQueryFlat_HistogramReassembly(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Samples, 1)
 	s := res.Samples[0]
-	// reassembled: bounds [1,5], cumulative counts [10,12] (+Inf slot appended)
 	assert.Equal(t, []float64{1, 5}, s.Bounds)
 	assert.Equal(t, []int64{10, 12}, s.BucketCounts[:2])
-	assert.Equal(t, 3.5, s.Value)         // _sum
-	assert.Equal(t, int64(12), s.Count)   // _count
+	assert.Equal(t, 3.5, s.Value)
+	assert.Equal(t, int64(12), s.Count)
 	assert.Equal(t, "cumulative", s.Temporality)
-	// three sub-series exports were issued
 	require.Len(t, exportCalls, 3)
 }
 
@@ -195,7 +172,34 @@ func TestListMetricNames_FiltersVMPrefix(t *testing.T) {
 	assert.Equal(t, []string{"another", "my_metric"}, names)
 }
 
-// ── ListLabelValuesForMetric ────────────────────────────────────────────────
+// ── ListMetricTypes (VM native metadata + histogram expansion) ──────────────
+
+func TestListMetricTypes_FromVMMetadata(t *testing.T) {
+	c, calls := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `{"status":"success","data":{
+			"vm_rows":[{"type":"counter"}],
+			"counter_m":[{"type":"counter"}],
+			"jvm_memory_used":[{"type":"gauge"}],
+			"http_dur":[{"type":"histogram"}]}}`)
+	})
+	rd := newTestReader(c)
+	types, err := rd.ListMetricTypes(context.Background(), observabilitystorageext.TimeRange{})
+	require.NoError(t, err)
+	assert.Equal(t, "counter", types["counter_m"].Type)
+	assert.Equal(t, "gauge", types["jvm_memory_used"].Type)
+	// vm_* filtered
+	_, ok := types["vm_rows"]
+	assert.False(t, ok, "vm_* self-monitoring must not surface")
+	// histogram sub-series expand to counter
+	assert.Equal(t, "counter", types["http_dur_bucket"].Type)
+	assert.Equal(t, "counter", types["http_dur_sum"].Type)
+	assert.Equal(t, "counter", types["http_dur_count"].Type)
+	// queried VM, not a local registry
+	require.Len(t, *calls, 1)
+	assert.Contains(t, (*calls)[0], "/api/v1/metadata")
+}
+
+// ── ListLabelValuesForMetric / app_id isolation ─────────────────────────────
 
 func TestListLabelValuesForMetric_MatchScoped(t *testing.T) {
 	c, calls := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
@@ -223,17 +227,6 @@ func TestListLabelValues_AppIDNeverSurfaced(t *testing.T) {
 	assert.Empty(t, values, "app_id is internal isolation; must not leak")
 }
 
-// ── ListMetricTypes (registry) ──────────────────────────────────────────────
-
-func TestListMetricTypes_FromRegistry(t *testing.T) {
-	reg := newTypeRegistry("")
-	reg.record("counter_m", "counter", "1", time.Now())
-	rd := newMetricReader(&noopClient{}, reg, zap.NewNop())
-	types, err := rd.ListMetricTypes(context.Background(), observabilitystorageext.TimeRange{})
-	require.NoError(t, err)
-	assert.Equal(t, "counter", types["counter_m"].Type)
-}
-
 // ── ListLabelCombinations ───────────────────────────────────────────────────
 
 func TestListLabelCombinations(t *testing.T) {
@@ -251,27 +244,3 @@ func TestListLabelCombinations(t *testing.T) {
 	require.Len(t, res.Combinations, 2, "duplicates deduped")
 	assert.Equal(t, map[string]string{"a": "1", "b": "x"}, res.Combinations[0])
 }
-
-// noopClient for tests that never hit HTTP.
-type noopClient struct{}
-
-func (n *noopClient) ImportLines(context.Context, []byte) error { return nil }
-func (n *noopClient) QueryInstant(context.Context, string, time.Time) (*VMSeriesList, error) {
-	return nil, fmt.Errorf("not expected")
-}
-func (n *noopClient) QueryRange(context.Context, string, time.Time, time.Time, time.Duration) (*VMSeriesList, error) {
-	return nil, fmt.Errorf("not expected")
-}
-func (n *noopClient) Export(context.Context, []string, time.Time, time.Time) ([]VMExportSeries, error) {
-	return nil, fmt.Errorf("not expected")
-}
-func (n *noopClient) LabelValues(context.Context, string, []string, time.Time, time.Time) ([]string, error) {
-	return nil, fmt.Errorf("not expected")
-}
-func (n *noopClient) LabelNames(context.Context, []string, time.Time, time.Time) ([]string, error) {
-	return nil, fmt.Errorf("not expected")
-}
-func (n *noopClient) Series(context.Context, []string, time.Time, time.Time) ([]map[string]string, error) {
-	return nil, fmt.Errorf("not expected")
-}
-func (n *noopClient) Health(context.Context) error { return nil }

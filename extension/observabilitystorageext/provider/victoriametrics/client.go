@@ -27,8 +27,14 @@ func max64(a, b int64) int64 {
 // VMClient is the HTTP surface to VictoriaMetrics. The writer and reader depend
 // on this interface, not on the concrete HTTP client, so tests inject fakes.
 type VMClient interface {
-	// ImportLines posts newline-delimited JSON lines to /api/v1/import.
-	ImportLines(ctx context.Context, lines []byte) error
+	// ImportText posts Prometheus text exposition format (sample rows plus
+	// optional # TYPE / # HELP metadata rows) to /api/v1/import/prometheus.
+	// VM stores the metadata natively, which /api/v1/metadata reads back.
+	ImportText(ctx context.Context, body []byte) error
+
+	// MetricMetadata reads VM's native metric metadata (type/help per family)
+	// via /api/v1/metadata. metricName scopes to one family; empty = all.
+	MetricMetadata(ctx context.Context, metricName string) (map[string]VMMeta, error)
 
 	// QueryInstant executes an instant query (/api/v1/query).
 	QueryInstant(ctx context.Context, query string, ts time.Time) (*VMSeriesList, error)
@@ -98,7 +104,13 @@ func newHTTPVMClient(cfg *Config) *httpVMClient {
 	}
 }
 
-func (c *httpVMClient) ImportLines(ctx context.Context, lines []byte) error {
+// VMMeta is one metric family's native metadata from VM.
+type VMMeta struct {
+	Type string `json:"type"`
+	Help string `json:"help"`
+}
+
+func (c *httpVMClient) ImportText(ctx context.Context, lines []byte) error {
 	if len(lines) == 0 {
 		return nil
 	}
@@ -113,7 +125,7 @@ func (c *httpVMClient) ImportLines(ctx context.Context, lines []byte) error {
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			c.writeBase+"/api/v1/import", bytes.NewReader(lines))
+			c.writeBase+"/api/v1/import/prometheus", bytes.NewReader(lines))
 		if err != nil {
 			return err
 		}
@@ -300,4 +312,25 @@ func (c *httpVMClient) promGet(ctx context.Context, path string, q url.Values, o
 		return fmt.Errorf("vm %s data decode failed: %w", path, err)
 	}
 	return nil
+}
+
+
+// MetricMetadata reads VM's native metric metadata via /api/v1/metadata.
+// The response shape is {"status","data":{family:[{type,help}]}}.
+func (c *httpVMClient) MetricMetadata(ctx context.Context, metricName string) (map[string]VMMeta, error) {
+	q := url.Values{}
+	if metricName != "" {
+		q.Set("metric", metricName)
+	}
+	var out map[string][]VMMeta
+	if err := c.promGet(ctx, "/api/v1/metadata", q, &out); err != nil {
+		return nil, err
+	}
+	res := make(map[string]VMMeta, len(out))
+	for family, items := range out {
+		if len(items) > 0 {
+			res[family] = items[0]
+		}
+	}
+	return res, nil
 }

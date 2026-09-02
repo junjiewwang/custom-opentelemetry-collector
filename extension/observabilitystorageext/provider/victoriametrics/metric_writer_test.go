@@ -6,7 +6,6 @@ package victoriametrics
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,37 +23,35 @@ import (
 
 func TestConvertHistogram_DeltaAccumulates(t *testing.T) {
 	pt := storedmodel.StoredMetricDataPoint{
-		TimeUnixMilli:           1700000000000,
-		Name:                    "http_duration",
-		Type:                    "histogram",
-		Value:                   12.5,
-		Count:                   3,
-		AppID:                   "app1",
-		ServiceName:             "svc1",
-		Labels:                  map[string]any{"route": "/api"},
-		BucketCounts:            []uint64{1, 0, 2},
-		ExplicitBounds:          []float64{1, 5},
-		AggregationTemporality:  "delta",
+		TimeUnixMilli:          1700000000000,
+		Name:                   "http_duration",
+		Type:                   "histogram",
+		Value:                  12.5,
+		Count:                  3,
+		AppID:                  "app1",
+		ServiceName:            "svc1",
+		Labels:                 map[string]any{"route": "/api"},
+		BucketCounts:           []uint64{1, 0, 2},
+		ExplicitBounds:         []float64{1, 5},
+		AggregationTemporality: "delta",
 	}
-	lines := convertHistogram(pt, nil)
-
-	byName := map[string]vmLine{}
-	for _, l := range lines {
-		byName[l.Metric["__name__"]+"|"+l.Metric["le"]] = l
+	samples := convertHistogram(pt, nil)
+	byKey := map[string]textSample{}
+	for _, s := range samples {
+		byKey[s.metric+"|"+s.labels["le"]] = s
 	}
 	// delta [1,0,2] → cumulative [1,1,3]
-	require.Contains(t, byName, "http_duration_bucket|1")
-	assert.Equal(t, 1.0, byName["http_duration_bucket|1"].Values[0])
-	require.Contains(t, byName, "http_duration_bucket|5")
-	assert.Equal(t, 1.0, byName["http_duration_bucket|5"].Values[0])
-	require.Contains(t, byName, "http_duration_bucket|+Inf")
-	assert.Equal(t, 3.0, byName["http_duration_bucket|+Inf"].Values[0])
-	assert.Equal(t, 3.0, byName["http_duration_count|"].Values[0])
-	assert.Equal(t, 12.5, byName["http_duration_sum|"].Values[0])
-	// labels propagated
-	assert.Equal(t, "app1", byName["http_duration_count|"].Metric["app_id"])
-	assert.Equal(t, "svc1", byName["http_duration_count|"].Metric["service_name"])
-	assert.Equal(t, "/api", byName["http_duration_count|"].Metric["route"])
+	require.Contains(t, byKey, "http_duration_bucket|1")
+	assert.Equal(t, 1.0, byKey["http_duration_bucket|1"].value)
+	require.Contains(t, byKey, "http_duration_bucket|5")
+	assert.Equal(t, 1.0, byKey["http_duration_bucket|5"].value)
+	require.Contains(t, byKey, "http_duration_bucket|+Inf")
+	assert.Equal(t, 3.0, byKey["http_duration_bucket|+Inf"].value)
+	assert.Equal(t, 3.0, byKey["http_duration_count|"].value)
+	assert.Equal(t, 12.5, byKey["http_duration_sum|"].value)
+	assert.Equal(t, "app1", byKey["http_duration_count|"].labels["app_id"])
+	assert.Equal(t, "svc1", byKey["http_duration_count|"].labels["service_name"])
+	assert.Equal(t, "/api", byKey["http_duration_count|"].labels["route"])
 }
 
 func TestConvertHistogram_CumulativeAsIs(t *testing.T) {
@@ -67,20 +64,19 @@ func TestConvertHistogram_CumulativeAsIs(t *testing.T) {
 		ExplicitBounds:         []float64{1, 5},
 		AggregationTemporality: "cumulative",
 	}
-	lines := convertHistogram(pt, nil)
+	samples := convertHistogram(pt, nil)
 	byLE := map[string]float64{}
-	for _, l := range lines {
-		if l.Metric["__name__"] == "http_duration_bucket" {
-			byLE[l.Metric["le"]] = l.Values[0]
+	for _, s := range samples {
+		if s.metric == "http_duration_bucket" {
+			byLE[s.labels["le"]] = s.value
 		}
 	}
-	// cumulative values written verbatim — NO re-accumulation (10+10=20 would be wrong)
+	// cumulative written verbatim — NO re-accumulation
 	assert.Equal(t, map[string]float64{"1": 10, "5": 10, "+Inf": 12}, byLE)
 }
 
-// ── writer: JSON line format + same-series merge + error contract ───────────
+// ── writer: text format + type rows + error contract ───────────────────────
 
-// newTestWriter spins a MetricWriter against a recording httptest server.
 func newTestWriter(t *testing.T, status int, cfg *Config) (*MetricWriter, *[][]byte) {
 	t.Helper()
 	var bodies [][]byte
@@ -100,15 +96,15 @@ func newTestWriter(t *testing.T, status int, cfg *Config) (*MetricWriter, *[][]b
 	if cfg.WriteTimeout == 0 {
 		cfg.WriteTimeout = 2 * time.Second
 	}
-	w := NewMetricWriter(newHTTPVMClient(cfg), cfg, newTypeRegistry(""), zap.NewNop())
+	w := NewMetricWriter(newHTTPVMClient(cfg), cfg, zap.NewNop())
 	t.Cleanup(w.Stop)
 	return w, &bodies
 }
 
-func TestWriteMetrics_JSONLineFormat(t *testing.T) {
+func TestWriteMetrics_TextFormat(t *testing.T) {
 	w, bodies := newTestWriter(t, http.StatusNoContent, nil)
-
-	pt := storedmodel.StoredMetricDataPoint{
+	w.noteType("jvm_memory_used", storedmodel.MetricMeta{Type: "gauge"})
+	w.ingestPoint(storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli: 1700000000000,
 		Name:          "jvm_memory_used",
 		Type:          "gauge",
@@ -116,51 +112,36 @@ func TestWriteMetrics_JSONLineFormat(t *testing.T) {
 		AppID:         "appA",
 		ServiceName:   "svcA",
 		Labels:        map[string]any{"pool": "heap"},
-	}
-	w.ingestPoint(pt, time.Now())
+	})
 	require.NoError(t, w.Flush(context.Background()))
 
 	require.Len(t, *bodies, 1)
-	lines := strings.Split(strings.TrimSpace(string((*bodies)[0])), "\n")
-	require.Len(t, lines, 1)
-	var parsed map[string]any
-	require.NoError(t, json.Unmarshal([]byte(lines[0]), &parsed))
-	metric := parsed["metric"].(map[string]any)
-	assert.Equal(t, "jvm_memory_used", metric["__name__"])
-	assert.Equal(t, "appA", metric["app_id"])
-	assert.Equal(t, "svcA", metric["service_name"])
-	assert.Equal(t, "heap", metric["pool"])
-	assert.Equal(t, []any{42.0}, parsed["values"])
-	assert.Equal(t, []any{1700000000000.0}, parsed["timestamps"])
+	body := string((*bodies)[0])
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	require.Len(t, lines, 2, "one TYPE row + one sample row")
+	assert.Equal(t, "# TYPE jvm_memory_used gauge", lines[0])
+	assert.Equal(t, `jvm_memory_used{app_id="appA",pool="heap",service_name="svcA"} 42 1700000000000`, lines[1])
 }
 
-func TestWriteMetrics_SameSeriesMergesOneLine(t *testing.T) {
+func TestWriteMetrics_TypeRowEmittedOnce(t *testing.T) {
 	w, bodies := newTestWriter(t, http.StatusNoContent, nil)
-	base := storedmodel.StoredMetricDataPoint{
-		Name: "m", Type: "gauge", AppID: "a", ServiceName: "s",
-		Labels: map[string]any{"k": "v"},
-	}
-	p1, p2, p3 := base, base, base
-	p1.TimeUnixMilli, p1.Value = 1000, 1.0
-	p2.TimeUnixMilli, p2.Value = 2000, 2.0
-	p3.TimeUnixMilli, p3.Value = 3000, 3.0
-	w.ingestPoint(p1, time.Now())
-	w.ingestPoint(p2, time.Now())
-	w.ingestPoint(p3, time.Now())
+	w.noteType("counter_m", storedmodel.MetricMeta{Type: "counter"})
+	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 1, TimeUnixMilli: 1000})
+	require.NoError(t, w.Flush(context.Background()))
+	// Second flush: same type → no repeated # TYPE row
+	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 2, TimeUnixMilli: 2000})
 	require.NoError(t, w.Flush(context.Background()))
 
-	lines := strings.Split(strings.TrimSpace(string((*bodies)[0])), "\n")
-	require.Len(t, lines, 1, "same series must merge into one line")
-	var parsed map[string]any
-	require.NoError(t, json.Unmarshal([]byte(lines[0]), &parsed))
-	assert.Equal(t, []any{1.0, 2.0, 3.0}, parsed["values"])
-	assert.Equal(t, []any{1000.0, 2000.0, 3000.0}, parsed["timestamps"])
+	first := string((*bodies)[0])
+	second := string((*bodies)[1])
+	assert.Contains(t, first, "# TYPE counter_m counter")
+	assert.NotContains(t, second, "# TYPE", "type row must not repeat")
+	assert.Contains(t, second, "counter_m 2 2000")
 }
 
 func TestWriteMetrics_4xxFailsFastNoRetry(t *testing.T) {
-	// 400 must NOT be retried: one request only.
 	w, bodies := newTestWriter(t, http.StatusBadRequest, nil)
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "m", Type: "gauge", Value: 1, TimeUnixMilli: 1}, time.Now())
+	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "m", Type: "gauge", Value: 1, TimeUnixMilli: 1})
 	err := w.Flush(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no retry")
@@ -168,69 +149,25 @@ func TestWriteMetrics_4xxFailsFastNoRetry(t *testing.T) {
 }
 
 func TestWriteMetrics_5xxRetriesThenFails(t *testing.T) {
-	// 500 retries MaxRetries times then surfaces the error (drop contract).
 	w, bodies := newTestWriter(t, http.StatusInternalServerError, &Config{MaxRetries: 2})
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "m", Type: "gauge", Value: 1, TimeUnixMilli: 1}, time.Now())
+	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "m", Type: "gauge", Value: 1, TimeUnixMilli: 1})
 	err := w.Flush(context.Background())
 	require.Error(t, err)
 	assert.Len(t, *bodies, 3, "initial + 2 retries")
 }
 
-// ── metricsql builders ──────────────────────────────────────────────────────
+// ── helpers ─────────────────────────────────────────────────────────────────
 
-func TestBuildSelector(t *testing.T) {
-	s := buildSelector("m", "appA", "", map[string]string{"a": "1"}, map[string]string{"b": "x|y"}, nil, nil)
-	assert.Equal(t, `m{app_id="appA",a="1",b=~"x|y"}`, s)
-	// empty everything → bare name
-	assert.Equal(t, "m", buildSelector("m", "", "", nil, nil, nil, nil))
+func TestRenderSampleLine(t *testing.T) {
+	s := textSample{metric: "m", labels: map[string]string{"b": "2", "a": "1"}, value: 1.5, timeUnixMi: 100}
+	assert.Equal(t, `m{a="1",b="2"} 1.5 100`, renderSampleLine(s))
 	// escaping
-	s2 := buildSelector("m", `a"b`, "", nil, nil, nil, nil)
-	assert.Contains(t, s2, `app_id="a\"b"`)
+	s2 := textSample{metric: "m", labels: map[string]string{"path": "/x\"y"}, value: 1, timeUnixMi: 1}
+	assert.Contains(t, renderSampleLine(s2), `/x\"y`)
 }
 
-func TestBuildRangeAggregation(t *testing.T) {
-	assert.Equal(t, "m{app_id=\"a\"}", buildRangeAggregation("", "m{app_id=\"a\"}", nil))
-	assert.Equal(t, "avg(m)", buildRangeAggregation("avg", "m", nil))
-	assert.Equal(t, "sum by (a,b) (m)", buildRangeAggregation("sum", "m", []string{"b", "a"}))
-}
-
-func TestStripAppIDLabel(t *testing.T) {
-	in := map[string]string{"app_id": "a", "x": "1"}
-	out := stripAppIDLabel(in)
-	assert.NotContains(t, out, "app_id")
-	assert.Equal(t, "1", out["x"])
-	// input not mutated
-	assert.Equal(t, "a", in["app_id"])
-	// no-op when absent
-	same := map[string]string{"x": "1"}
-	assert.Equal(t, same, stripAppIDLabel(same))
-}
-
-// ── type registry ───────────────────────────────────────────────────────────
-
-func TestTypeRegistry_PersistAndReload(t *testing.T) {
-	path := t.TempDir() + "/registry.json"
-	r1 := newTypeRegistry(path)
-	r1.record("counter_metric", "counter", "1", time.Now())
-	r1.record("gauge_metric", "gauge", "By", time.Now())
-	require.NoError(t, r1.flushToFile())
-
-	r2 := newTypeRegistry(path)
-	require.NoError(t, r2.loadFromFile())
-	got, ok := r2.get("counter_metric")
-	require.True(t, ok)
-	assert.Equal(t, "counter", got.Type)
-	assert.Equal(t, "1", got.Unit)
-	_, ok = r2.get("nonexistent")
-	assert.False(t, ok)
-}
-
-func TestTypeRegistry_SnapshotTimeFilter(t *testing.T) {
-	r := newTypeRegistry("")
-	old := time.Now().Add(-2 * time.Hour)
-	r.record("stale_metric", "gauge", "", old)
-	r.record("fresh_metric", "gauge", "", time.Now())
-	snap := r.snapshot(time.Now().Add(-1*time.Hour), time.Time{})
-	assert.NotContains(t, snap, "stale_metric")
-	assert.Contains(t, snap, "fresh_metric")
+func TestSanitizeName(t *testing.T) {
+	assert.Equal(t, "jvm_memory_used", sanitizeName("jvm.memory.used"))
+	assert.Equal(t, "a_b_c", sanitizeName("a-b.c"))
+	assert.Equal(t, "plain", sanitizeName("plain"))
 }

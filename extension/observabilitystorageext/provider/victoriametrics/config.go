@@ -36,9 +36,6 @@ type Config struct {
 	// ExtraLabels are injected into every written series (e.g. cluster="prod").
 	ExtraLabels map[string]string `mapstructure:"extra_labels"`
 
-	// RegistryPath persists the metric type/unit registry as a JSON file so
-	// ListMetricTypes survives restarts. Empty = memory-only.
-	RegistryPath string `mapstructure:"registry_path"`
 }
 
 // ApplyDefaults fills zero-valued fields with sensible defaults.

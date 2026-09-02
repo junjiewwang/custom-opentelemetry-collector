@@ -447,7 +447,6 @@ type VictoriaMetricsConfig struct {
 	ReadTimeout   time.Duration     `mapstructure:"read_timeout"`
 	MaxRetries    int               `mapstructure:"max_retries"`
 	ExtraLabels   map[string]string `mapstructure:"extra_labels"`
-	RegistryPath  string            `mapstructure:"registry_path"`
 }
 
 // GetVMProviderConfig returns a providerregistry.VMConfigView-compatible
@@ -481,7 +480,6 @@ func (c *VictoriaMetricsConfig) GetVMProviderConfig() registry.VMConfigView {
 		ReadTimeout:   c.ReadTimeout,
 		MaxRetries:    c.MaxRetries,
 		ExtraLabels:   c.ExtraLabels,
-		RegistryPath:  c.RegistryPath,
 	}
 }
 

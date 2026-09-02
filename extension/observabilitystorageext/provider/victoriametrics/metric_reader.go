@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"strconv"
 	"time"
 
@@ -23,13 +24,12 @@ var _ observabilitystorageext.MetricReader = (*MetricReader)(nil)
 // MetricReader implements the public observabilitystorageext.MetricReader
 // interface against VictoriaMetrics' Prometheus-compatible HTTP API.
 type MetricReader struct {
-	client   VMClient
-	registry *typeRegistry
-	logger   *zap.Logger
+	client VMClient
+	logger *zap.Logger
 }
 
-func newMetricReader(client VMClient, registry *typeRegistry, logger *zap.Logger) *MetricReader {
-	return &MetricReader{client: client, registry: registry, logger: logger}
+func newMetricReader(client VMClient, logger *zap.Logger) *MetricReader {
+	return &MetricReader{client: client, logger: logger}
 }
 
 // defaultFlatMaxDocs caps QueryFlat/QueryRaw sample counts. VM's export has
@@ -144,8 +144,10 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query observabilitystorage
 
 	base := query.MetricName
 	if base != "" {
-		if meta, ok := r.registry.get(base); ok && meta.Type == "histogram" {
-			return r.queryFlatHistogram(ctx, query, maxDocs)
+		if fams, err := r.client.MetricMetadata(ctx, base); err == nil {
+			if m, ok := fams[base]; ok && m.Type == "histogram" {
+				return r.queryFlatHistogram(ctx, query, maxDocs)
+			}
 		}
 	}
 
@@ -391,15 +393,46 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange observabil
 		if isVMPrefix(n) {
 			continue
 		}
+		// The writer sanitizes metric names to underscore form, so any dotted
+		// name is legacy data from a pre-sanitize deployment generation. It
+		// must NOT surface here: adminext's global reverse map builds
+		// sanitize(dotted)→dotted from this list, which would hijack
+		// unsanitizeMetricName(underscore) → dotted and silently zero every
+		// query (observed live: avg(jvm_memory_used) → VM queried for
+		// jvm.memory.used → 0 series).
+		if strings.Contains(n, ".") {
+			continue
+		}
 		out = append(out, n)
 	}
 	sort.Strings(out)
 	return out, nil
 }
 
-// ListMetricTypes returns the type registry snapshot (no VM HTTP call).
+// ListMetricTypes reads VM's native metric metadata (/api/v1/metadata) —
+// the type rows the writer's # TYPE comments made VM store, replacing the
+// ES-style meta sidecar entirely. Histogram families expand to their
+// Prometheus-convention sub-series (_bucket/_sum/_count) typed "counter":
+// in VM those series ARE cumulative counters, and Grafana Drilldown needs
+// type=counter on x_bucket to wrap it in rate() for sum-by-le heatmaps.
 func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange observabilitystorageext.TimeRange) (map[string]storedmodel.MetricMeta, error) {
-	return r.registry.snapshot(timeRange.Start, timeRange.End), nil
+	fams, err := r.client.MetricMetadata(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("vm metadata query failed: %w", err)
+	}
+	out := make(map[string]storedmodel.MetricMeta, len(fams)*2)
+	for name, m := range fams {
+		if isVMPrefix(name) {
+			continue
+		}
+		out[name] = storedmodel.MetricMeta{Type: m.Type}
+		if m.Type == "histogram" {
+			for _, suffix := range []string{"_bucket", "_sum", "_count"} {
+				out[name+suffix] = storedmodel.MetricMeta{Type: "counter"}
+			}
+		}
+	}
+	return out, nil
 }
 
 // ListLabelCombinations returns label value combinations via /api/v1/series.
