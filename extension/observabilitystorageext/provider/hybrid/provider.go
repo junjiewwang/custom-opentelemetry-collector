@@ -18,16 +18,24 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/registry"
 )
 
 // Config holds the Hybrid provider routing configuration.
 type Config struct {
-	Trace string `mapstructure:"trace"`
-	Metric string `mapstructure:"metric"`
-	Log   string `mapstructure:"log"`
-	Admin string `mapstructure:"admin"`
-	ES    *elasticsearch.Config `mapstructure:"es"`
-	PG    *postgresql.Config `mapstructure:"pg"`
+	Trace  string                `mapstructure:"trace"`
+	Metric string                `mapstructure:"metric"`
+	Log    string                `mapstructure:"log"`
+	Admin  string                `mapstructure:"admin"`
+	ES     *elasticsearch.Config `mapstructure:"es"`
+	PG     *postgresql.Config    `mapstructure:"pg"`
+	// VM holds the VictoriaMetrics sub-provider config. It is typed as the
+	// concrete provider Config via an indirection-free alias declared in
+	// vmconfig.go (same package) to avoid importing victoriametrics here —
+	// hybrid is imported by the extension package, and victoriametrics
+	// imports the extension package (public interfaces), so a direct import
+	// would be a cycle.
+	VM     *VMConfig             `mapstructure:"vm"`
 }
 
 // subProvider is the local interface that both ES and PG providers satisfy.
@@ -65,6 +73,12 @@ type Provider struct {
 	// concrete references retained for read-path accessors (backward compat)
 	esProvider *elasticsearch.Provider
 	pgProvider *postgresql.Provider
+	// vmMetricReader holds the VM backend's metric reader as an opaque value;
+	// the extension layer (which owns the public interface types) type-asserts
+	// it to MetricReader. The concrete type lives in a package that cannot be
+	// imported here (victoriametrics imports the extension package for its
+	// public-interface implementation — see Config.VM comment).
+	vmMetricReader any
 }
 
 // NewProvider creates a new Hybrid provider instance.
@@ -81,9 +95,9 @@ func NewProvider(config *Config, logger *zap.Logger) (*Provider, error) {
 	}
 
 	for signal, be := range routing {
-		if be != storedmodel.BackendES && be != storedmodel.BackendPG {
-			return nil, fmt.Errorf("invalid backend for %s: %q (must be %q or %q)",
-				signal, be, storedmodel.BackendES, storedmodel.BackendPG)
+		if be != storedmodel.BackendES && be != storedmodel.BackendPG && be != storedmodel.BackendVM {
+			return nil, fmt.Errorf("invalid backend for %s: %q (must be %q, %q or %q)",
+				signal, be, storedmodel.BackendES, storedmodel.BackendPG, storedmodel.BackendVM)
 		}
 	}
 
@@ -131,6 +145,14 @@ func (p *Provider) Start(ctx context.Context) error {
 		p.pgProvider = pg.(*postgresql.Provider)
 	}
 
+	if needed[storedmodel.BackendVM] {
+		vm, err := p.startVM(ctx)
+		if err != nil {
+			return err
+		}
+		p.backends[storedmodel.BackendVM] = vm
+	}
+
 	p.logger.Info("Hybrid provider started")
 	return nil
 }
@@ -163,6 +185,28 @@ func (p *Provider) startPG(ctx context.Context) (subProvider, error) {
 	}
 	p.logger.Info("PG sub-provider started")
 	return pg, nil
+}
+
+func (p *Provider) startVM(ctx context.Context) (subProvider, error) {
+	if p.config.VM == nil {
+		return nil, fmt.Errorf("hybrid routing requires victoriametrics config but it is nil")
+	}
+	f, err := registry.Get(storedmodel.BackendVM)
+	if err != nil {
+		return nil, fmt.Errorf("victoriametrics factory not registered (import the providerregistry bridge package): %w", err)
+	}
+	lp, err := f.Create(p.config.VM.Inner, registry.FactoryContext{Logger: p.logger})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create VM sub-provider: %w", err)
+	}
+	if err := lp.Start(ctx); err != nil {
+		return nil, fmt.Errorf("failed to start VM sub-provider: %w", err)
+	}
+	if ap, ok := lp.(vmReaderProvider); ok {
+		p.vmMetricReader = ap.VMMetricReader()
+	}
+	p.logger.Info("VM sub-provider started")
+	return &vmSubProvider{LifecycleProvider: lp}, nil
 }
 
 // Shutdown gracefully stops all sub-providers.
@@ -300,7 +344,68 @@ func (p *Provider) FlushLogs(ctx context.Context) error {
 
 func (p *Provider) ESProvider() *elasticsearch.Provider { return p.esProvider }
 func (p *Provider) PGProvider() *postgresql.Provider   { return p.pgProvider }
+// VMMetricReader returns the VM backend's metric reader as an opaque value
+// (nil when metrics route elsewhere). The extension layer asserts it to the
+// public MetricReader interface.
+func (p *Provider) VMMetricReader() any {
+	return p.vmMetricReader
+}
 func (p *Provider) TraceBackend() string                { return p.routing[storedmodel.SignalTrace] }
 func (p *Provider) MetricBackend() string               { return p.routing[storedmodel.SignalMetric] }
 func (p *Provider) LogBackend() string                  { return p.routing[storedmodel.SignalLog] }
 func (p *Provider) AdminBackend() string                { return p.routing[storedmodel.SignalAdmin] }
+
+
+// ═══════════════════════════════════════════════════════
+// VM sub-provider adapter
+// ═══════════════════════════════════════════════════════
+
+// vmSubProvider adapts the metric-only VictoriaMetrics provider to the
+// hybrid subProvider interface. Trace/log writes are configuration errors —
+// valid hybrid routing never sends them here (they route to ES/PG).
+// vmReaderProvider is the optional interface the VM lifecycle provider
+// implements to expose its metric reader as an opaque value (the extension
+// layer asserts it to the public MetricReader interface).
+type vmReaderProvider interface {
+	VMMetricReader() any
+}
+
+type vmSubProvider struct {
+	registry.LifecycleProvider
+}
+
+func (v *vmSubProvider) WriteTraces(_ context.Context, _ ptrace.Traces) error {
+	return fmt.Errorf("victoriametrics backend does not accept traces (fix hybrid trace routing)")
+}
+
+func (v *vmSubProvider) WriteSpans(_ context.Context, _ []storedmodel.StoredSpan) error {
+	return fmt.Errorf("victoriametrics backend does not accept traces (fix hybrid trace routing)")
+}
+
+func (v *vmSubProvider) WriteLogs(_ context.Context, _ plog.Logs) error {
+	return fmt.Errorf("victoriametrics backend does not accept logs (fix hybrid log routing)")
+}
+
+func (v *vmSubProvider) WriteLogRecords(_ context.Context, _ []storedmodel.StoredLogRecord) error {
+	return fmt.Errorf("victoriametrics backend does not accept logs (fix hybrid log routing)")
+}
+
+func (v *vmSubProvider) WriteMetricPoints(_ context.Context, _ []storedmodel.StoredMetricDataPoint) error {
+	// Raw-point writes (rollup replay) are an ES-tier concept; VM ingests
+	// only via WriteMetrics (OTLP conversion). Hybrid routes rollup output
+	// elsewhere in any valid configuration.
+	return fmt.Errorf("victoriametrics backend does not accept raw metric points (use WriteMetrics)")
+}
+
+// WriteMetrics forwards to the lifecycle provider (VM's implementation).
+func (v *vmSubProvider) WriteMetrics(ctx context.Context, md pmetric.Metrics) error {
+	return v.LifecycleProvider.WriteMetrics(ctx, md)
+}
+
+// FlushMetrics forwards to the lifecycle provider (VM's implementation).
+func (v *vmSubProvider) FlushMetrics(ctx context.Context) error {
+	return v.LifecycleProvider.FlushMetrics(ctx)
+}
+
+func (v *vmSubProvider) FlushTraces(_ context.Context) error { return nil }
+func (v *vmSubProvider) FlushLogs(_ context.Context) error   { return nil }

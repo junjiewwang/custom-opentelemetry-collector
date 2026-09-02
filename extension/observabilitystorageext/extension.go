@@ -444,6 +444,19 @@ func (e *ObservabilityStorage) convertHybridConfig() *hybrid.Config {
 	if e.config.PostgreSQL != nil {
 		cfg.PG = e.convertPGConfig()
 	}
+	if e.config.VictoriaMetrics != nil {
+		// Translate the extension-level config into the provider's own Config
+		// via the registry translator (the provider package cannot be
+		// imported here — it imports this package for its public-interface
+		// implementation). The translated value is an opaque any consumed by
+		// the VM factory at Create time.
+		translated, err := registry.TranslateConfig(storedmodel.BackendVM, e.config.VictoriaMetrics.GetVMProviderConfig())
+		if err != nil {
+			e.logger.Warn("victoriametrics config translation failed; VM backend will not start", zap.Error(err))
+		} else {
+			cfg.VM = &hybrid.VMConfig{Inner: translated}
+		}
+	}
 	return cfg
 }
 
@@ -488,6 +501,21 @@ func (e *ObservabilityStorage) getHybridMetricReader() MetricReader {
 			return nil
 		}
 		return &pgMetricReaderAdapter{inner: e.pgProvider.MetricReader()}
+	case storedmodel.BackendVM:
+		// The VM reader arrives as an opaque value from the hybrid provider
+		// (neither side can name the other's types — see hybrid provider.go).
+		// Assert it to the public MetricReader interface here, at the layer
+		// that owns the interface.
+		raw := e.hybridProvider.VMMetricReader()
+		if raw == nil {
+			return nil
+		}
+		r, ok := raw.(MetricReader)
+		if !ok {
+			e.logger.Warn("hybrid: victoriametrics metric reader has unexpected type")
+			return nil
+		}
+		return r
 	default:
 		return nil
 	}

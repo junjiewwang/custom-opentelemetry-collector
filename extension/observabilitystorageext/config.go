@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/registry"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 )
 
@@ -18,6 +19,10 @@ type Config struct {
 
 	// Elasticsearch holds the ES provider configuration.
 	Elasticsearch *ElasticsearchConfig `mapstructure:"elasticsearch,omitempty"`
+
+	// VictoriaMetrics holds the VictoriaMetrics provider configuration
+	// (metric-only backend, typically via hybrid routing).
+	VictoriaMetrics *VictoriaMetricsConfig `mapstructure:"victoriametrics,omitempty"`
 
 	// PostgreSQL holds the PG provider configuration.
 	PostgreSQL *PostgreSQLConfig `mapstructure:"postgresql,omitempty"`
@@ -416,7 +421,8 @@ type HybridConfig struct {
 	// Trace specifies which backend to use for traces: "elasticsearch" or "postgresql".
 	Trace string `mapstructure:"trace"`
 
-	// Metric specifies which backend to use for metrics.
+	// Metric specifies which backend to use for metrics: "elasticsearch",
+	// "postgresql" or "victoriametrics".
 	Metric string `mapstructure:"metric"`
 
 	// Log specifies which backend to use for logs.
@@ -426,9 +432,62 @@ type HybridConfig struct {
 	Admin string `mapstructure:"admin"`
 }
 
+// VictoriaMetricsConfig is the extension-level configuration for the
+// VictoriaMetrics provider. It mirrors provider/victoriametrics.Config field
+// for field; the providerregistry bridge maps between them (the provider
+// package cannot be imported here — it imports this package to implement the
+// public MetricReader interface directly).
+type VictoriaMetricsConfig struct {
+	Endpoint      string            `mapstructure:"endpoint"`
+	WriteEndpoint string            `mapstructure:"write_endpoint"`
+	ReadEndpoint  string            `mapstructure:"read_endpoint"`
+	BatchSize     int               `mapstructure:"batch_size"`
+	FlushInterval time.Duration     `mapstructure:"flush_interval"`
+	WriteTimeout  time.Duration     `mapstructure:"write_timeout"`
+	ReadTimeout   time.Duration     `mapstructure:"read_timeout"`
+	MaxRetries    int               `mapstructure:"max_retries"`
+	ExtraLabels   map[string]string `mapstructure:"extra_labels"`
+	RegistryPath  string            `mapstructure:"registry_path"`
+}
+
+// GetVMProviderConfig returns a providerregistry.VMConfigView-compatible
+// value (field-for-field copy) so the bridge package can build the concrete
+// provider Config without importing this package's type (import cycle).
+// The view struct itself is defined by the bridge; this method returns an
+// interface-free struct literal the bridge type-asserts.
+type vmProviderConfigView struct {
+	Endpoint      string
+	WriteEndpoint string
+	ReadEndpoint  string
+	BatchSize     int
+	FlushInterval time.Duration
+	WriteTimeout  time.Duration
+	ReadTimeout   time.Duration
+	MaxRetries    int
+	ExtraLabels   map[string]string
+	RegistryPath  string
+}
+
+// GetVMProviderConfig exposes the config as the registry.VMConfigView the
+// bridge package translates into the concrete provider Config.
+func (c *VictoriaMetricsConfig) GetVMProviderConfig() registry.VMConfigView {
+	return registry.VMConfigView{
+		Endpoint:      c.Endpoint,
+		WriteEndpoint: c.WriteEndpoint,
+		ReadEndpoint:  c.ReadEndpoint,
+		BatchSize:     c.BatchSize,
+		FlushInterval: c.FlushInterval,
+		WriteTimeout:  c.WriteTimeout,
+		ReadTimeout:   c.ReadTimeout,
+		MaxRetries:    c.MaxRetries,
+		ExtraLabels:   c.ExtraLabels,
+		RegistryPath:  c.RegistryPath,
+	}
+}
+
 // Validate checks if the HybridConfig is valid and ensures dependent provider configs exist.
 func (cfg *HybridConfig) Validate(parent *Config) error {
-	validBackends := map[string]bool{storedmodel.BackendES: true, storedmodel.BackendPG: true}
+	validBackends := map[string]bool{storedmodel.BackendES: true, storedmodel.BackendPG: true, storedmodel.BackendVM: true}
 
 	routes := map[string]string{
 		storedmodel.SignalTrace: cfg.Trace,
@@ -438,8 +497,8 @@ func (cfg *HybridConfig) Validate(parent *Config) error {
 	}
 	for signal, backend := range routes {
 		if !validBackends[backend] {
-			return fmt.Errorf("hybrid.%s: invalid backend %q (must be %q or %q)",
-				signal, backend, storedmodel.BackendES, storedmodel.BackendPG)
+			return fmt.Errorf("hybrid.%s: invalid backend %q (must be %q, %q or %q)",
+				signal, backend, storedmodel.BackendES, storedmodel.BackendPG, storedmodel.BackendVM)
 		}
 	}
 
@@ -454,6 +513,14 @@ func (cfg *HybridConfig) Validate(parent *Config) error {
 	}
 	if needsPG && parent.PostgreSQL == nil {
 		return errors.New("hybrid routing requires postgresql config but 'postgresql' section is missing")
+	}
+	needsVM := cfg.Trace == storedmodel.BackendVM || cfg.Metric == storedmodel.BackendVM ||
+		cfg.Log == storedmodel.BackendVM || cfg.Admin == storedmodel.BackendVM
+	if needsVM && parent.VictoriaMetrics == nil {
+		return errors.New("hybrid routing requires victoriametrics config but 'victoriametrics' section is missing")
+	}
+	if needsVM && parent.VictoriaMetrics.Endpoint == "" {
+		return errors.New("hybrid: victoriametrics config invalid: endpoint is required")
 	}
 
 	// Validate sub-provider configs

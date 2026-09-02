@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -70,9 +71,36 @@ type AccessorsProvider interface {
 	Accessors() any
 }
 
+// VMConfigView is the field-for-field view of the extension-level
+// VictoriaMetricsConfig. It lives here (not in the extension or provider
+// packages) because both sides can import the registry package without
+// cycles: the extension builds it, the providerregistry bridge converts it
+// to the concrete provider Config.
+type VMConfigView struct {
+	Endpoint      string
+	WriteEndpoint string
+	ReadEndpoint  string
+	BatchSize     int
+	FlushInterval time.Duration
+	WriteTimeout  time.Duration
+	ReadTimeout   time.Duration
+	MaxRetries    int
+	ExtraLabels   map[string]string
+	RegistryPath  string
+}
+
+// ConfigTranslator converts an extension-level provider config value into
+// the provider package's own config type, returned as any. It exists so the
+// extension package can hand configs to factories without importing the
+// provider packages (some of which import the extension package — the
+// direction inversion is resolved by bridge packages registering a
+// translator here).
+type ConfigTranslator func(extCfg any) (any, error)
+
 var (
-	mu        sync.RWMutex
-	factories = map[string]Factory{}
+	mu          sync.RWMutex
+	factories   = map[string]Factory{}
+	translators = map[string]ConfigTranslator{}
 )
 
 // Register adds a factory. Duplicate names panic at init time — a silent
@@ -84,6 +112,28 @@ func Register(f Factory) {
 		panic(fmt.Sprintf("observabilitystorageext: provider factory %q registered twice", f.Name()))
 	}
 	factories[f.Name()] = f
+}
+
+// RegisterConfigTranslator registers a config translator for a provider
+// type. The bridge package for providers that implement public interfaces
+// directly (e.g. VictoriaMetrics) registers one at init.
+func RegisterConfigTranslator(name string, t ConfigTranslator) {
+	mu.Lock()
+	defer mu.Unlock()
+	translators[name] = t
+}
+
+// TranslateConfig converts an extension-level config value into the
+// provider's own config type using the registered translator.
+func TranslateConfig(name string, extCfg any) (any, error) {
+	mu.RLock()
+	t, ok := translators[name]
+	mu.RUnlock()
+	if !ok {
+		// No translator means extCfg is already the provider-native type.
+		return extCfg, nil
+	}
+	return t(extCfg)
 }
 
 // Get returns the factory for a provider type name.
