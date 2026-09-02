@@ -53,8 +53,8 @@ func (p *Provider) Start(ctx context.Context) error {
 		// metrics types repopulate on the next write.
 		p.logger.Warn("victoriametrics: type registry load failed (starting empty)", zap.Error(err))
 	}
-	if p.client.Health(ctx) != nil {
-		p.logger.Warn("victoriametrics: initial health check failed (will retry on writes)")
+	if healthy, msg, _ := p.HealthCheck(ctx); !healthy {
+		p.logger.Warn("victoriametrics: initial health check failed (will retry on writes)", zap.String("msg", msg))
 	}
 	p.metricWriter = NewMetricWriter(p.client, p.config, p.registry, p.logger)
 	p.metricReader = newMetricReader(p.client, p.registry, p.logger)
@@ -96,12 +96,17 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// HealthCheck reports VM reachability via /health.
-func (p *Provider) HealthCheck(ctx context.Context) error {
+// HealthCheck reports VM reachability via /health in the registry contract
+// shape (bool, message, details).
+func (p *Provider) HealthCheck(ctx context.Context) (bool, string, map[string]any) {
 	if err := p.client.Health(ctx); err != nil {
-		return fmt.Errorf("victoriametrics backend unhealthy: %w", err)
+		return false, fmt.Sprintf("victoriametrics backend unhealthy: %v", err), map[string]any{
+			"endpoint": p.config.readBase(),
+		}
 	}
-	return nil
+	return true, "ok", map[string]any{
+		"endpoint": p.config.readBase(),
+	}
 }
 
 // MetricWriter returns the metric writer.

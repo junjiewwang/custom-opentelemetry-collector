@@ -23,6 +23,9 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/hybrid"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/registry"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/identity"
 	"go.opentelemetry.io/collector/custom/taskengine"
@@ -59,6 +62,9 @@ type ObservabilityStorage struct {
 	esProvider     *elasticsearch.Provider
 	pgProvider     *postgresql.Provider
 	hybridProvider *hybrid.Provider
+	// factoryAccessors holds the registry factory's adapter-assembled readers
+	// (metric/trace/log/admin) for the active non-hybrid provider.
+	factoryAccessors *accessors
 
 	// Lifecycle management
 	scheduler      *lifecycle.LifecycleScheduler
@@ -250,104 +256,51 @@ func (e *ObservabilityStorage) GetProvider() *elasticsearch.Provider {
 
 // GetStorageAdmin returns the StorageAdmin interface.
 func (e *ObservabilityStorage) GetStorageAdmin() StorageAdmin {
-	switch e.config.Type {
-	case "elasticsearch":
-		if e.esProvider == nil || e.esProvider.Admin() == nil {
-			return nil
-		}
-		return &storageAdminAdapter{inner: e.esProvider.Admin(), config: e.config, retentionStore: e.retentionStore}
-	case "postgresql":
-		if e.pgProvider == nil || e.pgProvider.Admin() == nil {
-			return nil
-		}
-		return &pgStorageAdminAdapter{inner: e.pgProvider.Admin(), config: e.config}
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		return e.getHybridStorageAdmin()
-	default:
-		return nil
 	}
+	if e.factoryAccessors != nil {
+		return e.factoryAccessors.storageAdmin
+	}
+	return nil
 }
 
 // GetTraceReader returns the TraceReader interface.
 func (e *ObservabilityStorage) GetTraceReader() TraceReader {
-	switch e.config.Type {
-	case "elasticsearch":
-		if e.esProvider == nil || e.esProvider.TraceReader() == nil {
-			return nil
-		}
-		return &traceReaderAdapter{inner: e.esProvider.TraceReader()}
-	case "postgresql":
-		if e.pgProvider == nil || e.pgProvider.TraceReader() == nil {
-			return nil
-		}
-		return &pgTraceReaderAdapter{inner: e.pgProvider.TraceReader()}
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		return e.getHybridTraceReader()
-	default:
-		return nil
 	}
+	if e.factoryAccessors != nil {
+		return e.factoryAccessors.traceReader
+	}
+	return nil
 }
 
 // GetMetricReader returns the MetricReader interface.
 func (e *ObservabilityStorage) GetMetricReader() MetricReader {
-	switch e.config.Type {
-	case "elasticsearch":
-		if e.esProvider == nil || e.esProvider.MetricReader() == nil {
-			return nil
-		}
-		return &metricReaderAdapter{inner: e.esProvider.MetricReader()}
-	case "postgresql":
-		if e.pgProvider == nil || e.pgProvider.MetricReader() == nil {
-			return nil
-		}
-		return &pgMetricReaderAdapter{inner: e.pgProvider.MetricReader()}
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		return e.getHybridMetricReader()
-	default:
-		return nil
 	}
+	if e.factoryAccessors != nil {
+		return e.factoryAccessors.metricReader
+	}
+	return nil
 }
 
 // GetLogReader returns the LogReader interface.
 func (e *ObservabilityStorage) GetLogReader() LogReader {
-	switch e.config.Type {
-	case "elasticsearch":
-		if e.esProvider == nil || e.esProvider.LogReader() == nil {
-			return nil
-		}
-		return &logReaderAdapter{inner: e.esProvider.LogReader()}
-	case "postgresql":
-		if e.pgProvider == nil || e.pgProvider.LogReader() == nil {
-			return nil
-		}
-		return &pgLogReaderAdapter{inner: e.pgProvider.LogReader()}
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		return e.getHybridLogReader()
-	default:
-		return nil
 	}
+	if e.factoryAccessors != nil {
+		return e.factoryAccessors.logReader
+	}
+	return nil
 }
 
 // createProvider creates the appropriate provider based on configuration.
 func (e *ObservabilityStorage) createProvider() (internalProvider, error) {
-	switch e.config.Type {
-	case "elasticsearch":
-		esCfg := e.convertESConfig()
-		p, err := elasticsearch.NewProvider(esCfg, e.logger)
-		if err != nil {
-			return nil, err
-		}
-		e.esProvider = p
-		return p, nil
-	case "postgresql":
-		pgCfg := e.convertPGConfig()
-		p, err := postgresql.NewProvider(pgCfg, e.logger)
-		if err != nil {
-			return nil, err
-		}
-		e.pgProvider = p
-		return p, nil
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		hybridCfg := e.convertHybridConfig()
 		p, err := hybrid.NewProvider(hybridCfg, e.logger)
 		if err != nil {
@@ -358,9 +311,49 @@ func (e *ObservabilityStorage) createProvider() (internalProvider, error) {
 		e.esProvider = p.ESProvider()
 		e.pgProvider = p.PGProvider()
 		return p, nil
-	default:
-		return nil, fmt.Errorf("unsupported provider type: %q", e.config.Type)
 	}
+
+	ensureFactoriesRegistered.Do(registerAllFactories)
+	f, err := registry.Get(e.config.Type)
+	if err != nil {
+		return nil, err
+	}
+	var providerCfg any
+	switch e.config.Type {
+	case storedmodel.BackendES:
+		providerCfg = e.convertESConfig()
+	case storedmodel.BackendPG:
+		providerCfg = e.convertPGConfig()
+	default:
+		providerCfg = nil
+	}
+	lp, err := f.Create(providerCfg, registry.FactoryContext{
+		Logger:         e.logger,
+		ExtensionCfg:   e.config,
+		RetentionStore: e.retentionStore,
+	})
+	if err != nil {
+		return nil, err
+	}
+	p, ok := lp.(internalProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider %q does not implement the internal lifecycle interface", e.config.Type)
+	}
+	// Capture per-provider references the rest of the extension still uses
+	// (rollup wiring, lifecycle scheduler, deprecated GetProvider).
+	switch t := lp.(type) {
+	case *elasticsearch.Provider:
+		e.esProvider = t
+	case *postgresql.Provider:
+		e.pgProvider = t
+	}
+	// Factories that host public-interface accessors expose them here.
+	if ap, ok := f.(accessorProvider); ok {
+		if acc := ap.Accessors(); acc != nil {
+			e.factoryAccessors = acc
+		}
+	}
+	return p, nil
 }
 
 // convertESConfig converts the extension config to ES provider's internal config.
