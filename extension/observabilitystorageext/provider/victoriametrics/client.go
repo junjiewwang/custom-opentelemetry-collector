@@ -221,13 +221,11 @@ func (c *httpVMClient) LabelValues(ctx context.Context, label string, match []st
 	}
 	q.Set("start", strconv.FormatInt(start.Unix(), 10))
 	q.Set("end", strconv.FormatInt(end.Unix(), 10))
-	var out struct {
-		Data []string `json:"data"`
-	}
+	var out []string
 	if err := c.promGet(ctx, "/api/v1/label/"+url.PathEscape(label)+"/values", q, &out); err != nil {
 		return nil, err
 	}
-	return out.Data, nil
+	return out, nil
 }
 
 func (c *httpVMClient) LabelNames(ctx context.Context, match []string, start, end time.Time) ([]string, error) {
@@ -237,13 +235,11 @@ func (c *httpVMClient) LabelNames(ctx context.Context, match []string, start, en
 	}
 	q.Set("start", strconv.FormatInt(start.Unix(), 10))
 	q.Set("end", strconv.FormatInt(end.Unix(), 10))
-	var out struct {
-		Data []string `json:"data"`
-	}
+	var out []string
 	if err := c.promGet(ctx, "/api/v1/labels", q, &out); err != nil {
 		return nil, err
 	}
-	return out.Data, nil
+	return out, nil
 }
 
 func (c *httpVMClient) Series(ctx context.Context, match []string, start, end time.Time) ([]map[string]string, error) {
@@ -253,13 +249,11 @@ func (c *httpVMClient) Series(ctx context.Context, match []string, start, end ti
 	}
 	q.Set("start", strconv.FormatInt(start.Unix(), 10))
 	q.Set("end", strconv.FormatInt(end.Unix(), 10))
-	var out struct {
-		Data []map[string]string `json:"data"`
-	}
+	var out []map[string]string
 	if err := c.promGet(ctx, "/api/v1/series", q, &out); err != nil {
 		return nil, err
 	}
-	return out.Data, nil
+	return out, nil
 }
 
 func (c *httpVMClient) Health(ctx context.Context) error {

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 )
 
@@ -169,5 +170,56 @@ func storedmetricPoint(name string, v float64, ts int64) storedmodel.StoredMetri
 		Type:          "gauge",
 		Value:         v,
 		AppID:         "it_app",
+	}
+}
+
+func TestIntegration_ReaderFlatHistogramEndToEnd(t *testing.T) {
+	c := newIntegrationClient(t)
+	ctx := context.Background()
+	ts := time.Now().UnixMilli()
+	base := fmt.Sprintf("it_rd_%d", ts)
+
+	// Write a delta histogram, then read it back through the reader's
+	// QueryFlat histogram path (reassembly from _bucket/_sum/_count).
+	reg := newTypeRegistry("")
+	rd := newMetricReader(c, reg, zap.NewNop())
+	reg.record(base, "histogram", "s", time.Now())
+
+	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, reg, zap.NewNop())
+	defer w.Stop()
+	w.ingestPoint(storedmodel.StoredMetricDataPoint{
+		TimeUnixMilli:          ts,
+		Name:                   base,
+		Type:                   "histogram",
+		Value:                  7.0,
+		Count:                  3,
+		AppID:                  "it_app",
+		BucketCounts:           []uint64{1, 0, 2},
+		ExplicitBounds:         []float64{1, 5},
+		AggregationTemporality: "delta",
+	}, time.Now())
+	require.NoError(t, w.Flush(ctx))
+
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		res, err := rd.QueryFlat(ctx, observabilitystorageext.MetricFlatQuery{
+			MetricName: base, AppID: "it_app",
+			TimeRange: observabilitystorageext.TimeRange{Start: time.UnixMilli(ts).Add(-time.Minute), End: time.UnixMilli(ts).Add(time.Minute)},
+		})
+		if err != nil {
+			t.Fatalf("QueryFlat: %v", err)
+		}
+		if len(res.Samples) > 0 {
+			s := res.Samples[0]
+			assert.Equal(t, []float64{1, 5}, s.Bounds)
+			assert.Equal(t, []int64{1, 1, 3}, s.BucketCounts, "delta [1,0,2] reassembled as cumulative [1,1,3] (+Inf slot)")
+			assert.InDelta(t, 7.0, s.Value, 1e-9)
+			assert.Equal(t, int64(3), s.Count)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("QueryFlat histogram never returned samples")
+		}
+		time.Sleep(3 * time.Second)
 	}
 }
