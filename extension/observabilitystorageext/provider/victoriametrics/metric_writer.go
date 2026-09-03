@@ -49,6 +49,15 @@ type MetricWriter struct {
 	doneCh     chan struct{}
 }
 
+// metadataRefreshInterval is how often the writer forgets which # TYPE rows it
+// has already sent, forcing the next flush to re-emit every active metric's
+// # TYPE row. VictoriaMetrics' metricsmetadata table independently garbage-
+// collects entries whose series go stale (observed live: 3210 inserted rows
+// shrank to 0 while the collector kept running, because # TYPE was sent exactly
+// once per metric via sentTypes). Re-sending is idempotent (VM overwrites) and
+// the rows are tiny, so the cost is negligible against the 3s flush cadence.
+const metadataRefreshInterval = 5 * time.Minute
+
 // NewMetricWriter builds the writer. The background flush loop starts here.
 func NewMetricWriter(client VMClient, config *Config, logger *zap.Logger) *MetricWriter {
 	w := &MetricWriter{
@@ -250,12 +259,20 @@ func (w *MetricWriter) flushLoop() {
 	defer close(w.doneCh)
 	ticker := time.NewTicker(w.config.FlushInterval)
 	defer ticker.Stop()
+	refresh := time.NewTicker(metadataRefreshInterval)
+	defer refresh.Stop()
 	for {
 		select {
 		case <-w.stopCh:
 			return
 		case <-ticker.C:
 		case <-w.flushCh:
+		case <-refresh.C:
+			// Forget which # TYPE rows were sent so the next flush re-emits them
+			// (VM's metricsmetadata table GCs stale entries independently).
+			w.mu.Lock()
+			w.sentTypes = make(map[string]storedmodel.MetricMeta)
+			w.mu.Unlock()
 		}
 		if err := w.Flush(context.Background()); err != nil {
 			w.logger.Warn("victoriametrics flush failed (batch dropped)", zap.Error(err))

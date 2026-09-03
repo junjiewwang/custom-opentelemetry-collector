@@ -171,3 +171,27 @@ func TestSanitizeName(t *testing.T) {
 	assert.Equal(t, "a_b_c", sanitizeName("a-b.c"))
 	assert.Equal(t, "plain", sanitizeName("plain"))
 }
+
+func TestWriteMetrics_TypeRowReEmittedAfterSentTypesReset(t *testing.T) {
+	// The metadata refresh loop clears sentTypes so VM's (independently GC'd)
+	// metricsmetadata table gets re-populated. Verify the writer re-emits a
+	// # TYPE row after sentTypes is reset — the idempotent path the refresh
+	// ticker drives.
+	w, bodies := newTestWriter(t, http.StatusNoContent, nil)
+	w.noteType("counter_m", storedmodel.MetricMeta{Type: "counter"})
+	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 1, TimeUnixMilli: 1000})
+	require.NoError(t, w.Flush(context.Background()))
+	require.Contains(t, string((*bodies)[0]), "# TYPE counter_m counter")
+
+	// Simulate the refresh ticker: clear sentTypes.
+	w.mu.Lock()
+	w.sentTypes = make(map[string]storedmodel.MetricMeta)
+	w.mu.Unlock()
+
+	// Next write → noteType sees the name as new → re-emits # TYPE.
+	w.noteType("counter_m", storedmodel.MetricMeta{Type: "counter"})
+	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 2, TimeUnixMilli: 2000})
+	require.NoError(t, w.Flush(context.Background()))
+	assert.Contains(t, string((*bodies)[1]), "# TYPE counter_m counter",
+		"after sentTypes reset, # TYPE must be re-emitted")
+}
