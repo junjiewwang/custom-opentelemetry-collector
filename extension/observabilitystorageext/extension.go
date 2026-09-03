@@ -129,6 +129,17 @@ func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) e
 		return fmt.Errorf("failed to start provider: %w", err)
 	}
 
+	// Hybrid sub-providers (esProvider/pgProvider) are only populated by the
+	// hybrid provider's Start() — the concrete references are nil until then.
+	// Capture them AFTER Start so getHybridTraceReader/LogReader/StorageAdmin
+	// (which route trace/log/admin to ES) resolve a non-nil provider instead of
+	// returning nil. Without this, metric→VM leaves trace/log reader wiring
+	// pointing at a pre-Start nil snapshot and every trace/log query breaks.
+	if e.config.Type == "hybrid" {
+		e.esProvider = e.hybridProvider.ESProvider()
+		e.pgProvider = e.hybridProvider.PGProvider()
+	}
+
 	e.provider = provider
 	e.logger.Info("Observability storage extension started successfully",
 		zap.String("provider", provider.Name()),
@@ -148,8 +159,15 @@ func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) e
 		e.logger.Info("Lifecycle scheduler started")
 	}
 
-	// Start metric rollup engine if enabled (ES provider only).
-	if e.config.Scheduler.RollupEnabled {
+	// Start metric rollup engine if enabled (ES metric backend only).
+	// The 5m rollup engine aggregates raw ES metric indices; when the metric
+	// signal is routed to VictoriaMetrics (hybrid.metric != "elasticsearch"),
+	// there is nothing for it to do — and worse, it would read the entire
+	// historical ES metric corpus on startup and OOM the process (observed
+	// live: restart → rollup backfill → 39MiB→695MiB→OOMKilled). Gate it on
+	// the metric backend, not merely the presence of an ES sub-provider (which
+	// is always present in hybrid mode because trace/log route to ES).
+	if e.config.Scheduler.RollupEnabled && e.metricBackendIsES() {
 		if engine := e.buildRollupEngine(host); engine != nil {
 			engine.Start(ctx)
 			e.rollupEngine = engine
@@ -158,6 +176,20 @@ func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) e
 	}
 
 	return nil
+}
+
+// metricBackendIsES reports whether the metric signal is stored in
+// Elasticsearch — the only backend the 5m rollup engine understands. In
+// non-hybrid ES mode this is trivially true; in hybrid mode it consults the
+// metric routing.
+func (e *ObservabilityStorage) metricBackendIsES() bool {
+	if e.config.Type != "hybrid" {
+		return e.config.Type == storedmodel.BackendES
+	}
+	if e.hybridProvider == nil {
+		return false
+	}
+	return e.hybridProvider.MetricBackend() == storedmodel.BackendES
 }
 
 // Shutdown gracefully stops the storage provider.
@@ -307,9 +339,6 @@ func (e *ObservabilityStorage) createProvider() (internalProvider, error) {
 			return nil, err
 		}
 		e.hybridProvider = p
-		// Expose sub-providers for Reader/Admin access
-		e.esProvider = p.ESProvider()
-		e.pgProvider = p.PGProvider()
 		return p, nil
 	}
 

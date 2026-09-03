@@ -154,7 +154,23 @@ extensions:
   # Observability Storage extension - Unified storage layer for Trace/Metric/Log
   # Replaces separate Jaeger + Prometheus backends with direct ES write
   observability_storage:
-    type: "elasticsearch"
+    type: "hybrid"
+    # ── VictoriaMetrics metric backend (metric signal only) ──
+    # hybrid.metric routes the metric signal to victoriametrics; trace/log/admin
+    # stay on elasticsearch. Rollback = set hybrid.metric back to elasticsearch
+    # (historical ES data is untouched).
+    victoriametrics:
+      endpoint: "http://vmsingle.vm-minimal.svc.cluster.local:8428"
+      flush_interval: 3s
+      batch_size: 5000
+      write_timeout: 10s
+      read_timeout: 30s
+      max_retries: 3
+    hybrid:
+      trace: "elasticsearch"
+      metric: "victoriametrics"
+      log: "elasticsearch"
+      admin: "elasticsearch"
     elasticsearch:
       addresses:
         - "http://[[.Service.elasticsearch.host]]:[[.Service.elasticsearch.port]]"
@@ -699,27 +715,6 @@ extensions:
   # zPages for debugging
   zpages:
     endpoint: 0.0.0.0:55679
-
-  # ── VictoriaMetrics metric backend (optional, metric signal only) ──
-  # Enable by setting type: hybrid and hybrid.metric: victoriametrics.
-  # Trace/log/admin stay on elasticsearch. Rollback = set hybrid.metric back
-  # to elasticsearch (historical ES data is untouched).
-  #
-  # victoriametrics:
-  #   endpoint: "http://vmsingle.vm-minimal.svc.cluster.local:8428"
-  #   flush_interval: 3s
-  #   batch_size: 5000
-  #   write_timeout: 10s
-  #   read_timeout: 30s
-  #   max_retries: 3
-  #   # registry_path: "/vm-data/type-registry.json"  # metric type persistence (restart-safe)
-  #   # extra_labels:
-  #   #   cluster: "minikube"
-  # hybrid:
-  #   trace: "elasticsearch"
-  #   metric: "victoriametrics"
-  #   log: "elasticsearch"
-  #   admin: "elasticsearch"
 
 connectors:
   # MetricGenerator connector - generates RED + ServiceGraph metrics from traces

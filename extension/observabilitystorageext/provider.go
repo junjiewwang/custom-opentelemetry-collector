@@ -240,6 +240,43 @@ type FlatDensityProber interface {
 	QueryFlatDensity(ctx context.Context, query FlatDensityQuery) ([]DensityBucket, error)
 }
 
+// MetricNameScheme is an optional capability a MetricReader may implement to
+// declare the metric-name storage convention of its backend. The query layer
+// (adminext) must translate a PromQL-safe underscored name (jvm_memory_used)
+// back to the backend's storage form before issuing a read.
+//
+//   - Elasticsearch / PostgreSQL store the OTel dotted name (jvm.memory.used),
+//     so a dotted-name backend needs the underscore→dot reverse mapping.
+//   - VictoriaMetrics ingests via the Prometheus text format, whose writer
+//     sanitizes dots to underscores — it stores the underscored name verbatim,
+//     so NO reverse mapping applies (an underscore→dot map would query a
+//     dotted name VM never stored and silently return zero series).
+//
+// Readers that do NOT implement this interface are treated as dotted-name
+// backends (the historical ES behavior), so existing providers keep working
+// unchanged. VM is the single exception and declares false explicitly.
+type MetricNameScheme interface {
+	// UsesDottedMetricNames reports whether the backend stores metric names in
+	// the OTel dotted form (needs underscore→dot reverse mapping on reads).
+	UsesDottedMetricNames() bool
+}
+
+// NativeHeatmapRange is an optional capability a MetricReader may implement to
+// answer a histogram heatmap range query — `sum by (le[, g...]) (rate(m[5m]))` —
+// directly in the backend instead of pulling every _bucket series into the
+// collector and reassembling buckets in Go. VictoriaMetrics implements this by
+// delegating to its own MetricsQL engine (`sum by (le) (rate(m_bucket[5m]))`),
+// which is both correct and far cheaper than materialising thousands of bucket
+// series; Elasticsearch does NOT implement it (it stores delta bucket_counts
+// that require the Go reassembly path).
+//
+// QueryHeatmapRange MUST return one series per (le[, extra group]) with le in
+// the Labels map, Prometheus-convention cumulative-rate values, and timestamps
+// in Unix milliseconds (matching MetricTimeValue.TimeUnixMilli semantics).
+type NativeHeatmapRange interface {
+	QueryHeatmapRange(ctx context.Context, query MetricHeatmapRangeQuery) (*MetricRangeResult, error)
+}
+
 // LogReader queries log data from the storage backend.
 type LogReader interface {
 	// SearchLogs searches for logs matching the query parameters.

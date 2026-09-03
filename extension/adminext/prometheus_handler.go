@@ -251,7 +251,15 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 	// Try full PromQL engine for range queries. If it parses (even with
 	// empty result), use it — the old parser doesn't support delta/rate/+
 	// and would 400 on those expressions.
-	if isComplexPromQL(queryStr) {
+	//
+	// EXCEPTION: a histogram heatmap (`sum by (le[, g...]) (rate(m[5m]))`)
+	// on a native-heatmap backend (VictoriaMetrics) must bypass the engine.
+	// The engine path serves such queries through esQuerier.Select →
+	// QueryFlat → queryFlatHistogram, which materialises every _bucket series
+	// (thousands of series × hundreds of points) into the collector and OOMs
+	// the process. The subset parser's heatmap branch delegates to the backend's
+	// native MetricsQL `sum by (le) (rate(m_bucket[5m]))` instead.
+	if isComplexPromQL(queryStr) && !h.isNativeHeatmapQuery(queryStr) {
 		if result, failReason := h.tryPromQLRange(r.Context(), queryStr, start, end, step); result != nil {
 			items, _ := result.Result.([]promMatrixSample)
 			route = "engine"
@@ -862,12 +870,6 @@ func (h *promHandlers) handlePromMetadata(w http.ResponseWriter, r *http.Request
 
 	tr := parsePromQueryTimeRange(r)
 
-	names, err := h.metricReader.ListMetricNames(r.Context(), tr)
-	if err != nil {
-		h.writePromError(w, "execution", err.Error())
-		return
-	}
-
 	// Metric type drives Grafana Metrics Drilldown's visualization choice and
 	// whether it wraps a query in rate(), so report the stored OTel type rather
 	// than labelling everything a gauge. A backend that cannot supply types
@@ -876,6 +878,30 @@ func (h *promHandlers) handlePromMetadata(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		h.logger.Warn("prom metadata: metric type lookup failed, defaulting to gauge", zap.Error(err))
 		types = nil
+	}
+
+	// The metadata skeleton is the TYPES key set (metric *families*), not the
+	// ListMetricNames set (metric *series*). The two differ on histograms: VM
+	// stores a histogram as _bucket/_sum/_count series whose base name is not
+	// itself a series, so ListMetricNames lacks the base name while the type
+	// map has it. Building from types is what surfaces histogram-typed metrics
+	// (Grafana Drilldown relies on /metadata reporting type=histogram). When a
+	// backend returns no types, fall back to the names set so the endpoint is
+	// still populated (every name reported as gauge).
+	var names []string
+	if len(types) > 0 {
+		names = make([]string, 0, len(types))
+		for name := range types {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+	} else {
+		var err error
+		names, err = h.metricReader.ListMetricNames(r.Context(), tr)
+		if err != nil {
+			h.writePromError(w, "execution", err.Error())
+			return
+		}
 	}
 
 	// Prometheus supports narrowing to one metric via ?metric=<name>.
@@ -957,11 +983,13 @@ func (h *promHandlers) isHistogramBaseMetric(ctx context.Context, baseName strin
 	// traces_spanmetrics_latency). For gauge names that merely end in _count,
 	// the stripped base (e.g. jvm_thread) is not a storage name, so it misses.
 	// baseName is a Prometheus-safe underscored name (e.g. http_server_request_duration);
-	// the storage type map is keyed by the dotted OTel name, so reverse-sanitize
-	// before the lookup — otherwise a dotted histogram base (http.server.request.duration)
-	// is wrongly judged a gauge and its _count sub-series falls through to the
-	// bare-metric path, returning empty.
-	meta, ok := types[unsanitizeMetricName(baseName)]
+	// dotted-name backends key the type map by the dotted OTel name, so reverse-
+	// sanitize before the lookup — otherwise a dotted histogram base
+	// (http.server.request.duration) is wrongly judged a gauge and its _count
+	// sub-series falls through to the bare-metric path, returning empty.
+	// VictoriaMetrics keys by the underscored name verbatim, so storageMetricName
+	// passes it through unchanged.
+	meta, ok := types[h.storageMetricName(baseName)]
 	return ok && meta.Type == "histogram"
 }
 
@@ -971,7 +999,7 @@ func (h *promHandlers) isHistogramBaseMetric(ctx context.Context, baseName strin
 // Uses ES terms aggregation to return unique label value combinations.
 func (h *promHandlers) dispatchLabelExplore(r *http.Request, expr *promqlExpr) *promQueryData {
 	query := observabilitystorageext.LabelCombinationsQuery{
-		MetricName: unsanitizeMetricName(expr.MetricName),
+		MetricName: h.storageMetricName(expr.MetricName),
 		LabelKeys:  expr.GroupBy,
 	}
 
@@ -1032,7 +1060,7 @@ func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, e
 			delete(esLabels, PromLabelLe)
 		}
 		query := observabilitystorageext.MetricQuery{
-			MetricName:    unsanitizeMetricName(expr.MetricName),
+			MetricName:    h.storageMetricName(expr.MetricName),
 			Labels:        esLabels,
 			LabelMatch:    labelMatch,
 			LabelNot:      expr.LabelNot,
@@ -1161,6 +1189,18 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 		// bucket into one series.
 		if expr.Aggregation != "" && groupsByLe(expr.GroupBy) {
 			defer span.SetAttributes(attribute.Int("promql.series_count", 0))
+			// VictoriaMetrics computes the heatmap natively via MetricsQL — far
+			// cheaper than materialising every _bucket series. ES/PG fall through
+			// to the Go reassembly path.
+			if h.metricReader != nil {
+				if native, ok := h.metricReader.(observabilitystorageext.NativeHeatmapRange); ok {
+					result := h.execNativeHeatmapRange(r, native, expr, start, end, step, labels, labelMatch)
+					if result == nil {
+						return &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}}
+					}
+					return result
+				}
+			}
 			result := h.execHistogramBucketRange(r, expr, start, end, step, labels, labelMatch)
 			if result == nil {
 				return &promQueryData{ResultType: ResultTypeMatrix, Result: []promMatrixSample{}}
@@ -1227,7 +1267,7 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 	bareMetric := expr.Aggregation == "" && expr.Function == "" && len(expr.GroupBy) == 0
 	if bareMetric {
 		if labelKeys, derr := h.metricReader.ListLabelNames(r.Context(),
-			observabilitystorageext.TimeRange{Start: start, End: end}, unsanitizeMetricName(expr.MetricName)); derr == nil {
+			observabilitystorageext.TimeRange{Start: start, End: end}, h.storageMetricName(expr.MetricName)); derr == nil {
 			groupBy := make([]string, 0, len(labelKeys))
 			for _, k := range labelKeys {
 				if promKey := translateLabelToPromQL(k); promKey != "" {
@@ -1242,7 +1282,7 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 	}
 
 	query := observabilitystorageext.MetricRangeQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1326,7 +1366,7 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1420,7 +1460,7 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 	// Use QueryFlat (same as execRateRange) to avoid ES top_hits limit and
 	// painless script hardcoded label fields. Data is grouped by labels in Go.
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1521,7 +1561,7 @@ func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promq
 	lookbackStart := evalTime.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1621,7 +1661,7 @@ func (h *promHandlers) execHistogramBucketRange(r *http.Request, expr *promqlExp
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1764,7 +1804,7 @@ func (h *promHandlers) execHistogramBucketBareRange(r *http.Request, expr *promq
 	delete(esLabels, PromLabelLe)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        esLabels,
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1851,7 +1891,7 @@ func (h *promHandlers) execHistogramBucketBareRange(r *http.Request, expr *promq
 // restored. snapExtract maps a per-step snapshot slice to the output value(s).
 func (h *promHandlers) bareHistogramSubMatrix(r *http.Request, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string, snapExtract func(HistogramBucket) float64) []promMatrixSample {
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -1990,7 +2030,7 @@ func (h *promHandlers) execHistogramBucketInstant(r *http.Request, expr *promqlE
 	lookbackStart := evalTime.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,
@@ -2093,6 +2133,94 @@ func groupsByLe(groupBy []string) bool {
 	return slices.Contains(groupBy, PromLabelLe)
 }
 
+// isNativeHeatmapQuery reports whether the query is a histogram heatmap
+// (`sum by (le[, g...]) (rate(m[5m]))`) that a native-heatmap backend
+// (VictoriaMetrics) should serve directly rather than through the PromQL
+// engine. The engine path would materialise every _bucket series and OOM;
+// the subset parser's heatmap branch delegates to native MetricsQL.
+func (h *promHandlers) isNativeHeatmapQuery(queryStr string) bool {
+	// Backend must expose the native heatmap capability.
+	if h.metricReader == nil {
+		return false
+	}
+	if _, ok := h.metricReader.(observabilitystorageext.NativeHeatmapRange); !ok {
+		return false
+	}
+	// Shape: contains a rate/increase range-vector function AND a by (le) clause.
+	lower := strings.ToLower(queryStr)
+	hasRangeFunc := false
+	for _, fn := range []string{"rate(", "increase("} {
+		if strings.Contains(lower, fn) {
+			hasRangeFunc = true
+			break
+		}
+	}
+	if !hasRangeFunc {
+		return false
+	}
+	return strings.Contains(lower, "by (le") || strings.Contains(lower, "by(le")
+}
+
+// execNativeHeatmapRange serves a histogram heatmap range query through a
+// backend that implements NativeHeatmapRange (VictoriaMetrics). It delegates the
+// whole `sum by (le[, g...]) (rate(m[5m]))` to the backend's native engine and
+// converts the returned MetricRangeResult (one series per le[, extra group])
+// into the promMatrixSample shape the Prometheus API expects.
+func (h *promHandlers) execNativeHeatmapRange(r *http.Request, native observabilitystorageext.NativeHeatmapRange, expr *promqlExpr, start, end time.Time, step time.Duration, labels, labelMatch map[string]string) *promQueryData {
+	// le is a histogram-expansion dimension, not a stored label: it must not be
+	// forwarded as a label matcher (the backend derives le from the _bucket
+	// series). The extra group-by dimensions (non-le) carry through untouched.
+	extraGroupBy := make([]string, 0, len(expr.GroupBy))
+	for _, g := range expr.GroupBy {
+		if g != PromLabelLe {
+			extraGroupBy = append(extraGroupBy, g)
+		}
+	}
+
+	query := observabilitystorageext.MetricHeatmapRangeQuery{
+		MetricName:    h.storageMetricName(expr.MetricName),
+		Labels:        filterInternalLabels(labels),
+		LabelMatch:    labelMatch,
+		LabelNot:      expr.LabelNot,
+		LabelNotMatch: expr.LabelNotMatch,
+		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
+		Step:          step,
+		RangeDuration: expr.RangeDuration,
+		GroupBy:       extraGroupBy,
+		AppID:         expr.AppID,
+	}
+
+	result, err := native.QueryHeatmapRange(r.Context(), query)
+	if err != nil {
+		h.logger.Error("native heatmap range query failed", zap.String("metric", expr.MetricName), zap.Error(err))
+		return nil
+	}
+	if result == nil || len(result.Data) == 0 {
+		return nil
+	}
+
+	matrix := make([]promMatrixSample, 0, len(result.Data))
+	for _, s := range result.Data {
+		m := promMetric{}
+		for k, v := range s.Labels {
+			if k == "__name__" || k == PromLabelName {
+				continue
+			}
+			m[translateLabelToPromQL(k)] = v
+		}
+		values := make([][]any, 0, len(s.Values))
+		for _, tv := range s.Values {
+			tsMs, err := strconv.ParseInt(tv.TimeUnixMilli, 10, 64)
+			if err != nil {
+				continue
+			}
+			values = append(values, []any{float64(tsMs) / 1000.0, formatPromValue(tv.Value)})
+		}
+		matrix = append(matrix, promMatrixSample{Metric: m, Values: values})
+	}
+	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
+}
+
 // bucketSeriesKey identifies one heatmap output series: a grouping key plus the
 // le bound it represents.
 type bucketSeriesKey struct {
@@ -2187,7 +2315,7 @@ func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlE
 	lookbackStart := start.Add(-expr.RangeDuration)
 
 	flatQuery := observabilitystorageext.MetricFlatQuery{
-		MetricName:    unsanitizeMetricName(expr.MetricName),
+		MetricName:    h.storageMetricName(expr.MetricName),
 		Labels:        filterInternalLabels(labels),
 		LabelMatch:    labelMatch,
 		LabelNot:      expr.LabelNot,

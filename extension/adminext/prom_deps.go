@@ -27,6 +27,10 @@ type promHandlers struct {
 	metricReader     observabilitystorageext.MetricReader
 	traceReader      observabilitystorageext.TraceReader
 	logger           *zap.Logger
+	// usesDottedNames is false when the backend (VictoriaMetrics) stores metric
+	// names in the PromQL-safe underscore form already. When true (ES/PG), the
+	// subset-parser path reverse-maps underscore→dot before issuing reads.
+	usesDottedNames bool
 	// Full PromQL engine backed by ES→storage.Queryable adapter.
 	// Falls back to the subset parser (parsePromQL) for expressions
 	// the engine cannot handle (e.g. unsupported histogram_quantile).
@@ -48,16 +52,28 @@ func newPromHandlers(e *Extension) *promHandlers {
 		EnableNegativeOffset: true,
 	})
 	return &promHandlers{
-		metricReader: e.storageMetricReader,
-		traceReader:  e.storageTraceReader,
-		logger:       e.logger,
-		queryable:    queryable,
-		engine:       engine,
+		metricReader:    e.storageMetricReader,
+		traceReader:     e.storageTraceReader,
+		logger:          e.logger,
+		usesDottedNames: usesDottedMetricNames(e.storageMetricReader),
+		queryable:       queryable,
+		engine:          engine,
 		queryMetrics: newQueryMetrics(
 			e.settings.TelemetrySettings.MeterProvider.Meter("otelcol/query"),
 			identity.ResolveUniqueNodeID(""),
 		),
 	}
+}
+
+// storageMetricName maps a PromQL-safe underscored name to the backend's
+// storage form. Dotted-name backends (ES/PG) get the underscore→dot reverse
+// map; VictoriaMetrics stores the underscored name verbatim so it passes
+// through unchanged.
+func (h *promHandlers) storageMetricName(promQLName string) string {
+	if !h.usesDottedNames {
+		return promQLName
+	}
+	return unsanitizeMetricName(promQLName)
 }
 
 // tryPromQLRange executes the PromQL expression as a range query over

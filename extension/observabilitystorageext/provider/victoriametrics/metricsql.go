@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // buildSelector builds a MetricsQL series selector from query fields.
@@ -57,6 +58,27 @@ func buildRangeAggregation(agg, selector string, groupBy []string) string {
 	keys := append([]string(nil), groupBy...)
 	sort.Strings(keys)
 	return fmt.Sprintf("%s by (%s) (%s)", agg, strings.Join(keys, ","), selector)
+}
+
+// buildHeatmapRangeExpr builds the native MetricsQL expression for a histogram
+// heatmap range query: sum by (le[, extra...]) (rate(<base>_bucket[5m])).
+// The heatmap's rate operates on the _bucket sub-series (a Prometheus counter)
+// whose `le` label VM aggregates natively — the whole point of NativeHeatmapRange.
+func buildHeatmapRangeExpr(baseName, appID string, extraGroupBy []string, rangeDuration string) string {
+	selector := buildSelector(baseName+"_bucket", appID, "", nil, nil, nil, nil)
+	keys := append([]string{"le"}, extraGroupBy...)
+	sort.Strings(keys)
+	return fmt.Sprintf("sum by (%s) (rate(%s[%s]))", strings.Join(keys, ","), selector, rangeDuration)
+}
+
+// durationString formats a time.Duration as a MetricsQL/PromQL duration string
+// ("5m", "1m30s"). Sub-second components are dropped (rate windows are ≥ seconds
+// in practice, and PromQL duration syntax is whole units).
+func durationString(d time.Duration) string {
+	if d <= 0 {
+		return "5m"
+	}
+	return d.Truncate(time.Second).String()
 }
 
 // stripAppIDLabel removes the internal app_id label from a returned label set

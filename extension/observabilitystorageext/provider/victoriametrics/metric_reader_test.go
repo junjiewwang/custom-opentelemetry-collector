@@ -160,6 +160,20 @@ func TestQueryFlat_HistogramReassembly(t *testing.T) {
 
 // ── ListMetricNames (vm_* filtering) ────────────────────────────────────────
 
+func TestMetricReader_DeclaresUnderscoreNameScheme(t *testing.T) {
+	// VM ingests via the Prometheus text format (writer sanitizes dots to
+	// underscores), so the reader must declare UsesDottedMetricNames()=false —
+	// otherwise adminext reverse-maps jvm_memory_used → jvm.memory.used and
+	// queries a dotted name VM never stored (0 series).
+	c, _ := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `{"status":"success","data":["jvm_memory_used"]}`)
+	})
+	rd := newTestReader(c)
+	scheme, ok := any(rd).(observabilitystorageext.MetricNameScheme)
+	require.True(t, ok, "VM MetricReader must implement MetricNameScheme")
+	assert.False(t, scheme.UsesDottedMetricNames(), "VM stores underscored names verbatim")
+}
+
 func TestListMetricNames_FiltersVMPrefix(t *testing.T) {
 	c, _ := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, `{"status":"success","data":["vm_rows","vmagent_rows","my_metric","another"]}`)
@@ -243,4 +257,44 @@ func TestListLabelCombinations(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Combinations, 2, "duplicates deduped")
 	assert.Equal(t, map[string]string{"a": "1", "b": "x"}, res.Combinations[0])
+}
+
+func TestBuildHeatmapRangeExpr(t *testing.T) {
+	got := buildHeatmapRangeExpr("traces_spanmetrics_latency", "appX", []string{"service_name"}, "5m")
+	assert.Contains(t, got, "sum by (")
+	assert.Contains(t, got, "le")
+	assert.Contains(t, got, "service_name")
+	assert.Contains(t, got, "rate(traces_spanmetrics_latency_bucket{app_id=\"appX\"}[5m])")
+}
+
+func TestQueryHeatmapRange_NativeDelegation(t *testing.T) {
+	c, calls := newFakeVM(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `{"status":"success","data":{"resultType":"matrix","result":[
+			{"metric":{"le":"10"},"values":[[1788437880,"0.46"],[1788437940,"0.47"]]},
+			{"metric":{"le":"+Inf"},"values":[[1788437880,"1.0"]]}
+		]}}`)
+	})
+	rd := newTestReader(c)
+	res, err := rd.QueryHeatmapRange(context.Background(), observabilitystorageext.MetricHeatmapRangeQuery{
+		MetricName:    "traces_spanmetrics_latency",
+		AppID:         "appX",
+		TimeRange:     observabilitystorageext.TimeRange{Start: time.Unix(1788434000, 0), End: time.Unix(1788441000, 0)},
+		Step:          60 * time.Second,
+		RangeDuration: 5 * time.Minute,
+		GroupBy:       []string{"service_name"},
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Data, 2)
+	// The emitted request must be the native MetricsQL heatmap, not a bucket export.
+	require.Len(t, *calls, 1)
+	assert.Contains(t, (*calls)[0], "query_range")
+	assert.Contains(t, (*calls)[0], "sum+by+%28le%2Cservice_name%29+%28rate%28traces_spanmetrics_latency_bucket")
+	assert.Equal(t, "le", func() string {
+		for k := range res.Data[0].Labels {
+			if k == "le" {
+				return k
+			}
+		}
+		return ""
+	}())
 }

@@ -30,18 +30,27 @@ type esQueryable struct {
 	reader    observabilitystorageext.MetricReader
 	logger    *zap.Logger
 	maxSeries int
+	// usesDottedNames is false when the backend (VictoriaMetrics) stores
+	// metric names in the PromQL-safe underscore form already. When true
+	// (ES/PG), Select reverse-maps underscore→dot before reading.
+	usesDottedNames bool
 }
 
 func newESQueryable(reader observabilitystorageext.MetricReader, logger *zap.Logger) *esQueryable {
-	return &esQueryable{reader: reader, logger: logger, maxSeries: 5000}
+	return &esQueryable{reader: reader, logger: logger, maxSeries: 5000, usesDottedNames: usesDottedMetricNames(reader)}
 }
 
 func (q *esQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
-	// Lazy-build the complete metric name reverse map on first Querier call.
-	buildGlobalReverseMap(q.reader, q.logger)
+	// The underscore→dot reverse map only matters for dotted-name backends
+	// (ES/PG). VictoriaMetrics stores underscored names verbatim, so skip the
+	// (potentially expensive) ListMetricNames build — it would be unused there.
+	if q.usesDottedNames {
+		buildGlobalReverseMap(q.reader, q.logger)
+	}
 	return &esQuerier{
 		reader: q.reader, logger: q.logger,
 		mint: mint, maxt: maxt, maxSeries: q.maxSeries,
+		usesDottedNames: q.usesDottedNames,
 	}, nil
 }
 
@@ -53,6 +62,8 @@ type esQuerier struct {
 	mint, maxt int64
 	maxSeries int
 	qCache    *queryCache
+	// usesDottedNames mirrors esQueryable.usesDottedNames (see there).
+	usesDottedNames bool
 	// flatSem bounds concurrent ES QueryFlat calls across a single query's
 	// bisection tree, keeping us under the ES connection pool limit.
 	flatSem chan struct{}
@@ -105,8 +116,11 @@ func (q *esQuerier) Select(ctx context.Context, sortSeries bool, hints *storage.
 		zap.Int64("maxt", q.maxt),
 	)
 
-	// Convert PromQL-safe name (jvm_memory_used) → OTel dotted name (jvm.memory.used) for ES.
-	if metricName != "" {
+	// Convert PromQL-safe name (jvm_memory_used) → OTel dotted name (jvm.memory.used)
+	// for dotted-name backends (ES/PG). VictoriaMetrics stores the underscored name
+	// verbatim, so skip the reverse map there or it would query a dotted name VM
+	// never stored and return zero series.
+	if metricName != "" && q.usesDottedNames {
 		originalName := metricName
 		metricName = unsanitizeMetricName(metricName)
 		q.logger.Debug("Select sanitization",
@@ -879,6 +893,17 @@ func sanitizeMetricName(otelName string) string {
 		}
 	}
 	return string(b)
+}
+
+// usesDottedMetricNames reports whether the given reader's backend stores
+// metric names in the OTel dotted form (ES/PG) rather than the PromQL-safe
+// underscore form (VictoriaMetrics). Readers that don't implement the optional
+// MetricNameScheme capability default to true (historical ES behavior).
+func usesDottedMetricNames(reader observabilitystorageext.MetricReader) bool {
+	if scheme, ok := reader.(observabilitystorageext.MetricNameScheme); ok {
+		return scheme.UsesDottedMetricNames()
+	}
+	return true
 }
 
 // unsanitizeMetricName maps a Prometheus-safe underscored name back to the

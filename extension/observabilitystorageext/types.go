@@ -399,6 +399,25 @@ type MetricFlatResult struct {
 	Truncated bool `json:"truncated,omitempty"`
 }
 
+// MetricHeatmapRangeQuery describes a histogram heatmap range query —
+// `sum by (le[, g...]) (rate(m[5m]))`. MetricName is the histogram base name
+// (no _bucket suffix); the backend is responsible for targeting its bucket
+// sub-series and applying the rate. GroupBy carries the extra (non-le)
+// grouping dimensions alongside le.
+type MetricHeatmapRangeQuery struct {
+	AppID         string            `json:"appId,omitempty"`
+	MetricName    string            `json:"metric"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
+	LabelNot      map[string]string `json:"labelNot,omitempty"`
+	LabelNotMatch map[string]string `json:"labelNotMatch,omitempty"`
+	TimeRange     TimeRange         `json:"timeRange"`
+	Step          time.Duration     `json:"step"`
+	RangeDuration time.Duration     `json:"rangeDuration"`      // rate window [5m]
+	GroupBy       []string          `json:"groupBy,omitempty"`  // extra (non-le) grouping dims
+	SeriesLimit   int               `json:"seriesLimit,omitempty"`
+}
+
 // DensityBucket is a single time bucket of a flat-density probe. It tells the
 // caller how many matching docs fall in a fixed-width time window, so the
 // bisection logic can decide the slice boundaries up front instead of probing

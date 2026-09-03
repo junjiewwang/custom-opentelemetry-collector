@@ -32,6 +32,14 @@ func newMetricReader(client VMClient, logger *zap.Logger) *MetricReader {
 	return &MetricReader{client: client, logger: logger}
 }
 
+// UsesDottedMetricNames implements observabilitystorageext.MetricNameScheme.
+// VM ingests via the Prometheus text format whose writer sanitizes dots to
+// underscores, so VM stores the underscored name verbatim (jvm_memory_used).
+// Declaring false makes adminext skip its ES-style underscore→dot reverse map,
+// which would otherwise query a dotted name VM never stored and return zero
+// series (observed live: avg(jvm_memory_used) → VM queried jvm.memory.used → 0).
+func (r *MetricReader) UsesDottedMetricNames() bool { return false }
+
 // defaultFlatMaxDocs caps QueryFlat/QueryRaw sample counts. VM's export has
 // no ES-style max_result_window, but an unbounded window can still return
 // enormous payloads; the cap mirrors the ES provider's flat floor.
@@ -77,6 +85,48 @@ func (r *MetricReader) QueryRange(ctx context.Context, query observabilitystorag
 	res, err := r.client.QueryRange(ctx, expr, query.TimeRange.Start, query.TimeRange.End, query.Step)
 	if err != nil {
 		return nil, fmt.Errorf("vm range query failed: %w", err)
+	}
+	limit := query.SeriesLimit
+	if limit <= 0 {
+		limit = 100
+	}
+	out := &observabilitystorageext.MetricRangeResult{Data: []observabilitystorageext.MetricSeries{}}
+	for i, s := range res.Series {
+		if i >= limit {
+			break
+		}
+		series := observabilitystorageext.MetricSeries{
+			Metric: s.Metric["__name__"],
+			Labels: stripAppIDLabel(s.Metric),
+			Values: []observabilitystorageext.MetricTimeValue{},
+		}
+		for _, pair := range s.Values {
+			tsMs, v, ok := parseSamplePair(pair)
+			if !ok {
+				continue
+			}
+			series.Values = append(series.Values, observabilitystorageext.MetricTimeValue{
+				TimeUnixMilli: strconv.FormatInt(tsMs, 10),
+				Value:         v,
+			})
+		}
+		out.Data = append(out.Data, series)
+	}
+	return out, nil
+}
+
+// QueryHeatmapRange implements observabilitystorageext.NativeHeatmapRange. It
+// delegates the histogram heatmap (`sum by (le[, g...]) (rate(m[5m]))`) to VM's
+// own MetricsQL engine rather than materialising thousands of _bucket series
+// and reassembling them in Go — the ES path does that because ES stores delta
+// bucket_counts; VM stores Prometheus-convention cumulative _bucket counters and
+// can compute the whole heatmap natively (and far more cheaply).
+func (r *MetricReader) QueryHeatmapRange(ctx context.Context, query observabilitystorageext.MetricHeatmapRangeQuery) (*observabilitystorageext.MetricRangeResult, error) {
+	// MetricsQL rate() needs a duration string ("5m"), not a time.Duration.
+	expr := buildHeatmapRangeExpr(query.MetricName, query.AppID, query.GroupBy, durationString(query.RangeDuration))
+	res, err := r.client.QueryRange(ctx, expr, query.TimeRange.Start, query.TimeRange.End, query.Step)
+	if err != nil {
+		return nil, fmt.Errorf("vm heatmap range query failed: %w", err)
 	}
 	limit := query.SeriesLimit
 	if limit <= 0 {
