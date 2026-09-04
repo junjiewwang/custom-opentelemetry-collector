@@ -35,7 +35,7 @@ type histogram struct {
 func newHistogram(bounds []float64) *histogram {
 	return &histogram{
 		bounds:  bounds,
-		buckets: make([]atomic.Int64, len(bounds)),
+		buckets: make([]atomic.Int64, len(bounds)+1), // +1 for the +Inf overflow bucket
 	}
 }
 
@@ -44,13 +44,17 @@ func (h *histogram) Record(val float64) {
 	h.sum.Add(int64(val * 1e6)) // microsecond precision
 	h.count.Add(1)
 
-	// Linear scan for the correct bucket.
+	// Linear scan for the correct bucket. The last bucket (index len(bounds))
+	// is the +Inf overflow bucket: values above every explicit bound land there
+	// (OTel histogram convention: BucketCounts has one more entry than
+	// ExplicitBounds, the final being +Inf).
 	for i, b := range h.bounds {
 		if val <= b {
 			h.buckets[i].Add(1)
 			return
 		}
 	}
+	h.buckets[len(h.bounds)].Add(1)
 }
 
 // Snapshot returns a copy of the current histogram state and resets all counters.

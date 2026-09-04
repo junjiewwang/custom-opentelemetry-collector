@@ -144,6 +144,20 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 		evalTime = time.Now()
 	}
 
+	// ── Native PromQL backend (VictoriaMetrics) ──
+	// A full PromQL engine backend executes the expression directly — the
+	// ES→storage.Queryable adapter path (esQuerier) exists only because ES is
+	// not a PromQL engine. Forcing VM through it both OOMs on high-cardinality
+	// queries and mis-brackets rate([1m]) windows. Route natively first.
+	if h.nativePromQL != nil {
+		if result := h.tryNativePromQLInstant(r.Context(), queryStr, evalTime); result != nil {
+			route = "native"
+			recordEngineRouteSpan(r.Context(), queryStr, "native", "")
+			h.writePromSuccess(w, result)
+			return
+		}
+	}
+
 	// ── Full PromQL engine (alpha) ──
 	// Enabled for queries that contain arithmetic, aggregation, or function
 	// syntax that the subset parser cannot handle.
@@ -246,6 +260,18 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		h.writePromError(w, "bad_data", "invalid 'step' parameter: "+err.Error())
 		return
+	}
+
+	// ── Native PromQL backend (VictoriaMetrics) ──
+	// Route the whole range expression directly to VM's PromQL engine first;
+	// the esQuerier path below OOMs and mis-brackets rate([1m]) for VM.
+	if h.nativePromQL != nil {
+		if result := h.tryNativePromQLRange(r.Context(), queryStr, start, end, step); result != nil {
+			route = "native"
+			recordEngineRouteSpan(r.Context(), queryStr, "native", "")
+			h.writePromSuccess(w, result)
+			return
+		}
 	}
 
 	// Try full PromQL engine for range queries. If it parses (even with
@@ -730,18 +756,17 @@ func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Requ
 
 	tr := parsePromQueryTimeRange(r)
 
-	// Translate PromQL underscore label name to ES dot format for the storage query.
-	// e.g. Grafana sends "span_kind" → ES stores "span.kind".
-	esLabelName := prometheusToOtelLabelKeys[labelName]
-	if esLabelName == "" {
-		esLabelName = labelName
-	}
+	// Translate the PromQL underscore label name to the backend's storage form.
+	// ES stores dotted names ("span.kind"); VictoriaMetrics stores the PromQL
+	// underscore form verbatim ("span_kind") — so the ES-style dot mapping must
+	// NOT apply to VM or every scoped label-values query returns empty.
+	esLabelName := h.storageLabelName(labelName)
 
 	// Scope to the metric named by match[], mirroring /labels. Without this the
 	// breakdown UI lists values drawn from every metric, so picking one yields
 	// an empty panel. Only the __name__ constraint is honoured; other matchers
 	// in the selector are not applied.
-	metricName := extractMetricNameFromMatch(r.Form["match[]"])
+	metricName := h.storageMetricName(extractMetricNameFromMatch(r.Form["match[]"]))
 
 	values, err := h.metricReader.ListLabelValuesForMetric(r.Context(), esLabelName, metricName, tr)
 	if err != nil {
@@ -750,6 +775,19 @@ func (h *promHandlers) handlePromLabelValues(w http.ResponseWriter, r *http.Requ
 	}
 
 	h.writePromSuccessLabelList(w, values)
+}
+
+// storageLabelName maps a PromQL underscore label name to the backend's storage
+// form. Dotted-name backends (ES) get the underscore→dot OTel mapping; VM stores
+// the underscore form verbatim so it passes through unchanged.
+func (h *promHandlers) storageLabelName(promQLName string) string {
+	if !h.usesDottedNames {
+		return promQLName
+	}
+	if otelKey, ok := prometheusToOtelLabelKeys[promQLName]; ok {
+		return otelKey
+	}
+	return promQLName
 }
 
 // ── Handler: series ────────────────────────────────
@@ -2159,6 +2197,195 @@ func (h *promHandlers) isNativeHeatmapQuery(queryStr string) bool {
 		return false
 	}
 	return strings.Contains(lower, "by (le") || strings.Contains(lower, "by(le")
+}
+
+// tryNativePromQLInstant executes a normalized PromQL expression directly on a
+// native-PromQL backend (VictoriaMetrics) and converts the result to the
+// Prometheus vector shape. Returns nil on error or empty result so the caller
+// can fall through to the subset parser.
+func (h *promHandlers) tryNativePromQLInstant(ctx context.Context, queryStr string, evalTime time.Time) *promQueryData {
+	if h.nativePromQL == nil {
+		return nil
+	}
+	// A histogram query must NOT be passed through verbatim: VM stores the base
+	// histogram as _bucket/_sum/_count sub-series, not a base-named series, so a
+	// native `rate(base[5m])` / `histogram_quantile(..., base)` returns empty.
+	// Rewrite histogram base names to their `_bucket` sub-series and add the
+	// `sum by (le)` aggregation the sub-series needs; if the rewrite can't be
+	// done, skip passthrough and let the subset parser's histogram branch handle
+	// it (which knows to target `_bucket`).
+	expr, rewritten := h.rewriteHistogramForNative(queryStr)
+	if !rewritten {
+		return nil
+	}
+	res, err := h.nativePromQL.ExecPromQLInstant(ctx, expr, evalTime)
+	if err != nil {
+		h.logger.Debug("native promql instant failed", zap.String("query", expr), zap.Error(err))
+		return nil
+	}
+	if res == nil {
+		return nil
+	}
+	if res.ResultType == ResultTypeScalar {
+		// Scalar probe (e.g. "1+1") — return a scalar result.
+		if len(res.Series) > 0 && res.Series[0].Value != nil {
+			return &promQueryData{ResultType: ResultTypeScalar, Result: res.Series[0].Value}
+		}
+		return nil
+	}
+	if res.ResultType != ResultTypeVector {
+		return nil
+	}
+	vectors := make([]promVectorSample, 0, len(res.Series))
+	for _, s := range res.Series {
+		if s.Value == nil {
+			continue
+		}
+		m := promMetric{}
+		for k, v := range s.Labels {
+			if k == "__name__" || k == PromLabelName {
+				continue
+			}
+			m[translateLabelToPromQL(k)] = v
+		}
+		vectors = append(vectors, promVectorSample{Metric: m, Value: []any{s.Value[0], s.Value[1]}})
+	}
+	return &promQueryData{ResultType: ResultTypeVector, Result: vectors}
+}
+
+// rewriteHistogramForNative rewrites a PromQL query for native (VictoriaMetrics)
+// execution by mapping histogram base names to their `_bucket` sub-series and
+// adding the `sum by (le)` aggregation the sub-series needs. Returns the
+// normalized+rewritten expression and whether the rewrite could be performed.
+// When the query does not target a histogram base name, it returns the plain
+// normalized expression and true (native passthrough is safe).
+func (h *promHandlers) rewriteHistogramForNative(queryStr string) (string, bool) {
+	normalized := normalizeQueryForPromQL(queryStr)
+	base := h.nativeHistogramBaseName(queryStr)
+	if base == "" {
+		return normalized, true
+	}
+	// Rewrite the histogram base name to its _bucket sub-series.
+	rewritten := strings.ReplaceAll(normalized, base, base+HistogramSuffixBucket)
+	// Ensure the inner aggregation carries `sum by (le)`: a histogram_quantile
+	// needs the le dimension. Replace `sum(` with `sum by (le) (` when it is not
+	// already grouping by le.
+	if strings.Contains(rewritten, "histogram_quantile") {
+		rewritten = ensureSumByLe(rewritten)
+	}
+	return rewritten, true
+}
+
+// nativeHistogramBaseName returns the histogram base metric name (underscore
+// form) referenced by the query, or "" if none. It consults the cached set of
+// histogram base names from the backend type map (lazily built).
+func (h *promHandlers) nativeHistogramBaseName(queryStr string) string {
+	if h.metricReader == nil {
+		return ""
+	}
+	h.histBaseMu.Lock()
+	if h.histBaseNames == nil {
+		h.histBaseNames = map[string]struct{}{}
+		tr := observabilitystorageext.TimeRange{Start: time.Now().Add(-time.Hour), End: time.Now()}
+		types, err := h.metricReader.ListMetricTypes(context.Background(), tr)
+		if err == nil {
+			for name, meta := range types {
+				if meta.Type == "histogram" {
+					h.histBaseNames[sanitizeMetricName(name)] = struct{}{}
+				}
+			}
+		}
+	}
+	names := h.histBaseNames
+	h.histBaseMu.Unlock()
+
+	normalized := normalizeQueryForPromQL(queryStr)
+	// Check each histogram base name for a token-level presence in the query.
+	for base := range names {
+		if base != "" && strings.Contains(normalized, base) {
+			// Only treat it as a hit when the base name appears as a selector, not
+			// merely as a _bucket/_sum/_count suffix (those already carry the suffix
+			// and should not be re-suffixed).
+			if strings.Contains(normalized, base+HistogramSuffixBucket) ||
+				strings.Contains(normalized, base+HistogramSuffixSum) ||
+				strings.Contains(normalized, base+HistogramSuffixCount) {
+				continue
+			}
+			return base
+		}
+	}
+	return ""
+}
+
+// ensureSumByLe inserts `by (le)` into a `sum(` aggregation that is inside a
+// histogram_quantile and does not already group by le. It handles the common
+// `sum(rate(...))` → `sum by (le) (rate(...))` shape emitted by Grafana's
+// native-histogram form.
+func ensureSumByLe(expr string) string {
+	// Already grouped by le — nothing to do.
+	if strings.Contains(expr, "by (le") || strings.Contains(expr, "by(le") {
+		return expr
+	}
+	// Replace the innermost `sum(` (the one wrapping rate/selector) with `sum by (le) (`.
+	// This is a targeted, conservative rewrite: only the first `sum(` after
+	// histogram_quantile's opening paren.
+	idx := strings.Index(expr, "histogram_quantile(")
+	if idx < 0 {
+		return expr
+	}
+	open := strings.Index(expr[idx:], ",") // position of the comma after θ
+	if open < 0 {
+		return expr
+	}
+	innerStart := idx + open + 1
+	sumIdx := strings.Index(expr[innerStart:], "sum(")
+	if sumIdx < 0 {
+		return expr
+	}
+	// Rewrite `sum(` → `sum by (le) (`: the aggregation keyword + by clause
+	// precede the parenthesised inner expression (PromQL requires
+	// `sum by (le) (rate(...))`, not `sum(by (le) rate(...))`).
+	pos := innerStart + sumIdx + len("sum(")
+	return expr[:innerStart+sumIdx] + "sum by (le) (" + expr[pos:]
+}
+
+// tryNativePromQLRange executes a normalized PromQL expression directly on a
+// native-PromQL backend and converts the result to the Prometheus matrix shape.
+func (h *promHandlers) tryNativePromQLRange(ctx context.Context, queryStr string, start, end time.Time, step time.Duration) *promQueryData {
+	if h.nativePromQL == nil {
+		return nil
+	}
+	// Histogram base-named queries must be rewritten to target the _bucket
+	// sub-series (VM stores histograms as _bucket/_sum/_count, no base-named
+	// series) — see rewriteHistogramForNative.
+	expr, rewritten := h.rewriteHistogramForNative(queryStr)
+	if !rewritten {
+		return nil
+	}
+	res, err := h.nativePromQL.ExecPromQLRange(ctx, expr, start, end, step)
+	if err != nil {
+		h.logger.Debug("native promql range failed", zap.String("query", expr), zap.Error(err))
+		return nil
+	}
+	if res == nil || res.ResultType != ResultTypeMatrix {
+		return nil
+	}
+	matrix := make([]promMatrixSample, 0, len(res.Series))
+	for _, s := range res.Series {
+		m := promMetric{}
+		for k, v := range s.Labels {
+			if k == "__name__" || k == PromLabelName {
+				continue
+			}
+			m[translateLabelToPromQL(k)] = v
+		}
+		values := make([][]any, 0, len(s.Values))
+		for _, p := range s.Values {
+			values = append(values, []any{p[0], p[1]})
+		}
+		matrix = append(matrix, promMatrixSample{Metric: m, Values: values})
+	}
+	return &promQueryData{ResultType: ResultTypeMatrix, Result: matrix}
 }
 
 // execNativeHeatmapRange serves a histogram heatmap range query through a

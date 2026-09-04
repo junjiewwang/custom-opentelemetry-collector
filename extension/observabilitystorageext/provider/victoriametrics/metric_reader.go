@@ -45,6 +45,41 @@ func (r *MetricReader) UsesDottedMetricNames() bool { return false }
 // enormous payloads; the cap mirrors the ES provider's flat floor.
 const defaultFlatMaxDocs = 50000
 
+// ExecPromQLInstant implements observabilitystorageext.NativePromQL. It
+// forwards a normalized PromQL expression to VM's own engine and returns the
+// vector result, letting the collector skip the in-process PromQL engine for
+// a backend that already has one.
+func (r *MetricReader) ExecPromQLInstant(ctx context.Context, expr string, ts time.Time) (*observabilitystorageext.PromQLResult, error) {
+	res, err := r.client.QueryInstant(ctx, expr, ts)
+	if err != nil {
+		return nil, fmt.Errorf("vm native promql instant failed: %w", err)
+	}
+	out := &observabilitystorageext.PromQLResult{ResultType: res.ResultType}
+	for _, s := range res.Series {
+		out.Series = append(out.Series, observabilitystorageext.PromQLSeries{
+			Labels: stripAppIDLabel(s.Metric),
+			Value:  s.Value,
+		})
+	}
+	return out, nil
+}
+
+// ExecPromQLRange implements observabilitystorageext.NativePromQL.
+func (r *MetricReader) ExecPromQLRange(ctx context.Context, expr string, start, end time.Time, step time.Duration) (*observabilitystorageext.PromQLResult, error) {
+	res, err := r.client.QueryRange(ctx, expr, start, end, step)
+	if err != nil {
+		return nil, fmt.Errorf("vm native promql range failed: %w", err)
+	}
+	out := &observabilitystorageext.PromQLResult{ResultType: res.ResultType}
+	for _, s := range res.Series {
+		out.Series = append(out.Series, observabilitystorageext.PromQLSeries{
+			Labels: stripAppIDLabel(s.Metric),
+			Values: s.Values,
+		})
+	}
+	return out, nil
+}
+
 // Query executes an instant metric query at query.Time.
 func (r *MetricReader) Query(ctx context.Context, query observabilitystorageext.MetricQuery) (*observabilitystorageext.MetricResult, error) {
 	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,

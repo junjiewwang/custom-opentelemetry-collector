@@ -277,6 +277,42 @@ type NativeHeatmapRange interface {
 	QueryHeatmapRange(ctx context.Context, query MetricHeatmapRangeQuery) (*MetricRangeResult, error)
 }
 
+// NativePromQL is an optional capability a MetricReader may implement to
+// declare that its backend is a full PromQL/MetricsQL engine (VictoriaMetrics)
+// and can execute an arbitrary normalized PromQL expression directly. When the
+// query layer sees this, it forwards PromQL strings to the backend instead of
+// materialising raw samples into the in-process PromQL engine (esQuerier) — the
+// ES adapter path exists because ES is not a PromQL engine, but VM is, and
+// forcing VM through it both OOMs on high-cardinality queries (every _bucket
+// series) and returns wrong results for rate([1m]) windows that VM brackets
+// natively.
+type NativePromQL interface {
+	// ExecPromQLInstant executes a normalized PromQL expression at ts and
+	// returns the result series (vector). ts is a Unix second timestamp.
+	ExecPromQLInstant(ctx context.Context, expr string, ts time.Time) (*PromQLResult, error)
+	// ExecPromQLRange executes a normalized PromQL expression over [start,end]
+	// with the given step and returns matrix series.
+	ExecPromQLRange(ctx context.Context, expr string, start, end time.Time, step time.Duration) (*PromQLResult, error)
+}
+
+// PromQLResult is the backend-normalized result of a native PromQL execution:
+// one series per element with a label set and (for range) per-step values, or
+// (for instant) a single value. Values is [tsUnixSeconds, valueString] pairs;
+// Instant holds the single [tsUnixSeconds, valueString] pair for vector results.
+type PromQLResult struct {
+	ResultType string
+	Series     []PromQLSeries
+}
+
+// PromQLSeries is one series in a native PromQL result.
+type PromQLSeries struct {
+	Labels map[string]string
+	// Values is [tsUnixSeconds, valueString] pairs for matrix results.
+	Values [][2]any
+	// Value is the single [tsUnixSeconds, valueString] pair for vector results.
+	Value *[2]any
+}
+
 // LogReader queries log data from the storage backend.
 type LogReader interface {
 	// SearchLogs searches for logs matching the query parameters.
