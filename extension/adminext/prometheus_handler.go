@@ -580,12 +580,18 @@ func extractMetricNameFromMatch(matches []string) string {
 		//   extractMetricNamesFromMatch to get all names individually.
 		// - If the pattern is wrapped in .* (e.g. ".*metric_name.*"), strip the
 		//   wildcards and return the single metric name for targeted filtering.
+		// - A bare match-all pattern (".*" or ".+") is NOT a metric name: return
+		//   "" so the caller lists across all metrics (Grafana's Metrics Drilldown
+		//   sends {__name__=~".+"} when the breakdown has no metric scoping).
 		if isRegex {
 			if strings.Contains(raw, "|") {
 				return ""
 			}
 			raw = strings.TrimPrefix(raw, ".*")
 			raw = strings.TrimSuffix(raw, ".*")
+			if raw == "" || raw == ".+" {
+				return ""
+			}
 		}
 		return raw
 	}
@@ -631,7 +637,8 @@ func extractMetricNamesFromMatch(matches []string) []string {
 			p = strings.TrimSpace(p)
 			p = strings.TrimPrefix(p, ".*")
 			p = strings.TrimSuffix(p, ".*")
-			if p != "" {
+			// A match-all fragment (".+" / bare ".") is not a metric name.
+			if p != "" && p != ".+" {
 				names = append(names, p)
 			}
 		}
