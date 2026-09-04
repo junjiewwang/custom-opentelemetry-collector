@@ -651,8 +651,9 @@ func (h *promHandlers) handlePromLabels(w http.ResponseWriter, r *http.Request) 
 
 	tr := parsePromQueryTimeRange(r)
 
-	// Extract optional metric name from match[] parameter.
-	metricName := extractMetricNameFromMatch(r.Form["match[]"])
+	// Extract optional metric name from match[] parameter, mapped to the
+	// backend's storage form (VM stores underscore names, ES dotted).
+	metricName := h.storageMetricName(extractMetricNameFromMatch(r.Form["match[]"]))
 
 	var names []string
 	if metricName == "" {
@@ -662,7 +663,7 @@ func (h *promHandlers) handlePromLabels(w http.ResponseWriter, r *http.Request) 
 		if len(metricNames) > 0 {
 			labelSet := make(map[string]struct{})
 			for _, mn := range metricNames {
-				n, err := h.metricReader.ListLabelNames(r.Context(), tr, mn)
+				n, err := h.metricReader.ListLabelNames(r.Context(), tr, h.storageMetricName(mn))
 				if err != nil {
 					h.logger.Debug("list label names skipped",
 						zap.String("metric", mn), zap.Error(err))
@@ -849,7 +850,7 @@ func (h *promHandlers) handlePromSeries(w http.ResponseWriter, r *http.Request) 
 		}
 		for _, n := range queryNames {
 			q := query
-			q.MetricName = n
+			q.MetricName = h.storageMetricName(n)
 			result, err := h.metricReader.Query(r.Context(), q)
 			if err != nil {
 				continue
@@ -2243,9 +2244,9 @@ func (h *promHandlers) tryNativePromQLInstant(ctx context.Context, queryStr stri
 		}
 		m := promMetric{}
 		for k, v := range s.Labels {
-			if k == "__name__" || k == PromLabelName {
-				continue
-			}
+			// __name__ is a legitimate Prometheus label and must be preserved
+			// (Grafana reads it back for the series name); only the internal
+			// app_id isolation label is stripped upstream (stripAppIDLabel).
 			m[translateLabelToPromQL(k)] = v
 		}
 		vectors = append(vectors, promVectorSample{Metric: m, Value: []any{s.Value[0], s.Value[1]}})
@@ -2374,9 +2375,8 @@ func (h *promHandlers) tryNativePromQLRange(ctx context.Context, queryStr string
 	for _, s := range res.Series {
 		m := promMetric{}
 		for k, v := range s.Labels {
-			if k == "__name__" || k == PromLabelName {
-				continue
-			}
+			// Preserve __name__ (a legitimate Prometheus label); app_id is
+			// already stripped upstream by stripAppIDLabel.
 			m[translateLabelToPromQL(k)] = v
 		}
 		values := make([][]any, 0, len(s.Values))
