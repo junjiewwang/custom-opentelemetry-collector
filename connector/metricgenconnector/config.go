@@ -79,8 +79,8 @@ func (c *Config) Validate() error {
 func (c *Config) IsCumulative() bool { return c.AggregationTemporality == TemporalityCumulative }
 
 var defaultHistogramBuckets = []float64{
-	2, 4, 6, 8, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 300, 400, 500,
-	750, 1000, 1500, 2000, 3000, 4000, 5000, 7500, 10000,
+	0.002, 0.004, 0.006, 0.008, 0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1,
+	0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 7.5, 10,
 }
 
 var defaultDimensions = []string{

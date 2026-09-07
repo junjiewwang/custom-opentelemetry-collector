@@ -120,7 +120,10 @@ func (g *REDGenerator) ProcessSpan(svcName, appID string, resource pcommon.Resou
 	}
 
 	series.calls.Add(1)
-	series.latency.Record(spanDuration(span))
+	// spanDuration returns milliseconds; RED latency is reported in seconds
+	// (matching Grafana's Tempo datasource durationMetric unit and the service
+	// graph's *_seconds histograms).
+	series.latency.Record(spanDuration(span) / 1000.0)
 	// Mark this series as active in the current flush cycle (cumulative-mode eviction).
 	atomic.StoreUint64(&series.lastSeenCycle, uint64(g.cycle.Load()))
 }
