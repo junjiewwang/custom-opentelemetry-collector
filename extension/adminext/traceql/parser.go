@@ -143,6 +143,15 @@ func (p *Parser) parseSpanFilter() (Expr, error) {
 	var orGroups [][][]Condition
 
 	for p.peek().Type != TokenRBrace && p.peek().Type != TokenEOF {
+		// Skip stray && separators. The drilldown app emits a leading "&&"
+		// (e.g. "{ && true }") when no span filters are set; && is already an
+		// optional separator between conditions below, so skipping it at the
+		// leading position keeps the grammar consistent rather than special-casing.
+		if p.peek().Type == TokenAnd {
+			p.advance()
+			continue
+		}
+
 		// Handle "true" literal.
 		if p.peek().Type == TokenTrue {
 			p.advance()

@@ -253,6 +253,31 @@ func TestParseEmptyQuery(t *testing.T) {
 	assert.Nil(t, ast)
 }
 
+// TestParseSpanFilter_LeadingAndSeparator verifies that a stray leading "&&"
+// (the Grafana Traces Drilldown app emits "{ && true }" when no span filters
+// are set) is treated as an optional separator rather than rejected. && is
+// already an optional separator between conditions; allowing it at the leading
+// position keeps "match all" queries parseable without special-casing.
+func TestParseSpanFilter_LeadingAndSeparator(t *testing.T) {
+	tests := []struct {
+		query          string
+		wantConditions int
+	}{
+		{"{ && true }", 0},
+		{"{ && true && }", 0},
+		{"{ && && }", 0},
+		{"{ && resource.service.name = \"svc\" }", 1},
+	}
+	for _, tt := range tests {
+		ast, err := Parse(tt.query)
+		require.NoError(t, err, "query %q should parse", tt.query)
+		sf, ok := ast.(*SpanFilter)
+		require.True(t, ok, "query %q should yield SpanFilter, got %T", tt.query, ast)
+		assert.Len(t, sf.Conditions, tt.wantConditions, "query %q", tt.query)
+		assert.Empty(t, sf.OrGroups, "query %q", tt.query)
+	}
+}
+
 // ═══════════════════════════════════════════════════
 // Planner Tests
 // ═══════════════════════════════════════════════════
