@@ -132,3 +132,32 @@ func TestSpanDuration(t *testing.T) {
 	dur := spanDuration(span)
 	assert.InDelta(t, 50.0, dur, 1.0)
 }
+
+// TestSpanKindLabel verifies the span.kind label uses the OTel enum form
+// ("SPAN_KIND_SERVER") that Grafana's Tempo datasource expects, not the short
+// form ("Server") that pdata's SpanKind.String() produces.
+func TestSpanKindLabel(t *testing.T) {
+	cases := map[ptrace.SpanKind]string{
+		ptrace.SpanKindUnspecified: "SPAN_KIND_UNSPECIFIED",
+		ptrace.SpanKindInternal:    "SPAN_KIND_INTERNAL",
+		ptrace.SpanKindServer:      "SPAN_KIND_SERVER",
+		ptrace.SpanKindClient:      "SPAN_KIND_CLIENT",
+		ptrace.SpanKindProducer:    "SPAN_KIND_PRODUCER",
+		ptrace.SpanKindConsumer:    "SPAN_KIND_CONSUMER",
+	}
+	for kind, want := range cases {
+		assert.Equal(t, want, spanKindLabel(kind), "kind=%v", kind)
+	}
+}
+
+// TestStatusCodeLabel verifies the status.code label uses the OTel enum form.
+func TestStatusCodeLabel(t *testing.T) {
+	cases := map[ptrace.StatusCode]string{
+		ptrace.StatusCodeUnset: "STATUS_CODE_UNSET",
+		ptrace.StatusCodeOk:    "STATUS_CODE_OK",
+		ptrace.StatusCodeError: "STATUS_CODE_ERROR",
+	}
+	for code, want := range cases {
+		assert.Equal(t, want, statusCodeLabel(code), "code=%v", code)
+	}
+}

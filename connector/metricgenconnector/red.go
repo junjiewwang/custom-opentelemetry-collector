@@ -101,8 +101,8 @@ func (g *REDGenerator) ProcessSpan(svcName, appID string, resource pcommon.Resou
 
 	dims["service.name"] = svcName
 	dims["span.name"] = span.Name()
-	dims["span.kind"] = span.Kind().String()
-	dims["status.code"] = span.Status().Code().String()
+	dims["span.kind"] = spanKindLabel(span.Kind())
+	dims["status.code"] = statusCodeLabel(span.Status().Code())
 
 	for _, d := range g.config.Dimensions {
 		if v, ok := attrs.Get(d); ok && v.Str() != "" {
@@ -215,4 +215,40 @@ func (g *REDGenerator) CollectCumulative(staleCycles int) []*redMetricSeries {
 		result = append(result, s)
 	}
 	return result
+}
+
+// spanKindLabel returns the Prometheus label value for a span kind, using the
+// OTel enum form ("SPAN_KIND_SERVER") rather than the short form ("Server")
+// that pdata's SpanKind.String() produces. Grafana's Tempo datasource filters
+// span metrics with span_kind="SPAN_KIND_SERVER", so the short form would make
+// the service graph's "top 5 operations" table come back empty.
+func spanKindLabel(kind ptrace.SpanKind) string {
+	switch kind {
+	case ptrace.SpanKindInternal:
+		return "SPAN_KIND_INTERNAL"
+	case ptrace.SpanKindServer:
+		return "SPAN_KIND_SERVER"
+	case ptrace.SpanKindClient:
+		return "SPAN_KIND_CLIENT"
+	case ptrace.SpanKindProducer:
+		return "SPAN_KIND_PRODUCER"
+	case ptrace.SpanKindConsumer:
+		return "SPAN_KIND_CONSUMER"
+	default:
+		return "SPAN_KIND_UNSPECIFIED"
+	}
+}
+
+// statusCodeLabel returns the Prometheus label value for a status code, using
+// the OTel enum form ("STATUS_CODE_ERROR") rather than the short form ("Error").
+// Grafana's Tempo datasource filters span metrics with status_code="STATUS_CODE_ERROR".
+func statusCodeLabel(code ptrace.StatusCode) string {
+	switch code {
+	case ptrace.StatusCodeOk:
+		return "STATUS_CODE_OK"
+	case ptrace.StatusCodeError:
+		return "STATUS_CODE_ERROR"
+	default:
+		return "STATUS_CODE_UNSET"
+	}
 }
