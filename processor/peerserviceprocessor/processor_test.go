@@ -295,6 +295,27 @@ func TestExtractPeerFromPriority(t *testing.T) {
 	assert.Equal(t, "orders", extractPeerFromPriority(s, cfg.DBPeerPriority))
 }
 
+func TestExtractPeerFromPriority_AddressWithPort(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	td := newTestTraces()
+	s := addSpan(td, "db", traceID(1, 23), spanID(100), zeroSpanID(), ptrace.SpanKindClient)
+	s.Attributes().PutStr("server.address", "demo-middleware-mysql")
+	s.Attributes().PutInt("server.port", 3306)
+	s.Attributes().PutStr("db.system", "mysql")
+	// Address beats db.system, and the port is appended.
+	assert.Equal(t, "demo-middleware-mysql:3306", extractPeerFromPriority(s, cfg.DBPeerPriority))
+}
+
+func TestExtractPeerFromPriority_NetworkPeerAddress(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	td := newTestTraces()
+	s := addSpan(td, "db", traceID(1, 24), spanID(100), zeroSpanID(), ptrace.SpanKindClient)
+	s.Attributes().PutStr("network.peer.address", "demo-middleware-mysql")
+	s.Attributes().PutInt("server.port", 3306)
+	s.Attributes().PutStr("db.system", "mysql")
+	assert.Equal(t, "demo-middleware-mysql:3306", extractPeerFromPriority(s, cfg.DBPeerPriority))
+}
+
 // ---------------------------------------------------------------------------
 // Processor integration tests
 // ---------------------------------------------------------------------------
@@ -534,7 +555,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, 10000, cfg.Store.MaxItems)
 	assert.Equal(t, 10*time.Second, cfg.Store.TTL)
-	assert.Equal(t, []string{"db.name", "db.instance", "db.system", "db.type", "server.address"}, cfg.DBPeerPriority)
+	assert.Equal(t, []string{"server.address", "network.peer.address", "net.peer.name", "db.name", "db.instance", "db.system", "db.type"}, cfg.DBPeerPriority)
 }
 
 func TestConfig_Validate(t *testing.T) {

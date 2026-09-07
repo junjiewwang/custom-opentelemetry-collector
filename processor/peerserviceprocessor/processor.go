@@ -377,10 +377,29 @@ func extractPeerFromPriority(span ptrace.Span, priority []string) string {
 	attrs := span.Attributes()
 	for _, attr := range priority {
 		if v, ok := attrs.Get(attr); ok && v.Str() != "" {
-			return v.Str()
+			val := v.Str()
+			// Address-bearing attributes should carry the peer port so the peer
+			// is fully identifiable (demo-middleware-mysql:3306, not just the
+			// bare host). Reuse the port from server.port when present.
+			if isPeerAddressAttr(attr) {
+				if port, ok := attrs.Get("server.port"); ok && port.Int() > 0 {
+					val = fmt.Sprintf("%s:%d", val, port.Int())
+				}
+			}
+			return val
 		}
 	}
 	return "unknown"
+}
+
+// isPeerAddressAttr reports whether a priority-list entry denotes a peer host
+// address (which pairs with server.port) rather than a database name/engine.
+func isPeerAddressAttr(attr string) bool {
+	switch attr {
+	case "server.address", "network.peer.address", "net.peer.name", "net.peer.address":
+		return true
+	}
+	return false
 }
 
 // buildMessagingPeerService builds a composite peer.service for messaging
