@@ -278,6 +278,32 @@ func TestParseSpanFilter_LeadingAndSeparator(t *testing.T) {
 	}
 }
 
+// TestParseSpanFilter_BareOr verifies that a bare "||" inside a span filter
+// (Tempo's standard "{a || b}" form, which the Service Graph "View traces" link
+// emits) is parsed into a single OR group rather than rejected as an unexpected
+// identifier.
+func TestParseSpanFilter_BareOr(t *testing.T) {
+	tests := []struct {
+		query        string
+		wantBranches int // branches in the single OR group
+		wantConds    int // top-level AND conditions (0 for pure OR)
+	}{
+		{`{span.db.name="x" || span.db.system="x" || span.peer.service="x" || span.messaging.system="x" || span.net.peer.name="x"}`, 5, 0},
+		{`{a="1" || b="2" || c="3"}`, 3, 0},
+		{`{a="1" && b="2" || c="3"}`, 2, 0}, // (a && b) || c
+		{`{a="1" || b="2" && c="3"}`, 2, 0}, // a || (b && c)
+	}
+	for _, tt := range tests {
+		ast, err := Parse(tt.query)
+		require.NoError(t, err, "query %q should parse", tt.query)
+		sf, ok := ast.(*SpanFilter)
+		require.True(t, ok, "query %q should yield SpanFilter, got %T", tt.query, ast)
+		assert.Len(t, sf.Conditions, tt.wantConds, "query %q", tt.query)
+		require.Len(t, sf.OrGroups, 1, "query %q should have exactly 1 OR group", tt.query)
+		assert.Len(t, sf.OrGroups[0], tt.wantBranches, "query %q OR branches", tt.query)
+	}
+}
+
 // ═══════════════════════════════════════════════════
 // Planner Tests
 // ═══════════════════════════════════════════════════
