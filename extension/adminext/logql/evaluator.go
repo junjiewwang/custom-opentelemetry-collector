@@ -86,7 +86,18 @@ func (e *Evaluator) Evaluate(lq *LogQLQuery) *observabilitystorageext.LogQuery {
 			pattern := escapeLokiPattern(f.Pattern)
 			lineQueries = append(lineQueries, `-"`+pattern+`"`)
 		case FilterRegex:
-			q.RegexFilters = append(q.RegexFilters, f.Pattern)
+			if plain, ok := plainSubstringOf(f.Pattern); ok {
+				// A "plain substring" regex (no metacharacters, e.g. "(?i)php-feedback-service"
+				// from the logs-drilldown full-text search) must go through the contains
+				// path. ES regexp on the analyzed body text field matches individual
+				// tokens, not the raw string, so a hyphenated term like
+				// "php-feedback-service" (tokenized into php/feedback/service) never
+				// matches — the Match query (=|) handles it correctly.
+				pattern := escapeLokiPattern(plain)
+				lineQueries = append(lineQueries, `"`+pattern+`"`)
+			} else {
+				q.RegexFilters = append(q.RegexFilters, f.Pattern)
+			}
 		case FilterNotRegex:
 			q.NotRegexFilters = append(q.NotRegexFilters, f.Pattern)
 		}
@@ -186,4 +197,23 @@ func escapeLokiPattern(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return s
+}
+
+// inlineFlagRe strips leading LogQL/RE2 inline flags like (?i), (?s), (?is).
+var inlineFlagRe = regexp.MustCompile(`^\(\?[imsU]*\)`)
+
+// regexMetaRe matches regex metacharacters.
+var regexMetaRe = regexp.MustCompile(`[.+*?\[\](){}^$|\\]`)
+
+// plainSubstringOf returns the plain substring of a line-filter regex pattern if
+// it contains no regex metacharacters (after stripping inline flags). Such a
+// pattern is semantically a plain substring match and must be routed to the
+// contains (|=) path, because ES regexp on an analyzed text field matches
+// individual tokens rather than the raw string.
+func plainSubstringOf(pattern string) (string, bool) {
+	p := inlineFlagRe.ReplaceAllString(pattern, "")
+	if p == "" || regexMetaRe.MatchString(p) {
+		return "", false
+	}
+	return p, true
 }
