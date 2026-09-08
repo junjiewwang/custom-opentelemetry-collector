@@ -378,9 +378,39 @@ func isHistogramSubSeriesQuery(q string) bool {
 // deriv) and arithmetic expressions. This is far more robust than a
 // hardcoded string replacer.
 func normalizeQueryForPromQL(q string) string {
-	return dottedMetricNameRE.ReplaceAllStringFunc(q, func(match string) string {
-		return strings.ReplaceAll(match, ".", "_")
-	})
+	var b strings.Builder
+	i := 0
+	for i < len(q) {
+		ch := q[i]
+		if ch == '"' || ch == '\'' {
+			// Quoted string literal (a label value): copy verbatim. Dots inside
+			// a label value (e.g. span_name="market.MarketService/GetAllProductInfo")
+			// are NOT metric-name separators and must be preserved — replacing them
+			// with underscores breaks exact label matching. Find the matching close.
+			j := i + 1
+			for j < len(q) && q[j] != ch {
+				j++
+			}
+			end := j
+			if j < len(q) {
+				end = j + 1 // include the closing quote
+			}
+			b.WriteString(q[i:end])
+			i = end
+			continue
+		}
+		// Unquoted run: only here do dots separate metric-name segments.
+		j := i
+		for j < len(q) && q[j] != '"' && q[j] != '\'' {
+			j++
+		}
+		seg := q[i:j]
+		b.WriteString(dottedMetricNameRE.ReplaceAllStringFunc(seg, func(match string) string {
+			return strings.ReplaceAll(match, ".", "_")
+		}))
+		i = j
+	}
+	return b.String()
 }
 
 // dottedMetricNameRE matches a series of dot-separated identifiers that
