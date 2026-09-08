@@ -256,12 +256,17 @@ func publicSpanToProtoSpan(s observabilitystorageext.Span) *v1trace.Span {
 		ps.TraceState = s.TraceState
 	}
 
-	// Status is optional (only set when code is not "unset").
-	if s.Status.Code != "" && s.Status.Code != observabilitystorageext.StatusCodeUnset {
-		ps.Status = &v1trace.Status{
-			Code:    mapStatusCode(s.Status.Code),
-			Message: s.Status.Message,
-		}
+	// Always set a non-nil Status. OTel treats an omitted Status as equivalent
+	// to Status{code=UNSET}, but Grafana 12.0.1's tempo trace_transform.go
+	// dereferences span.Status.Code without a nil check — a trace containing any
+	// span with Status=nil panics ("invalid memory address or nil pointer
+	// dereference", trace_transform.go:134) and the whole trace query 500s. Since
+	// real traces are dominated by UNSET-status spans (observed: 74/90 in one
+	// trace), explicitly emitting Status{code=UNSET} keeps the wire format
+	// semantically identical while avoiding the Grafana crash.
+	ps.Status = &v1trace.Status{
+		Code:    mapStatusCode(s.Status.Code),
+		Message: s.Status.Message,
 	}
 
 	return ps

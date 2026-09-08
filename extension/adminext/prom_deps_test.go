@@ -73,3 +73,42 @@ func TestTryPromQL_HistogramSubSeriesShortCircuits(t *testing.T) {
 	assert.Nil(t, result, "histogram _bucket query must short-circuit without calling the engine")
 	assert.Empty(t, failReason, "short-circuit is a shape decision, not a cancellation")
 }
+
+// TestNormalizeQueryForPromQL_PreservesLabelValues verifies that dots inside
+// quoted label values are NOT rewritten to underscores (they are not metric-name
+// separators). A span_name like "market.MarketService/GetAllProductInfo" must
+// survive normalization unchanged, or the exact label matcher built downstream
+// matches nothing and the query returns empty.
+func TestNormalizeQueryForPromQL_PreservesLabelValues(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "label value with dots preserved",
+			in:   `traces_spanmetrics_calls_total{span_name="market.MarketService/GetAllProductInfo"}`,
+			want: `traces_spanmetrics_calls_total{span_name="market.MarketService/GetAllProductInfo"}`,
+		},
+		{
+			name: "dotted metric name still normalized",
+			in:   `jvm.memory.used{service="a"}`,
+			want: `jvm_memory_used{service="a"}`,
+		},
+		{
+			name: "regex label value preserved",
+			in:   `traces_spanmetrics_calls_total{span_name=~".*GetAllProductInfo.*"}`,
+			want: `traces_spanmetrics_calls_total{span_name=~".*GetAllProductInfo.*"}`,
+		},
+		{
+			name: "rate query with dotted label value preserved",
+			in:   `sum(rate(traces_spanmetrics_calls_total{span_name="market.MarketService/GetAllProductInfo"}[1m]))`,
+			want: `sum(rate(traces_spanmetrics_calls_total{span_name="market.MarketService/GetAllProductInfo"}[1m]))`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, normalizeQueryForPromQL(tt.in))
+		})
+	}
+}

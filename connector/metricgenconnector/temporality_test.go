@@ -23,7 +23,7 @@ func TestHistogram_CumulativeVsDelta(t *testing.T) {
 	// Delta: Snapshot resets.
 	b1, _, sum1, count1 := h.Snapshot()
 	require.Equal(t, uint64(3), count1)
-	assert.Equal(t, []uint64{1, 1, 1}, b1)
+	assert.Equal(t, []uint64{1, 1, 1, 0}, b1) // 3 explicit buckets + empty +Inf overflow bucket
 	assert.NotZero(t, sum1)
 
 	// After delta snapshot, state is gone.
@@ -39,7 +39,7 @@ func TestHistogram_CumulativeVsDelta(t *testing.T) {
 
 	b2, _, sum2, count2 := h2.SnapshotCumulative()
 	require.Equal(t, uint64(3), count2)
-	assert.Equal(t, []uint64{1, 1, 1}, b2)
+	assert.Equal(t, []uint64{1, 1, 1, 0}, b2)
 	assert.NotZero(t, sum2)
 
 	// State still present after cumulative snapshot.

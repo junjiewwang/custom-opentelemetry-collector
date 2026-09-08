@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/prometheus/promql"
@@ -27,6 +28,19 @@ type promHandlers struct {
 	metricReader     observabilitystorageext.MetricReader
 	traceReader      observabilitystorageext.TraceReader
 	logger           *zap.Logger
+	// usesDottedNames is false when the backend (VictoriaMetrics) stores metric
+	// names in the PromQL-safe underscore form already. When true (ES/PG), the
+	// subset-parser path reverse-maps underscore→dot before issuing reads.
+	usesDottedNames bool
+	// nativePromQL is non-nil when the backend is a full PromQL engine
+	// (VictoriaMetrics). Such backends execute PromQL directly instead of going
+	// through the ES→storage.Queryable adapter (which OOMs on high-cardinality
+	// queries and mis-brackets rate([1m]) windows).
+	nativePromQL observabilitystorageext.NativePromQL
+	// histBaseMu guards histBaseNames, the lazily-cached set of histogram base
+	// metric names (underscore form) for the native PromQL rewrite.
+	histBaseMu    sync.Mutex
+	histBaseNames map[string]struct{}
 	// Full PromQL engine backed by ES→storage.Queryable adapter.
 	// Falls back to the subset parser (parsePromQL) for expressions
 	// the engine cannot handle (e.g. unsupported histogram_quantile).
@@ -48,16 +62,38 @@ func newPromHandlers(e *Extension) *promHandlers {
 		EnableNegativeOffset: true,
 	})
 	return &promHandlers{
-		metricReader: e.storageMetricReader,
-		traceReader:  e.storageTraceReader,
-		logger:       e.logger,
-		queryable:    queryable,
-		engine:       engine,
+		metricReader:    e.storageMetricReader,
+		traceReader:     e.storageTraceReader,
+		logger:          e.logger,
+		usesDottedNames: usesDottedMetricNames(e.storageMetricReader),
+		nativePromQL:    nativePromQLReader(e.storageMetricReader),
+		queryable:       queryable,
+		engine:          engine,
 		queryMetrics: newQueryMetrics(
 			e.settings.TelemetrySettings.MeterProvider.Meter("otelcol/query"),
 			identity.ResolveUniqueNodeID(""),
 		),
 	}
+}
+
+// nativePromQLReader narrows the reader to NativePromQL if the backend
+// implements it (VictoriaMetrics); nil otherwise (ES/PG).
+func nativePromQLReader(reader observabilitystorageext.MetricReader) observabilitystorageext.NativePromQL {
+	if n, ok := reader.(observabilitystorageext.NativePromQL); ok {
+		return n
+	}
+	return nil
+}
+
+// storageMetricName maps a PromQL-safe underscored name to the backend's
+// storage form. Dotted-name backends (ES/PG) get the underscore→dot reverse
+// map; VictoriaMetrics stores the underscored name verbatim, so a dotted input
+// is sanitized to underscores and an already-underscored name passes through.
+func (h *promHandlers) storageMetricName(promQLName string) string {
+	if !h.usesDottedNames {
+		return sanitizeMetricName(promQLName)
+	}
+	return unsanitizeMetricName(promQLName)
 }
 
 // tryPromQLRange executes the PromQL expression as a range query over
@@ -342,9 +378,39 @@ func isHistogramSubSeriesQuery(q string) bool {
 // deriv) and arithmetic expressions. This is far more robust than a
 // hardcoded string replacer.
 func normalizeQueryForPromQL(q string) string {
-	return dottedMetricNameRE.ReplaceAllStringFunc(q, func(match string) string {
-		return strings.ReplaceAll(match, ".", "_")
-	})
+	var b strings.Builder
+	i := 0
+	for i < len(q) {
+		ch := q[i]
+		if ch == '"' || ch == '\'' {
+			// Quoted string literal (a label value): copy verbatim. Dots inside
+			// a label value (e.g. span_name="market.MarketService/GetAllProductInfo")
+			// are NOT metric-name separators and must be preserved — replacing them
+			// with underscores breaks exact label matching. Find the matching close.
+			j := i + 1
+			for j < len(q) && q[j] != ch {
+				j++
+			}
+			end := j
+			if j < len(q) {
+				end = j + 1 // include the closing quote
+			}
+			b.WriteString(q[i:end])
+			i = end
+			continue
+		}
+		// Unquoted run: only here do dots separate metric-name segments.
+		j := i
+		for j < len(q) && q[j] != '"' && q[j] != '\'' {
+			j++
+		}
+		seg := q[i:j]
+		b.WriteString(dottedMetricNameRE.ReplaceAllStringFunc(seg, func(match string) string {
+			return strings.ReplaceAll(match, ".", "_")
+		}))
+		i = j
+	}
+	return b.String()
 }
 
 // dottedMetricNameRE matches a series of dot-separated identifiers that

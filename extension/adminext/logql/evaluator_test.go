@@ -11,8 +11,9 @@ import (
 )
 
 func TestEvaluate_RegexFilterGoesToRegexFields(t *testing.T) {
-	// Verify regex filters (|~, !~) route to RegexFilters/NotRegexFields
-	// instead of the general Query field (which uses ES match query).
+	// Verify regex filters WITH metacharacters (|~, !~) route to
+	// RegexFilters/NotRegexFields instead of the general Query field (which uses
+	// ES match query). Plain-substring regexes are routed to Query separately.
 	lq := &LogQLQuery{
 		StreamSelector: StreamSelector{
 			Matchers: []LabelMatcher{
@@ -20,7 +21,7 @@ func TestEvaluate_RegexFilterGoesToRegexFields(t *testing.T) {
 			},
 		},
 		LineFilters: []LineFilter{
-			{Type: FilterRegex, Pattern: "(?i)order"},
+			{Type: FilterRegex, Pattern: "(?i)error|timeout"},
 			{Type: FilterNotRegex, Pattern: "debug"},
 		},
 		Start: time.Unix(0, 1784792466051000000),
@@ -39,8 +40,8 @@ func TestEvaluate_RegexFilterGoesToRegexFields(t *testing.T) {
 	// Regex filters must be present.
 	if len(result.RegexFilters) != 1 {
 		t.Errorf("expected 1 RegexFilter, got %d", len(result.RegexFilters))
-	} else if result.RegexFilters[0] != "(?i)order" {
-		t.Errorf("expected RegexFilter '(?i)order', got %q", result.RegexFilters[0])
+	} else if result.RegexFilters[0] != "(?i)error|timeout" {
+		t.Errorf("expected RegexFilter '(?i)error|timeout', got %q", result.RegexFilters[0])
 	}
 
 	// NotRegexFilter must be present.
@@ -49,6 +50,24 @@ func TestEvaluate_RegexFilterGoesToRegexFields(t *testing.T) {
 	} else if result.NotRegexFilters[0] != "debug" {
 		t.Errorf("expected NotRegexFilter 'debug', got %q", result.NotRegexFilters[0])
 	}
+}
+
+func TestEvaluate_PlainSubstringRegexGoesToQuery(t *testing.T) {
+	// A regex with no metacharacters (e.g. "(?i)php-feedback-service" from the
+	// logs-drilldown full-text search) must route to the contains (Query) path:
+	// ES regexp on the analyzed body text field matches tokens, not the raw
+	// string, so a hyphenated term would match nothing.
+	lq := &LogQLQuery{
+		LineFilters: []LineFilter{
+			{Type: FilterRegex, Pattern: "(?i)php-feedback-service"},
+		},
+	}
+
+	ev := &Evaluator{}
+	result := ev.Evaluate(lq)
+
+	assert.Equal(t, `"php-feedback-service"`, result.Query)
+	assert.Empty(t, result.RegexFilters)
 }
 
 func TestEvaluate_ContainsFilterStillGoesToQuery(t *testing.T) {
@@ -85,7 +104,7 @@ func TestEvaluate_MixedFilters(t *testing.T) {
 		},
 		LineFilters: []LineFilter{
 			{Type: FilterContains, Pattern: "error"},
-			{Type: FilterRegex, Pattern: "(?i)order"},
+			{Type: FilterRegex, Pattern: "(?i)error|timeout"},
 			{Type: FilterContains, Pattern: "timeout"},
 			{Type: FilterNotRegex, Pattern: "debug"},
 		},

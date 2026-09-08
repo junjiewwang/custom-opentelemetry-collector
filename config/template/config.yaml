@@ -154,7 +154,23 @@ extensions:
   # Observability Storage extension - Unified storage layer for Trace/Metric/Log
   # Replaces separate Jaeger + Prometheus backends with direct ES write
   observability_storage:
-    type: "elasticsearch"
+    type: "hybrid"
+    # ── VictoriaMetrics metric backend (metric signal only) ──
+    # hybrid.metric routes the metric signal to victoriametrics; trace/log/admin
+    # stay on elasticsearch. Rollback = set hybrid.metric back to elasticsearch
+    # (historical ES data is untouched).
+    victoriametrics:
+      endpoint: "http://vmsingle.vm-minimal.svc.cluster.local:8428"
+      flush_interval: 3s
+      batch_size: 5000
+      write_timeout: 10s
+      read_timeout: 30s
+      max_retries: 3
+    hybrid:
+      trace: "elasticsearch"
+      metric: "victoriametrics"
+      log: "elasticsearch"
+      admin: "elasticsearch"
     elasticsearch:
       addresses:
         - "http://[[.Service.elasticsearch.host]]:[[.Service.elasticsearch.port]]"
@@ -733,33 +749,34 @@ connectors:
         - rpc.service
         - peer.service
       histogram:
+        # Latency buckets in seconds (aligned with Tempo ServiceGraph)
         buckets:
+          - 0.002
+          - 0.004
+          - 0.006
+          - 0.008
+          - 0.01
+          - 0.015
+          - 0.02
+          - 0.03
+          - 0.04
+          - 0.05
+          - 0.075
+          - 0.1
+          - 0.15
+          - 0.2
+          - 0.3
+          - 0.4
+          - 0.5
+          - 0.75
+          - 1
+          - 1.5
           - 2
+          - 3
           - 4
-          - 6
-          - 8
+          - 5
+          - 7.5
           - 10
-          - 15
-          - 20
-          - 30
-          - 40
-          - 50
-          - 75
-          - 100
-          - 150
-          - 200
-          - 300
-          - 400
-          - 500
-          - 750
-          - 1000
-          - 1500
-          - 2000
-          - 3000
-          - 4000
-          - 5000
-          - 7500
-          - 10000
     # ServiceGraph generator config
     service_graph:
       enabled: true
@@ -794,11 +811,13 @@ processors:
     # Database fast path: extract peer.service from these span attributes
     # Supports both new (db.system) and deprecated (db.type) conventions.
     db_peer_priority:
+      - server.address
+      - network.peer.address
+      - net.peer.name
       - db.name
       - db.instance
       - db.system
       - db.type
-      - server.address
     # Messaging fast path: extract peer.service for Producer spans
     messaging_peer_priority:
       - messaging.destination.name

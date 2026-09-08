@@ -1062,9 +1062,10 @@ func TestParseTempoSearchParams_StructuralQueryRelaxesConditions(t *testing.T) {
 }
 
 // TestParseTempoSearchParams_InvalidQuery verifies the fail-closed behavior:
-// invalid TraceQL (e.g. top-level || without parens, which the AST parser
-// rejects) returns an error instead of silently salvaging via the legacy
+// invalid TraceQL returns an error instead of silently salvaging via the legacy
 // parser (which has been removed). The handler maps this to HTTP 400.
+// Note: bare "||" inside a span filter ("{a=1 || b=2}") is now VALID (Tempo's
+// standard OR form), not rejected.
 func TestParseTempoSearchParams_InvalidQuery(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1073,7 +1074,7 @@ func TestParseTempoSearchParams_InvalidQuery(t *testing.T) {
 	}{
 		{"valid", `{status="error"}`, false},
 		{"empty selector match-all", `{}`, false},
-		{"top-level OR without parens (invalid)", `{a=1 || b=2}`, true},
+		{"bare OR (valid)", `{a=1 || b=2}`, false},
 		{"unbalanced brace", `{status="error"`, true},
 	}
 	for _, tt := range tests {

@@ -39,8 +39,13 @@ func (cfg *Config) Validate() error {
 func createDefaultConfig() component.Config {
 	return &Config{
 		Enabled: true,
+		// Peer address first, database type last: peer.service must identify the
+		// specific peer instance (demo-middleware-mysql:3306), not the database
+		// engine (mysql). Putting db.system first collapsed every MySQL instance
+		// into a single "mysql" peer and hid which host was actually called.
 		DBPeerPriority: []string{
-			"db.name", "db.instance", "db.system", "db.type", "server.address",
+			"server.address", "network.peer.address", "net.peer.name",
+			"db.name", "db.instance", "db.system", "db.type",
 		},
 		MessagingPeerPriority: []string{
 			"messaging.destination.name", "messaging.destination", "messaging.system",

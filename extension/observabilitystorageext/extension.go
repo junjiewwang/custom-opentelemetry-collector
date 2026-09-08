@@ -23,6 +23,9 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/hybrid"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/postgresql"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/registry"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/identity"
 	"go.opentelemetry.io/collector/custom/taskengine"
@@ -59,6 +62,9 @@ type ObservabilityStorage struct {
 	esProvider     *elasticsearch.Provider
 	pgProvider     *postgresql.Provider
 	hybridProvider *hybrid.Provider
+	// factoryAccessors holds the registry factory's adapter-assembled readers
+	// (metric/trace/log/admin) for the active non-hybrid provider.
+	factoryAccessors *accessors
 
 	// Lifecycle management
 	scheduler      *lifecycle.LifecycleScheduler
@@ -123,6 +129,17 @@ func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) e
 		return fmt.Errorf("failed to start provider: %w", err)
 	}
 
+	// Hybrid sub-providers (esProvider/pgProvider) are only populated by the
+	// hybrid provider's Start() — the concrete references are nil until then.
+	// Capture them AFTER Start so getHybridTraceReader/LogReader/StorageAdmin
+	// (which route trace/log/admin to ES) resolve a non-nil provider instead of
+	// returning nil. Without this, metric→VM leaves trace/log reader wiring
+	// pointing at a pre-Start nil snapshot and every trace/log query breaks.
+	if e.config.Type == "hybrid" {
+		e.esProvider = e.hybridProvider.ESProvider()
+		e.pgProvider = e.hybridProvider.PGProvider()
+	}
+
 	e.provider = provider
 	e.logger.Info("Observability storage extension started successfully",
 		zap.String("provider", provider.Name()),
@@ -142,8 +159,15 @@ func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) e
 		e.logger.Info("Lifecycle scheduler started")
 	}
 
-	// Start metric rollup engine if enabled (ES provider only).
-	if e.config.Scheduler.RollupEnabled {
+	// Start metric rollup engine if enabled (ES metric backend only).
+	// The 5m rollup engine aggregates raw ES metric indices; when the metric
+	// signal is routed to VictoriaMetrics (hybrid.metric != "elasticsearch"),
+	// there is nothing for it to do — and worse, it would read the entire
+	// historical ES metric corpus on startup and OOM the process (observed
+	// live: restart → rollup backfill → 39MiB→695MiB→OOMKilled). Gate it on
+	// the metric backend, not merely the presence of an ES sub-provider (which
+	// is always present in hybrid mode because trace/log route to ES).
+	if e.config.Scheduler.RollupEnabled && e.metricBackendIsES() {
 		if engine := e.buildRollupEngine(host); engine != nil {
 			engine.Start(ctx)
 			e.rollupEngine = engine
@@ -152,6 +176,20 @@ func (e *ObservabilityStorage) Start(ctx context.Context, host component.Host) e
 	}
 
 	return nil
+}
+
+// metricBackendIsES reports whether the metric signal is stored in
+// Elasticsearch — the only backend the 5m rollup engine understands. In
+// non-hybrid ES mode this is trivially true; in hybrid mode it consults the
+// metric routing.
+func (e *ObservabilityStorage) metricBackendIsES() bool {
+	if e.config.Type != "hybrid" {
+		return e.config.Type == storedmodel.BackendES
+	}
+	if e.hybridProvider == nil {
+		return false
+	}
+	return e.hybridProvider.MetricBackend() == storedmodel.BackendES
 }
 
 // Shutdown gracefully stops the storage provider.
@@ -250,117 +288,101 @@ func (e *ObservabilityStorage) GetProvider() *elasticsearch.Provider {
 
 // GetStorageAdmin returns the StorageAdmin interface.
 func (e *ObservabilityStorage) GetStorageAdmin() StorageAdmin {
-	switch e.config.Type {
-	case "elasticsearch":
-		if e.esProvider == nil || e.esProvider.Admin() == nil {
-			return nil
-		}
-		return &storageAdminAdapter{inner: e.esProvider.Admin(), config: e.config, retentionStore: e.retentionStore}
-	case "postgresql":
-		if e.pgProvider == nil || e.pgProvider.Admin() == nil {
-			return nil
-		}
-		return &pgStorageAdminAdapter{inner: e.pgProvider.Admin(), config: e.config}
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		return e.getHybridStorageAdmin()
-	default:
-		return nil
 	}
+	if e.factoryAccessors != nil {
+		return e.factoryAccessors.storageAdmin
+	}
+	return nil
 }
 
 // GetTraceReader returns the TraceReader interface.
 func (e *ObservabilityStorage) GetTraceReader() TraceReader {
-	switch e.config.Type {
-	case "elasticsearch":
-		if e.esProvider == nil || e.esProvider.TraceReader() == nil {
-			return nil
-		}
-		return &traceReaderAdapter{inner: e.esProvider.TraceReader()}
-	case "postgresql":
-		if e.pgProvider == nil || e.pgProvider.TraceReader() == nil {
-			return nil
-		}
-		return &pgTraceReaderAdapter{inner: e.pgProvider.TraceReader()}
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		return e.getHybridTraceReader()
-	default:
-		return nil
 	}
+	if e.factoryAccessors != nil {
+		return e.factoryAccessors.traceReader
+	}
+	return nil
 }
 
 // GetMetricReader returns the MetricReader interface.
 func (e *ObservabilityStorage) GetMetricReader() MetricReader {
-	switch e.config.Type {
-	case "elasticsearch":
-		if e.esProvider == nil || e.esProvider.MetricReader() == nil {
-			return nil
-		}
-		return &metricReaderAdapter{inner: e.esProvider.MetricReader()}
-	case "postgresql":
-		if e.pgProvider == nil || e.pgProvider.MetricReader() == nil {
-			return nil
-		}
-		return &pgMetricReaderAdapter{inner: e.pgProvider.MetricReader()}
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		return e.getHybridMetricReader()
-	default:
-		return nil
 	}
+	if e.factoryAccessors != nil {
+		return e.factoryAccessors.metricReader
+	}
+	return nil
 }
 
 // GetLogReader returns the LogReader interface.
 func (e *ObservabilityStorage) GetLogReader() LogReader {
-	switch e.config.Type {
-	case "elasticsearch":
-		if e.esProvider == nil || e.esProvider.LogReader() == nil {
-			return nil
-		}
-		return &logReaderAdapter{inner: e.esProvider.LogReader()}
-	case "postgresql":
-		if e.pgProvider == nil || e.pgProvider.LogReader() == nil {
-			return nil
-		}
-		return &pgLogReaderAdapter{inner: e.pgProvider.LogReader()}
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		return e.getHybridLogReader()
-	default:
-		return nil
 	}
+	if e.factoryAccessors != nil {
+		return e.factoryAccessors.logReader
+	}
+	return nil
 }
 
 // createProvider creates the appropriate provider based on configuration.
 func (e *ObservabilityStorage) createProvider() (internalProvider, error) {
-	switch e.config.Type {
-	case "elasticsearch":
-		esCfg := e.convertESConfig()
-		p, err := elasticsearch.NewProvider(esCfg, e.logger)
-		if err != nil {
-			return nil, err
-		}
-		e.esProvider = p
-		return p, nil
-	case "postgresql":
-		pgCfg := e.convertPGConfig()
-		p, err := postgresql.NewProvider(pgCfg, e.logger)
-		if err != nil {
-			return nil, err
-		}
-		e.pgProvider = p
-		return p, nil
-	case "hybrid":
+	if e.config.Type == "hybrid" {
 		hybridCfg := e.convertHybridConfig()
 		p, err := hybrid.NewProvider(hybridCfg, e.logger)
 		if err != nil {
 			return nil, err
 		}
 		e.hybridProvider = p
-		// Expose sub-providers for Reader/Admin access
-		e.esProvider = p.ESProvider()
-		e.pgProvider = p.PGProvider()
 		return p, nil
-	default:
-		return nil, fmt.Errorf("unsupported provider type: %q", e.config.Type)
 	}
+
+	ensureFactoriesRegistered.Do(registerAllFactories)
+	f, err := registry.Get(e.config.Type)
+	if err != nil {
+		return nil, err
+	}
+	var providerCfg any
+	switch e.config.Type {
+	case storedmodel.BackendES:
+		providerCfg = e.convertESConfig()
+	case storedmodel.BackendPG:
+		providerCfg = e.convertPGConfig()
+	default:
+		providerCfg = nil
+	}
+	lp, err := f.Create(providerCfg, registry.FactoryContext{
+		Logger:         e.logger,
+		ExtensionCfg:   e.config,
+		RetentionStore: e.retentionStore,
+	})
+	if err != nil {
+		return nil, err
+	}
+	p, ok := lp.(internalProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider %q does not implement the internal lifecycle interface", e.config.Type)
+	}
+	// Capture per-provider references the rest of the extension still uses
+	// (rollup wiring, lifecycle scheduler, deprecated GetProvider).
+	switch t := lp.(type) {
+	case *elasticsearch.Provider:
+		e.esProvider = t
+	case *postgresql.Provider:
+		e.pgProvider = t
+	}
+	// Factories that host public-interface accessors expose them here.
+	if ap, ok := f.(accessorProvider); ok {
+		if acc := ap.Accessors(); acc != nil {
+			e.factoryAccessors = acc
+		}
+	}
+	return p, nil
 }
 
 // convertESConfig converts the extension config to ES provider's internal config.
@@ -451,6 +473,19 @@ func (e *ObservabilityStorage) convertHybridConfig() *hybrid.Config {
 	if e.config.PostgreSQL != nil {
 		cfg.PG = e.convertPGConfig()
 	}
+	if e.config.VictoriaMetrics != nil {
+		// Translate the extension-level config into the provider's own Config
+		// via the registry translator (the provider package cannot be
+		// imported here — it imports this package for its public-interface
+		// implementation). The translated value is an opaque any consumed by
+		// the VM factory at Create time.
+		translated, err := registry.TranslateConfig(storedmodel.BackendVM, e.config.VictoriaMetrics.GetVMProviderConfig())
+		if err != nil {
+			e.logger.Warn("victoriametrics config translation failed; VM backend will not start", zap.Error(err))
+		} else {
+			cfg.VM = &hybrid.VMConfig{Inner: translated}
+		}
+	}
 	return cfg
 }
 
@@ -495,6 +530,21 @@ func (e *ObservabilityStorage) getHybridMetricReader() MetricReader {
 			return nil
 		}
 		return &pgMetricReaderAdapter{inner: e.pgProvider.MetricReader()}
+	case storedmodel.BackendVM:
+		// The VM reader arrives as an opaque value from the hybrid provider
+		// (neither side can name the other's types — see hybrid provider.go).
+		// Assert it to the public MetricReader interface here, at the layer
+		// that owns the interface.
+		raw := e.hybridProvider.VMMetricReader()
+		if raw == nil {
+			return nil
+		}
+		r, ok := raw.(MetricReader)
+		if !ok {
+			e.logger.Warn("hybrid: victoriametrics metric reader has unexpected type")
+			return nil
+		}
+		return r
 	default:
 		return nil
 	}

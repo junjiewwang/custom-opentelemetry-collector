@@ -139,42 +139,46 @@ func (p *Parser) parseGrouped() (Expr, error) {
 func (p *Parser) parseSpanFilter() (Expr, error) {
 	p.advance() // consume {
 
-	var conditions []Condition
-	var orGroups [][][]Condition
+	var andConds []Condition      // conditions of the current AND-group
+	var orGroups [][][]Condition  // parenthesized OR groups, AND-ed at the top level
+	var orBranches [][]Condition  // bare-OR branches (each an AND-group), from "{a || b}"
 
 	for p.peek().Type != TokenRBrace && p.peek().Type != TokenEOF {
-		// Handle "true" literal.
-		if p.peek().Type == TokenTrue {
+		switch p.peek().Type {
+		case TokenAnd:
+			// Stray && separator. The drilldown app emits a leading "&&"
+			// (e.g. "{ && true }") when no span filters are set; && is an
+			// optional separator, so skip it wherever it appears.
 			p.advance()
-			// Skip "true" — it's a no-op condition.
-			if p.peek().Type == TokenAnd {
-				p.advance() // consume &&
-			}
-			continue
-		}
 
-		// Handle parenthesized OR group: (cond1 || cond2 || cond3)
-		if p.peek().Type == TokenLParen {
+		case TokenOr:
+			// Bare || : close the current AND-group into an OR branch.
+			// Tempo's standard form for OR is "{a || b}" (not "{a} || {b}").
+			p.advance()
+			orBranches = append(orBranches, andConds)
+			andConds = nil
+
+		case TokenTrue:
+			// "true" is a no-op condition.
+			p.advance()
+
+		case TokenLParen:
+			// Parenthesized OR group: (cond1 || cond2 || cond3)
 			group, err := p.parseOrGroup()
 			if err != nil {
 				return nil, err
 			}
 			orGroups = append(orGroups, group)
 
-			// Consume optional && after the group.
-			if p.peek().Type == TokenAnd {
-				p.advance()
+		default:
+			cond, err := p.parseCondition()
+			if err != nil {
+				return nil, err
 			}
-			continue
+			andConds = append(andConds, cond)
 		}
 
-		cond, err := p.parseCondition()
-		if err != nil {
-			return nil, err
-		}
-		conditions = append(conditions, cond)
-
-		// Consume optional && between conditions.
+		// Consume optional && between conditions (not ||, which is handled above).
 		if p.peek().Type == TokenAnd {
 			p.advance()
 		}
@@ -185,7 +189,22 @@ func (p *Parser) parseSpanFilter() (Expr, error) {
 	}
 	p.advance() // consume }
 
-	return &SpanFilter{Conditions: conditions, OrGroups: orGroups}, nil
+	if len(orBranches) > 0 {
+		// Bare OR present: the whole filter is "(andConds_0) || (andConds_1) || ...".
+		orBranches = append(orBranches, andConds)
+		nonEmpty := orBranches[:0]
+		for _, b := range orBranches {
+			if len(b) > 0 {
+				nonEmpty = append(nonEmpty, b)
+			}
+		}
+		if len(nonEmpty) > 0 {
+			orGroups = append(orGroups, nonEmpty)
+		}
+		return &SpanFilter{OrGroups: orGroups}, nil
+	}
+
+	return &SpanFilter{Conditions: andConds, OrGroups: orGroups}, nil
 }
 
 // parseOrGroup parses a parenthesized OR group: ( cond1 || cond2 || cond3 )

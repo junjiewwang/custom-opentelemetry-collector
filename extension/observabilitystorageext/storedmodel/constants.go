@@ -7,6 +7,7 @@ package storedmodel
 const (
 	BackendES  = "elasticsearch"
 	BackendPG  = "postgresql"
+	BackendVM  = "victoriametrics"
 )
 
 // Signal routing keys used by hybrid provider's routing map.

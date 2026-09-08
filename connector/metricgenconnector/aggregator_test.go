@@ -32,7 +32,7 @@ func TestHistogram_Record(t *testing.T) {
 	h.Record(5)   // bucket 0
 	h.Record(30)  // bucket 1
 	h.Record(60)  // bucket 2
-	h.Record(200) // overflow (not in any bucket)
+	h.Record(200) // overflow → +Inf bucket (index 3)
 
 	buckets, b, sumMicros, count := h.Snapshot()
 
@@ -41,7 +41,7 @@ func TestHistogram_Record(t *testing.T) {
 	assert.Equal(t, uint64(1), buckets[0]) // 5 → ≤10
 	assert.Equal(t, uint64(1), buckets[1]) // 30 → ≤50
 	assert.Equal(t, uint64(1), buckets[2]) // 60 → ≤100
-	// Overflow (200) is not counted in any bucket.
+	assert.Equal(t, uint64(1), buckets[3]) // 200 → +Inf overflow bucket
 	assert.True(t, sumMicros > 0)
 }
 

@@ -45,6 +45,10 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/mcpext"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageexporter"
+	// Registers the VictoriaMetrics provider factory + config translator in
+	// the storage registry (bridge package — see its doc comment for why it
+	// cannot be imported from the extension package itself).
+	_ "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/providerregistry"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/processor/tokenauthprocessor"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver"
