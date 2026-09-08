@@ -476,6 +476,11 @@ func (h *lokiHandlers) handleLokiDrilldownLimits(w http.ResponseWriter, r *http.
 		"max_query_series":         1000,
 		"pattern_ingester_enabled": false,
 		"version":                  "custom-otel-collector",
+		// The lokiexplore-app reads limits.retention_period to clamp the time
+		// range picker; missing the field throws a frontend TypeError.
+		"limits": map[string]interface{}{
+			"retention_period": "720h",
+		},
 	})
 }
 
