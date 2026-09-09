@@ -116,7 +116,7 @@ func (e *Extension) newRouter() http.Handler {
 		// ============================================================================
 		// Auth - WebSocket Token (for secure WS connections)
 		// ============================================================================
-		r.Post("/auth/ws-token", admin.generateWSToken)
+		r.With(requireAdminMiddleware).Post("/auth/ws-token", admin.generateWSToken)
 
 		// ============================================================================
 		// App Management (App = AppGroup, 1:1 with Token)
@@ -184,17 +184,17 @@ func (e *Extension) newRouter() http.Handler {
 		})
 
 		// ============================================================================
-		// Global Service View
+		// Global Service View (admin-only — leaks cross-tenant services otherwise)
 		// ============================================================================
-		r.Get("/services", admin.listAllServices)
+		r.With(requireAdminMiddleware).Get("/services", admin.listAllServices)
 
 		// ============================================================================
-		// Global Instance View (for operations/dashboard)
+		// Global Instance View (for operations/dashboard, admin-only)
 		// ============================================================================
-		r.Get("/instances", admin.listAllInstances)
-		r.Get("/instances/stats", admin.getInstanceStats)
-		r.Get("/instances/{instanceID}", admin.getInstance)
-		r.Post("/instances/{instanceID}/kick", admin.kickInstance)
+		r.With(requireAdminMiddleware).Get("/instances", admin.listAllInstances)
+		r.With(requireAdminMiddleware).Get("/instances/stats", admin.getInstanceStats)
+		r.With(requireAdminMiddleware).Get("/instances/{instanceID}", admin.getInstance)
+		r.With(requireAdminMiddleware).Post("/instances/{instanceID}/kick", admin.kickInstance)
 
 		// ============================================================================
 		// Task Management (global, cross-app) - model JSON
@@ -230,9 +230,9 @@ func (e *Extension) newRouter() http.Handler {
 		})
 
 		// ============================================================================
-		// Dashboard
+		// Dashboard (admin-only — cross-tenant aggregate overview)
 		// ============================================================================
-		r.Get("/dashboard/overview", admin.getDashboardOverview)
+		r.With(requireAdminMiddleware).Get("/dashboard/overview", admin.getDashboardOverview)
 
 		// ============================================================================
 		// Notification Management (monitoring & retry)
