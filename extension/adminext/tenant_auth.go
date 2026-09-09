@@ -70,6 +70,15 @@ func NewTenantAuthMiddleware(staticKeys []string, validator KeyValidator, logger
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip auth for health / CORS preflight / WebSocket (mirrors
+			// NewAuthMiddleware so this is a drop-in replacement for api_key).
+			if r.URL.Path == "/health" ||
+				r.Method == http.MethodOptions ||
+				(isWebSocketRequest(r) && strings.HasSuffix(r.URL.Path, "/ws")) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			key := extractAPIKey(r)
 			if key == "" {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)

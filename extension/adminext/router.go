@@ -4,12 +4,30 @@
 package adminext
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
+
+// authMiddleware returns the API auth middleware. When tenant management is
+// wired and auth type is api_key, it uses tenant-aware auth (sk_/ok_/tk_ with
+// TenantID injection); otherwise it falls back to static basic/jwt/api_key auth.
+func (e *Extension) authMiddleware() func(http.Handler) http.Handler {
+	if e.config.Auth.Type == "api_key" && e.tenantMgr != nil {
+		validator := KeyValidatorFunc(func(ctx context.Context, key string) (string, string, bool) {
+			v, err := e.tenantMgr.Keys.ValidateAPIKey(ctx, key)
+			if err != nil || !v.Valid {
+				return "", "", false
+			}
+			return v.TenantID, v.KeyType, true
+		})
+		return NewTenantAuthMiddleware(e.config.Auth.APIKey.Keys, validator, e.logger)
+	}
+	return NewAuthMiddleware(e.config.Auth, e.logger)
+}
 
 // newRouter creates and configures the HTTP router with all routes.
 // Route hierarchy (App = AppGroup, 1:1 relationship):
@@ -92,7 +110,7 @@ func (e *Extension) newRouter() http.Handler {
 	r.Route("/api/v2", func(r chi.Router) {
 		// Apply auth middleware only to API routes
 		if e.config.Auth.Enabled {
-			r.Use(NewAuthMiddleware(e.config.Auth, e.logger))
+			r.Use(e.authMiddleware())
 		}
 
 		// ============================================================================
@@ -275,131 +293,131 @@ func (e *Extension) newRouter() http.Handler {
 			})
 		}
 
-	// ============================================================================
-	// Prometheus v1 Compatible API (for Grafana Prometheus data source)
-	// ============================================================================
-	// Grafana configuration:
-	//   Type: Prometheus
-	//   URL: http://<collector>:8088/api/v2/prometheus
-	//   Access: Server (proxy)
-	//   Auth: Basic Auth (same as admin API)
-	if e.storageMetricReader != nil {
-		prom := newPromHandlers(e)
-		r.Route("/prometheus/api/v1", func(r chi.Router) {
-			r.Get("/query", prom.handlePromQuery)
-			r.Post("/query", prom.handlePromQuery)
-			r.Get("/query_range", prom.handlePromQueryRange)
-			r.Post("/query_range", prom.handlePromQueryRange)
-			r.Get("/labels", prom.handlePromLabels)
-			r.Post("/labels", prom.handlePromLabels)
-			r.Get("/label/{labelName}/values", prom.handlePromLabelValues)
-			r.Get("/series", prom.handlePromSeries)
-			r.Post("/series", prom.handlePromSeries)
-			r.Get("/metadata", prom.handlePromMetadata)
-			r.Get("/query_exemplars", prom.handlePromQueryExemplars)
-			r.Post("/query_exemplars", prom.handlePromQueryExemplars)
-			r.Get("/status/buildinfo", prom.handlePromBuildInfo)
+		// ============================================================================
+		// Prometheus v1 Compatible API (for Grafana Prometheus data source)
+		// ============================================================================
+		// Grafana configuration:
+		//   Type: Prometheus
+		//   URL: http://<collector>:8088/api/v2/prometheus
+		//   Access: Server (proxy)
+		//   Auth: Basic Auth (same as admin API)
+		if e.storageMetricReader != nil {
+			prom := newPromHandlers(e)
+			r.Route("/prometheus/api/v1", func(r chi.Router) {
+				r.Get("/query", prom.handlePromQuery)
+				r.Post("/query", prom.handlePromQuery)
+				r.Get("/query_range", prom.handlePromQueryRange)
+				r.Post("/query_range", prom.handlePromQueryRange)
+				r.Get("/labels", prom.handlePromLabels)
+				r.Post("/labels", prom.handlePromLabels)
+				r.Get("/label/{labelName}/values", prom.handlePromLabelValues)
+				r.Get("/series", prom.handlePromSeries)
+				r.Post("/series", prom.handlePromSeries)
+				r.Get("/metadata", prom.handlePromMetadata)
+				r.Get("/query_exemplars", prom.handlePromQueryExemplars)
+				r.Post("/query_exemplars", prom.handlePromQueryExemplars)
+				r.Get("/status/buildinfo", prom.handlePromBuildInfo)
+			})
+		}
+
+		// ============================================================================
+		// Grafana Tempo Compatible API (for Grafana Tempo data source)
+		// ============================================================================
+		// Grafana configuration:
+		//   Type: Tempo
+		//   URL: http://<collector>:8088/api/v2/tempo
+		//   Access: Server (proxy)
+		//   Auth: Basic Auth (same as admin API)
+		// Tempo API — trace endpoints (require storageTraceReader) and metrics (require storageMetricReader).
+		if e.storageTraceReader != nil || e.storageMetricReader != nil {
+			tempo := newTempoHandlers(e)
+			r.Route("/tempo", func(r chi.Router) {
+				if e.storageTraceReader != nil {
+					// V1 endpoints
+					r.Get("/api/echo", tempo.handleTempoEcho)
+					r.Get("/api/status/buildinfo", tempo.handleTempoBuildInfo)
+					r.Get("/api/traces/{traceID}", tempo.handleTempoGetTrace)
+					r.Get("/api/search", tempo.handleTempoSearch)
+					r.Get("/api/search/tags", tempo.handleTempoSearchTags)
+					r.Get("/api/search/tag/{tagName}/values", tempo.handleTempoSearchTagValues)
+
+					// V2 endpoints (Grafana 12+ calls these by default)
+					// Both GET and POST: Grafana may use POST for long TraceQL queries.
+					r.Get("/api/v2/traces/{traceID}", tempo.handleTempoV2GetTrace)
+					r.Post("/api/v2/traces/{traceID}", tempo.handleTempoV2GetTrace)
+					r.Get("/api/v2/search", tempo.handleTempoV2Search)
+					r.Post("/api/v2/search", tempo.handleTempoV2Search)
+					r.Get("/api/v2/search/tags", tempo.handleTempoV2SearchTags)
+					r.Get("/api/v2/search/tag/{tagName}/values", tempo.handleTempoV2SearchTagValues)
+				}
+				// TraceQL metrics (/api/metrics/query_range) requires either:
+				// - storageTraceReader (primary: real-time aggregation from raw spans)
+				// - storageMetricReader (fallback: pre-aggregated spanmetrics)
+				if e.storageTraceReader != nil || e.storageMetricReader != nil {
+					r.Get("/api/metrics/query_range", tempo.handleTempoMetricsQueryRange)
+				}
+			})
+
+			// Loki Compatible API — requires storageLogReader
+			// WARNING: Go import cycle detection in chi. Because this block is inside
+			// the /tempo scope, the actual routes are exposed at /loki directly.
+		}
+
+		// Loki API — log endpoints (requires storageLogReader)
+		// Grafana Loki datasource URL = /api/v2/loki
+		// Grafana hardcodes /loki/api/v1/* suffix after the datasource URL.
+		// Full request paths from Grafana:
+		//   /api/v2/loki/loki/api/v1/query
+		//   /api/v2/loki/loki/api/v1/query_range
+		//   /api/v2/loki/loki/api/v1/labels
+		//   /api/v2/loki/loki/api/v1/label/{name}/values
+		//
+		// Since we are INSIDE r.Route("/api/v2", ...), the sub-paths are relative
+		// to /api/v2. So we register /loki/loki/api/v1/* here.
+		//
+		// Routes are registered unconditionally — each handler returns a clear
+		// error when storageLogReader is nil, rather than a cryptic 404.
+
+		// Main routes: Grafana calls (datasource path + hardcoded Grafana suffix)
+		// Full: /api/v2 + /loki/loki/api/v1/* = /api/v2/loki/loki/api/v1/*
+		// Supports both GET and POST — Grafana may use either for query_range.
+		loki := newLokiHandlers(e)
+		r.Route("/loki/loki/api/v1", func(r chi.Router) {
+			r.Get("/query", loki.handleLokiInstantQuery)
+			r.Post("/query", loki.handleLokiInstantQuery)
+			r.Get("/query_range", loki.handleLokiQueryRange)
+			r.Post("/query_range", loki.handleLokiQueryRange)
+			r.Get("/labels", loki.handleLokiLabels)
+			r.Get("/label/{name}/values", loki.handleLokiLabelValues)
+			// logs-drilldown app endpoints (Loki 3.x compatibility)
+			r.Get("/index/volume", loki.handleLokiIndexVolume)
+			r.Get("/index/stats", loki.handleLokiIndexStats)
+			r.Get("/drilldown-limits", loki.handleLokiDrilldownLimits)
+			r.Get("/detected_labels", loki.handleLokiDetectedLabels)
+			r.Get("/detected_fields", loki.handleLokiDetectedFields)
+			// logs-drilldown's detected-field VALUES endpoint is plural
+			// (/detected_fields/<name>/values); the singular form is kept as a
+			// backward-compatible alias for direct API callers.
+			r.Get("/detected_fields/{name}/values", loki.handleLokiDetectedFieldValues)
+			r.Get("/detected_field/{name}/values", loki.handleLokiDetectedFieldValues)
+			// Loki series endpoint (used by getTagKeys for ad-hoc filter key
+			// auto-completion) and the patterns ingester endpoint.
+			r.Get("/series", loki.handleLokiSeries)
+			r.Get("/patterns", loki.handleLokiPatterns)
 		})
-	}
-
-	// ============================================================================
-	// Grafana Tempo Compatible API (for Grafana Tempo data source)
-	// ============================================================================
-	// Grafana configuration:
-	//   Type: Tempo
-	//   URL: http://<collector>:8088/api/v2/tempo
-	//   Access: Server (proxy)
-	//   Auth: Basic Auth (same as admin API)
-	// Tempo API — trace endpoints (require storageTraceReader) and metrics (require storageMetricReader).
-	if e.storageTraceReader != nil || e.storageMetricReader != nil {
-		tempo := newTempoHandlers(e)
-		r.Route("/tempo", func(r chi.Router) {
-			if e.storageTraceReader != nil {
-			// V1 endpoints
-			r.Get("/api/echo", tempo.handleTempoEcho)
-			r.Get("/api/status/buildinfo", tempo.handleTempoBuildInfo)
-			r.Get("/api/traces/{traceID}", tempo.handleTempoGetTrace)
-				r.Get("/api/search", tempo.handleTempoSearch)
-				r.Get("/api/search/tags", tempo.handleTempoSearchTags)
-				r.Get("/api/search/tag/{tagName}/values", tempo.handleTempoSearchTagValues)
-
-			// V2 endpoints (Grafana 12+ calls these by default)
-			// Both GET and POST: Grafana may use POST for long TraceQL queries.
-			r.Get("/api/v2/traces/{traceID}", tempo.handleTempoV2GetTrace)
-			r.Post("/api/v2/traces/{traceID}", tempo.handleTempoV2GetTrace)
-			r.Get("/api/v2/search", tempo.handleTempoV2Search)
-			r.Post("/api/v2/search", tempo.handleTempoV2Search)
-			r.Get("/api/v2/search/tags", tempo.handleTempoV2SearchTags)
-			r.Get("/api/v2/search/tag/{tagName}/values", tempo.handleTempoV2SearchTagValues)
-			}
-			// TraceQL metrics (/api/metrics/query_range) requires either:
-			// - storageTraceReader (primary: real-time aggregation from raw spans)
-			// - storageMetricReader (fallback: pre-aggregated spanmetrics)
-			if e.storageTraceReader != nil || e.storageMetricReader != nil {
-				r.Get("/api/metrics/query_range", tempo.handleTempoMetricsQueryRange)
-			}
+		// Shorter aliases for direct curl/API access
+		// Full: /api/v2 + /loki/* = /api/v2/loki/*
+		r.Route("/loki", func(r chi.Router) {
+			r.Get("/query", loki.handleLokiInstantQuery)
+			r.Post("/query", loki.handleLokiInstantQuery)
+			r.Get("/query_range", loki.handleLokiQueryRange)
+			r.Post("/query_range", loki.handleLokiQueryRange)
+			r.Get("/labels", loki.handleLokiLabels)
+			r.Get("/label/{name}/values", loki.handleLokiLabelValues)
 		})
 
-		// Loki Compatible API — requires storageLogReader
-		// WARNING: Go import cycle detection in chi. Because this block is inside
-		// the /tempo scope, the actual routes are exposed at /loki directly.
-	}
-
-	// Loki API — log endpoints (requires storageLogReader)
-	// Grafana Loki datasource URL = /api/v2/loki
-	// Grafana hardcodes /loki/api/v1/* suffix after the datasource URL.
-	// Full request paths from Grafana:
-	//   /api/v2/loki/loki/api/v1/query
-	//   /api/v2/loki/loki/api/v1/query_range
-	//   /api/v2/loki/loki/api/v1/labels
-	//   /api/v2/loki/loki/api/v1/label/{name}/values
-	//
-	// Since we are INSIDE r.Route("/api/v2", ...), the sub-paths are relative
-	// to /api/v2. So we register /loki/loki/api/v1/* here.
-	//
-	// Routes are registered unconditionally — each handler returns a clear
-	// error when storageLogReader is nil, rather than a cryptic 404.
-
-	// Main routes: Grafana calls (datasource path + hardcoded Grafana suffix)
-	// Full: /api/v2 + /loki/loki/api/v1/* = /api/v2/loki/loki/api/v1/*
-	// Supports both GET and POST — Grafana may use either for query_range.
-	loki := newLokiHandlers(e)
-	r.Route("/loki/loki/api/v1", func(r chi.Router) {
-		r.Get("/query", loki.handleLokiInstantQuery)
-		r.Post("/query", loki.handleLokiInstantQuery)
-		r.Get("/query_range", loki.handleLokiQueryRange)
-		r.Post("/query_range", loki.handleLokiQueryRange)
-		r.Get("/labels", loki.handleLokiLabels)
-		r.Get("/label/{name}/values", loki.handleLokiLabelValues)
-		// logs-drilldown app endpoints (Loki 3.x compatibility)
-		r.Get("/index/volume", loki.handleLokiIndexVolume)
-		r.Get("/index/stats", loki.handleLokiIndexStats)
-		r.Get("/drilldown-limits", loki.handleLokiDrilldownLimits)
-		r.Get("/detected_labels", loki.handleLokiDetectedLabels)
-		r.Get("/detected_fields", loki.handleLokiDetectedFields)
-		// logs-drilldown's detected-field VALUES endpoint is plural
-		// (/detected_fields/<name>/values); the singular form is kept as a
-		// backward-compatible alias for direct API callers.
-		r.Get("/detected_fields/{name}/values", loki.handleLokiDetectedFieldValues)
-		r.Get("/detected_field/{name}/values", loki.handleLokiDetectedFieldValues)
-		// Loki series endpoint (used by getTagKeys for ad-hoc filter key
-		// auto-completion) and the patterns ingester endpoint.
-		r.Get("/series", loki.handleLokiSeries)
-		r.Get("/patterns", loki.handleLokiPatterns)
-	})
-	// Shorter aliases for direct curl/API access
-	// Full: /api/v2 + /loki/* = /api/v2/loki/*
-	r.Route("/loki", func(r chi.Router) {
-		r.Get("/query", loki.handleLokiInstantQuery)
-		r.Post("/query", loki.handleLokiInstantQuery)
-		r.Get("/query_range", loki.handleLokiQueryRange)
-		r.Post("/query_range", loki.handleLokiQueryRange)
-		r.Get("/labels", loki.handleLokiLabels)
-		r.Get("/label/{name}/values", loki.handleLokiLabelValues)
-	})
-
-	// ============================================================================
-	// Arthas Tunnel (if enabled)
+		// ============================================================================
+		// Arthas Tunnel (if enabled)
 		// ============================================================================
 		if e.arthasTunnel != nil {
 			r.Route("/arthas", func(r chi.Router) {

@@ -20,12 +20,13 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/instrumentationmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
@@ -60,6 +61,7 @@ type Extension struct {
 	taskMgr    taskmanager.TaskManager
 	agentReg   agentregistry.AgentRegistry
 	tokenMgr   appmanager.TokenManager
+	tenantMgr  *tenantmanager.MultiTenantManager
 	serviceMgr servicemanager.ServiceManager
 	instrMgr   instrumentationmanager.InstrumentationManager
 
@@ -74,8 +76,8 @@ type Extension struct {
 	storageTraceReader   observabilitystorageext.TraceReader
 	storageMetricReader  observabilitystorageext.MetricReader
 	storageLogReader     observabilitystorageext.LogReader
-	storageAdmin      observabilitystorageext.StorageAdmin
-	retentionProvider appmanager.AppRetentionProvider
+	storageAdmin         observabilitystorageext.StorageAdmin
+	retentionProvider    appmanager.AppRetentionProvider
 
 	// Notification components (from controlplane extension)
 	notificationStore notification.Store
@@ -210,6 +212,7 @@ func (e *Extension) initFromControlPlane(host component.Host) error {
 	e.taskMgr = cpExt.GetTaskManager()
 	e.agentReg = cpExt.GetAgentRegistry()
 	e.tokenMgr = cpExt.GetTokenManager()
+	e.tenantMgr = cpExt.GetMultiTenantManager()
 	e.serviceMgr = cpExt.GetServiceManager()
 	e.blobStore = cpExt.GetBlobStore()
 	e.notificationStore = cpExt.GetNotificationStore()
@@ -521,7 +524,7 @@ func (e *Extension) initObservability(host component.Host) error {
 					if e.retentionProvider != nil && e.tokenMgr != nil {
 						e.observabilityStorage.SetAppRetentionProvider(e.retentionProvider, e.tokenMgr)
 					}
-				e.logger.Info("Observability readers initialized from storage extension",
+					e.logger.Info("Observability readers initialized from storage extension",
 						zap.String("extension", e.config.Observability.StorageExtension),
 						zap.Bool("trace_reader", e.storageTraceReader != nil),
 						zap.Bool("metric_reader", e.storageMetricReader != nil),
