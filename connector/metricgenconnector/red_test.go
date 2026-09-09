@@ -48,7 +48,7 @@ func TestREDGenerator_ProcessSpan(t *testing.T) {
 		"peer.service": "tapm-db",
 	})
 
-	gen.ProcessSpan("test-service", "test-app", resource, span)
+	gen.ProcessSpan("test-service", "test-app", "", resource, span)
 	assert.Equal(t, 1, gen.Cardinality())
 }
 
@@ -60,7 +60,7 @@ func TestREDGenerator_CollectAndReset(t *testing.T) {
 	}, 100)
 
 	span, resource := newTestSpan("test", ptrace.SpanKindServer, 5)
-	gen.ProcessSpan("test-service", "test-app", resource, span)
+	gen.ProcessSpan("test-service", "test-app", "", resource, span)
 	assert.Equal(t, 1, gen.Cardinality())
 
 	series := gen.Collect()
@@ -82,7 +82,7 @@ func TestREDGenerator_CardinalityLimit(t *testing.T) {
 		span, resource := newTestSPANWithAttrs("test", ptrace.SpanKindServer, 5, map[string]string{
 			"tag": tag,
 		})
-		gen.ProcessSpan("test-service", "test-app", resource, span)
+		gen.ProcessSpan("test-service", "test-app", "", resource, span)
 		if i == 2 {
 			assert.Equal(t, int64(1), gen.Dropped(), "third series should be dropped")
 		}
@@ -95,7 +95,7 @@ func TestREDGenerator_Disabled(t *testing.T) {
 	gen := NewREDGenerator(&REDConfig{Enabled: false}, 100)
 
 	span, resource := newTestSpan("test", ptrace.SpanKindServer, 5)
-	gen.ProcessSpan("test-service", "test-app", resource, span)
+	gen.ProcessSpan("test-service", "test-app", "", resource, span)
 	assert.Equal(t, 0, gen.Cardinality())
 }
 
@@ -107,7 +107,7 @@ func TestREDGenerator_InternalSpan(t *testing.T) {
 	}, 100)
 
 	span, resource := newTestSpan("internal-op", ptrace.SpanKindInternal, 3)
-	gen.ProcessSpan("test-service", "test-app", resource, span)
+	gen.ProcessSpan("test-service", "test-app", "", resource, span)
 
 	assert.Equal(t, 1, gen.Cardinality())
 	series := gen.Collect()

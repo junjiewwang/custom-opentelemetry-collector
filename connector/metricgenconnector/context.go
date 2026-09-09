@@ -26,6 +26,14 @@ func extractAppID(resource pcommon.Resource) string {
 	return ""
 }
 
+// extractTenantID reads the tenant identifier from a resource.
+func extractTenantID(resource pcommon.Resource) string {
+	if v, ok := resource.Attributes().Get("tenant_id"); ok {
+		return v.Str()
+	}
+	return ""
+}
+
 // spanDuration returns the span duration in milliseconds.
 func spanDuration(span ptrace.Span) float64 {
 	start := span.StartTimestamp().AsTime()

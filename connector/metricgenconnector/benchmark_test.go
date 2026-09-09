@@ -44,7 +44,7 @@ func BenchmarkREDGenerator_SingleSeries(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		gen.ProcessSpan("test-svc", "test-app", res, span)
+		gen.ProcessSpan("test-svc", "test-app", "", res, span)
 	}
 }
 
@@ -70,7 +70,7 @@ func BenchmarkREDGenerator_UniqueSeries(b *testing.B) {
 		res := pcommon.NewResource()
 		res.Attributes().PutStr("service.name", "test-svc")
 
-		gen.ProcessSpan("test-svc", "test-app", res, span)
+		gen.ProcessSpan("test-svc", "test-app", "", res, span)
 	}
 }
 
@@ -86,13 +86,13 @@ func BenchmarkREDGenerator_Collect(b *testing.B) {
 
 	// Pre-fill with 1000 spans.
 	for j := 0; j < 1000; j++ {
-		gen.ProcessSpan("test-svc", "test-app", res, span)
+		gen.ProcessSpan("test-svc", "test-app", "", res, span)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		gen.Collect()
-		gen.ProcessSpan("test-svc", "test-app", res, span)
+		gen.ProcessSpan("test-svc", "test-app", "", res, span)
 	}
 }
 
@@ -104,8 +104,8 @@ func BenchmarkServiceGraph_ClientServer(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		gen.ProcessSpan("tapm-api", "test-app", cRes, cSpan)
-		gen.ProcessSpan("tapm-db", "test-app", sRes, sSpan)
+		gen.ProcessSpan("tapm-api", "test-app", "", cRes, cSpan)
+		gen.ProcessSpan("tapm-db", "test-app", "", sRes, sSpan)
 	}
 }
 
@@ -118,8 +118,8 @@ func BenchmarkServiceGraph_Messaging(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		gen.ProcessSpan("tapm-api", "test-app", pRes, pSpan)
-		gen.ProcessSpan("tapm-worker", "test-app", cRes, cSpan)
+		gen.ProcessSpan("tapm-api", "test-app", "", pRes, pSpan)
+		gen.ProcessSpan("tapm-worker", "test-app", "", cRes, cSpan)
 	}
 }
 

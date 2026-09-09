@@ -18,7 +18,7 @@ import (
 func TestSetResourceAttr_ServiceName(t *testing.T) {
 	t.Run("both app_id and service.name set", func(t *testing.T) {
 		res := pcommon.NewResource()
-		setResourceAttr(res, "app1", "svc1")
+		setResourceAttr(res, "app1", "svc1", "")
 		appID, ok := res.Attributes().Get("app_id")
 		assert.True(t, ok)
 		assert.Equal(t, "app1", appID.Str())
@@ -29,14 +29,14 @@ func TestSetResourceAttr_ServiceName(t *testing.T) {
 
 	t.Run("empty service.name omitted (no attribute)", func(t *testing.T) {
 		res := pcommon.NewResource()
-		setResourceAttr(res, "app1", "")
+		setResourceAttr(res, "app1", "", "")
 		_, ok := res.Attributes().Get("service.name")
 		assert.False(t, ok, "empty service.name should not be set")
 	})
 
 	t.Run("empty app_id omitted", func(t *testing.T) {
 		res := pcommon.NewResource()
-		setResourceAttr(res, "", "svc1")
+		setResourceAttr(res, "", "svc1", "")
 		_, ok := res.Attributes().Get("app_id")
 		assert.False(t, ok)
 		svc, ok := res.Attributes().Get("service.name")

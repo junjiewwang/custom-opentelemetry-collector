@@ -71,7 +71,7 @@ func TestREDGenerator_CumulativePreservesState(t *testing.T) {
 
 	// Feed one span (Producer kind so it counts via RED ProcessSpan — RED counts all spans).
 	span, res := makeSGSpan("GET", ptrace.SpanKindServer, 10, "svc", "", nil)
-	g.ProcessSpan("svc", "app", res, span)
+	g.ProcessSpan("svc", "app", "", res, span)
 
 	// Delta mode: Collect drains.
 	s1 := g.Collect()
@@ -82,7 +82,7 @@ func TestREDGenerator_CumulativePreservesState(t *testing.T) {
 	// Cumulative mode: CollectCumulative returns series repeatedly.
 	g2 := NewREDGenerator(&REDConfig{Enabled: true, Dimensions: []string{}}, 100)
 	span2, res2 := makeSGSpan("GET", ptrace.SpanKindServer, 10, "svc", "", nil)
-	g2.ProcessSpan("svc", "app", res2, span2)
+	g2.ProcessSpan("svc", "app", "", res2, span2)
 
 	g2.cycle.Add(1)
 	c1 := g2.CollectCumulative(5)
@@ -91,7 +91,7 @@ func TestREDGenerator_CumulativePreservesState(t *testing.T) {
 
 	// Feed another span → cumulative count becomes 2.
 	span3, res3 := makeSGSpan("GET", ptrace.SpanKindServer, 10, "svc", "", nil)
-	g2.ProcessSpan("svc", "app", res3, span3)
+	g2.ProcessSpan("svc", "app", "", res3, span3)
 	g2.cycle.Add(1)
 	c2 := g2.CollectCumulative(5)
 	require.Len(t, c2, 1)
@@ -102,7 +102,7 @@ func TestREDGenerator_CumulativePreservesState(t *testing.T) {
 func TestREDGenerator_CumulativeEvictsStale(t *testing.T) {
 	g := NewREDGenerator(&REDConfig{Enabled: true, Dimensions: []string{}}, 100)
 	span, res := makeSGSpan("GET", ptrace.SpanKindServer, 10, "svc", "", nil)
-	g.ProcessSpan("svc", "app", res, span)
+	g.ProcessSpan("svc", "app", "", res, span)
 
 	// Advance many cycles without feeding data → series should be evicted.
 	for i := 0; i < 10; i++ {
@@ -116,7 +116,7 @@ func TestREDGenerator_CumulativeEvictsStale(t *testing.T) {
 func TestREDGenerator_CumulativeKeepsActive(t *testing.T) {
 	g := NewREDGenerator(&REDConfig{Enabled: true, Dimensions: []string{}}, 100)
 	span, res := makeSGSpan("GET", ptrace.SpanKindServer, 10, "svc", "", nil)
-	g.ProcessSpan("svc", "app", res, span)
+	g.ProcessSpan("svc", "app", "", res, span)
 
 	// A few cycles pass but under the threshold.
 	for i := 0; i < 3; i++ {
@@ -132,7 +132,7 @@ func TestServiceGraphGenerator_CumulativePreservesState(t *testing.T) {
 
 	// Feed a producer span (has peer.service).
 	span, res := makeSGSpan("publish", ptrace.SpanKindProducer, 5, "svc", "peer", nil)
-	g.ProcessSpan("svc", "app", res, span)
+	g.ProcessSpan("svc", "app", "", res, span)
 
 	// Delta drains.
 	d1 := g.Collect()
@@ -143,14 +143,14 @@ func TestServiceGraphGenerator_CumulativePreservesState(t *testing.T) {
 	// Cumulative preserves.
 	g2 := NewServiceGraphGenerator(&ServiceGraphConfig{Enabled: true, Dimensions: []string{}})
 	span2, res2 := makeSGSpan("publish", ptrace.SpanKindProducer, 5, "svc", "peer", nil)
-	g2.ProcessSpan("svc", "app", res2, span2)
+	g2.ProcessSpan("svc", "app", "", res2, span2)
 	g2.cycle.Add(1)
 	c1 := g2.CollectCumulative(5)
 	require.Len(t, c1, 1)
 	require.Equal(t, int64(1), c1[0].requestTotal.Load())
 
 	span3, res3 := makeSGSpan("publish", ptrace.SpanKindProducer, 5, "svc", "peer", nil)
-	g2.ProcessSpan("svc", "app", res3, span3)
+	g2.ProcessSpan("svc", "app", "", res3, span3)
 	g2.cycle.Add(1)
 	c2 := g2.CollectCumulative(5)
 	require.Len(t, c2, 1)

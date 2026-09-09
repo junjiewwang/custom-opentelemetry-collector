@@ -132,6 +132,7 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 
 	for _, s := range series {
 		appID := s.appID
+		tenantID := s.tenantID
 		svcName, _ := s.dims.Lookup("service.name")
 		// --- calls_total counter ---
 		var calls int64
@@ -142,7 +143,7 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 		}
 		if calls > 0 {
 			rm := md.ResourceMetrics().AppendEmpty()
-			setResourceAttr(rm.Resource(), appID, svcName)
+			setResourceAttr(rm.Resource(), appID, svcName, tenantID)
 			sm := rm.ScopeMetrics().AppendEmpty()
 			m := sm.Metrics().AppendEmpty()
 			m.SetName(metricNameREDCallsTotal)
@@ -167,7 +168,7 @@ func (f *metricFlusher) buildREDMetrics(md pmetric.Metrics, series []*redMetricS
 		}
 		if count > 0 {
 			rm := md.ResourceMetrics().AppendEmpty()
-			setResourceAttr(rm.Resource(), appID, svcName)
+			setResourceAttr(rm.Resource(), appID, svcName, tenantID)
 			sm := rm.ScopeMetrics().AppendEmpty()
 			m := sm.Metrics().AppendEmpty()
 			m.SetName(metricNameREDLatency)
@@ -206,6 +207,7 @@ func (f *metricFlusher) buildSGMetrics(md pmetric.Metrics, edges []*sgEdgeSeries
 
 	for _, e := range edges {
 		appID := e.appID
+		tenantID := e.tenantID
 		labels := map[string]string{
 			"client":          e.key.client,
 			"server":          e.key.server,
@@ -220,7 +222,7 @@ func (f *metricFlusher) buildSGMetrics(md pmetric.Metrics, edges []*sgEdgeSeries
 			calls = e.requestTotal.Swap()
 		}
 		if calls > 0 {
-			f.emitCounter(md, metricNameSGRequestTotal, calls, labels, appID, now)
+			f.emitCounter(md, metricNameSGRequestTotal, calls, labels, appID, tenantID, now)
 		}
 
 		// --- failed_total counter ---
@@ -231,28 +233,28 @@ func (f *metricFlusher) buildSGMetrics(md pmetric.Metrics, edges []*sgEdgeSeries
 			failed = e.failedTotal.Swap()
 		}
 		if failed > 0 {
-			f.emitCounter(md, metricNameSGFailedTotal, failed, labels, appID, now)
+			f.emitCounter(md, metricNameSGFailedTotal, failed, labels, appID, tenantID, now)
 		}
 
 		// --- client_seconds histogram ---
-		f.emitHistogramIfNonEmpty(md, metricNameSGClientSeconds, e.clientSeconds, labels, appID, now)
+		f.emitHistogramIfNonEmpty(md, metricNameSGClientSeconds, e.clientSeconds, labels, appID, tenantID, now)
 
 		// --- server_seconds histogram ---
-		f.emitHistogramIfNonEmpty(md, metricNameSGServerSeconds, e.serverSeconds, labels, appID, now)
+		f.emitHistogramIfNonEmpty(md, metricNameSGServerSeconds, e.serverSeconds, labels, appID, tenantID, now)
 
 		// --- messaging_system_seconds histogram ---
-		f.emitHistogramIfNonEmpty(md, metricNameSGMessagingSeconds, e.msgSeconds, labels, appID, now)
+		f.emitHistogramIfNonEmpty(md, metricNameSGMessagingSeconds, e.msgSeconds, labels, appID, tenantID, now)
 
 		// --- message_size_bytes histogram ---
-		f.emitHistogramIfNonEmpty(md, metricNameSGMessageSize, e.messageSize, labels, appID, now)
+		f.emitHistogramIfNonEmpty(md, metricNameSGMessageSize, e.messageSize, labels, appID, tenantID, now)
 	}
 
 	return len(edges)
 }
 
-func (f *metricFlusher) emitCounter(md pmetric.Metrics, name string, value int64, labels map[string]string, appID string, now pcommon.Timestamp) {
+func (f *metricFlusher) emitCounter(md pmetric.Metrics, name string, value int64, labels map[string]string, appID, tenantID string, now pcommon.Timestamp) {
 	rm := md.ResourceMetrics().AppendEmpty()
-	setResourceAttr(rm.Resource(), appID, labels["service.name"])
+	setResourceAttr(rm.Resource(), appID, labels["service.name"], tenantID)
 	sm := rm.ScopeMetrics().AppendEmpty()
 	m := sm.Metrics().AppendEmpty()
 	m.SetName(name)
@@ -265,7 +267,7 @@ func (f *metricFlusher) emitCounter(md pmetric.Metrics, name string, value int64
 	setLabelsSorted(dp.Attributes(), labels)
 }
 
-func (f *metricFlusher) emitHistogramIfNonEmpty(md pmetric.Metrics, name string, h *histogram, labels map[string]string, appID string, now pcommon.Timestamp) {
+func (f *metricFlusher) emitHistogramIfNonEmpty(md pmetric.Metrics, name string, h *histogram, labels map[string]string, appID, tenantID string, now pcommon.Timestamp) {
 	var buckets []uint64
 	var bounds []float64
 	var sumMicros int64
@@ -279,7 +281,7 @@ func (f *metricFlusher) emitHistogramIfNonEmpty(md pmetric.Metrics, name string,
 		return
 	}
 	rm := md.ResourceMetrics().AppendEmpty()
-	setResourceAttr(rm.Resource(), appID, labels["service.name"])
+	setResourceAttr(rm.Resource(), appID, labels["service.name"], tenantID)
 	sm := rm.ScopeMetrics().AppendEmpty()
 	m := sm.Metrics().AppendEmpty()
 	m.SetName(name)
@@ -301,12 +303,15 @@ func (f *metricFlusher) emitHistogramIfNonEmpty(md pmetric.Metrics, name string,
 // "unknown". Without it, spanmetrics metrics get serviceName="unknown" at the
 // top level even though labels.service_name is correct — which then surfaces
 // as the wrong service_name in group-by queries.
-func setResourceAttr(res pcommon.Resource, appID, svcName string) {
+func setResourceAttr(res pcommon.Resource, appID, svcName, tenantID string) {
 	if appID != "" {
 		res.Attributes().PutStr("app_id", appID)
 	}
 	if svcName != "" {
 		res.Attributes().PutStr("service.name", svcName)
+	}
+	if tenantID != "" {
+		res.Attributes().PutStr("tenant_id", tenantID)
 	}
 }
 
