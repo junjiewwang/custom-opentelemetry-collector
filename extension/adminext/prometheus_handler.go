@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/promql/parser"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -108,6 +110,7 @@ type promqlExpr struct {
 	IsScalarProbe bool              // Grafana health/connectivity probe (e.g. "1+1")
 	ScalarValue   float64           // evaluated value of the probe
 	AppID         string            // appID scoping (extracted from app_id/appId label) for index routing
+	TenantID      string            // tenantID scoping (from auth context) for tenant isolation
 }
 
 // ── Handler: query ─────────────────────────────────
@@ -196,6 +199,7 @@ func (h *promHandlers) handlePromQuery(w http.ResponseWriter, r *http.Request) {
 
 	// Extract appID scoping from app_id/appId label (routes to app-scoped index).
 	expr.AppID, expr.Labels = extractAppID(expr.Labels)
+	expr.TenantID = TenantIDFromContext(r.Context())
 
 	// Attach PromQL expression details to the OTel span for observability
 	span := trace.SpanFromContext(r.Context())
@@ -321,6 +325,7 @@ func (h *promHandlers) handlePromQueryRange(w http.ResponseWriter, r *http.Reque
 
 	// Extract appID scoping from app_id/appId label (routes to app-scoped index).
 	expr.AppID, expr.Labels = extractAppID(expr.Labels)
+	expr.TenantID = TenantIDFromContext(r.Context())
 
 	// Attach PromQL expression details to the OTel span for observability
 	span := trace.SpanFromContext(r.Context())
@@ -461,7 +466,7 @@ func (h *promHandlers) handlePromQueryExemplars(w http.ResponseWriter, r *http.R
 			continue
 		}
 		seriesLabels := map[string]string{
-			"__name__": metricName,
+			"__name__":      metricName,
 			serviceLabelKey: t.service,
 		}
 		for k, v := range t.extraLabels {
@@ -1112,6 +1117,7 @@ func (h *promHandlers) dispatchInstantQuery(r *http.Request, expr *promqlExpr, e
 			LabelNot:      expr.LabelNot,
 			LabelNotMatch: expr.LabelNotMatch,
 			AppID:         expr.AppID,
+			TenantID:      expr.TenantID,
 			Time:          evalTime,
 		}
 
@@ -1339,6 +1345,7 @@ func (h *promHandlers) dispatchRangeQuery(r *http.Request, expr *promqlExpr, sta
 		GroupBy:       expr.GroupBy,
 		MissingBucket: bareMetric, // bare-metric: include all series; explicit by(): drop missing
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 	}
 	if query.Aggregation == "" {
 		query.Aggregation = AggAvg
@@ -1419,6 +1426,7 @@ func (h *promHandlers) execRateRange(r *http.Request, expr *promqlExpr, start, e
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 		ForRateQuery:  true,
 	}
 
@@ -1513,6 +1521,7 @@ func (h *promHandlers) execRateInstant(r *http.Request, expr *promqlExpr, evalTi
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 		ForRateQuery:  true,
 	}
 
@@ -1614,6 +1623,7 @@ func (h *promHandlers) execHistogramQuantileInstant(r *http.Request, expr *promq
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 	}
 
 	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1714,6 +1724,7 @@ func (h *promHandlers) execHistogramBucketRange(r *http.Request, expr *promqlExp
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 	}
 
 	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1857,6 +1868,7 @@ func (h *promHandlers) execHistogramBucketBareRange(r *http.Request, expr *promq
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 		ForRateQuery:  true,
 	}
 	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -1944,6 +1956,7 @@ func (h *promHandlers) bareHistogramSubMatrix(r *http.Request, expr *promqlExpr,
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: start, End: end},
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 		ForRateQuery:  true,
 	}
 	flatResult, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -2083,6 +2096,7 @@ func (h *promHandlers) execHistogramBucketInstant(r *http.Request, expr *promqlE
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: evalTime},
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 	}
 
 	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
@@ -2211,6 +2225,27 @@ func (h *promHandlers) isNativeHeatmapQuery(queryStr string) bool {
 // native-PromQL backend (VictoriaMetrics) and converts the result to the
 // Prometheus vector shape. Returns nil on error or empty result so the caller
 // can fall through to the subset parser.
+// injectTenantLabel adds a tenant_id="X" matcher to every vector selector in a
+// PromQL expression, enforcing tenant isolation on the native VM path (the
+// structured path injects tenant_id via buildSelector instead). Returns the
+// original expression unchanged when tenantID is empty or parsing fails.
+func injectTenantLabel(expr string, tenantID string) string {
+	if tenantID == "" {
+		return expr
+	}
+	parsed, err := parser.ParseExpr(expr)
+	if err != nil {
+		return expr
+	}
+	parser.Inspect(parsed, func(node parser.Node, _ []parser.Node) error {
+		if vs, ok := node.(*parser.VectorSelector); ok {
+			vs.LabelMatchers = append(vs.LabelMatchers, labels.MustNewMatcher(labels.MatchEqual, "tenant_id", tenantID))
+		}
+		return nil
+	})
+	return parsed.String()
+}
+
 func (h *promHandlers) tryNativePromQLInstant(ctx context.Context, queryStr string, evalTime time.Time) *promQueryData {
 	if h.nativePromQL == nil {
 		return nil
@@ -2226,6 +2261,7 @@ func (h *promHandlers) tryNativePromQLInstant(ctx context.Context, queryStr stri
 	if !rewritten {
 		return nil
 	}
+	expr = injectTenantLabel(expr, TenantIDFromContext(ctx))
 	res, err := h.nativePromQL.ExecPromQLInstant(ctx, expr, evalTime)
 	if err != nil {
 		h.logger.Debug("native promql instant failed", zap.String("query", expr), zap.Error(err))
@@ -2370,6 +2406,7 @@ func (h *promHandlers) tryNativePromQLRange(ctx context.Context, queryStr string
 	if !rewritten {
 		return nil
 	}
+	expr = injectTenantLabel(expr, TenantIDFromContext(ctx))
 	res, err := h.nativePromQL.ExecPromQLRange(ctx, expr, start, end, step)
 	if err != nil {
 		h.logger.Debug("native promql range failed", zap.String("query", expr), zap.Error(err))
@@ -2422,6 +2459,7 @@ func (h *promHandlers) execNativeHeatmapRange(r *http.Request, native observabil
 		RangeDuration: expr.RangeDuration,
 		GroupBy:       extraGroupBy,
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 	}
 
 	result, err := native.QueryHeatmapRange(r.Context(), query)
@@ -2556,6 +2594,7 @@ func (h *promHandlers) execHistogramQuantileRange(r *http.Request, expr *promqlE
 		LabelNotMatch: expr.LabelNotMatch,
 		TimeRange:     observabilitystorageext.TimeRange{Start: lookbackStart, End: end},
 		AppID:         expr.AppID,
+		TenantID:      expr.TenantID,
 	}
 
 	result, err := h.slicedQueryFlat(r.Context(), flatQuery, h.logger)
