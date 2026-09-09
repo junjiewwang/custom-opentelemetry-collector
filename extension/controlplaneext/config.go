@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
 )
 
 // Config defines the configuration for the control plane extension.
@@ -38,6 +39,9 @@ type Config struct {
 
 	// TokenManager configuration for token validation.
 	TokenManager appmanager.Config `mapstructure:"token_manager"`
+
+	// TenantManager configuration for multi-tenancy (tenant CRUD + API keys).
+	TenantManager tenantmanager.Config `mapstructure:"tenant_manager"`
 
 	// ServiceManager configuration for service entity management.
 	ServiceManager servicemanager.Config `mapstructure:"service_manager"`
@@ -119,6 +123,7 @@ func createDefaultConfig() *Config {
 		TaskManager:      taskmanager.DefaultConfig(),
 		AgentRegistry:    agentregistry.DefaultConfig(),
 		TokenManager:     appmanager.DefaultConfig(),
+		TenantManager:    tenantmanager.DefaultConfig(),
 		ServiceManager:   servicemanager.DefaultConfig(),
 		TaskExecutor: TaskExecutorConfig{
 			Workers:        4,
@@ -129,7 +134,7 @@ func createDefaultConfig() *Config {
 			CompletedTasksBuffer: 50,
 			HealthCheckInterval:  10 * time.Second,
 		},
-		ChunkManager: DefaultChunkManagerConfig(),
+		ChunkManager:         DefaultChunkManagerConfig(),
 		ArtifactNotification: notification.DefaultConfig(),
 	}
 }

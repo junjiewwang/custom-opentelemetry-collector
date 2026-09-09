@@ -60,10 +60,12 @@ type Config struct {
 	KeyPrefix string `mapstructure:"key_prefix"`
 }
 
-// DefaultConfig returns the default configuration.
+// DefaultConfig returns the default configuration. Tenant management is
+// Redis-backed by default: it must be shared across collector replicas and
+// survive restarts, so a memory backend is not a safe production default.
 func DefaultConfig() Config {
 	return Config{
-		Type:      "memory",
+		Type:      "redis",
 		RedisName: "default",
 		KeyPrefix: "otel:tenants",
 	}

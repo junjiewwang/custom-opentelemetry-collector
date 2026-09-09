@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 	"go.opentelemetry.io/collector/custom/taskengine"
@@ -94,6 +95,7 @@ type Extension struct {
 	taskMgr        taskmanager.TaskManager
 	agentReg       agentregistry.AgentRegistry
 	tokenMgr       appmanager.TokenManager
+	tenantMgr      *tenantmanager.MultiTenantManager
 	serviceMgr     servicemanager.ServiceManager
 	taskExecutor   *TaskExecutor
 	statusReporter *StatusReporter
@@ -175,6 +177,11 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		return fmt.Errorf("failed to create token manager: %w", err)
 	}
 
+	e.tenantMgr, err = factory.CreateTenantManager(e.config.TenantManager, e.tokenMgr)
+	if err != nil {
+		return fmt.Errorf("failed to create tenant manager: %w", err)
+	}
+
 	e.serviceMgr, err = factory.CreateServiceManager(e.config.ServiceManager)
 	if err != nil {
 		return fmt.Errorf("failed to create service manager: %w", err)
@@ -216,6 +223,10 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	}
 
 	if err := e.tokenMgr.Start(ctx); err != nil {
+		return err
+	}
+
+	if err := e.tenantMgr.Tenants.Start(ctx); err != nil {
 		return err
 	}
 
@@ -547,6 +558,12 @@ func (e *Extension) GetOnDemandConfigManager() configmanager.OnDemandConfigManag
 // GetTokenManager returns the token manager for direct access.
 func (e *Extension) GetTokenManager() appmanager.TokenManager {
 	return e.tokenMgr
+}
+
+// GetMultiTenantManager returns the multi-tenancy manager (tenant CRUD + API
+// key management) for cross-extension access (e.g. adminext auth middleware).
+func (e *Extension) GetMultiTenantManager() *tenantmanager.MultiTenantManager {
+	return e.tenantMgr
 }
 
 // GetServiceManager returns the service manager for direct access.
