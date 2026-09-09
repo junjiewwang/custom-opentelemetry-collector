@@ -67,8 +67,9 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 		aggSize = MaxResultWindow
 	}
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0, // We only want aggregation results.
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		Size:     0, // We only want aggregation results.
 		Aggregations: map[string]any{
 			"traces": map[string]any{
 				"terms": map[string]any{
@@ -141,8 +142,9 @@ func (r *TraceReader) SearchTraceSummaries(ctx context.Context, query TraceQuery
 	}
 
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0,
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		Size:     0,
 		Aggregations: map[string]any{
 			"traces": map[string]any{
 				"terms": map[string]any{
@@ -199,6 +201,7 @@ func (r *TraceReader) QueryTraceDurations(ctx context.Context, traceIDs []string
 	}
 
 	searchReq := &SearchRequest{
+		TenantID: query.TenantID,
 		Query: esq.NewBuilder().
 			Raw(esq.TimeRangeFilter(FieldStartTimeUnixNano, query.TimeRange)).
 			Raw(esq.TermsQ(FieldTraceID, traceIDs)).
@@ -415,8 +418,9 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 		aggSize = MaxResultWindow
 	}
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0,
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		Size:     0,
 		Aggregations: map[string]any{
 			"traces": map[string]any{
 				"terms": map[string]any{

@@ -109,6 +109,7 @@ type Dependency struct {
 // LogQuery holds parameters for searching logs.
 type LogQuery struct {
 	AppID       string // required: identifies which app's data to query
+	TenantID    string // optional: tenant isolation filter
 	Query       string // full-text search
 	ServiceName string
 	Severity    []string // e.g. ["ERROR", "WARN"]
@@ -201,6 +202,7 @@ type LogField struct {
 // LogStatsQuery holds parameters for log statistics queries.
 type LogStatsQuery struct {
 	AppID       string // required: identifies which app's data to query
+	TenantID    string // optional: tenant isolation filter
 	ServiceName string
 	TimeRange   TimeRange
 	GroupBy     string // e.g. "severity", "service_name"
@@ -372,6 +374,7 @@ type DensityBucket struct {
 // TraceMetricsQuery is the ES-local type for a TraceQL metrics query.
 type TraceMetricsQuery struct {
 	AppID         string
+	TenantID      string
 	ServiceName   string
 	OperationName string
 	Tags          map[string]string

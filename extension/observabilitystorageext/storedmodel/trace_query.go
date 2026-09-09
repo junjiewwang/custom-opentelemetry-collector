@@ -9,6 +9,7 @@ import "time"
 // All providers (ES, PG, future) use this single definition.
 type TraceQuery struct {
 	AppID         string
+	TenantID      string
 	ServiceName   string
 	OperationName string
 	Tags          map[string]string
@@ -25,7 +26,7 @@ type TraceQuery struct {
 	IsRoot   bool   // true = filter for root spans only (parentSpanId = "")
 
 	// ── Event filters (from TraceQL event:* scope) ──
-	EventTags   []map[string]string     // AND conditions on span events (requires nested query)
+	EventTags   []map[string]string // AND conditions on span events (requires nested query)
 	TagsNotOr   [][]map[string]string
 	TagsRegexOr [][]map[string]string
 	EventTagsOr [][][]map[string]string // OR groups of event conditions
@@ -35,7 +36,7 @@ type TraceQuery struct {
 	TagsNot map[string]string
 	// TagsExists: != nil conditions → ES exists query.
 	TagsNotExists []string
-	TagsExists []string
+	TagsExists    []string
 	// TagsRegex: =~ regex conditions → ES regexp query.
 	TagsRegex map[string]string
 

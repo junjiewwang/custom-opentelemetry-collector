@@ -63,6 +63,7 @@ func (r *TraceReader) QueryTraceMetrics(ctx context.Context, query TraceMetricsQ
 	searchReq := &SearchRequest{
 		Query:        baseFilter,
 		Size:         0,
+		TenantID:     query.TenantID,
 		Aggregations: searchAggs,
 	}
 
@@ -389,9 +390,9 @@ func (r *TraceReader) parseMetricsResponse(resp *SearchResponse, query TraceMetr
 func (r *TraceReader) parseSingleSeries(raw map[string]json.RawMessage, bucketAggName string, query TraceMetricsQuery, stepSeconds float64) ([]TraceMetricsSeries, error) {
 	var agg struct {
 		Buckets []struct {
-			Key    float64         `json:"key"` // histogram returns float64 keys
-			DocCount float64       `json:"doc_count"` // native bucket doc count (the metric for rate/count)
-			Metric json.RawMessage `json:"metric"`
+			Key      float64         `json:"key"`       // histogram returns float64 keys
+			DocCount float64         `json:"doc_count"` // native bucket doc count (the metric for rate/count)
+			Metric   json.RawMessage `json:"metric"`
 		} `json:"buckets"`
 	}
 

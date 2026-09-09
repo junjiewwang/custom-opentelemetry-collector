@@ -9,6 +9,8 @@ import "time"
 type TraceMetricsQuery struct {
 	// AppID for tenant isolation.
 	AppID string
+	// TenantID scopes the query to a tenant (optional).
+	TenantID string
 
 	// Filters from the span filter part of the TraceQL query.
 	ServiceName   string
@@ -28,11 +30,11 @@ type TraceMetricsQuery struct {
 	Step time.Duration
 
 	// Metrics function configuration.
-	Function    string   // "rate", "quantile_over_time", "histogram_over_time"
-	Field       string   // intrinsic field, e.g. "duration"
+	Function    string    // "rate", "quantile_over_time", "histogram_over_time"
+	Field       string    // intrinsic field, e.g. "duration"
 	Percentiles []float64 // for quantile_over_time
-	ByLabels    []string   // group-by labels
-	Sample      bool       // sample hint (ignored in basic impl)
+	ByLabels    []string  // group-by labels
+	Sample      bool      // sample hint (ignored in basic impl)
 
 	// ── Negation / Existence / Regex filters (Sprint 2) ──
 	TagsNot    map[string]string // != value conditions → ES must_not + term
@@ -46,8 +48,8 @@ type TraceMetricsQuery struct {
 
 // TraceMetricsSeries is a single time series result from a metrics query.
 type TraceMetricsSeries struct {
-	Labels map[string]string    `json:"metric,omitempty"` // Prometheus-style labels
-	Values []TraceMetricsPoint  `json:"values"`
+	Labels map[string]string   `json:"metric,omitempty"` // Prometheus-style labels
+	Values []TraceMetricsPoint `json:"values"`
 }
 
 // TraceMetricsPoint is a single time-value pair.

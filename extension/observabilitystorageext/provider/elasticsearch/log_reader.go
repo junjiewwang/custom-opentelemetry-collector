@@ -45,9 +45,10 @@ func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchR
 	}
 
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		From:  query.Offset,
-		Size:  limit,
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		From:     query.Offset,
+		Size:     limit,
 		Sort: []map[string]any{
 			{FieldLogTimeUnixNano: map[string]any{"order": "desc"}},
 		},
@@ -117,9 +118,10 @@ func (r *LogReader) SearchLogMetric(ctx context.Context, query LogMetricQuery) (
 	}
 
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0,
-		Sort:  nil, // not needed for aggregations
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		Size:     0,
+		Sort:     nil, // not needed for aggregations
 	}
 	if len(query.GroupByLabels) > 0 {
 		searchReq.Aggregations = outerAgg
@@ -421,6 +423,7 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 	}
 
 	searchReq := &SearchRequest{
+		TenantID: query.TenantID,
 		Query: map[string]any{
 			"bool": map[string]any{"must": must},
 		},
