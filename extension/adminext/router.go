@@ -122,6 +122,7 @@ func (e *Extension) newRouter() http.Handler {
 		// App Management (App = AppGroup, 1:1 with Token)
 		// ============================================================================
 		r.Route("/apps", func(r chi.Router) {
+			r.Use(requireAdminMiddleware)
 			r.Get("/", admin.listApps)
 			r.Post("/", admin.createApp)
 
@@ -164,6 +165,7 @@ func (e *Extension) newRouter() http.Handler {
 		// Multi-tenancy: Tenant + read-path API key management
 		// ============================================================================
 		r.Route("/tenants", func(r chi.Router) {
+			r.Use(requireAdminMiddleware)
 			r.Get("/", admin.listTenants)
 			r.Post("/", admin.createTenant)
 
@@ -198,6 +200,7 @@ func (e *Extension) newRouter() http.Handler {
 		// Task Management (global, cross-app) - model JSON
 		// ============================================================================
 		r.Route("/tasks", func(r chi.Router) {
+			r.Use(requireAdminMiddleware)
 			r.Get("/", admin.listTasksV2)
 			r.Post("/", admin.createTaskV2)
 			r.Post("/batch", admin.batchTaskActionV2)
@@ -213,6 +216,7 @@ func (e *Extension) newRouter() http.Handler {
 		// Dynamic Instrumentation Workbench
 		// ============================================================================
 		r.Route("/instrumentation", func(r chi.Router) {
+			r.Use(requireAdminMiddleware)
 			r.Get("/rules", admin.listInstrumentationRules)
 			r.Post("/rules", admin.createInstrumentationRule)
 			r.Get("/rules/{ruleID}", admin.getInstrumentationRule)
@@ -234,6 +238,7 @@ func (e *Extension) newRouter() http.Handler {
 		// Notification Management (monitoring & retry)
 		// ============================================================================
 		r.Route("/notifications", func(r chi.Router) {
+			r.Use(requireAdminMiddleware)
 			r.Get("/", admin.listNotifications)
 			r.Post("/retry-all", admin.retryAllFailedNotifications)
 			r.Get("/{id}", admin.getNotification)
@@ -249,6 +254,7 @@ func (e *Extension) newRouter() http.Handler {
 		// ============================================================================
 		obsV2 := newObsV2Handlers(e)
 		r.Route("/observability", func(r chi.Router) {
+			r.Use(requireAdminMiddleware)
 			// --- Trace 查询 ---
 			if e.storageTraceReader != nil {
 				// V2 mode: structured responses from storage extension

@@ -153,3 +153,17 @@ func isStaticAPIKey(key string, staticKeys []string) bool {
 	}
 	return false
 }
+
+// requireAdminMiddleware rejects requests that carry a tenant identity (tk_
+// keys). Management API endpoints (apps/tenants/keys/...) are admin-only; a
+// tenant key must be limited to the read-path query endpoints (Prometheus /
+// Tempo / Loki), where TenantID is used for data isolation instead.
+func requireAdminMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if TenantIDFromContext(r.Context()) != "" {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
