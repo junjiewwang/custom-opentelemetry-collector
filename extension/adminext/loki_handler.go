@@ -692,7 +692,7 @@ func (h *lokiHandlers) handleLokiDetectedFields(w http.ResponseWriter, r *http.R
 			}
 		}
 		if storageQ == nil {
-			storageQ = &observabilitystorageext.LogQuery{TimeRange: observabilitystorageext.TimeRange{Start: start, End: end}}
+			storageQ = &observabilitystorageext.LogQuery{TenantID: TenantIDFromContext(r.Context()), TimeRange: observabilitystorageext.TimeRange{Start: start, End: end}}
 		}
 		storageQ.Limit = 5
 
