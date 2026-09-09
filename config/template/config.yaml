@@ -363,6 +363,13 @@ extensions:
       type: redis  # "memory" or "redis"
       redis_name: default
       key_prefix: "otel:apps"
+
+    # Multi-tenancy: tenant CRUD + read-path API key management.
+    # Must be redis — shared across collector replicas and durable across restarts.
+    tenant_manager:
+      type: redis  # "memory" or "redis"
+      redis_name: default
+      key_prefix: "otel:tenants"
       # Built-in apps auto-registered on startup (idempotent — skip if exists).
       # collector_self is the built-in app for the collector's own internal telemetry.
       # Its token is injected into internal spans via service.telemetry.resource.
