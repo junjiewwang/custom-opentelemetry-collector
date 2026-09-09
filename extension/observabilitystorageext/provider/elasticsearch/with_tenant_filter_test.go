@@ -24,8 +24,8 @@ func TestWithTenantFilter(t *testing.T) {
 		t.Fatalf("expected term filter, got %T", filters[1])
 	}
 	inner, ok := term["term"].(map[string]any)
-	if !ok || inner["tenantId"] != "tn-1" {
-		t.Fatalf("expected tenantId term, got %#v", term)
+	if !ok || inner["tenantId.keyword"] != "tn-1" {
+		t.Fatalf("expected tenantId.keyword term, got %#v", term)
 	}
 
 	// Empty query → bare tenant filter (match-all becomes tenant filter).

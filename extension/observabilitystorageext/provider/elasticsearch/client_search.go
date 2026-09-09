@@ -60,8 +60,13 @@ type SearchHit struct {
 // withTenantFilter wraps query with a bool.filter that ANDs a tenantId term
 // filter, so a tenant only sees its own documents. An empty query becomes a
 // bare tenant filter (match all → tenant filter).
+//
+// The term targets tenantId.keyword: tenantId is dynamically mapped as text
+// (with a .keyword sub-field) rather than keyword like appId (which has an
+// index-template mapping). A term query on the analyzed text field would not
+// exact-match the raw tenant ID.
 func withTenantFilter(query map[string]any, tenantID string) map[string]any {
-	term := map[string]any{"term": map[string]any{"tenantId": tenantID}}
+	term := map[string]any{"term": map[string]any{"tenantId.keyword": tenantID}}
 	if len(query) == 0 {
 		return map[string]any{"bool": map[string]any{"filter": []any{term}}}
 	}
