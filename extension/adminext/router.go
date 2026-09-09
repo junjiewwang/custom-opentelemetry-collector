@@ -304,24 +304,6 @@ func (e *Extension) newRouter() http.Handler {
 		})
 
 		// ============================================================================
-		// InfluxDB v1 Compatible API (for Grafana direct connection)
-		// ============================================================================
-		// Grafana configuration:
-		//   Type: InfluxDB
-		//   URL: http://<collector>:8088/api/v2
-		//   Access: Server
-		//   Database: <app_id>
-		if e.storageMetricReader != nil {
-			influx := newInfluxHandlers(e)
-			r.Route("/influxdb", func(r chi.Router) {
-				r.Get("/ping", influx.handleInfluxDBPing)  // Health check (some Grafana versions)
-				r.Head("/ping", influx.handleInfluxDBPing) // Health check HEAD variant
-				r.Post("/query", influx.handleInfluxDBQuery)
-				r.Get("/query", influx.handleInfluxDBQuery) // Grafana may use GET with params
-			})
-		}
-
-		// ============================================================================
 		// Prometheus v1 Compatible API (for Grafana Prometheus data source)
 		// ============================================================================
 		// Grafana configuration:
