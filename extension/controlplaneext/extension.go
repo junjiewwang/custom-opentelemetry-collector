@@ -16,11 +16,11 @@ import (
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 	"go.opentelemetry.io/collector/custom/taskengine"
@@ -28,11 +28,12 @@ import (
 
 // TokenValidationResult holds the result of token validation.
 type TokenValidationResult struct {
-	Valid   bool   `json:"valid"`
-	AppID   string `json:"app_id,omitempty"`
-	AppName string `json:"app_name,omitempty"`
-	Token   string `json:"token,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Valid    bool   `json:"valid"`
+	AppID    string `json:"app_id,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+	AppName  string `json:"app_name,omitempty"`
+	Token    string `json:"token,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // ControlPlane defines the model-based interface exposed by this extension.
@@ -489,11 +490,12 @@ func (e *Extension) ValidateToken(ctx context.Context, token string) (*TokenVali
 	}
 
 	return &TokenValidationResult{
-		Valid:   result.Valid,
-		AppID:   result.AppID,
-		AppName: result.AppName,
-		Token:   token,
-		Reason:  result.Reason,
+		Valid:    result.Valid,
+		AppID:    result.AppID,
+		TenantID: result.TenantID,
+		AppName:  result.AppName,
+		Token:    token,
+		Reason:   result.Reason,
 	}, nil
 }
 

@@ -161,12 +161,15 @@ func pointToSample(pt storedmodel.StoredMetricDataPoint, extra map[string]string
 // the point's own labels. __name__ is NOT in this map (text format has the
 // name outside the braces). app_id is injected from pt.AppID.
 func baseLabels(pt storedmodel.StoredMetricDataPoint, extra map[string]string) map[string]string {
-	labels := make(map[string]string, len(pt.Labels)+len(extra)+2)
+	labels := make(map[string]string, len(pt.Labels)+len(extra)+3)
 	if pt.ServiceName != "" {
 		labels["service_name"] = pt.ServiceName
 	}
 	if pt.AppID != "" {
 		labels["app_id"] = pt.AppID
+	}
+	if pt.TenantID != "" {
+		labels["tenant_id"] = pt.TenantID
 	}
 	for k, v := range extra {
 		labels[k] = v

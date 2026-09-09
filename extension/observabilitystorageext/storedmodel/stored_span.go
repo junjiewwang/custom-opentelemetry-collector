@@ -53,6 +53,7 @@ type StoredSpan struct {
 	DurationNano int64  `json:"durationNano"`
 	ServiceName  string `json:"serviceName"`
 	AppID        string `json:"appId,omitempty"`
+	TenantID     string `json:"tenantId,omitempty"`
 }
 
 // StoredScope preserves InstrumentationScope info that was previously discarded.
@@ -93,6 +94,7 @@ func ConvertOTLPSpan(span ptrace.Span, scope ptrace.ScopeSpans, resource pcommon
 	resourceAttrs := resource.Attributes()
 	serviceName := getAttrStr(resourceAttrs, "service.name", "unknown")
 	appID := getAppIDAttr(resourceAttrs)
+	tenantID := getAttrStr(resourceAttrs, "tenant_id", "")
 
 	return StoredSpan{
 		TraceID:       span.TraceID().String(),
@@ -119,6 +121,7 @@ func ConvertOTLPSpan(span ptrace.Span, scope ptrace.ScopeSpans, resource pcommon
 		Links:       convertLinks(span.Links()),
 		ServiceName: serviceName,
 		AppID:       appID,
+		TenantID:    tenantID,
 	}
 }
 

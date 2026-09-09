@@ -22,6 +22,7 @@ type StoredLogRecord struct {
 	Resource             map[string]any `json:"resource,omitempty"`
 	ServiceName          string         `json:"serviceName"`
 	AppID                string         `json:"appId,omitempty"`
+	TenantID             string         `json:"tenantId,omitempty"`
 }
 
 // ConvertOTLPLog converts an OTLP plog.LogRecord to StoredLogRecord.
@@ -29,6 +30,7 @@ func ConvertOTLPLog(lr plog.LogRecord, resource pcommon.Resource) StoredLogRecor
 	resourceAttrs := resource.Attributes()
 	serviceName := getAttrStr(resourceAttrs, "service.name", "unknown")
 	appID := getAppIDAttr(resourceAttrs)
+	tenantID := getAttrStr(resourceAttrs, "tenant_id", "")
 
 	rec := StoredLogRecord{
 		TimeUnixNano:         int64(lr.Timestamp()),
@@ -37,6 +39,7 @@ func ConvertOTLPLog(lr plog.LogRecord, resource pcommon.Resource) StoredLogRecor
 		SeverityText:         lr.SeverityText(),
 		ServiceName:          serviceName,
 		AppID:                appID,
+		TenantID:             tenantID,
 		Attributes:           pcommonMapToFlat(lr.Attributes()),
 		Resource:             pcommonMapToFlat(resourceAttrs),
 	}

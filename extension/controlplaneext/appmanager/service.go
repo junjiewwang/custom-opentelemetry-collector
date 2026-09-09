@@ -124,10 +124,10 @@ type AppRetentionProvider interface {
 
 // Compile-time interface satisfaction checks.
 var (
-	_ AppManager            = (*AppService)(nil)
-	_ TokenValidator        = (*AppService)(nil)
-	_ AppRetentionProvider  = (*AppService)(nil)
-	_ TokenManager          = (*AppService)(nil)
+	_ AppManager           = (*AppService)(nil)
+	_ TokenValidator       = (*AppService)(nil)
+	_ AppRetentionProvider = (*AppService)(nil)
+	_ TokenManager         = (*AppService)(nil)
 )
 
 // ═══════════════════════════════════════════════════
@@ -393,9 +393,10 @@ func (s *AppService) ValidateToken(ctx context.Context, token string) (*TokenVal
 	}
 
 	return &TokenValidationResult{
-		Valid:   true,
-		AppID:   app.ID,
-		AppName: app.Name,
+		Valid:    true,
+		AppID:    app.ID,
+		TenantID: app.TenantID,
+		AppName:  app.Name,
 	}, nil
 }
 
