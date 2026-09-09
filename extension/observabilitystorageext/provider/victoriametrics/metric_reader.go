@@ -13,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -466,6 +467,9 @@ func (r *MetricReader) exportSeries(ctx context.Context, selector string, start,
 // excluding VM's own vm_* namespace.
 func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
 	match := []string{}
+	if tenantID := tenantctx.TenantIDFromContext(ctx); tenantID != "" {
+		match = []string{buildSelector("", "", tenantID, "", nil, nil, nil, nil)}
+	}
 	if timeRange.Start.IsZero() {
 		timeRange.Start = time.Now().Add(-24 * time.Hour)
 	}
@@ -548,9 +552,10 @@ func (r *MetricReader) ListLabelCombinations(ctx context.Context, query observab
 
 // ListLabelNames returns label names, optionally scoped by metric.
 func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange observabilitystorageext.TimeRange, metricName string) ([]string, error) {
+	tenantID := tenantctx.TenantIDFromContext(ctx)
 	var match []string
-	if metricName != "" {
-		match = []string{metricName}
+	if metricName != "" || tenantID != "" {
+		match = []string{buildSelector(metricName, "", tenantID, "", nil, nil, nil, nil)}
 	}
 	if timeRange.Start.IsZero() {
 		timeRange.Start = time.Now().Add(-24 * time.Hour)
@@ -570,9 +575,10 @@ func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRa
 
 // ListLabelValuesForMetric returns values for a label restricted to one metric.
 func (r *MetricReader) ListLabelValuesForMetric(ctx context.Context, label, metricName string, timeRange observabilitystorageext.TimeRange) ([]string, error) {
+	tenantID := tenantctx.TenantIDFromContext(ctx)
 	var match []string
-	if metricName != "" {
-		match = []string{metricName}
+	if metricName != "" || tenantID != "" {
+		match = []string{buildSelector(metricName, "", tenantID, "", nil, nil, nil, nil)}
 	}
 	if timeRange.Start.IsZero() {
 		timeRange.Start = time.Now().Add(-24 * time.Hour)

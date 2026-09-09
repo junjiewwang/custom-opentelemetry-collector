@@ -12,6 +12,7 @@ import (
 
 	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -372,6 +373,7 @@ func (r *LogReader) ListLogFields(ctx context.Context, timeRange TimeRange) ([]L
 			},
 		},
 	}
+	searchReq.TenantID = tenantctx.TenantIDFromContext(ctx)
 
 	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
 	if err != nil {

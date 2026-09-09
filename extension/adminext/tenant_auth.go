@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -37,21 +38,17 @@ func (f KeyValidatorFunc) ValidateAPIKey(ctx context.Context, key string) (strin
 	return f(ctx, key)
 }
 
-// tenantContextKey is the context key for the authenticated tenant ID.
-type tenantContextKey struct{}
-
 // WithTenantID injects the tenant ID into the context. Empty means global.
+// Delegates to the shared tenantctx key so storage providers can read the same
+// tenant scope from the request context.
 func WithTenantID(ctx context.Context, tenantID string) context.Context {
-	return context.WithValue(ctx, tenantContextKey{}, tenantID)
+	return tenantctx.WithTenantID(ctx, tenantID)
 }
 
 // TenantIDFromContext returns the authenticated tenant ID, or "" for global
 // (super/operator) requests.
 func TenantIDFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(tenantContextKey{}).(string); ok {
-		return v
-	}
-	return ""
+	return tenantctx.TenantIDFromContext(ctx)
 }
 
 // keyTypeContextKey is the context key for the authenticated key type.

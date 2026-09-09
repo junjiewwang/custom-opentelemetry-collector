@@ -13,6 +13,7 @@ import (
 
 	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -489,6 +490,7 @@ func (r *TraceReader) GetServices(ctx context.Context, timeRange TimeRange) ([]S
 			},
 		},
 	}
+	searchReq.TenantID = tenantctx.TenantIDFromContext(ctx)
 
 	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
@@ -525,6 +527,7 @@ func (r *TraceReader) GetOperations(ctx context.Context, service string, timeRan
 			},
 		},
 	}
+	searchReq.TenantID = tenantctx.TenantIDFromContext(ctx)
 
 	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
@@ -1220,6 +1223,7 @@ func (r *TraceReader) calculateDependencies(ctx context.Context, timeRange TimeR
 			},
 		},
 	}
+	searchReq.TenantID = tenantctx.TenantIDFromContext(ctx)
 
 	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
