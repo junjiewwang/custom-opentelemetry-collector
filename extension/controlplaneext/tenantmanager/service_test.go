@@ -140,3 +140,46 @@ func TestEnsureDefaultTenant_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "admin", tenant.Name)
 }
+
+func TestCreateTenant_AllocatesAccountID(t *testing.T) {
+	repo := NewMemoryTenantRepository()
+	svc := NewTenantService(repo, NewIDGenerator(), fakeAppLister{}, nil)
+
+	// The default tenant holds account 0 (reserved); real tenants start at 1.
+	require.NoError(t, svc.EnsureDefaultTenant(context.Background()))
+
+	a, err := svc.CreateTenant(context.Background(), &CreateTenantRequest{Name: "acme"})
+	require.NoError(t, err)
+	b, err := svc.CreateTenant(context.Background(), &CreateTenantRequest{Name: "globex"})
+	require.NoError(t, err)
+
+	assert.Equal(t, uint32(1), a.AccountID)
+	assert.Equal(t, uint32(2), b.AccountID)
+}
+
+func TestResolveAccountID(t *testing.T) {
+	repo := NewMemoryTenantRepository()
+	svc := NewTenantService(repo, NewIDGenerator(), fakeAppLister{}, nil)
+
+	require.NoError(t, svc.EnsureDefaultTenant(context.Background()))
+	a, err := svc.CreateTenant(context.Background(), &CreateTenantRequest{Name: "acme"})
+	require.NoError(t, err)
+
+	// Empty (global) and the default tenant both resolve to account 0.
+	id, err := svc.ResolveAccountID(context.Background(), "")
+	require.NoError(t, err)
+	assert.Equal(t, uint32(0), id)
+
+	id, err = svc.ResolveAccountID(context.Background(), DefaultTenantID)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(0), id)
+
+	// A real tenant resolves to its allocated account.
+	id, err = svc.ResolveAccountID(context.Background(), a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, a.AccountID, id)
+
+	// An unknown tenant is an error.
+	_, err = svc.ResolveAccountID(context.Background(), "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+}

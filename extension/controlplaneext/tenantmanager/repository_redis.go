@@ -19,10 +19,12 @@ import (
 //
 //	{prefix}        → Hash: tenantID → Tenant JSON
 //	{prefix}:names  → Hash: name → tenantID (secondary index for uniqueness)
+//	{prefix}:account_seq → INCR counter for allocating VM account IDs
 type RedisTenantRepository struct {
-	client     redis.UniversalClient
-	tenantsKey string
-	namesKey   string
+	client        redis.UniversalClient
+	tenantsKey    string
+	namesKey      string
+	accountSeqKey string
 }
 
 // NewRedisTenantRepository creates a new Redis-backed TenantRepository.
@@ -31,9 +33,10 @@ func NewRedisTenantRepository(client redis.UniversalClient, keyPrefix string) *R
 		keyPrefix = "otel:tenants"
 	}
 	return &RedisTenantRepository{
-		client:     client,
-		tenantsKey: keyPrefix,
-		namesKey:   fmt.Sprintf("%s:names", keyPrefix),
+		client:        client,
+		tenantsKey:    keyPrefix,
+		namesKey:      fmt.Sprintf("%s:names", keyPrefix),
+		accountSeqKey: fmt.Sprintf("%s:account_seq", keyPrefix),
 	}
 }
 
@@ -145,6 +148,17 @@ func (r *RedisTenantRepository) List(ctx context.Context) ([]*Tenant, error) {
 		tenants = append(tenants, tenant)
 	}
 	return tenants, nil
+}
+
+// NextAccountID allocates the next VictoriaMetrics account ID via an atomic
+// Redis INCR. The counter starts at 0, so the first allocation returns 1 (0 is
+// reserved for the default tenant). Safe across replicas.
+func (r *RedisTenantRepository) NextAccountID(ctx context.Context) (uint32, error) {
+	n, err := r.client.Incr(ctx, r.accountSeqKey).Result()
+	if err != nil {
+		return 0, fmt.Errorf("next account id: %w", err)
+	}
+	return uint32(n), nil
 }
 
 func unmarshalTenant(data string) (*Tenant, error) {

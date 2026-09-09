@@ -12,9 +12,10 @@ import (
 // Pure data access — no business logic. Suitable for testing and single-node
 // deployments.
 type MemoryTenantRepository struct {
-	mu      sync.RWMutex
-	tenants map[string]*Tenant // id → tenant
-	byName  map[string]string  // name → id
+	mu            sync.RWMutex
+	tenants       map[string]*Tenant // id → tenant
+	byName        map[string]string  // name → id
+	nextAccountID uint32             // monotonic VM account ID allocator (starts at 0 → first is 1)
 }
 
 // NewMemoryTenantRepository creates a new in-memory TenantRepository.
@@ -116,4 +117,13 @@ func (r *MemoryTenantRepository) List(_ context.Context) ([]*Tenant, error) {
 		tenants = append(tenants, &clone)
 	}
 	return tenants, nil
+}
+
+// NextAccountID allocates the next VictoriaMetrics account ID from an in-memory
+// counter. First call returns 1 (0 is reserved for the default tenant).
+func (r *MemoryTenantRepository) NextAccountID(_ context.Context) (uint32, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextAccountID++
+	return r.nextAccountID, nil
 }

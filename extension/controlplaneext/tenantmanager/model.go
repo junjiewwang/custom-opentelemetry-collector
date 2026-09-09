@@ -12,6 +12,11 @@ import (
 // It is created idempotently on startup (EnsureDefaultTenant) and never deleted.
 const DefaultTenantID = "admin"
 
+// DefaultAccountID is the VictoriaMetrics account reserved for the built-in
+// "admin" tenant and for global (tenant-less) data. Real tenants get account
+// IDs allocated monotonically from 1 upward via TenantRepository.NextAccountID.
+const DefaultAccountID uint32 = 0
+
 // Tenant status values.
 const (
 	StatusActive   = "active"
@@ -35,6 +40,13 @@ type Tenant struct {
 	// Status is "active" or "disabled". A disabled tenant's keys are rejected
 	// at authentication time.
 	Status string `json:"status"`
+
+	// AccountID is the VictoriaMetrics native-multitenancy account that hard-
+	// isolates this tenant's metrics. 0 is reserved for the default "admin"
+	// tenant / global data; real tenants are allocated monotonically from 1.
+	// A zero value also keeps the current label-based soft isolation as the
+	// fallback path during migration.
+	AccountID uint32 `json:"account_id,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

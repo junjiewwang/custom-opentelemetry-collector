@@ -30,6 +30,11 @@ type TenantManager interface {
 	// ListTenantApps returns the app IDs owned by a tenant.
 	ListTenantApps(ctx context.Context, tenantID string) ([]string, error)
 
+	// ResolveAccountID returns the VictoriaMetrics native-multitenancy account
+	// ID that scopes data for the given tenant. An empty tenantID (global /
+	// super / operator request) maps to DefaultAccountID (0).
+	ResolveAccountID(ctx context.Context, tenantID string) (uint32, error)
+
 	// EnsureDefaultTenant idempotently creates the built-in "admin" tenant.
 	EnsureDefaultTenant(ctx context.Context) error
 

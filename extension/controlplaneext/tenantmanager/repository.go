@@ -47,4 +47,11 @@ type TenantRepository interface {
 
 	// List returns all stored tenants. Returns an empty slice if none exist.
 	List(ctx context.Context) ([]*Tenant, error)
+
+	// NextAccountID returns the next available VictoriaMetrics account ID
+	// (monotonic, starting from 1). 0 is reserved for the default tenant and
+	// must never be returned. Implementations must be safe for concurrent use
+	// across collector replicas (Redis INCR) or within a single process
+	// (in-memory counter).
+	NextAccountID(ctx context.Context) (uint32, error)
 }

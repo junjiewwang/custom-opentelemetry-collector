@@ -49,12 +49,18 @@ func (s *TenantService) CreateTenant(ctx context.Context, req *CreateTenantReque
 		return nil, fmt.Errorf("generate tenant id: %w", err)
 	}
 
+	accountID, err := s.repo.NextAccountID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("allocate tenant account id: %w", err)
+	}
+
 	now := time.Now()
 	tenant := &Tenant{
 		ID:          id,
 		Name:        req.Name,
 		Description: req.Description,
 		Status:      StatusActive,
+		AccountID:   accountID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -155,6 +161,21 @@ func (s *TenantService) ListTenantApps(ctx context.Context, tenantID string) ([]
 	return ids, nil
 }
 
+// ResolveAccountID returns the VictoriaMetrics account ID that scopes data for
+// the given tenant. An empty tenantID (global / super / operator request) maps
+// to DefaultAccountID (0), as does the built-in "admin" tenant — matching the
+// write path where tenant-less data lands in the default account.
+func (s *TenantService) ResolveAccountID(ctx context.Context, tenantID string) (uint32, error) {
+	if tenantID == "" || tenantID == DefaultTenantID {
+		return DefaultAccountID, nil
+	}
+	tenant, err := s.repo.FindByID(ctx, tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve account id: %w", err)
+	}
+	return tenant.AccountID, nil
+}
+
 // EnsureDefaultTenant idempotently creates the built-in "admin" tenant.
 func (s *TenantService) EnsureDefaultTenant(ctx context.Context) error {
 	if _, err := s.repo.FindByID(ctx, DefaultTenantID); err == nil {
@@ -169,6 +190,7 @@ func (s *TenantService) EnsureDefaultTenant(ctx context.Context) error {
 		Name:        "admin",
 		Description: "Default tenant (owns pre-existing apps)",
 		Status:      StatusActive,
+		AccountID:   DefaultAccountID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
