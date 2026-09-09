@@ -71,6 +71,7 @@ func (h *adminHandlers) listApps(w http.ResponseWriter, r *http.Request) {
 		Description  string            `json:"description,omitempty"`
 		Token        string            `json:"token"`
 		Status       string            `json:"status,omitempty"`
+		TenantID     string            `json:"tenant_id,omitempty"`
 		CreatedAt    time.Time         `json:"created_at"`
 		UpdatedAt    time.Time         `json:"updated_at"`
 		Metadata     map[string]string `json:"metadata,omitempty"`
@@ -88,6 +89,7 @@ func (h *adminHandlers) listApps(w http.ResponseWriter, r *http.Request) {
 			Description:  app.Description,
 			Token:        app.Token,
 			Status:       app.Status,
+			TenantID:     app.TenantID,
 			CreatedAt:    app.CreatedAt,
 			UpdatedAt:    app.UpdatedAt,
 			Metadata:     app.Metadata,
