@@ -82,6 +82,12 @@ interface InstrumentationTargetListResponse {
   total: number;
 }
 
+/** Auth identity returned by GET /auth/me — key_type ∈ {super, operator, tenant}. */
+export interface AuthMe {
+  key_type: string;
+  tenant_id: string;
+}
+
 class ApiClient {
   private apiKey: string = '';
 
@@ -126,6 +132,14 @@ class ApiClient {
     }
 
     return res.json() as Promise<T>;
+  }
+
+  // ========================================================================
+  // Auth (identity)
+  // ========================================================================
+
+  getAuthMe(): Promise<AuthMe> {
+    return this.request<AuthMe>('GET', '/auth/me');
   }
 
   // ========================================================================

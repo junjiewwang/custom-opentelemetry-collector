@@ -13,15 +13,24 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useSidebar } from '@/contexts/SidebarContext';
 
 /** 菜单分组 */
-const MENU_GROUPS = [
+interface MenuItem {
+  id: string;
+  label: string;
+  icon: string;
+  path: string;
+  /** admin-only 菜单项对 tenant 角色隐藏 */
+  adminOnly?: boolean;
+}
+
+const MENU_GROUPS: { label: string; items: MenuItem[] }[] = [
   {
     label: 'Management',
     items: [
-      { id: 'dashboard', label: 'Dashboard', icon: 'fas fa-chart-pie', path: '/dashboard' },
-      { id: 'apps', label: 'Applications', icon: 'fas fa-cube', path: '/apps' },
-      { id: 'tenants', label: 'Tenants', icon: 'fas fa-users', path: '/tenants' },
-      { id: 'services', label: 'Services', icon: 'fas fa-sitemap', path: '/services' },
-      { id: 'instances', label: 'Instances', icon: 'fas fa-server', path: '/instances' },
+      { id: 'dashboard', label: 'Dashboard', icon: 'fas fa-chart-pie', path: '/dashboard', adminOnly: true },
+      { id: 'apps', label: 'Applications', icon: 'fas fa-cube', path: '/apps', adminOnly: true },
+      { id: 'tenants', label: 'Tenants', icon: 'fas fa-users', path: '/tenants', adminOnly: true },
+      { id: 'services', label: 'Services', icon: 'fas fa-sitemap', path: '/services', adminOnly: true },
+      { id: 'instances', label: 'Instances', icon: 'fas fa-server', path: '/instances', adminOnly: true },
     ],
   },
   {
@@ -30,16 +39,22 @@ const MENU_GROUPS = [
       { id: 'traces', label: 'Traces', icon: 'fas fa-route', path: '/traces' },
       { id: 'metrics', label: 'Metrics', icon: 'fas fa-chart-line', path: '/metrics' },
       { id: 'logs', label: 'Logs', icon: 'fas fa-file-alt', path: '/logs' },
-      { id: 'instrumentation', label: 'Instrumentation', icon: 'fas fa-wave-square', path: '/instrumentation' },
-      { id: 'storage', label: 'Storage', icon: 'fas fa-database', path: '/storage' },
+      { id: 'instrumentation', label: 'Instrumentation', icon: 'fas fa-wave-square', path: '/instrumentation', adminOnly: true },
+      { id: 'storage', label: 'Storage', icon: 'fas fa-database', path: '/storage', adminOnly: true },
     ],
   },
 ];
 
 export default function Sidebar() {
-  const { logout } = useAuth();
+  const { logout, role } = useAuth();
+  const isAdmin = role === 'admin';
   const { collapsed, mobileOpen, isMobile, closeMobile } = useSidebar();
   const location = useLocation();
+
+  // tenant 角色只显示可观测性读路径（Traces/Metrics/Logs），隐藏 admin-only 菜单
+  const menuGroups = MENU_GROUPS
+    .map((group) => ({ ...group, items: group.items.filter((item) => !item.adminOnly || isAdmin) }))
+    .filter((group) => group.items.length > 0);
 
   // 移动端：点击导航后自动关闭抽屉
   const handleNavClick = () => {
@@ -89,7 +104,7 @@ export default function Sidebar() {
 
         {/* Navigation Groups */}
         <nav className="flex-1 overflow-y-auto py-3 px-3">
-          {MENU_GROUPS.map((group, idx) => (
+          {menuGroups.map((group, idx) => (
             <div key={group.label} className={idx > 0 ? 'mt-4' : ''}>
               {/* 分组标签 */}
               {collapsed && !isMobile ? (
