@@ -19,6 +19,7 @@ const MENU_GROUPS = [
     items: [
       { id: 'dashboard', label: 'Dashboard', icon: 'fas fa-chart-pie', path: '/dashboard' },
       { id: 'apps', label: 'Applications', icon: 'fas fa-cube', path: '/apps' },
+      { id: 'tenants', label: 'Tenants', icon: 'fas fa-users', path: '/tenants' },
       { id: 'services', label: 'Services', icon: 'fas fa-sitemap', path: '/services' },
       { id: 'instances', label: 'Instances', icon: 'fas fa-server', path: '/instances' },
     ],

@@ -20,6 +20,9 @@ import type {
   AgentConfig,
 
   ApiError,
+  Tenant,
+  TenantAPIKey,
+  CreateAPIKeyResponse,
 } from '@/types/api';
 
 import type {
@@ -601,6 +604,45 @@ class ApiClient {
   /** 删除 App 某 signal 的 retention override */
   deleteAppRetention(appId: string, signal: string): Promise<{ message: string; success: boolean }> {
     return this.request('DELETE', `/apps/${encodeURIComponent(appId)}/retention/${signal}`);
+  }
+
+  // ========================================================================
+  // Tenants (Multi-tenancy)
+  // ========================================================================
+
+  getTenants(): Promise<Tenant[]> {
+    return this.request<{ tenants: Tenant[]; total: number }>('GET', '/tenants')
+      .then(res => res.tenants || []);
+  }
+
+  createTenant(data: { name: string; description?: string }): Promise<Tenant> {
+    return this.request<Tenant>('POST', '/tenants', data);
+  }
+
+  updateTenant(id: string, data: { name?: string; description?: string; status?: string }): Promise<Tenant> {
+    return this.request<Tenant>('PUT', `/tenants/${encodeURIComponent(id)}`, data);
+  }
+
+  deleteTenant(id: string): Promise<{ deleted: boolean }> {
+    return this.request<{ deleted: boolean }>('DELETE', `/tenants/${encodeURIComponent(id)}`);
+  }
+
+  getTenantApps(id: string): Promise<string[]> {
+    return this.request<{ apps: string[]; total: number }>('GET', `/tenants/${encodeURIComponent(id)}/apps`)
+      .then(res => res.apps || []);
+  }
+
+  getTenantKeys(id: string): Promise<TenantAPIKey[]> {
+    return this.request<{ keys: TenantAPIKey[]; total: number }>('GET', `/tenants/${encodeURIComponent(id)}/keys`)
+      .then(res => res.keys || []);
+  }
+
+  createTenantKey(id: string, data: { name: string; key_type: string; scopes?: string[] }): Promise<CreateAPIKeyResponse> {
+    return this.request<CreateAPIKeyResponse>('POST', `/tenants/${encodeURIComponent(id)}/keys`, data);
+  }
+
+  revokeTenantKey(id: string, keyId: string): Promise<{ revoked: boolean }> {
+    return this.request<{ revoked: boolean }>('DELETE', `/tenants/${encodeURIComponent(id)}/keys/${encodeURIComponent(keyId)}`);
   }
 }
 

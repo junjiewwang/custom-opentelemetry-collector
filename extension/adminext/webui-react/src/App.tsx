@@ -14,6 +14,7 @@ import LazyLoadFallback from '@/components/LazyLoadFallback';
 import LoginPage from '@/pages/LoginPage';
 import DashboardPage from '@/pages/DashboardPage';
 import AppsPage from '@/pages/AppsPage';
+import TenantsPage from '@/pages/TenantsPage';
 import ServicesPage from '@/pages/ServicesPage';
 import InstancesPage from '@/pages/InstancesPage';
 import InstrumentationPage from '@/pages/InstrumentationPage';
@@ -45,6 +46,7 @@ function ProtectedRoutes() {
           {/* 已迁移页面 - React 原生实现 */}
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="apps" element={<AppsPage />} />
+          <Route path="tenants" element={<TenantsPage />} />
           <Route path="services" element={<ServicesPage />} />
           <Route path="instances" element={<InstancesPage />} />
           <Route path="instrumentation" element={<InstrumentationPage />} />

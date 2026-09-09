@@ -274,3 +274,31 @@ export interface MenuItem {
   path: string;
   badge?: string | number;
 }
+
+// ============================================================================
+// Tenant (Multi-tenancy)
+// ============================================================================
+
+export interface Tenant {
+  id: string;
+  name: string;
+  description?: string;
+  status: 'active' | 'disabled';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TenantAPIKey {
+  id: string;
+  tenant_id: string;
+  key_type: 'ok' | 'tk';
+  key_prefix: string;
+  name: string;
+  scopes?: string[];
+  status: 'active' | 'revoked';
+}
+
+/** 创建 API Key 的响应，key 为明文（仅返回一次） */
+export interface CreateAPIKeyResponse extends TenantAPIKey {
+  key: string;
+}
