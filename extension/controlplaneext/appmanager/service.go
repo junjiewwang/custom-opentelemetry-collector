@@ -105,6 +105,7 @@ type AppManager interface {
 	ListApps(ctx context.Context) ([]*AppInfo, error)
 	RegenerateToken(ctx context.Context, appID string) (*AppInfo, error)
 	SetToken(ctx context.Context, appID string, req *SetTokenRequest) (*AppInfo, error)
+	SetTenantID(ctx context.Context, appID, tenantID string) (*AppInfo, error)
 }
 
 // TokenValidator validates agent authentication tokens. This is the narrow
@@ -362,6 +363,27 @@ func (s *AppService) SetToken(ctx context.Context, appID string, req *SetTokenRe
 	}
 
 	s.logger.Info("Token set", zap.String("id", appID), zap.String("name", app.Name))
+	return app, nil
+}
+
+// SetTenantID assigns an app to a tenant (migration / admin operation). The
+// tenant ID is denormalized into newly-written data at write time; existing
+// data keeps its original tenant binding (per the no-reassignment design —
+// this operation does not backfill historical documents).
+func (s *AppService) SetTenantID(ctx context.Context, appID, tenantID string) (*AppInfo, error) {
+	app, err := s.repo.FindByID(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+
+	app.TenantID = tenantID
+	app.UpdatedAt = time.Now()
+
+	if err := s.repo.Save(ctx, app); err != nil {
+		return nil, fmt.Errorf("save app tenant: %w", err)
+	}
+
+	s.logger.Info("App tenant assigned", zap.String("id", appID), zap.String("tenant_id", tenantID))
 	return app, nil
 }
 

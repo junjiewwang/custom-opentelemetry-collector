@@ -131,6 +131,7 @@ func (e *Extension) newRouter() http.Handler {
 				r.Delete("/", admin.deleteApp)
 				r.Post("/token", admin.regenerateAppToken)
 				r.Put("/token", admin.setAppToken)
+				r.Put("/tenant", admin.setAppTenant)
 
 				// Config management (Simplified: Service-level only)
 				r.Route("/config", func(r chi.Router) {

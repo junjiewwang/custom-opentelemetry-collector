@@ -145,3 +145,39 @@ func (h *adminHandlers) revokeTenantKey(w http.ResponseWriter, r *http.Request) 
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{"revoked": true})
 }
+
+// setAppTenant assigns an app to a tenant (migration / admin operation).
+func (h *adminHandlers) setAppTenant(w http.ResponseWriter, r *http.Request) {
+	appID := chi.URLParam(r, "appID")
+
+	req, err := decodeJSON[struct {
+		TenantID string `json:"tenant_id"`
+	}](r)
+	if err != nil {
+		h.handleError(w, errBadRequest(err.Error()))
+		return
+	}
+	if req.TenantID == "" {
+		h.handleError(w, errBadRequest("tenant_id is required"))
+		return
+	}
+
+	// Verify the tenant exists so we never bind an app to a dangling tenant.
+	if h.tenantMgr == nil {
+		h.handleError(w, errInternal("tenant manager not configured"))
+		return
+	}
+	if _, err := h.tenantMgr.Tenants.GetTenant(r.Context(), req.TenantID); err != nil {
+		h.handleError(w, errNotFound("tenant not found: "+req.TenantID))
+		return
+	}
+
+	app, err := h.tokenMgr.SetTenantID(r.Context(), appID, req.TenantID)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+
+	h.logger.Info("App assigned to tenant via API", zap.String("app_id", appID), zap.String("tenant_id", req.TenantID))
+	h.writeJSON(w, http.StatusOK, app)
+}

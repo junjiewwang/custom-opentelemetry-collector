@@ -65,6 +65,9 @@ func (m *mockAppManager) RegenerateToken(_ context.Context, _ string) (*appmanag
 func (m *mockAppManager) SetToken(_ context.Context, _ string, _ *appmanager.SetTokenRequest) (*appmanager.AppInfo, error) {
 	return nil, nil
 }
+func (m *mockAppManager) SetTenantID(_ context.Context, _ string, _ string) (*appmanager.AppInfo, error) {
+	return nil, nil
+}
 
 func TestAppRetentionStoreAdapter_NoProvider(t *testing.T) {
 	adapter := newAppRetentionStoreAdapter()
