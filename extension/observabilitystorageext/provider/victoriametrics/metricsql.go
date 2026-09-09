@@ -14,10 +14,13 @@ import (
 // Every part is optional; the AppID matcher is injected first so app
 // isolation applies to all reads. %q performs the same string-literal
 // escaping MetricsQL requires (backslash, quote, newline).
-func buildSelector(metricName, appID, serviceName string, labels, labelMatch, labelNot, labelNotMatch map[string]string) string {
+func buildSelector(metricName, appID, tenantID, serviceName string, labels, labelMatch, labelNot, labelNotMatch map[string]string) string {
 	var parts []string
 	if appID != "" {
 		parts = append(parts, fmt.Sprintf("app_id=%q", appID))
+	}
+	if tenantID != "" {
+		parts = append(parts, fmt.Sprintf("tenant_id=%q", tenantID))
 	}
 	if serviceName != "" {
 		parts = append(parts, fmt.Sprintf("service_name=%q", serviceName))
@@ -64,8 +67,8 @@ func buildRangeAggregation(agg, selector string, groupBy []string) string {
 // heatmap range query: sum by (le[, extra...]) (rate(<base>_bucket[5m])).
 // The heatmap's rate operates on the _bucket sub-series (a Prometheus counter)
 // whose `le` label VM aggregates natively — the whole point of NativeHeatmapRange.
-func buildHeatmapRangeExpr(baseName, appID string, extraGroupBy []string, rangeDuration string) string {
-	selector := buildSelector(baseName+"_bucket", appID, "", nil, nil, nil, nil)
+func buildHeatmapRangeExpr(baseName, appID, tenantID string, extraGroupBy []string, rangeDuration string) string {
+	selector := buildSelector(baseName+"_bucket", appID, tenantID, "", nil, nil, nil, nil)
 	keys := append([]string{"le"}, extraGroupBy...)
 	sort.Strings(keys)
 	return fmt.Sprintf("sum by (%s) (rate(%s[%s]))", strings.Join(keys, ","), selector, rangeDuration)
@@ -81,16 +84,18 @@ func durationString(d time.Duration) string {
 	return d.Truncate(time.Second).String()
 }
 
-// stripAppIDLabel removes the internal app_id label from a returned label set
-// so Grafana never sees it (mirrors ES per-app index isolation invisibility).
-// Returns a new map; the input is not mutated.
+// stripAppIDLabel removes the internal app_id and tenant_id isolation labels
+// from a returned label set so Grafana never sees them (mirrors ES per-app
+// index isolation invisibility). Returns a new map; the input is not mutated.
 func stripAppIDLabel(labels map[string]string) map[string]string {
 	if _, ok := labels["app_id"]; !ok {
-		return labels
+		if _, ok := labels["tenant_id"]; !ok {
+			return labels
+		}
 	}
-	out := make(map[string]string, len(labels)-1)
+	out := make(map[string]string, len(labels))
 	for k, v := range labels {
-		if k != "app_id" {
+		if k != "app_id" && k != "tenant_id" {
 			out[k] = v
 		}
 	}

@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
@@ -82,7 +82,7 @@ func (r *MetricReader) ExecPromQLRange(ctx context.Context, expr string, start, 
 
 // Query executes an instant metric query at query.Time.
 func (r *MetricReader) Query(ctx context.Context, query observabilitystorageext.MetricQuery) (*observabilitystorageext.MetricResult, error) {
-	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,
+	selector := buildSelector(query.MetricName, query.AppID, query.TenantID, query.ServiceName,
 		query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	res, err := r.client.QueryInstant(ctx, selector, query.Time)
 	if err != nil {
@@ -110,7 +110,7 @@ func (r *MetricReader) Query(ctx context.Context, query observabilitystorageext.
 // QueryRange executes a range query. Aggregation/GroupBy translate to a
 // MetricsQL aggregation wrapper; step passes through.
 func (r *MetricReader) QueryRange(ctx context.Context, query observabilitystorageext.MetricRangeQuery) (*observabilitystorageext.MetricRangeResult, error) {
-	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,
+	selector := buildSelector(query.MetricName, query.AppID, query.TenantID, query.ServiceName,
 		query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	// missing_bucket semantics: ES's composite drops series lacking a grouped
 	// label when false. MetricsQL's `by` keeps them with an empty label —
@@ -158,7 +158,7 @@ func (r *MetricReader) QueryRange(ctx context.Context, query observabilitystorag
 // can compute the whole heatmap natively (and far more cheaply).
 func (r *MetricReader) QueryHeatmapRange(ctx context.Context, query observabilitystorageext.MetricHeatmapRangeQuery) (*observabilitystorageext.MetricRangeResult, error) {
 	// MetricsQL rate() needs a duration string ("5m"), not a time.Duration.
-	expr := buildHeatmapRangeExpr(query.MetricName, query.AppID, query.GroupBy, durationString(query.RangeDuration))
+	expr := buildHeatmapRangeExpr(query.MetricName, query.AppID, query.TenantID, query.GroupBy, durationString(query.RangeDuration))
 	res, err := r.client.QueryRange(ctx, expr, query.TimeRange.Start, query.TimeRange.End, query.Step)
 	if err != nil {
 		return nil, fmt.Errorf("vm heatmap range query failed: %w", err)
@@ -194,7 +194,7 @@ func (r *MetricReader) QueryHeatmapRange(ctx context.Context, query observabilit
 
 // QueryRaw returns raw sample points per series via /api/v1/export.
 func (r *MetricReader) QueryRaw(ctx context.Context, query observabilitystorageext.MetricRawQuery) ([]observabilitystorageext.MetricRawSeries, error) {
-	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,
+	selector := buildSelector(query.MetricName, query.AppID, query.TenantID, query.ServiceName,
 		query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	series, err := r.exportSeries(ctx, selector, query.TimeRange.Start, query.TimeRange.End, defaultFlatMaxDocs)
 	if err != nil {
@@ -236,7 +236,7 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query observabilitystorage
 		}
 	}
 
-	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,
+	selector := buildSelector(query.MetricName, query.AppID, query.TenantID, query.ServiceName,
 		query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	series, err := r.exportSeries(ctx, selector, query.TimeRange.Start, query.TimeRange.End, maxDocs)
 	if err != nil {
@@ -265,7 +265,7 @@ func (r *MetricReader) queryFlatHistogram(ctx context.Context, query observabili
 	// Fetch the three sub-families with the same filter set.
 	mkSel := func(suffix string) string {
 		name := query.MetricName + suffix
-		return buildSelector(name, query.AppID, query.ServiceName,
+		return buildSelector(name, query.AppID, query.TenantID, query.ServiceName,
 			query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	}
 	buckets, err := r.exportSeries(ctx, mkSel("_bucket"), query.TimeRange.Start, query.TimeRange.End, maxDocs)
@@ -522,7 +522,7 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange observabil
 
 // ListLabelCombinations returns label value combinations via /api/v1/series.
 func (r *MetricReader) ListLabelCombinations(ctx context.Context, query observabilitystorageext.LabelCombinationsQuery) (*observabilitystorageext.LabelCombinationsResult, error) {
-	match := []string{buildSelector(query.MetricName, query.AppID, "", nil, nil, nil, nil)}
+	match := []string{buildSelector(query.MetricName, query.AppID, query.TenantID, "", nil, nil, nil, nil)}
 	series, err := r.client.Series(ctx, match, time.Now().Add(-24*time.Hour), time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("vm series failed: %w", err)
