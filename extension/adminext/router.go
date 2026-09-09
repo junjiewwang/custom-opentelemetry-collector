@@ -160,6 +160,27 @@ func (e *Extension) newRouter() http.Handler {
 		})
 
 		// ============================================================================
+		// Multi-tenancy: Tenant + read-path API key management
+		// ============================================================================
+		r.Route("/tenants", func(r chi.Router) {
+			r.Get("/", admin.listTenants)
+			r.Post("/", admin.createTenant)
+
+			r.Route("/{tenantID}", func(r chi.Router) {
+				r.Get("/", admin.getTenant)
+				r.Put("/", admin.updateTenant)
+				r.Delete("/", admin.deleteTenant)
+				r.Get("/apps", admin.listTenantApps)
+
+				r.Route("/keys", func(r chi.Router) {
+					r.Get("/", admin.listTenantKeys)
+					r.Post("/", admin.createTenantKey)
+					r.Delete("/{keyID}", admin.revokeTenantKey)
+				})
+			})
+		})
+
+		// ============================================================================
 		// Global Service View
 		// ============================================================================
 		r.Get("/services", admin.listAllServices)
