@@ -54,6 +54,31 @@ func TenantIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// keyTypeContextKey is the context key for the authenticated key type.
+type keyTypeContextKey struct{}
+
+// Key type values injected by the tenant auth middleware, exposed to the
+// frontend via /auth/me so it can render admin vs tenant views.
+const (
+	KeyTypeSuper    = "super"
+	KeyTypeOperator = "operator"
+	KeyTypeTenant   = "tenant"
+)
+
+// WithKeyType injects the key type into the context.
+func WithKeyType(ctx context.Context, keyType string) context.Context {
+	return context.WithValue(ctx, keyTypeContextKey{}, keyType)
+}
+
+// KeyTypeFromContext returns the authenticated key type ("super" / "operator" /
+// "tenant"), or "" when not injected.
+func KeyTypeFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(keyTypeContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // NewTenantAuthMiddleware returns middleware that authenticates via prefixed
 // API keys:
 //
@@ -88,7 +113,7 @@ func NewTenantAuthMiddleware(staticKeys []string, validator KeyValidator, logger
 			switch {
 			case strings.HasPrefix(key, apiKeyPrefixSuper):
 				if isStaticAPIKey(key, staticKeys) {
-					next.ServeHTTP(w, r) // global
+					next.ServeHTTP(w, r.WithContext(WithKeyType(r.Context(), KeyTypeSuper))) // global
 					return
 				}
 
@@ -103,7 +128,7 @@ func NewTenantAuthMiddleware(staticKeys []string, validator KeyValidator, logger
 			default:
 				// Backward compatibility: unprefixed static key first.
 				if isStaticAPIKey(key, staticKeys) {
-					next.ServeHTTP(w, r)
+					next.ServeHTTP(w, r.WithContext(WithKeyType(r.Context(), KeyTypeSuper)))
 					return
 				}
 				if validator != nil {
@@ -127,8 +152,12 @@ func authenticateDynamic(r *http.Request, key string, validator KeyValidator) (c
 		return nil, false
 	}
 	ctx := r.Context()
-	if keyType == "tk" {
+	switch keyType {
+	case "tk":
 		ctx = WithTenantID(ctx, tenantID)
+		ctx = WithKeyType(ctx, KeyTypeTenant)
+	case "ok":
+		ctx = WithKeyType(ctx, KeyTypeOperator)
 	}
 	return ctx, true
 }

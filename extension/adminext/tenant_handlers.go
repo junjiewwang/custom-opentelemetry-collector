@@ -27,6 +27,16 @@ func tenantError(err error) *APIError {
 	}
 }
 
+// handleAuthMe returns the authenticated identity (key type + tenant) for the
+// current request. The frontend calls this after login to decide whether to
+// render the admin UI or the tenant-scoped observability view.
+func (h *adminHandlers) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"key_type":  KeyTypeFromContext(r.Context()),
+		"tenant_id": TenantIDFromContext(r.Context()),
+	})
+}
+
 // ── Tenant CRUD ─────────────────────────────────────
 
 func (h *adminHandlers) listTenants(w http.ResponseWriter, r *http.Request) {

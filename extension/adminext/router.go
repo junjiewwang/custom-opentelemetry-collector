@@ -114,6 +114,13 @@ func (e *Extension) newRouter() http.Handler {
 		}
 
 		// ============================================================================
+		// Auth - identity (key type + tenant) for role-aware frontend rendering
+		// ============================================================================
+		// Accessible to all authenticated key types (super/operator/tenant) so the
+		// frontend can distinguish admin vs tenant views. NOT behind requireAdmin.
+		r.Get("/auth/me", admin.handleAuthMe)
+
+		// ============================================================================
 		// Auth - WebSocket Token (for secure WS connections)
 		// ============================================================================
 		r.With(requireAdminMiddleware).Post("/auth/ws-token", admin.generateWSToken)
@@ -254,7 +261,10 @@ func (e *Extension) newRouter() http.Handler {
 		// ============================================================================
 		obsV2 := newObsV2Handlers(e)
 		r.Route("/observability", func(r chi.Router) {
-			r.Use(requireAdminMiddleware)
+			// Trace/Metric/Log query endpoints are tenant-scoped (handlers inject
+			// TenantIDFromContext), so they are intentionally NOT admin-only: a
+			// tk_ tenant key may query its own data here. Only the /admin storage
+			// sub-tree is restricted below.
 			// --- Trace 查询 ---
 			if e.storageTraceReader != nil {
 				// V2 mode: structured responses from storage extension
@@ -292,6 +302,7 @@ func (e *Extension) newRouter() http.Handler {
 			// --- Storage Admin (仅 storage extension 模式) ---
 			if e.storageAdmin != nil {
 				r.Route("/admin", func(r chi.Router) {
+					r.Use(requireAdminMiddleware)
 					r.Get("/status", obsV2.handleStorageStatus)
 					r.Get("/health", obsV2.handleStorageHealth)
 					r.Get("/retention", obsV2.handleStorageRetention)
