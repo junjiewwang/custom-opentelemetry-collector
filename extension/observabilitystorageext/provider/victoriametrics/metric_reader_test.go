@@ -37,7 +37,7 @@ func newFakeVM(t *testing.T, handle func(w http.ResponseWriter, r *http.Request)
 }
 
 func newTestReader(c VMClient) *MetricReader {
-	return newMetricReader(c, zap.NewNop())
+	return newMetricReader(c, false, zap.NewNop())
 }
 
 func writeJSON(w http.ResponseWriter, body string) {

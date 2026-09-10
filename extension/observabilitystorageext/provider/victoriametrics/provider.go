@@ -45,7 +45,7 @@ func (p *Provider) Start(ctx context.Context) error {
 		p.logger.Warn("victoriametrics: initial health check failed (will retry on writes)", zap.String("msg", msg))
 	}
 	p.metricWriter = NewMetricWriter(p.client, p.config, p.logger)
-	p.metricReader = newMetricReader(p.client, p.logger)
+	p.metricReader = newMetricReader(p.client, p.config.AccountScope, p.logger)
 	return nil
 }
 
@@ -81,3 +81,15 @@ func (p *Provider) MetricReader() *MetricReader { return p.metricReader }
 
 // SetClient overrides the HTTP client (tests inject fakes before Start).
 func (p *Provider) SetClient(c VMClient) { p.client = c }
+
+// SetAccountResolver wires the tenant→account mapping (tenantmanager.ResolveAccountID)
+// into the reader and writer. A nil resolver disables account scoping (every
+// tenant resolves to account 0). Call before Start.
+func (p *Provider) SetAccountResolver(resolve AccountResolver) {
+	if p.metricReader != nil {
+		p.metricReader.SetAccountResolver(resolve)
+	}
+	if p.metricWriter != nil {
+		p.metricWriter.SetAccountResolver(resolve)
+	}
+}

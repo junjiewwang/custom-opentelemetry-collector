@@ -67,7 +67,7 @@ func TestIntegration_WriteAndExportRoundTrip(t *testing.T) {
 
 	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, zap.NewNop())
 	defer w.Stop()
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli: ts,
 		Name:          name,
 		Type:          "gauge",
@@ -104,7 +104,7 @@ func TestIntegration_HistogramDeltaExpansion(t *testing.T) {
 	// The # TYPE row must be flushed for VM's metadata to mark this family a
 	// histogram — QueryFlat's histogram branch depends on it.
 	w.noteType(base, storedmodel.MetricMeta{Type: "histogram"})
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli:          ts,
 		Name:                   base,
 		Type:                   "histogram",
@@ -142,7 +142,7 @@ func TestIntegration_QueryInstant(t *testing.T) {
 
 	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, zap.NewNop())
 	defer w.Stop()
-	w.ingestPoint(storedmetricPoint(name, 99.0, ts))
+	w.ingestPoint(context.Background(), storedmetricPoint(name, 99.0, ts))
 	require.NoError(t, w.Flush(ctx))
 
 	// Instant queries on a single stale sample are empty by Prometheus
@@ -184,14 +184,14 @@ func TestIntegration_ReaderFlatHistogramEndToEnd(t *testing.T) {
 
 	// Write a delta histogram, then read it back through the reader's
 	// QueryFlat histogram path (reassembly from _bucket/_sum/_count).
-	rd := newMetricReader(c, zap.NewNop())
+	rd := newMetricReader(c, false, zap.NewNop())
 
 	w := NewMetricWriter(c, &Config{Endpoint: os.Getenv("VM_TEST_ENDPOINT"), BatchSize: 1, FlushInterval: time.Hour}, zap.NewNop())
 	defer w.Stop()
 	// The # TYPE row must be flushed for VM's metadata to mark this family a
 	// histogram — QueryFlat's histogram branch depends on it.
 	w.noteType(base, storedmodel.MetricMeta{Type: "histogram"})
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli:          ts,
 		Name:                   base,
 		Type:                   "histogram",

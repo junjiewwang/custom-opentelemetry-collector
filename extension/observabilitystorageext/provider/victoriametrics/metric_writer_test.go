@@ -104,7 +104,7 @@ func newTestWriter(t *testing.T, status int, cfg *Config) (*MetricWriter, *[][]b
 func TestWriteMetrics_TextFormat(t *testing.T) {
 	w, bodies := newTestWriter(t, http.StatusNoContent, nil)
 	w.noteType("jvm_memory_used", storedmodel.MetricMeta{Type: "gauge"})
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{
 		TimeUnixMilli: 1700000000000,
 		Name:          "jvm_memory_used",
 		Type:          "gauge",
@@ -126,10 +126,10 @@ func TestWriteMetrics_TextFormat(t *testing.T) {
 func TestWriteMetrics_TypeRowEmittedOnce(t *testing.T) {
 	w, bodies := newTestWriter(t, http.StatusNoContent, nil)
 	w.noteType("counter_m", storedmodel.MetricMeta{Type: "counter"})
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 1, TimeUnixMilli: 1000})
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 1, TimeUnixMilli: 1000})
 	require.NoError(t, w.Flush(context.Background()))
 	// Second flush: same type → no repeated # TYPE row
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 2, TimeUnixMilli: 2000})
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 2, TimeUnixMilli: 2000})
 	require.NoError(t, w.Flush(context.Background()))
 
 	first := string((*bodies)[0])
@@ -141,7 +141,7 @@ func TestWriteMetrics_TypeRowEmittedOnce(t *testing.T) {
 
 func TestWriteMetrics_4xxFailsFastNoRetry(t *testing.T) {
 	w, bodies := newTestWriter(t, http.StatusBadRequest, nil)
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "m", Type: "gauge", Value: 1, TimeUnixMilli: 1})
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{Name: "m", Type: "gauge", Value: 1, TimeUnixMilli: 1})
 	err := w.Flush(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no retry")
@@ -150,7 +150,7 @@ func TestWriteMetrics_4xxFailsFastNoRetry(t *testing.T) {
 
 func TestWriteMetrics_5xxRetriesThenFails(t *testing.T) {
 	w, bodies := newTestWriter(t, http.StatusInternalServerError, &Config{MaxRetries: 2})
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "m", Type: "gauge", Value: 1, TimeUnixMilli: 1})
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{Name: "m", Type: "gauge", Value: 1, TimeUnixMilli: 1})
 	err := w.Flush(context.Background())
 	require.Error(t, err)
 	assert.Len(t, *bodies, 3, "initial + 2 retries")
@@ -179,7 +179,7 @@ func TestWriteMetrics_TypeRowReEmittedAfterSentTypesReset(t *testing.T) {
 	// ticker drives.
 	w, bodies := newTestWriter(t, http.StatusNoContent, nil)
 	w.noteType("counter_m", storedmodel.MetricMeta{Type: "counter"})
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 1, TimeUnixMilli: 1000})
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 1, TimeUnixMilli: 1000})
 	require.NoError(t, w.Flush(context.Background()))
 	require.Contains(t, string((*bodies)[0]), "# TYPE counter_m counter")
 
@@ -190,7 +190,7 @@ func TestWriteMetrics_TypeRowReEmittedAfterSentTypesReset(t *testing.T) {
 
 	// Next write → noteType sees the name as new → re-emits # TYPE.
 	w.noteType("counter_m", storedmodel.MetricMeta{Type: "counter"})
-	w.ingestPoint(storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 2, TimeUnixMilli: 2000})
+	w.ingestPoint(context.Background(), storedmodel.StoredMetricDataPoint{Name: "counter_m", Type: "counter", Value: 2, TimeUnixMilli: 2000})
 	require.NoError(t, w.Flush(context.Background()))
 	assert.Contains(t, string((*bodies)[1]), "# TYPE counter_m counter",
 		"after sentTypes reset, # TYPE must be re-emitted")
