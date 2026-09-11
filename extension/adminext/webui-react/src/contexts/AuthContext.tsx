@@ -29,10 +29,16 @@ interface AuthContextType {
   role: Role;
   /** 当前租户 ID（仅 tenant 角色非空） */
   tenantID: string;
+  /** 是否正在扮演其它租户（admin/operator 视角切换） */
+  impersonating: boolean;
+  /** 扮演的目标租户 ID（仅 impersonating 时非空） */
+  impersonatedTenantID: string;
   /** 登录（验证 API Key 并解析角色） */
   login: (apiKey: string, remember: boolean) => Promise<void>;
   /** 登出 */
   logout: () => void;
+  /** 扮演某租户（传空串 = 退出扮演回到全局视角） */
+  impersonate: (tenantID: string) => Promise<void>;
   /** 登录加载状态 */
   loginLoading: boolean;
   /** 登录错误信息 */
@@ -58,8 +64,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [role, setRole] = useState<Role>('admin');
   const [tenantID, setTenantID] = useState('');
+  const [impersonating, setImpersonating] = useState(false);
+  const [impersonatedTenantID, setImpersonatedTenantID] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
+
+  // 应用 /auth/me 返回的身份：key_type → role，impersonating → 扮演状态。
+  // 注意：扮演时后端把生效租户放到 tenant_id 上（actor 本身是 admin），所以
+  // 扮演态下 tenantID 置空、impersonatedTenantID 取 tenant_id。
+  const applyAuthMe = useCallback((me: AuthMe) => {
+    setRole(roleFromAuthMe(me));
+    setTenantID(me.impersonating ? '' : (me.tenant_id || ''));
+    setImpersonating(me.impersonating || false);
+    setImpersonatedTenantID(me.impersonating ? (me.tenant_id || '') : '');
+  }, []);
 
   // 启动时尝试从 localStorage 恢复 API Key
   useEffect(() => {
@@ -71,8 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // 用 /auth/me 验证 key 是否有效 + 解析角色
         apiClient.getAuthMe()
           .then((me) => {
-            setRole(roleFromAuthMe(me));
-            setTenantID(me.tenant_id || '');
+            applyAuthMe(me);
             setAuthenticated(true);
           })
           .catch(() => {
@@ -94,8 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 后者是 admin-only，会导致 tenant key 登录失败）
       const me = await apiClient.getAuthMe();
 
-      setRole(roleFromAuthMe(me));
-      setTenantID(me.tenant_id || '');
+      applyAuthMe(me);
 
       // 保存到 localStorage
       if (remember) {
@@ -122,14 +138,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     apiClient.setApiKey('');
+    apiClient.clearImpersonateTenant();
     localStorage.removeItem(STORAGE_KEY_API_KEY);
     setAuthenticated(false);
     setRole('admin');
     setTenantID('');
+    setImpersonating(false);
+    setImpersonatedTenantID('');
   }, []);
 
+  // 扮演（admin/operator）：设置 X-Tenant-Id 头并重取 /auth/me 确认；空串 = 退出扮演。
+  const impersonate = useCallback(async (targetTenantID: string) => {
+    apiClient.setImpersonateTenant(targetTenantID);
+    try {
+      const me = await apiClient.getAuthMe();
+      applyAuthMe(me);
+    } catch (err) {
+      apiClient.clearImpersonateTenant();
+      setImpersonating(false);
+      setImpersonatedTenantID('');
+      throw err;
+    }
+  }, [applyAuthMe]);
+
   return (
-    <AuthContext.Provider value={{ authenticated, role, tenantID, login, logout, loginLoading, loginError }}>
+    <AuthContext.Provider value={{ authenticated, role, tenantID, impersonating, impersonatedTenantID, login, logout, impersonate, loginLoading, loginError }}>
       {children}
     </AuthContext.Provider>
   );

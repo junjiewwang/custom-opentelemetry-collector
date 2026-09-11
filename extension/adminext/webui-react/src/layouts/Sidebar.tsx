@@ -11,6 +11,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSidebar } from '@/contexts/SidebarContext';
+import TenantSwitcher from '@/components/TenantSwitcher';
 
 /** 菜单分组 */
 interface MenuItem {
@@ -101,6 +102,9 @@ export default function Sidebar() {
             </>
           )}
         </div>
+
+        {/* 租户切换器（admin 扮演，仅展开时显示）*/}
+        {(!collapsed || isMobile) && <TenantSwitcher />}
 
         {/* Navigation Groups */}
         <nav className="flex-1 overflow-y-auto py-3 px-3">

@@ -86,10 +86,13 @@ interface InstrumentationTargetListResponse {
 export interface AuthMe {
   key_type: string;
   tenant_id: string;
+  /** true when an admin/operator key is impersonating another tenant. */
+  impersonating?: boolean;
 }
 
 class ApiClient {
   private apiKey: string = '';
+  private impersonateTenant: string = '';
 
   setApiKey(key: string): void {
     this.apiKey = key;
@@ -99,16 +102,29 @@ class ApiClient {
     return this.apiKey;
   }
 
+  /** Set the tenant to impersonate (admin "view as tenant"). Empty clears it. */
+  setImpersonateTenant(tenantID: string): void {
+    this.impersonateTenant = tenantID;
+  }
+
+  clearImpersonateTenant(): void {
+    this.impersonateTenant = '';
+  }
+
   /**
    * 通用请求方法
    */
   async request<T>(method: string, path: string, data?: unknown): Promise<T> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-API-Key': this.apiKey,
+    };
+    if (this.impersonateTenant) {
+      headers['X-Tenant-Id'] = this.impersonateTenant;
+    }
     const options: RequestInit = {
       method,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': this.apiKey,
-      },
+      headers,
     };
 
     if (data) {
