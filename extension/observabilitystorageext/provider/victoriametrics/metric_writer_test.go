@@ -35,7 +35,7 @@ func TestConvertHistogram_DeltaAccumulates(t *testing.T) {
 		ExplicitBounds:         []float64{1, 5},
 		AggregationTemporality: "delta",
 	}
-	samples := convertHistogram(pt, nil)
+	samples := convertHistogram(pt, nil, false)
 	byKey := map[string]textSample{}
 	for _, s := range samples {
 		byKey[s.metric+"|"+s.labels["le"]] = s
@@ -64,7 +64,7 @@ func TestConvertHistogram_CumulativeAsIs(t *testing.T) {
 		ExplicitBounds:         []float64{1, 5},
 		AggregationTemporality: "cumulative",
 	}
-	samples := convertHistogram(pt, nil)
+	samples := convertHistogram(pt, nil, false)
 	byLE := map[string]float64{}
 	for _, s := range samples {
 		if s.metric == "http_duration_bucket" {

@@ -6,6 +6,8 @@ package victoriametrics
 import (
 	"context"
 	"testing"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 )
 
 func TestWriteReadPathAccountScope(t *testing.T) {
@@ -49,7 +51,7 @@ func TestResolveAccountID(t *testing.T) {
 	}
 	// Empty tenant → 0 (never hits the resolver).
 	called := false
-	r := AccountResolver(func(_ context.Context, tenantID string) (uint32, error) {
+	r := tenantctx.AccountResolver(func(_ context.Context, tenantID string) (uint32, error) {
 		called = true
 		return 7, nil
 	})

@@ -2261,7 +2261,9 @@ func (h *promHandlers) tryNativePromQLInstant(ctx context.Context, queryStr stri
 	if !rewritten {
 		return nil
 	}
-	expr = injectTenantLabel(expr, TenantIDFromContext(ctx))
+	if !h.usesAccountScoping {
+		expr = injectTenantLabel(expr, TenantIDFromContext(ctx))
+	}
 	res, err := h.nativePromQL.ExecPromQLInstant(ctx, expr, evalTime)
 	if err != nil {
 		h.logger.Debug("native promql instant failed", zap.String("query", expr), zap.Error(err))
@@ -2406,7 +2408,9 @@ func (h *promHandlers) tryNativePromQLRange(ctx context.Context, queryStr string
 	if !rewritten {
 		return nil
 	}
-	expr = injectTenantLabel(expr, TenantIDFromContext(ctx))
+	if !h.usesAccountScoping {
+		expr = injectTenantLabel(expr, TenantIDFromContext(ctx))
+	}
 	res, err := h.nativePromQL.ExecPromQLRange(ctx, expr, start, end, step)
 	if err != nil {
 		h.logger.Debug("native promql range failed", zap.String("query", expr), zap.Error(err))

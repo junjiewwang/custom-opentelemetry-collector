@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -79,6 +80,13 @@ type Provider struct {
 	// imported here (victoriametrics imports the extension package for its
 	// public-interface implementation — see Config.VM comment).
 	vmMetricReader any
+	// vmAccountResolverSetter retains the VM lifecycle's SetAccountResolver so
+	// the extension layer can wire tenantmanager.ResolveAccountID without naming
+	// the victoriametrics type (same import-cycle constraint as vmMetricReader).
+	vmAccountResolverSetter vmAccountResolverSetter
+	// vmAccountResolver stores the resolver set before the VM sub-provider was
+	// retained, making SetAccountResolver order-independent with respect to Start.
+	vmAccountResolver tenantctx.AccountResolver
 }
 
 // NewProvider creates a new Hybrid provider instance.
@@ -204,6 +212,12 @@ func (p *Provider) startVM(ctx context.Context) (subProvider, error) {
 	}
 	if ap, ok := lp.(vmReaderProvider); ok {
 		p.vmMetricReader = ap.VMMetricReader()
+	}
+	if as, ok := lp.(vmAccountResolverSetter); ok {
+		p.vmAccountResolverSetter = as
+		if p.vmAccountResolver != nil {
+			as.SetAccountResolver(p.vmAccountResolver)
+		}
 	}
 	p.logger.Info("VM sub-provider started")
 	return &vmSubProvider{LifecycleProvider: lp}, nil
@@ -350,6 +364,16 @@ func (p *Provider) PGProvider() *postgresql.Provider   { return p.pgProvider }
 func (p *Provider) VMMetricReader() any {
 	return p.vmMetricReader
 }
+
+// SetAccountResolver wires the tenant→account resolver into the VM backend
+// (no-op when metrics route elsewhere). It stores the resolver and forwards it
+// to the retained VM lifecycle, so it may be called before or after Start.
+func (p *Provider) SetAccountResolver(resolve tenantctx.AccountResolver) {
+	p.vmAccountResolver = resolve
+	if p.vmAccountResolverSetter != nil {
+		p.vmAccountResolverSetter.SetAccountResolver(resolve)
+	}
+}
 func (p *Provider) TraceBackend() string                { return p.routing[storedmodel.SignalTrace] }
 func (p *Provider) MetricBackend() string               { return p.routing[storedmodel.SignalMetric] }
 func (p *Provider) LogBackend() string                  { return p.routing[storedmodel.SignalLog] }
@@ -368,6 +392,13 @@ func (p *Provider) AdminBackend() string                { return p.routing[store
 // layer asserts it to the public MetricReader interface).
 type vmReaderProvider interface {
 	VMMetricReader() any
+}
+
+// vmAccountResolverSetter is the optional interface the VM lifecycle exposes to
+// receive the tenant→account resolver (promoted from the embedded
+// victoriametrics.Provider). The extension layer reaches it via Provider.
+type vmAccountResolverSetter interface {
+	SetAccountResolver(resolve tenantctx.AccountResolver)
 }
 
 type vmSubProvider struct {

@@ -31,3 +31,33 @@ func TenantIDFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
+// AccountResolver maps a tenant ID to a VictoriaMetrics account ID for native
+// multitenancy (vm-cluster). It is injected by the extension layer, which owns
+// the tenant→account mapping (tenantmanager.ResolveAccountID). A nil resolver
+// means account scoping is unwired; an empty tenantID always resolves to
+// account 0 (the default / global account).
+//
+// It lives here (not in provider/victoriametrics) because both the VM provider
+// and the extension layer must name the type, and the extension cannot import
+// the provider without an import cycle — the same reason tenantIDContextKey
+// lives in this leaf package.
+type AccountResolver func(ctx context.Context, tenantID string) (uint32, error)
+
+// impersonatingContextKey is the context key for the impersonation flag.
+type impersonatingContextKey struct{}
+
+// WithImpersonating marks the request as impersonating another tenant. The auth
+// middleware sets this when an admin/operator key supplies an X-Tenant-Id scope;
+// storage providers and audit paths read it via ImpersonatingFromContext to
+// distinguish a real tenant request from an admin acting on a tenant's behalf.
+func WithImpersonating(ctx context.Context, impersonating bool) context.Context {
+	return context.WithValue(ctx, impersonatingContextKey{}, impersonating)
+}
+
+// ImpersonatingFromContext reports whether the request is impersonating another
+// tenant (false for unmarked requests and for genuine tenant-key requests).
+func ImpersonatingFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(impersonatingContextKey{}).(bool)
+	return v
+}

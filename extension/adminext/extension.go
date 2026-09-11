@@ -524,6 +524,10 @@ func (e *Extension) initObservability(host component.Host) error {
 					if e.retentionProvider != nil && e.tokenMgr != nil {
 						e.observabilityStorage.SetAppRetentionProvider(e.retentionProvider, e.tokenMgr)
 					}
+					// Bridge tenant→account resolver for VM native multitenancy.
+					if e.tenantMgr != nil {
+						e.observabilityStorage.SetMetricAccountResolver(e.tenantMgr.Tenants.ResolveAccountID)
+					}
 					e.logger.Info("Observability readers initialized from storage extension",
 						zap.String("extension", e.config.Observability.StorageExtension),
 						zap.Bool("trace_reader", e.storageTraceReader != nil),

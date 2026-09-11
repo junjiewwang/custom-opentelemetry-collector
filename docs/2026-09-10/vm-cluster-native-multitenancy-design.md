@@ -108,8 +108,27 @@ type Tenant struct {
   前缀,命中 account 0。
 - **全局数据**(写入时无 tenant,如 collector-self 内部指标)也落 account 0,admin 可见,
   租户不可见——与现有语义一致。
-- 需要回答:admin 是否应看到所有租户的数据?现状(软隔离)admin 无 filter 能看到全部;原生模型
-  下 admin 若走 account 0 则**看不到**其它 account。**这是关键语义变化**,见 §7 开放问题。
+- 原生模型下 admin 若走 account 0 则**看不到**其它 account 的数据。原软隔离下 admin 无 filter
+  可见全部,迁移后默认视图收窄为 account 0——这是语义变化,但由「admin 三读面」补齐(见下),
+  不构成能力退步,反而是「最小可见 + 按需查看」的更安全方向。
+
+**admin 三读面(定稿结论)**
+
+admin 的「看」拆成三个正交平面,各有独立通道,**均不需要查询层跨 account fan-out**:
+
+| 平面 | 诉求 | 通道 |
+|---|---|---|
+| 数据平面(复现) | 看某租户实际看到什么(排查/复现) | 扮演:显式传 tenantID → `/select/<acct>/` |
+| 数据平面(计量) | 某租户的业务用量(调用量/错误率) | 扮演 + 查,或直接读存储账本 |
+| 资源平面 | 每租户吃多少存储/序列、全局资源分布 | `vmstorage /metrics` 的 `vm_tenant_*` per-account 账本 |
+
+- **扮演(admin impersonation)**:admin 显式指定 scope(tenantID),走与租户相同的
+  `ResolveAccountID → /select/<acct>/` 路径。需把「认证身份 actor」与「生效作用域 scope」拆开
+  (见 §7);`tk_` 键硬绑定自身租户,请求携带的 impersonation 参数必须被忽略/拒绝;仅 `ok_`/`sk_`
+  可扮演,并记审计日志。
+- **存储账本**:硬隔离自带,`vmstorage /metrics` 暴露 `vm_tenant_used_bytes` / `vm_tenant_rows` /
+  `vm_tenant_series` / `vm_tenant_timeseries_created_total`(label `accountID`/`projectID`)。
+  admin 资源面板拉取后把 `accountID` 反解回 tenant 名即可,数据面零查询代码改动。
 
 ### 5.5 vmauth vs 直连
 
@@ -144,8 +163,15 @@ vmauth 配置。vmauth 可作**可选前置网关**留给合规/限流场景。
 
 - **硬隔离只覆盖指标 1/3**:trace/log 仍 ES 软隔离,`tenantId.keyword` 纪律照旧要守。迁移不减少
   ES 侧的防漏义务。
-- **admin 可见性语义变化**(§5.4):原生 account 下 admin 默认只见 account 0,是否要让 admin
-  遍历所有 account 聚合?需要在查询层做「跨 account fan-out」——这是最大的额外复杂度。
+- **admin 可见性语义变化(已定稿,见 §5.4)**:原生 account 下 admin 默认只见 account 0。原
+  「跨 account fan-out」方案经论证**不需要**——它假设 admin 需在查询层合并租户数据,而实际
+  诉求由「admin 三读面」(扮演 / 存储账本 / account 0)全部覆盖,fan-out 是用错了工具。
+- **admin 扮演的 actor/scope 分离**:`TenantID` 字段现身兼「认证身份」与「生效作用域」两职,
+  支持扮演后必须拆开——actor 由 key 类型决定授权,scope 决定拼 `/select/<acct>/`。`tk_` 键
+  scope 恒等于自身租户,忽略任何 impersonation 参数;`ok_`/`sk_` 才可扮演,并写审计日志。
+- **ES 软隔离无存储账本(新开放项)**:指标迁移后 `vm_tenant_*` 白送 per-tenant 存储计量;
+  trace/log 的 ES 侧没有原生账本,per-tenant 存储占用需按 `tenantId` 聚合或 per-app index
+  统计(再靠 app→tenant 映射),成本与准确性都差一截。trace/log 的存储计量需单独立项。
 - **account 配额/回收**:VM account 无内置配额,内存/磁盘隔离需靠 storage 层配置。
 - **回填成本**:vmsingle 历史数据(带 `tenant_id` label)迁到 account 需按 tenant 拆写。
 

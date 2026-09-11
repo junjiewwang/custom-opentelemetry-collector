@@ -447,6 +447,7 @@ type VictoriaMetricsConfig struct {
 	ReadTimeout   time.Duration     `mapstructure:"read_timeout"`
 	MaxRetries    int               `mapstructure:"max_retries"`
 	ExtraLabels   map[string]string `mapstructure:"extra_labels"`
+	AccountScope  bool              `mapstructure:"account_scope"`
 }
 
 // GetVMProviderConfig returns a providerregistry.VMConfigView-compatible
@@ -480,6 +481,7 @@ func (c *VictoriaMetricsConfig) GetVMProviderConfig() registry.VMConfigView {
 		ReadTimeout:   c.ReadTimeout,
 		MaxRetries:    c.MaxRetries,
 		ExtraLabels:   c.ExtraLabels,
+		AccountScope:  c.AccountScope,
 	}
 }
 
@@ -517,8 +519,11 @@ func (cfg *HybridConfig) Validate(parent *Config) error {
 	if needsVM && parent.VictoriaMetrics == nil {
 		return errors.New("hybrid routing requires victoriametrics config but 'victoriametrics' section is missing")
 	}
-	if needsVM && parent.VictoriaMetrics.Endpoint == "" {
-		return errors.New("hybrid: victoriametrics config invalid: endpoint is required")
+	if needsVM && parent.VictoriaMetrics.Endpoint == "" && parent.VictoriaMetrics.WriteEndpoint == "" {
+		return errors.New("hybrid: victoriametrics config invalid: endpoint (or write_endpoint) is required")
+	}
+	if needsVM && parent.VictoriaMetrics.WriteEndpoint != "" && parent.VictoriaMetrics.ReadEndpoint == "" && parent.VictoriaMetrics.Endpoint == "" {
+		return errors.New("hybrid: victoriametrics config invalid: read_endpoint (or endpoint) is required when write_endpoint is set")
 	}
 
 	// Validate sub-provider configs

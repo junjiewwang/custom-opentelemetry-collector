@@ -160,7 +160,9 @@ extensions:
     # stay on elasticsearch. Rollback = set hybrid.metric back to elasticsearch
     # (historical ES data is untouched).
     victoriametrics:
-      endpoint: "http://vmsingle.vm-minimal.svc.cluster.local:8428"
+      write_endpoint: "http://vminsert.vm-cluster.svc.cluster.local:8480"
+      read_endpoint: "http://vmselect.vm-cluster.svc.cluster.local:8481"
+      account_scope: true
       flush_interval: 3s
       batch_size: 5000
       write_timeout: 10s
@@ -370,13 +372,6 @@ extensions:
       type: redis  # "memory" or "redis"
       redis_name: default
       key_prefix: "otel:tenants"
-      # Built-in apps auto-registered on startup (idempotent — skip if exists).
-      # collector_self is the built-in app for the collector's own internal telemetry.
-      # Its token is injected into internal spans via service.telemetry.resource.
-      seed_apps:
-        - name: collector-self
-          token: collector-self-monitoring-token
-          description: "Collector internal self-monitoring telemetry"
 
   # Admin extension - Management HTTP API interface
   # Provides REST APIs for frontend management

@@ -3,18 +3,16 @@
 
 package victoriametrics
 
-import "context"
+import (
+	"context"
 
-// AccountResolver maps a tenant ID to a VictoriaMetrics account ID for native
-// multitenancy (vm-cluster). It is injected by the extension layer, which owns
-// the tenant→account mapping (tenantmanager.ResolveAccountID). A nil resolver
-// means account scoping is not wired; an empty tenantID always resolves to
-// account 0 (the default / global account).
-type AccountResolver func(ctx context.Context, tenantID string) (uint32, error)
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
+)
 
 // resolveAccountID resolves the account for a tenant, defaulting to 0 for a nil
-// resolver or empty tenant.
-func resolveAccountID(r AccountResolver, ctx context.Context, tenantID string) (uint32, error) {
+// resolver or empty tenant. AccountResolver is defined in tenantctx (a shared
+// leaf package) so both the VM provider and the extension layer can name it.
+func resolveAccountID(r tenantctx.AccountResolver, ctx context.Context, tenantID string) (uint32, error) {
 	if r == nil || tenantID == "" {
 		return 0, nil
 	}

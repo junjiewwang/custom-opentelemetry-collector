@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
@@ -40,7 +41,7 @@ type MetricWriter struct {
 	config         *Config
 	logger         *zap.Logger
 	accountScope   bool
-	resolveAccount AccountResolver
+	resolveAccount tenantctx.AccountResolver
 
 	mu         sync.Mutex
 	buffer     []textSample
@@ -79,7 +80,7 @@ func NewMetricWriter(client VMClient, config *Config, logger *zap.Logger) *Metri
 
 // SetAccountResolver wires the tenant→account mapping (tenantmanager.ResolveAccountID).
 // A nil resolver is fine: account scoping then resolves every tenant to account 0.
-func (w *MetricWriter) SetAccountResolver(resolve AccountResolver) {
+func (w *MetricWriter) SetAccountResolver(resolve tenantctx.AccountResolver) {
 	w.resolveAccount = resolve
 }
 
@@ -158,22 +159,22 @@ func (w *MetricWriter) ingestPoint(ctx context.Context, pt storedmodel.StoredMet
 		}
 	}
 	if pt.Type == "histogram" && len(pt.BucketCounts) > 0 {
-		for _, s := range convertHistogram(pt, w.config.ExtraLabels) {
+		for _, s := range convertHistogram(pt, w.config.ExtraLabels, w.accountScope) {
 			s.accountID = accountID
 			w.addSample(s)
 		}
 		return
 	}
-	s := pointToSample(pt, w.config.ExtraLabels)
+	s := pointToSample(pt, w.config.ExtraLabels, w.accountScope)
 	s.accountID = accountID
 	w.addSample(s)
 }
 
 // pointToSample converts a gauge/counter/summary point to one text sample.
-func pointToSample(pt storedmodel.StoredMetricDataPoint, extra map[string]string) textSample {
+func pointToSample(pt storedmodel.StoredMetricDataPoint, extra map[string]string, accountScope bool) textSample {
 	return textSample{
 		metric:     sanitizeName(pt.Name),
-		labels:     baseLabels(pt, extra),
+		labels:     baseLabels(pt, extra, accountScope),
 		value:      pt.Value,
 		timeUnixMi: pt.TimeUnixMilli,
 	}
@@ -182,7 +183,7 @@ func pointToSample(pt storedmodel.StoredMetricDataPoint, extra map[string]string
 // baseLabels builds the label set for a point: service_name + extra labels +
 // the point's own labels. __name__ is NOT in this map (text format has the
 // name outside the braces). app_id is injected from pt.AppID.
-func baseLabels(pt storedmodel.StoredMetricDataPoint, extra map[string]string) map[string]string {
+func baseLabels(pt storedmodel.StoredMetricDataPoint, extra map[string]string, accountScope bool) map[string]string {
 	labels := make(map[string]string, len(pt.Labels)+len(extra)+3)
 	if pt.ServiceName != "" {
 		labels["service_name"] = pt.ServiceName
@@ -190,7 +191,10 @@ func baseLabels(pt storedmodel.StoredMetricDataPoint, extra map[string]string) m
 	if pt.AppID != "" {
 		labels["app_id"] = pt.AppID
 	}
-	if pt.TenantID != "" {
+	// In account-scoped mode the account itself isolates tenants (data is routed
+	// to /insert/<account>/), so no tenant_id label is written — it would be
+	// redundant and the read path no longer filters on it.
+	if pt.TenantID != "" && !accountScope {
 		labels["tenant_id"] = pt.TenantID
 	}
 	for k, v := range extra {
@@ -206,8 +210,8 @@ func baseLabels(pt storedmodel.StoredMetricDataPoint, extra map[string]string) m
 // sub-series samples: <base>_bucket{le=...} (cumulative), <base>_bucket{le="+Inf"},
 // <base>_sum, <base>_count. Delta bucket_counts are accumulated to
 // cumulative; cumulative bucket_counts are written as-is.
-func convertHistogram(pt storedmodel.StoredMetricDataPoint, extra map[string]string) []textSample {
-	base := baseLabels(pt, extra)
+func convertHistogram(pt storedmodel.StoredMetricDataPoint, extra map[string]string, accountScope bool) []textSample {
+	base := baseLabels(pt, extra, accountScope)
 	name := sanitizeName(pt.Name)
 
 	delta := pt.AggregationTemporality != "cumulative"

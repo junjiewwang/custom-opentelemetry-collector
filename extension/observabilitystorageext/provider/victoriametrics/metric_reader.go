@@ -27,7 +27,7 @@ var _ observabilitystorageext.MetricReader = (*MetricReader)(nil)
 type MetricReader struct {
 	client         VMClient
 	accountScope   bool
-	resolveAccount AccountResolver
+	resolveAccount tenantctx.AccountResolver
 	logger         *zap.Logger
 }
 
@@ -37,7 +37,7 @@ func newMetricReader(client VMClient, accountScope bool, logger *zap.Logger) *Me
 
 // SetAccountResolver wires the tenant→account mapping (tenantmanager.ResolveAccountID).
 // A nil resolver is fine: account scoping then resolves every tenant to account 0.
-func (r *MetricReader) SetAccountResolver(resolve AccountResolver) {
+func (r *MetricReader) SetAccountResolver(resolve tenantctx.AccountResolver) {
 	r.resolveAccount = resolve
 }
 
@@ -61,6 +61,12 @@ func (r *MetricReader) clientForTenant(ctx context.Context, tenantID string) (VM
 // which would otherwise query a dotted name VM never stored and return zero
 // series (observed live: avg(jvm_memory_used) → VM queried jvm.memory.used → 0).
 func (r *MetricReader) UsesDottedMetricNames() bool { return false }
+
+// UsesAccountScoping implements observabilitystorageext.AccountScoping. In
+// account-scoped mode the account itself isolates tenants, so the query layer
+// must not inject a tenant_id label matcher (the label is not written on the
+// ingest side either — see metric_writer.baseLabels).
+func (r *MetricReader) UsesAccountScoping() bool { return r.accountScope }
 
 // defaultFlatMaxDocs caps QueryFlat/QueryRaw sample counts. VM's export has
 // no ES-style max_result_window, but an unbounded window can still return
