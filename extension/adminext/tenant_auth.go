@@ -21,6 +21,12 @@ const (
 	apiKeyPrefixTenant   = "tk_"
 )
 
+// impersonateTenantHeader lets an admin/operator key act on behalf of a tenant
+// (impersonation): the effective tenant scope becomes the header value while the
+// actor's key type stays the same. Tenant (tk_) keys ignore it — they are
+// hard-bound to their own tenant.
+const impersonateTenantHeader = "X-Tenant-Id"
+
 // KeyValidator is the narrow, consumer-side interface the tenant auth
 // middleware needs to validate ok_/tk_ dynamic keys. It is satisfied by an
 // adapter over tenantmanager.APIKeyService, keeping adminext decoupled from the
@@ -110,13 +116,15 @@ func NewTenantAuthMiddleware(staticKeys []string, validator KeyValidator, logger
 			switch {
 			case strings.HasPrefix(key, apiKeyPrefixSuper):
 				if isStaticAPIKey(key, staticKeys) {
-					next.ServeHTTP(w, r.WithContext(WithKeyType(r.Context(), KeyTypeSuper))) // global
+					ctx := applyImpersonation(r, WithKeyType(r.Context(), KeyTypeSuper), KeyTypeSuper, logger)
+					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
 
 			case strings.HasPrefix(key, apiKeyPrefixOperator), strings.HasPrefix(key, apiKeyPrefixTenant):
 				if validator != nil {
 					if ctx, ok := authenticateDynamic(r, key, validator); ok {
+						ctx = applyImpersonation(r, ctx, KeyTypeFromContext(ctx), logger)
 						next.ServeHTTP(w, r.WithContext(ctx))
 						return
 					}
@@ -125,11 +133,13 @@ func NewTenantAuthMiddleware(staticKeys []string, validator KeyValidator, logger
 			default:
 				// Backward compatibility: unprefixed static key first.
 				if isStaticAPIKey(key, staticKeys) {
-					next.ServeHTTP(w, r.WithContext(WithKeyType(r.Context(), KeyTypeSuper)))
+					ctx := applyImpersonation(r, WithKeyType(r.Context(), KeyTypeSuper), KeyTypeSuper, logger)
+					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
 				if validator != nil {
 					if ctx, ok := authenticateDynamic(r, key, validator); ok {
+						ctx = applyImpersonation(r, ctx, KeyTypeFromContext(ctx), logger)
 						next.ServeHTTP(w, r.WithContext(ctx))
 						return
 					}
@@ -159,6 +169,26 @@ func authenticateDynamic(r *http.Request, key string, validator KeyValidator) (c
 	return ctx, true
 }
 
+// applyImpersonation resolves an impersonation request for admin/operator keys.
+// It returns the (possibly tenant-scoped) context; tk_ keys are hard-bound to
+// their own tenant and ignore any impersonation header. An audit log line is
+// emitted on every impersonation.
+func applyImpersonation(r *http.Request, ctx context.Context, keyType string, logger *zap.Logger) context.Context {
+	if keyType == KeyTypeTenant {
+		return ctx
+	}
+	target := r.Header.Get(impersonateTenantHeader)
+	if target == "" {
+		return ctx
+	}
+	logger.Info("admin impersonating tenant",
+		zap.String("actor_key_type", keyType),
+		zap.String("target_tenant", target),
+		zap.String("path", r.URL.Path),
+	)
+	return tenantctx.WithImpersonating(WithTenantID(ctx, target), true)
+}
+
 // extractAPIKey pulls the key from X-API-Key or Authorization: Bearer.
 func extractAPIKey(r *http.Request) string {
 	if key := r.Header.Get("X-API-Key"); key != "" {
@@ -186,7 +216,10 @@ func isStaticAPIKey(key string, staticKeys []string) bool {
 // Tempo / Loki), where TenantID is used for data isolation instead.
 func requireAdminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if TenantIDFromContext(r.Context()) != "" {
+		// Key-type-aware: block only genuine tenant (tk_) keys. Admin/operator
+		// keys stay authorized even when impersonating a tenant (which injects a
+		// tenant ID into the context but keeps the key type super/operator).
+		if KeyTypeFromContext(r.Context()) == KeyTypeTenant {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}

@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 )
 
 // tenantError maps a tenantmanager sentinel error to the HTTP API error.
@@ -32,8 +33,9 @@ func tenantError(err error) *APIError {
 // render the admin UI or the tenant-scoped observability view.
 func (h *adminHandlers) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]any{
-		"key_type":  KeyTypeFromContext(r.Context()),
-		"tenant_id": TenantIDFromContext(r.Context()),
+		"key_type":      KeyTypeFromContext(r.Context()),
+		"tenant_id":     TenantIDFromContext(r.Context()),
+		"impersonating": tenantctx.ImpersonatingFromContext(r.Context()),
 	})
 }
 
