@@ -66,6 +66,20 @@ func (h *adminHandlers) listApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// When impersonating a tenant, scope to its apps only (global view otherwise).
+	if appFilter, err := h.tenantAppFilter(r.Context()); err != nil {
+		h.handleError(w, err)
+		return
+	} else if appFilter != nil {
+		filtered := apps[:0]
+		for _, app := range apps {
+			if appFilter[app.ID] {
+				filtered = append(filtered, app)
+			}
+		}
+		apps = filtered
+	}
+
 	type appWithStats struct {
 		ID           string            `json:"id"`
 		Name         string            `json:"name"`
