@@ -4,6 +4,7 @@
 package adminext
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -519,6 +520,29 @@ func (h *adminHandlers) kickAppInstance(w http.ResponseWriter, r *http.Request) 
 // Global Service View
 // ============================================================================
 
+// tenantAppFilter returns the set of app IDs owned by the effective tenant, or
+// nil when the request is global (no impersonation / no tenant key). Management
+// enumeration endpoints (services/instances) use it to scope to a tenant when
+// an admin is impersonating one, while keeping the global view for a plain admin.
+func (h *adminHandlers) tenantAppFilter(ctx context.Context) (map[string]bool, error) {
+	tenantID := TenantIDFromContext(ctx)
+	if tenantID == "" {
+		return nil, nil
+	}
+	if h.tenantMgr == nil {
+		return nil, nil
+	}
+	appIDs, err := h.tenantMgr.Tenants.ListTenantApps(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(appIDs))
+	for _, id := range appIDs {
+		set[id] = true
+	}
+	return set, nil
+}
+
 func (h *adminHandlers) listAllServices(w http.ResponseWriter, r *http.Request) {
 	query := servicemanager.ListServicesQuery{
 		NamePattern:    r.URL.Query().Get("name"),
@@ -529,6 +553,20 @@ func (h *adminHandlers) listAllServices(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		h.handleError(w, err)
 		return
+	}
+
+	// When impersonating a tenant, scope to its apps only (global view otherwise).
+	if appFilter, err := h.tenantAppFilter(r.Context()); err != nil {
+		h.handleError(w, err)
+		return
+	} else if appFilter != nil {
+		filtered := make([]*servicemanager.ServiceInfo, 0, len(services))
+		for _, svc := range services {
+			if appFilter[svc.AppID] {
+				filtered = append(filtered, svc)
+			}
+		}
+		services = filtered
 	}
 
 	// Enrich with runtime stats from AgentRegistry
@@ -620,6 +658,20 @@ func (h *adminHandlers) listAllInstances(w http.ResponseWriter, r *http.Request)
 			h.handleError(w, err)
 			return
 		}
+	}
+
+	// When impersonating a tenant, scope to its apps only (global view otherwise).
+	if appFilter, err := h.tenantAppFilter(r.Context()); err != nil {
+		h.handleError(w, err)
+		return
+	} else if appFilter != nil {
+		filtered := make([]*agentregistry.AgentInfo, 0, len(instances))
+		for _, inst := range instances {
+			if appFilter[inst.AppID] {
+				filtered = append(filtered, inst)
+			}
+		}
+		instances = filtered
 	}
 
 	// Apply status filter when needed (for appID queries or "offline" filter)
