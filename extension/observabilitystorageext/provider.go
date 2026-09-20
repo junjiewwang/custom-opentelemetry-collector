@@ -261,6 +261,15 @@ type MetricNameScheme interface {
 	UsesDottedMetricNames() bool
 }
 
+// AccountScoping is an optional capability a MetricReader may implement to
+// declare that its backend isolates tenants via native account scoping
+// (VictoriaMetrics vm-cluster accountID), not via a tenant_id label. When set,
+// the query layer must NOT inject a tenant_id label matcher — the account
+// itself isolates the data and the ingest side does not write the label.
+type AccountScoping interface {
+	UsesAccountScoping() bool
+}
+
 // NativeHeatmapRange is an optional capability a MetricReader may implement to
 // answer a histogram heatmap range query — `sum by (le[, g...]) (rate(m[5m]))` —
 // directly in the backend instead of pulling every _bucket series into the

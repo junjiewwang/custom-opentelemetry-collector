@@ -16,11 +16,12 @@ import (
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 	"go.opentelemetry.io/collector/custom/taskengine"
@@ -28,11 +29,12 @@ import (
 
 // TokenValidationResult holds the result of token validation.
 type TokenValidationResult struct {
-	Valid   bool   `json:"valid"`
-	AppID   string `json:"app_id,omitempty"`
-	AppName string `json:"app_name,omitempty"`
-	Token   string `json:"token,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Valid    bool   `json:"valid"`
+	AppID    string `json:"app_id,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+	AppName  string `json:"app_name,omitempty"`
+	Token    string `json:"token,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // ControlPlane defines the model-based interface exposed by this extension.
@@ -93,6 +95,7 @@ type Extension struct {
 	taskMgr        taskmanager.TaskManager
 	agentReg       agentregistry.AgentRegistry
 	tokenMgr       appmanager.TokenManager
+	tenantMgr      *tenantmanager.MultiTenantManager
 	serviceMgr     servicemanager.ServiceManager
 	taskExecutor   *TaskExecutor
 	statusReporter *StatusReporter
@@ -174,6 +177,11 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		return fmt.Errorf("failed to create token manager: %w", err)
 	}
 
+	e.tenantMgr, err = factory.CreateTenantManager(e.config.TenantManager, e.tokenMgr)
+	if err != nil {
+		return fmt.Errorf("failed to create tenant manager: %w", err)
+	}
+
 	e.serviceMgr, err = factory.CreateServiceManager(e.config.ServiceManager)
 	if err != nil {
 		return fmt.Errorf("failed to create service manager: %w", err)
@@ -215,6 +223,10 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 	}
 
 	if err := e.tokenMgr.Start(ctx); err != nil {
+		return err
+	}
+
+	if err := e.tenantMgr.Tenants.Start(ctx); err != nil {
 		return err
 	}
 
@@ -489,11 +501,12 @@ func (e *Extension) ValidateToken(ctx context.Context, token string) (*TokenVali
 	}
 
 	return &TokenValidationResult{
-		Valid:   result.Valid,
-		AppID:   result.AppID,
-		AppName: result.AppName,
-		Token:   token,
-		Reason:  result.Reason,
+		Valid:    result.Valid,
+		AppID:    result.AppID,
+		TenantID: result.TenantID,
+		AppName:  result.AppName,
+		Token:    token,
+		Reason:   result.Reason,
 	}, nil
 }
 
@@ -545,6 +558,12 @@ func (e *Extension) GetOnDemandConfigManager() configmanager.OnDemandConfigManag
 // GetTokenManager returns the token manager for direct access.
 func (e *Extension) GetTokenManager() appmanager.TokenManager {
 	return e.tokenMgr
+}
+
+// GetMultiTenantManager returns the multi-tenancy manager (tenant CRUD + API
+// key management) for cross-extension access (e.g. adminext auth middleware).
+func (e *Extension) GetMultiTenantManager() *tenantmanager.MultiTenantManager {
+	return e.tenantMgr
 }
 
 // GetServiceManager returns the service manager for direct access.

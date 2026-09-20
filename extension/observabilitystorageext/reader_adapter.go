@@ -47,6 +47,7 @@ func (a *traceReaderAdapter) GetTrace(ctx context.Context, traceID string) (*Tra
 func toStoredTraceQuery(query TraceQuery) storedmodel.TraceQuery {
 	return storedmodel.TraceQuery{
 		AppID:         query.AppID,
+		TenantID:      query.TenantID,
 		ServiceName:   query.ServiceName,
 		OperationName: query.OperationName,
 		Tags:          query.Tags,
@@ -235,6 +236,7 @@ func (a *traceReaderAdapter) ListRootSpanServices(ctx context.Context, timeRange
 func (a *traceReaderAdapter) QueryTraceDurations(ctx context.Context, traceIDs []string, query TraceQuery) (map[string]int64, error) {
 	q := storedmodel.TraceQuery{
 		AppID:     query.AppID,
+		TenantID:  query.TenantID,
 		TimeRange: storedmodel.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
 	}
 	return a.inner.QueryTraceDurations(ctx, traceIDs, q)
@@ -243,6 +245,7 @@ func (a *traceReaderAdapter) QueryTraceDurations(ctx context.Context, traceIDs [
 func (a *traceReaderAdapter) QueryTraceMetrics(ctx context.Context, query TraceMetricsQuery) (*TraceMetricsResult, error) {
 	esQuery := elasticsearch.TraceMetricsQuery{
 		AppID:         query.AppID,
+		TenantID:      query.TenantID,
 		ServiceName:   query.ServiceName,
 		OperationName: query.OperationName,
 		Tags:          query.Tags,
@@ -292,6 +295,7 @@ func (a *logReaderAdapter) SearchLogMetric(ctx context.Context, query LogMetricQ
 	esQuery := elasticsearch.LogMetricQuery{
 		LogQuery: elasticsearch.LogQuery{
 			AppID:           query.AppID,
+			TenantID:        query.TenantID,
 			Query:           query.Query,
 			ServiceName:     query.ServiceName,
 			Severity:        query.Severity,
@@ -331,6 +335,7 @@ func (a *logReaderAdapter) SearchLogMetric(ctx context.Context, query LogMetricQ
 func (a *logReaderAdapter) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchResult, error) {
 	esQuery := elasticsearch.LogQuery{
 		AppID:           query.AppID,
+		TenantID:        query.TenantID,
 		Query:           query.Query,
 		ServiceName:     query.ServiceName,
 		Severity:        query.Severity,
@@ -379,6 +384,7 @@ func (a *logReaderAdapter) ListLogFields(ctx context.Context, timeRange TimeRang
 func (a *logReaderAdapter) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogStats, error) {
 	esQuery := elasticsearch.LogStatsQuery{
 		AppID:       query.AppID,
+		TenantID:    query.TenantID,
 		ServiceName: query.ServiceName,
 		TimeRange:   elasticsearch.TimeRange{Start: query.TimeRange.Start, End: query.TimeRange.End},
 		GroupBy:     query.GroupBy,

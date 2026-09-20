@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
@@ -24,6 +25,7 @@ type textSample struct {
 	labels     map[string]string
 	value      float64
 	timeUnixMi int64
+	accountID  uint32 // VM account (native multitenancy); 0 = default
 }
 
 // MetricWriter implements observabilitystorageext.MetricWriter against
@@ -35,9 +37,11 @@ type textSample struct {
 // type sidecar of its own. The trade-off (one line per sample instead of
 // one line per series) is irrelevant at this scale.
 type MetricWriter struct {
-	client VMClient
-	config *Config
-	logger *zap.Logger
+	client         VMClient
+	config         *Config
+	logger         *zap.Logger
+	accountScope   bool
+	resolveAccount tenantctx.AccountResolver
 
 	mu         sync.Mutex
 	buffer     []textSample
@@ -61,16 +65,23 @@ const metadataRefreshInterval = 5 * time.Minute
 // NewMetricWriter builds the writer. The background flush loop starts here.
 func NewMetricWriter(client VMClient, config *Config, logger *zap.Logger) *MetricWriter {
 	w := &MetricWriter{
-		client:    client,
-		config:    config,
-		logger:    logger,
-		sentTypes: make(map[string]storedmodel.MetricMeta),
-		stopCh:    make(chan struct{}),
-		flushCh:   make(chan struct{}, 1),
-		doneCh:    make(chan struct{}),
+		client:       client,
+		config:       config,
+		logger:       logger,
+		accountScope: config.AccountScope,
+		sentTypes:    make(map[string]storedmodel.MetricMeta),
+		stopCh:       make(chan struct{}),
+		flushCh:      make(chan struct{}, 1),
+		doneCh:       make(chan struct{}),
 	}
 	go w.flushLoop()
 	return w
+}
+
+// SetAccountResolver wires the tenant→account mapping (tenantmanager.ResolveAccountID).
+// A nil resolver is fine: account scoping then resolves every tenant to account 0.
+func (w *MetricWriter) SetAccountResolver(resolve tenantctx.AccountResolver) {
+	w.resolveAccount = resolve
 }
 
 // WriteMetrics converts and buffers a batch of OTLP metrics.
@@ -86,7 +97,7 @@ func (w *MetricWriter) WriteMetrics(ctx context.Context, md pmetric.Metrics) err
 				meta := storedmodel.MetricMeta{Type: metricTypeString(metric)}
 				w.noteType(metric.Name(), meta)
 				for _, pt := range storedmodel.ConvertOTLPMetric(metric, resource) {
-					w.ingestPoint(pt)
+					w.ingestPoint(ctx, pt)
 				}
 			}
 		}
@@ -137,21 +148,33 @@ func metricTypeString(m pmetric.Metric) string {
 }
 
 // ingestPoint buffers one StoredMetricDataPoint as one or more text samples.
-func (w *MetricWriter) ingestPoint(pt storedmodel.StoredMetricDataPoint) {
+func (w *MetricWriter) ingestPoint(ctx context.Context, pt storedmodel.StoredMetricDataPoint) {
+	accountID := uint32(0)
+	if w.accountScope {
+		var err error
+		accountID, err = resolveAccountID(w.resolveAccount, ctx, pt.TenantID)
+		if err != nil {
+			w.logger.Warn("victoriametrics: resolve account failed (dropping point)", zap.Error(err))
+			return
+		}
+	}
 	if pt.Type == "histogram" && len(pt.BucketCounts) > 0 {
-		for _, s := range convertHistogram(pt, w.config.ExtraLabels) {
+		for _, s := range convertHistogram(pt, w.config.ExtraLabels, w.accountScope) {
+			s.accountID = accountID
 			w.addSample(s)
 		}
 		return
 	}
-	w.addSample(pointToSample(pt, w.config.ExtraLabels))
+	s := pointToSample(pt, w.config.ExtraLabels, w.accountScope)
+	s.accountID = accountID
+	w.addSample(s)
 }
 
 // pointToSample converts a gauge/counter/summary point to one text sample.
-func pointToSample(pt storedmodel.StoredMetricDataPoint, extra map[string]string) textSample {
+func pointToSample(pt storedmodel.StoredMetricDataPoint, extra map[string]string, accountScope bool) textSample {
 	return textSample{
 		metric:     sanitizeName(pt.Name),
-		labels:     baseLabels(pt, extra),
+		labels:     baseLabels(pt, extra, accountScope),
 		value:      pt.Value,
 		timeUnixMi: pt.TimeUnixMilli,
 	}
@@ -160,13 +183,19 @@ func pointToSample(pt storedmodel.StoredMetricDataPoint, extra map[string]string
 // baseLabels builds the label set for a point: service_name + extra labels +
 // the point's own labels. __name__ is NOT in this map (text format has the
 // name outside the braces). app_id is injected from pt.AppID.
-func baseLabels(pt storedmodel.StoredMetricDataPoint, extra map[string]string) map[string]string {
-	labels := make(map[string]string, len(pt.Labels)+len(extra)+2)
+func baseLabels(pt storedmodel.StoredMetricDataPoint, extra map[string]string, accountScope bool) map[string]string {
+	labels := make(map[string]string, len(pt.Labels)+len(extra)+3)
 	if pt.ServiceName != "" {
 		labels["service_name"] = pt.ServiceName
 	}
 	if pt.AppID != "" {
 		labels["app_id"] = pt.AppID
+	}
+	// In account-scoped mode the account itself isolates tenants (data is routed
+	// to /insert/<account>/), so no tenant_id label is written — it would be
+	// redundant and the read path no longer filters on it.
+	if pt.TenantID != "" && !accountScope {
+		labels["tenant_id"] = pt.TenantID
 	}
 	for k, v := range extra {
 		labels[k] = v
@@ -181,8 +210,8 @@ func baseLabels(pt storedmodel.StoredMetricDataPoint, extra map[string]string) m
 // sub-series samples: <base>_bucket{le=...} (cumulative), <base>_bucket{le="+Inf"},
 // <base>_sum, <base>_count. Delta bucket_counts are accumulated to
 // cumulative; cumulative bucket_counts are written as-is.
-func convertHistogram(pt storedmodel.StoredMetricDataPoint, extra map[string]string) []textSample {
-	base := baseLabels(pt, extra)
+func convertHistogram(pt storedmodel.StoredMetricDataPoint, extra map[string]string, accountScope bool) []textSample {
+	base := baseLabels(pt, extra, accountScope)
 	name := sanitizeName(pt.Name)
 
 	delta := pt.AggregationTemporality != "cumulative"
@@ -298,18 +327,33 @@ func (w *MetricWriter) Flush(ctx context.Context) error {
 	w.size = 0
 	w.mu.Unlock()
 
-	var buf bytes.Buffer
-	// Metadata rows first (VM stores them via its metricsmetadata table when
-	// -enableMetadata is on, the default).
-	for _, n := range typeRows {
-		meta := typeMeta[n]
-		fmt.Fprintf(&buf, "# TYPE %s %s\n", sanitizeName(n), meta.Type)
-	}
+	// Group samples by VM account so each account gets its own import POST (and
+	// its own # TYPE rows, since VM metadata is per-account in native mode).
+	byAccount := make(map[uint32][]textSample, 1)
 	for _, s := range samples {
-		buf.WriteString(renderSampleLine(s))
-		buf.WriteByte('\n')
+		byAccount[s.accountID] = append(byAccount[s.accountID], s)
 	}
-	return w.client.ImportText(ctx, buf.Bytes())
+	for accountID, acctSamples := range byAccount {
+		var buf bytes.Buffer
+		// Metadata rows first (VM stores them via its metricsmetadata table when
+		// -enableMetadata is on, the default).
+		for _, n := range typeRows {
+			meta := typeMeta[n]
+			fmt.Fprintf(&buf, "# TYPE %s %s\n", sanitizeName(n), meta.Type)
+		}
+		for _, s := range acctSamples {
+			buf.WriteString(renderSampleLine(s))
+			buf.WriteByte('\n')
+		}
+		client := w.client
+		if w.accountScope {
+			client = client.ForAccount(accountID)
+		}
+		if err := client.ImportText(ctx, buf.Bytes()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // renderSampleLine renders `name{labels} value ts` with sorted label keys for

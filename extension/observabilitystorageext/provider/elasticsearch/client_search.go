@@ -26,6 +26,11 @@ type SearchRequest struct {
 	Source       any              `json:"_source,omitempty"`
 	Aggregations map[string]any   `json:"aggs,omitempty"`
 	SearchAfter  []any            `json:"search_after,omitempty"`
+
+	// TenantID is a Go-side tenant isolation hint, not serialized. When set,
+	// Client.Search wraps the query with a tenantId term filter so a tenant
+	// only ever sees its own data.
+	TenantID string `json:"-"`
 }
 
 // SearchResponse represents an ES _search response.
@@ -52,7 +57,26 @@ type SearchHit struct {
 }
 
 // Search executes a search request against the specified index pattern.
+// withTenantFilter wraps query with a bool.filter that ANDs a tenantId term
+// filter, so a tenant only sees its own documents. An empty query becomes a
+// bare tenant filter (match all → tenant filter).
+//
+// The term targets tenantId.keyword: tenantId is dynamically mapped as text
+// (with a .keyword sub-field) rather than keyword like appId (which has an
+// index-template mapping). A term query on the analyzed text field would not
+// exact-match the raw tenant ID.
+func withTenantFilter(query map[string]any, tenantID string) map[string]any {
+	term := map[string]any{"term": map[string]any{"tenantId.keyword": tenantID}}
+	if len(query) == 0 {
+		return map[string]any{"bool": map[string]any{"filter": []any{term}}}
+	}
+	return map[string]any{"bool": map[string]any{"filter": []any{query, term}}}
+}
+
 func (c *Client) Search(ctx context.Context, indexPattern string, req *SearchRequest) (*SearchResponse, error) {
+	if req.TenantID != "" {
+		req.Query = withTenantFilter(req.Query, req.TenantID)
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal search request: %w", err)

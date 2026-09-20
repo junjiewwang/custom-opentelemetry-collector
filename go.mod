@@ -8,7 +8,6 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/influxdata/influxql v1.4.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/mitchellh/mapstructure v1.5.1-0.20231216201459-8508981c8b6c

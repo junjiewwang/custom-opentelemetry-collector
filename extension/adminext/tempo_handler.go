@@ -54,7 +54,7 @@ type tempoTrace struct {
 }
 
 type tempoResourceSpans struct {
-	Resource   tempoResource    `json:"resource,omitempty"`
+	Resource   tempoResource     `json:"resource,omitempty"`
 	ScopeSpans []tempoScopeSpans `json:"scopeSpans,omitempty"`
 }
 
@@ -97,11 +97,11 @@ type tempoKeyValue struct {
 }
 
 type tempoAnyValue struct {
-	StringValue *string            `json:"stringValue,omitempty"`
-	IntValue    *string            `json:"intValue,omitempty"` // int64 as string (proto jsonpb compatibility)
-	DoubleValue *float64           `json:"doubleValue,omitempty"`
-	BoolValue   *bool              `json:"boolValue,omitempty"`
-	Value       *tempoAnyValueAlt  `json:"Value,omitempty"` // proto backward-compatible fallback format
+	StringValue *string           `json:"stringValue,omitempty"`
+	IntValue    *string           `json:"intValue,omitempty"` // int64 as string (proto jsonpb compatibility)
+	DoubleValue *float64          `json:"doubleValue,omitempty"`
+	BoolValue   *bool             `json:"boolValue,omitempty"`
+	Value       *tempoAnyValueAlt `json:"Value,omitempty"` // proto backward-compatible fallback format
 }
 
 // tempoAnyValueAlt provides proto-compatible snake_case field names
@@ -114,9 +114,9 @@ type tempoAnyValueAlt struct {
 }
 
 type tempoSpanEvent struct {
-	TimeUnixNano string           `json:"timeUnixNano"`
-	Name         string           `json:"name"`
-	Attributes   []tempoKeyValue  `json:"attributes,omitempty"`
+	TimeUnixNano string          `json:"timeUnixNano"`
+	Name         string          `json:"name"`
+	Attributes   []tempoKeyValue `json:"attributes,omitempty"`
 }
 
 type tempoSpanLink struct {
@@ -133,12 +133,12 @@ type tempoSearchResponse struct {
 }
 
 type tempoSearchTrace struct {
-	TraceID           string          `json:"traceID"`
-	RootServiceName   string          `json:"rootServiceName"`
-	RootTraceName     string          `json:"rootTraceName"`
-	StartTimeUnixNano string          `json:"startTimeUnixNano"`
-	DurationMs        int64           `json:"durationMs"`
-	SpanSets          []tempoSpanSet  `json:"spanSets"`
+	TraceID           string         `json:"traceID"`
+	RootServiceName   string         `json:"rootServiceName"`
+	RootTraceName     string         `json:"rootTraceName"`
+	StartTimeUnixNano string         `json:"startTimeUnixNano"`
+	DurationMs        int64          `json:"durationMs"`
+	SpanSets          []tempoSpanSet `json:"spanSets"`
 }
 
 type tempoSpanSet struct {
@@ -147,11 +147,11 @@ type tempoSpanSet struct {
 }
 
 type tempoSearchSpan struct {
-	SpanID            string           `json:"spanID"`
-	Name              string           `json:"name,omitempty"`
-	StartTimeUnixNano string           `json:"startTimeUnixNano"`
-	DurationNanos     string           `json:"durationNanos"`
-	Attributes        []tempoKeyValue  `json:"attributes"`
+	SpanID            string          `json:"spanID"`
+	Name              string          `json:"name,omitempty"`
+	StartTimeUnixNano string          `json:"startTimeUnixNano"`
+	DurationNanos     string          `json:"durationNanos"`
+	Attributes        []tempoKeyValue `json:"attributes"`
 }
 
 type tempoSearchMetrics struct {
@@ -176,7 +176,7 @@ type tempoTagValuesResponse struct {
 // V2 returns tags grouped by scope (resource/span/intrinsic) and values with type info.
 
 type tempoV2TagNamesResponse struct {
-	Scopes  []tempoV2Scope    `json:"scopes"`
+	Scopes  []tempoV2Scope     `json:"scopes"`
 	Metrics tempoSearchMetrics `json:"metrics"`
 }
 
@@ -186,7 +186,7 @@ type tempoV2Scope struct {
 }
 
 type tempoV2TagValuesResponse struct {
-	TagValues []tempoV2TagValue `json:"tagValues"`
+	TagValues []tempoV2TagValue  `json:"tagValues"`
 	Metrics   tempoSearchMetrics `json:"metrics"`
 }
 
@@ -646,8 +646,8 @@ const maxStructuralTraces = 50
 
 // structuralVerifyResult holds the result of structural verification for a single trace.
 type structuralVerifyResult struct {
-	summary       observabilitystorageext.TraceSummary
-	fullSpans     []observabilitystorageext.Span
+	summary        observabilitystorageext.TraceSummary
+	fullSpans      []observabilitystorageext.Span
 	matchedSpanIDs map[string]bool // spanIDs that matched the structural expression
 }
 
@@ -2078,6 +2078,7 @@ func isEmptyTempoValue(v tempoAnyValue) bool {
 //   - .X / span.X        → span attribute X
 //   - plain X            → check both span attributes and resource attributes
 //   - nestedSetParent / nestedSetLeft / nestedSetRight → nested set model
+//
 // projectSpanWithSelectResult holds the result of span projection, separating
 // the top-level span name from attributes for Grafana compatibility.
 type projectSpanWithSelectResult struct {
@@ -2422,6 +2423,7 @@ func normalizeTraceQLMetricsQuery(q string) string {
 func parseTempoSearchParams(r *http.Request) (*traceql.ExecutionPlan, observabilitystorageext.TraceQuery, error) {
 	q := r.URL.Query()
 	query := observabilitystorageext.TraceQuery{
+		TenantID:  TenantIDFromContext(r.Context()),
 		TimeRange: parseTempoTimeRange(r),
 	}
 	var plan *traceql.ExecutionPlan

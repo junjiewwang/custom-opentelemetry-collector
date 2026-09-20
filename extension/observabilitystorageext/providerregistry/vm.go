@@ -45,6 +45,7 @@ func TranslateVMConfig(ext any) (any, error) {
 		ReadTimeout:   v.ReadTimeout,
 		MaxRetries:    v.MaxRetries,
 		ExtraLabels:   v.ExtraLabels,
+		AccountScope:  v.AccountScope,
 	}
 	cfg.ApplyDefaults()
 	return cfg, nil

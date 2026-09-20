@@ -32,6 +32,10 @@ type promHandlers struct {
 	// names in the PromQL-safe underscore form already. When true (ES/PG), the
 	// subset-parser path reverse-maps underscore→dot before issuing reads.
 	usesDottedNames bool
+	// usesAccountScoping is true when the backend isolates tenants via native
+	// account scoping (VictoriaMetrics vm-cluster), so the query layer must not
+	// inject a tenant_id label matcher (the label isn't written/read in that mode).
+	usesAccountScoping bool
 	// nativePromQL is non-nil when the backend is a full PromQL engine
 	// (VictoriaMetrics). Such backends execute PromQL directly instead of going
 	// through the ES→storage.Queryable adapter (which OOMs on high-cardinality
@@ -65,8 +69,9 @@ func newPromHandlers(e *Extension) *promHandlers {
 		metricReader:    e.storageMetricReader,
 		traceReader:     e.storageTraceReader,
 		logger:          e.logger,
-		usesDottedNames: usesDottedMetricNames(e.storageMetricReader),
-		nativePromQL:    nativePromQLReader(e.storageMetricReader),
+		usesDottedNames:    usesDottedMetricNames(e.storageMetricReader),
+		usesAccountScoping: usesAccountScoping(e.storageMetricReader),
+		nativePromQL:       nativePromQLReader(e.storageMetricReader),
 		queryable:       queryable,
 		engine:          engine,
 		queryMetrics: newQueryMetrics(
@@ -83,6 +88,15 @@ func nativePromQLReader(reader observabilitystorageext.MetricReader) observabili
 		return n
 	}
 	return nil
+}
+
+// usesAccountScoping reports whether the backend isolates tenants via native
+// account scoping (VictoriaMetrics vm-cluster) rather than a tenant_id label.
+func usesAccountScoping(reader observabilitystorageext.MetricReader) bool {
+	if a, ok := reader.(observabilitystorageext.AccountScoping); ok {
+		return a.UsesAccountScoping()
+	}
+	return false
 }
 
 // storageMetricName maps a PromQL-safe underscored name to the backend's

@@ -37,7 +37,7 @@ func newFakeVM(t *testing.T, handle func(w http.ResponseWriter, r *http.Request)
 }
 
 func newTestReader(c VMClient) *MetricReader {
-	return newMetricReader(c, zap.NewNop())
+	return newMetricReader(c, false, zap.NewNop())
 }
 
 func writeJSON(w http.ResponseWriter, body string) {
@@ -81,7 +81,7 @@ func TestQueryRange_GroupByTranslation(t *testing.T) {
 		MetricName: "m", AppID: "a",
 		Aggregation: "sum", GroupBy: []string{"svc"},
 		TimeRange: observabilitystorageext.TimeRange{Start: time.Unix(1780000000, 0), End: time.Unix(1780000100, 0)},
-		Step:       time.Minute,
+		Step:      time.Minute,
 	})
 	require.NoError(t, err)
 	require.Len(t, res.Data, 1)
@@ -260,7 +260,7 @@ func TestListLabelCombinations(t *testing.T) {
 }
 
 func TestBuildHeatmapRangeExpr(t *testing.T) {
-	got := buildHeatmapRangeExpr("traces_spanmetrics_latency", "appX", []string{"service_name"}, "5m")
+	got := buildHeatmapRangeExpr("traces_spanmetrics_latency", "appX", "", []string{"service_name"}, "5m")
 	assert.Contains(t, got, "sum by (")
 	assert.Contains(t, got, "le")
 	assert.Contains(t, got, "service_name")

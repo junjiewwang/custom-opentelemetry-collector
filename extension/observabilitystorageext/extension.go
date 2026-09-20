@@ -26,6 +26,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/registry"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/identity"
 	"go.opentelemetry.io/collector/custom/taskengine"
@@ -328,6 +329,17 @@ func (e *ObservabilityStorage) GetLogReader() LogReader {
 		return e.factoryAccessors.logReader
 	}
 	return nil
+}
+
+// SetMetricAccountResolver wires the tenant→account resolver into the metric
+// backend (VictoriaMetrics native multitenancy). It is a no-op when metrics do
+// not route to VM. The resolver is stored and applied lazily, so it may be
+// called before or after the provider starts.
+func (e *ObservabilityStorage) SetMetricAccountResolver(resolve tenantctx.AccountResolver) {
+	if e.hybridProvider == nil {
+		return
+	}
+	e.hybridProvider.SetAccountResolver(resolve)
 }
 
 // createProvider creates the appropriate provider based on configuration.

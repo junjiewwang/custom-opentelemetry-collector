@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -21,6 +22,10 @@ type Provider struct {
 	client       VMClient
 	metricWriter *MetricWriter
 	metricReader *MetricReader
+	// resolveAccount stores the tenant→account resolver so it can be applied in
+	// Start, once the reader/writer exist. It makes SetAccountResolver order-
+	// independent with respect to Start.
+	resolveAccount tenantctx.AccountResolver
 }
 
 // NewProvider builds the provider (does not start I/O; call Start).
@@ -45,7 +50,11 @@ func (p *Provider) Start(ctx context.Context) error {
 		p.logger.Warn("victoriametrics: initial health check failed (will retry on writes)", zap.String("msg", msg))
 	}
 	p.metricWriter = NewMetricWriter(p.client, p.config, p.logger)
-	p.metricReader = newMetricReader(p.client, p.logger)
+	p.metricReader = newMetricReader(p.client, p.config.AccountScope, p.logger)
+	if p.resolveAccount != nil {
+		p.metricWriter.SetAccountResolver(p.resolveAccount)
+		p.metricReader.SetAccountResolver(p.resolveAccount)
+	}
 	return nil
 }
 
@@ -81,3 +90,16 @@ func (p *Provider) MetricReader() *MetricReader { return p.metricReader }
 
 // SetClient overrides the HTTP client (tests inject fakes before Start).
 func (p *Provider) SetClient(c VMClient) { p.client = c }
+
+// SetAccountResolver wires the tenant→account mapping (tenantmanager.ResolveAccountID)
+// into the reader and writer. A nil resolver disables account scoping (every
+// tenant resolves to account 0). Call before Start.
+func (p *Provider) SetAccountResolver(resolve tenantctx.AccountResolver) {
+	p.resolveAccount = resolve
+	if p.metricReader != nil {
+		p.metricReader.SetAccountResolver(resolve)
+	}
+	if p.metricWriter != nil {
+		p.metricWriter.SetAccountResolver(resolve)
+	}
+}

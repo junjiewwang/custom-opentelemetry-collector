@@ -13,6 +13,7 @@ import (
 
 	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -67,8 +68,9 @@ func (r *TraceReader) SearchTraces(ctx context.Context, query TraceQuery) (*Trac
 		aggSize = MaxResultWindow
 	}
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0, // We only want aggregation results.
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		Size:     0, // We only want aggregation results.
 		Aggregations: map[string]any{
 			"traces": map[string]any{
 				"terms": map[string]any{
@@ -141,8 +143,9 @@ func (r *TraceReader) SearchTraceSummaries(ctx context.Context, query TraceQuery
 	}
 
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0,
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		Size:     0,
 		Aggregations: map[string]any{
 			"traces": map[string]any{
 				"terms": map[string]any{
@@ -199,6 +202,7 @@ func (r *TraceReader) QueryTraceDurations(ctx context.Context, traceIDs []string
 	}
 
 	searchReq := &SearchRequest{
+		TenantID: query.TenantID,
 		Query: esq.NewBuilder().
 			Raw(esq.TimeRangeFilter(FieldStartTimeUnixNano, query.TimeRange)).
 			Raw(esq.TermsQ(FieldTraceID, traceIDs)).
@@ -415,8 +419,9 @@ func (r *TraceReader) SearchSpans(ctx context.Context, query TraceQuery) ([]Stor
 		aggSize = MaxResultWindow
 	}
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0,
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		Size:     0,
 		Aggregations: map[string]any{
 			"traces": map[string]any{
 				"terms": map[string]any{
@@ -485,6 +490,7 @@ func (r *TraceReader) GetServices(ctx context.Context, timeRange TimeRange) ([]S
 			},
 		},
 	}
+	searchReq.TenantID = tenantctx.TenantIDFromContext(ctx)
 
 	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
@@ -521,6 +527,7 @@ func (r *TraceReader) GetOperations(ctx context.Context, service string, timeRan
 			},
 		},
 	}
+	searchReq.TenantID = tenantctx.TenantIDFromContext(ctx)
 
 	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {
@@ -1216,6 +1223,7 @@ func (r *TraceReader) calculateDependencies(ctx context.Context, timeRange TimeR
 			},
 		},
 	}
+	searchReq.TenantID = tenantctx.TenantIDFromContext(ctx)
 
 	resp, err := r.searcher.Search(ctx, r.indexPattern(), searchReq)
 	if err != nil {

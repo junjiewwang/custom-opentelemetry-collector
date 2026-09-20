@@ -145,6 +145,11 @@ type AppInfo struct {
 	// Token is the authentication token for agents.
 	Token string `json:"token"`
 
+	// TenantID is the tenant this app belongs to (default "admin").
+	// Single source of truth for app→tenant ownership; denormalized into
+	// stored data as tenant_id at write time.
+	TenantID string `json:"tenant_id,omitempty"`
+
 	// Description is an optional description.
 	Description string `json:"description,omitempty"`
 
@@ -227,8 +232,9 @@ func (r *SetTokenRequest) Validate() error {
 
 // TokenValidationResult holds the result of token validation.
 type TokenValidationResult struct {
-	Valid   bool   `json:"valid"`
-	AppID   string `json:"app_id,omitempty"`
-	AppName string `json:"app_name,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Valid    bool   `json:"valid"`
+	AppID    string `json:"app_id,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+	AppName  string `json:"app_name,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }

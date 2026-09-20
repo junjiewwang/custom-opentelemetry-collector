@@ -39,13 +39,14 @@ func (c *metricGenConnector) ConsumeTraces(ctx context.Context, td ptrace.Traces
 		for j := 0; j < rs.ScopeSpans().Len(); j++ {
 			spans := rs.ScopeSpans().At(j).Spans()
 			appID := extractAppID(resource)
+			tenantID := extractTenantID(resource)
 			for k := 0; k < spans.Len(); k++ {
 				span := spans.At(k)
 				if c.redGen != nil {
-					c.redGen.ProcessSpan(svcName, appID, resource, span)
+					c.redGen.ProcessSpan(svcName, appID, tenantID, resource, span)
 				}
 				if c.sgGen != nil {
-					c.sgGen.ProcessSpan(svcName, appID, resource, span)
+					c.sgGen.ProcessSpan(svcName, appID, tenantID, resource, span)
 				}
 			}
 		}

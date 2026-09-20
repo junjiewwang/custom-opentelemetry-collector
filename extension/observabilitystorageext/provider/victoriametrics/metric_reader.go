@@ -7,12 +7,13 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -24,12 +25,33 @@ var _ observabilitystorageext.MetricReader = (*MetricReader)(nil)
 // MetricReader implements the public observabilitystorageext.MetricReader
 // interface against VictoriaMetrics' Prometheus-compatible HTTP API.
 type MetricReader struct {
-	client VMClient
-	logger *zap.Logger
+	client         VMClient
+	accountScope   bool
+	resolveAccount tenantctx.AccountResolver
+	logger         *zap.Logger
 }
 
-func newMetricReader(client VMClient, logger *zap.Logger) *MetricReader {
-	return &MetricReader{client: client, logger: logger}
+func newMetricReader(client VMClient, accountScope bool, logger *zap.Logger) *MetricReader {
+	return &MetricReader{client: client, accountScope: accountScope, logger: logger}
+}
+
+// SetAccountResolver wires the tenant→account mapping (tenantmanager.ResolveAccountID).
+// A nil resolver is fine: account scoping then resolves every tenant to account 0.
+func (r *MetricReader) SetAccountResolver(resolve tenantctx.AccountResolver) {
+	r.resolveAccount = resolve
+}
+
+// clientForTenant returns the account-scoped client for a tenant. When account
+// scoping is disabled it returns the base client unchanged.
+func (r *MetricReader) clientForTenant(ctx context.Context, tenantID string) (VMClient, error) {
+	if !r.accountScope {
+		return r.client, nil
+	}
+	accountID, err := resolveAccountID(r.resolveAccount, ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return r.client.ForAccount(accountID), nil
 }
 
 // UsesDottedMetricNames implements observabilitystorageext.MetricNameScheme.
@@ -39,6 +61,12 @@ func newMetricReader(client VMClient, logger *zap.Logger) *MetricReader {
 // which would otherwise query a dotted name VM never stored and return zero
 // series (observed live: avg(jvm_memory_used) → VM queried jvm.memory.used → 0).
 func (r *MetricReader) UsesDottedMetricNames() bool { return false }
+
+// UsesAccountScoping implements observabilitystorageext.AccountScoping. In
+// account-scoped mode the account itself isolates tenants, so the query layer
+// must not inject a tenant_id label matcher (the label is not written on the
+// ingest side either — see metric_writer.baseLabels).
+func (r *MetricReader) UsesAccountScoping() bool { return r.accountScope }
 
 // defaultFlatMaxDocs caps QueryFlat/QueryRaw sample counts. VM's export has
 // no ES-style max_result_window, but an unbounded window can still return
@@ -50,7 +78,11 @@ const defaultFlatMaxDocs = 50000
 // vector result, letting the collector skip the in-process PromQL engine for
 // a backend that already has one.
 func (r *MetricReader) ExecPromQLInstant(ctx context.Context, expr string, ts time.Time) (*observabilitystorageext.PromQLResult, error) {
-	res, err := r.client.QueryInstant(ctx, expr, ts)
+	client, err := r.clientForTenant(ctx, tenantctx.TenantIDFromContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("resolve vm account: %w", err)
+	}
+	res, err := client.QueryInstant(ctx, expr, ts)
 	if err != nil {
 		return nil, fmt.Errorf("vm native promql instant failed: %w", err)
 	}
@@ -66,7 +98,11 @@ func (r *MetricReader) ExecPromQLInstant(ctx context.Context, expr string, ts ti
 
 // ExecPromQLRange implements observabilitystorageext.NativePromQL.
 func (r *MetricReader) ExecPromQLRange(ctx context.Context, expr string, start, end time.Time, step time.Duration) (*observabilitystorageext.PromQLResult, error) {
-	res, err := r.client.QueryRange(ctx, expr, start, end, step)
+	client, err := r.clientForTenant(ctx, tenantctx.TenantIDFromContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("resolve vm account: %w", err)
+	}
+	res, err := client.QueryRange(ctx, expr, start, end, step)
 	if err != nil {
 		return nil, fmt.Errorf("vm native promql range failed: %w", err)
 	}
@@ -82,9 +118,13 @@ func (r *MetricReader) ExecPromQLRange(ctx context.Context, expr string, start, 
 
 // Query executes an instant metric query at query.Time.
 func (r *MetricReader) Query(ctx context.Context, query observabilitystorageext.MetricQuery) (*observabilitystorageext.MetricResult, error) {
-	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,
+	selector := buildSelector(query.MetricName, query.AppID, query.TenantID, query.ServiceName,
 		query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
-	res, err := r.client.QueryInstant(ctx, selector, query.Time)
+	client, err := r.clientForTenant(ctx, query.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve vm account: %w", err)
+	}
+	res, err := client.QueryInstant(ctx, selector, query.Time)
 	if err != nil {
 		return nil, fmt.Errorf("vm instant query failed: %w", err)
 	}
@@ -110,14 +150,18 @@ func (r *MetricReader) Query(ctx context.Context, query observabilitystorageext.
 // QueryRange executes a range query. Aggregation/GroupBy translate to a
 // MetricsQL aggregation wrapper; step passes through.
 func (r *MetricReader) QueryRange(ctx context.Context, query observabilitystorageext.MetricRangeQuery) (*observabilitystorageext.MetricRangeResult, error) {
-	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,
+	selector := buildSelector(query.MetricName, query.AppID, query.TenantID, query.ServiceName,
 		query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	// missing_bucket semantics: ES's composite drops series lacking a grouped
 	// label when false. MetricsQL's `by` keeps them with an empty label —
 	// closest native behavior; bare-metric callers (missingBucket=true) are
 	// the common path and match exactly.
 	expr := buildRangeAggregation(query.Aggregation, selector, query.GroupBy)
-	res, err := r.client.QueryRange(ctx, expr, query.TimeRange.Start, query.TimeRange.End, query.Step)
+	client, err := r.clientForTenant(ctx, query.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve vm account: %w", err)
+	}
+	res, err := client.QueryRange(ctx, expr, query.TimeRange.Start, query.TimeRange.End, query.Step)
 	if err != nil {
 		return nil, fmt.Errorf("vm range query failed: %w", err)
 	}
@@ -158,8 +202,12 @@ func (r *MetricReader) QueryRange(ctx context.Context, query observabilitystorag
 // can compute the whole heatmap natively (and far more cheaply).
 func (r *MetricReader) QueryHeatmapRange(ctx context.Context, query observabilitystorageext.MetricHeatmapRangeQuery) (*observabilitystorageext.MetricRangeResult, error) {
 	// MetricsQL rate() needs a duration string ("5m"), not a time.Duration.
-	expr := buildHeatmapRangeExpr(query.MetricName, query.AppID, query.GroupBy, durationString(query.RangeDuration))
-	res, err := r.client.QueryRange(ctx, expr, query.TimeRange.Start, query.TimeRange.End, query.Step)
+	expr := buildHeatmapRangeExpr(query.MetricName, query.AppID, query.TenantID, query.GroupBy, durationString(query.RangeDuration))
+	client, err := r.clientForTenant(ctx, query.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve vm account: %w", err)
+	}
+	res, err := client.QueryRange(ctx, expr, query.TimeRange.Start, query.TimeRange.End, query.Step)
 	if err != nil {
 		return nil, fmt.Errorf("vm heatmap range query failed: %w", err)
 	}
@@ -194,7 +242,7 @@ func (r *MetricReader) QueryHeatmapRange(ctx context.Context, query observabilit
 
 // QueryRaw returns raw sample points per series via /api/v1/export.
 func (r *MetricReader) QueryRaw(ctx context.Context, query observabilitystorageext.MetricRawQuery) ([]observabilitystorageext.MetricRawSeries, error) {
-	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,
+	selector := buildSelector(query.MetricName, query.AppID, query.TenantID, query.ServiceName,
 		query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	series, err := r.exportSeries(ctx, selector, query.TimeRange.Start, query.TimeRange.End, defaultFlatMaxDocs)
 	if err != nil {
@@ -228,15 +276,19 @@ func (r *MetricReader) QueryFlat(ctx context.Context, query observabilitystorage
 	}
 
 	base := query.MetricName
+	client, err := r.clientForTenant(ctx, query.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve vm account: %w", err)
+	}
 	if base != "" {
-		if fams, err := r.client.MetricMetadata(ctx, base); err == nil {
+		if fams, err := client.MetricMetadata(ctx, base); err == nil {
 			if m, ok := fams[base]; ok && m.Type == "histogram" {
 				return r.queryFlatHistogram(ctx, query, maxDocs)
 			}
 		}
 	}
 
-	selector := buildSelector(query.MetricName, query.AppID, query.ServiceName,
+	selector := buildSelector(query.MetricName, query.AppID, query.TenantID, query.ServiceName,
 		query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	series, err := r.exportSeries(ctx, selector, query.TimeRange.Start, query.TimeRange.End, maxDocs)
 	if err != nil {
@@ -265,7 +317,7 @@ func (r *MetricReader) queryFlatHistogram(ctx context.Context, query observabili
 	// Fetch the three sub-families with the same filter set.
 	mkSel := func(suffix string) string {
 		name := query.MetricName + suffix
-		return buildSelector(name, query.AppID, query.ServiceName,
+		return buildSelector(name, query.AppID, query.TenantID, query.ServiceName,
 			query.Labels, query.LabelMatch, query.LabelNot, query.LabelNotMatch)
 	}
 	buckets, err := r.exportSeries(ctx, mkSel("_bucket"), query.TimeRange.Start, query.TimeRange.End, maxDocs)
@@ -440,6 +492,10 @@ func flatResult(samples []observabilitystorageext.MetricSample, total int, trunc
 // dropped (VM rejects pre-epoch durations), and the window is clamped around
 // the data rather than wall clock.
 func (r *MetricReader) exportSeries(ctx context.Context, selector string, start, end time.Time, maxDocs int) ([]VMExportSeries, error) {
+	client, err := r.clientForTenant(ctx, tenantctx.TenantIDFromContext(ctx))
+	if err != nil {
+		return nil, err
+	}
 	s, e := start, end
 	if s.IsZero() {
 		s = time.Unix(0, 0)
@@ -447,7 +503,7 @@ func (r *MetricReader) exportSeries(ctx context.Context, selector string, start,
 	if e.IsZero() {
 		e = time.Now().Add(time.Hour)
 	}
-	series, err := r.client.Export(ctx, []string{selector}, s, e)
+	series, err := client.Export(ctx, []string{selector}, s, e)
 	if err != nil {
 		return nil, fmt.Errorf("vm export failed: %w", err)
 	}
@@ -465,11 +521,19 @@ func (r *MetricReader) exportSeries(ctx context.Context, selector string, start,
 // ListMetricNames returns metric names, optionally filtered by AppID and
 // excluding VM's own vm_* namespace.
 func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange observabilitystorageext.TimeRange) ([]string, error) {
+	tenantID := tenantctx.TenantIDFromContext(ctx)
+	client, err := r.clientForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	match := []string{}
+	if tenantID != "" {
+		match = []string{buildSelector("", "", tenantID, "", nil, nil, nil, nil)}
+	}
 	if timeRange.Start.IsZero() {
 		timeRange.Start = time.Now().Add(-24 * time.Hour)
 	}
-	names, err := r.client.LabelValues(ctx, "__name__", match, timeRange.Start, timeRange.End)
+	names, err := client.LabelValues(ctx, "__name__", match, timeRange.Start, timeRange.End)
 	if err != nil {
 		return nil, fmt.Errorf("vm label values failed: %w", err)
 	}
@@ -501,7 +565,11 @@ func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange observabil
 // in VM those series ARE cumulative counters, and Grafana Drilldown needs
 // type=counter on x_bucket to wrap it in rate() for sum-by-le heatmaps.
 func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange observabilitystorageext.TimeRange) (map[string]storedmodel.MetricMeta, error) {
-	fams, err := r.client.MetricMetadata(ctx, "")
+	client, err := r.clientForTenant(ctx, tenantctx.TenantIDFromContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	fams, err := client.MetricMetadata(ctx, "")
 	if err != nil {
 		return nil, fmt.Errorf("vm metadata query failed: %w", err)
 	}
@@ -522,8 +590,12 @@ func (r *MetricReader) ListMetricTypes(ctx context.Context, timeRange observabil
 
 // ListLabelCombinations returns label value combinations via /api/v1/series.
 func (r *MetricReader) ListLabelCombinations(ctx context.Context, query observabilitystorageext.LabelCombinationsQuery) (*observabilitystorageext.LabelCombinationsResult, error) {
-	match := []string{buildSelector(query.MetricName, query.AppID, "", nil, nil, nil, nil)}
-	series, err := r.client.Series(ctx, match, time.Now().Add(-24*time.Hour), time.Now())
+	client, err := r.clientForTenant(ctx, query.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	match := []string{buildSelector(query.MetricName, query.AppID, query.TenantID, "", nil, nil, nil, nil)}
+	series, err := client.Series(ctx, match, time.Now().Add(-24*time.Hour), time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("vm series failed: %w", err)
 	}
@@ -548,14 +620,19 @@ func (r *MetricReader) ListLabelCombinations(ctx context.Context, query observab
 
 // ListLabelNames returns label names, optionally scoped by metric.
 func (r *MetricReader) ListLabelNames(ctx context.Context, timeRange observabilitystorageext.TimeRange, metricName string) ([]string, error) {
+	tenantID := tenantctx.TenantIDFromContext(ctx)
+	client, err := r.clientForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	var match []string
-	if metricName != "" {
-		match = []string{metricName}
+	if metricName != "" || tenantID != "" {
+		match = []string{buildSelector(metricName, "", tenantID, "", nil, nil, nil, nil)}
 	}
 	if timeRange.Start.IsZero() {
 		timeRange.Start = time.Now().Add(-24 * time.Hour)
 	}
-	names, err := r.client.LabelNames(ctx, match, timeRange.Start, timeRange.End)
+	names, err := client.LabelNames(ctx, match, timeRange.Start, timeRange.End)
 	if err != nil {
 		return nil, fmt.Errorf("vm label names failed: %w", err)
 	}
@@ -570,14 +647,19 @@ func (r *MetricReader) ListLabelValues(ctx context.Context, label string, timeRa
 
 // ListLabelValuesForMetric returns values for a label restricted to one metric.
 func (r *MetricReader) ListLabelValuesForMetric(ctx context.Context, label, metricName string, timeRange observabilitystorageext.TimeRange) ([]string, error) {
+	tenantID := tenantctx.TenantIDFromContext(ctx)
+	client, err := r.clientForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	var match []string
-	if metricName != "" {
-		match = []string{metricName}
+	if metricName != "" || tenantID != "" {
+		match = []string{buildSelector(metricName, "", tenantID, "", nil, nil, nil, nil)}
 	}
 	if timeRange.Start.IsZero() {
 		timeRange.Start = time.Now().Add(-24 * time.Hour)
 	}
-	values, err := r.client.LabelValues(ctx, label, match, timeRange.Start, timeRange.End)
+	values, err := client.LabelValues(ctx, label, match, timeRange.Start, timeRange.End)
 	if err != nil {
 		return nil, fmt.Errorf("vm label values failed: %w", err)
 	}

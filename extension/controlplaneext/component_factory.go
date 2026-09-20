@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/taskengine"
 )
@@ -212,6 +213,28 @@ func (f *ComponentFactory) CreateTokenManager(cfg appmanager.Config) (appmanager
 	}
 
 	return appmanager.NewTokenManager(f.logger, cfg, redisClient)
+}
+
+// CreateTenantManager creates the full multi-tenancy manager (tenant CRUD +
+// API key management). appLister is the token manager (AppService), used to
+// resolve a tenant's apps.
+func (f *ComponentFactory) CreateTenantManager(cfg tenantmanager.Config, appLister tenantmanager.AppLister) (*tenantmanager.MultiTenantManager, error) {
+	var redisClient redis.UniversalClient
+	if cfg.Type == "redis" {
+		if f.storage == nil {
+			return nil, fmt.Errorf("storage extension required for redis tenant manager")
+		}
+		redisName := cfg.RedisName
+		if redisName == "" {
+			redisName = "default"
+		}
+		var err error
+		redisClient, err = f.storage.GetRedis(redisName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get redis client %q: %w", redisName, err)
+		}
+	}
+	return tenantmanager.NewMultiTenantManager(f.logger, cfg, redisClient, appLister)
 }
 
 // CreateServiceManager creates the appropriate ServiceManager based on config.

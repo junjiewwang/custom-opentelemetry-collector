@@ -250,7 +250,7 @@ func TestCacheOperations(t *testing.T) {
 	require.NotNil(t, p.cache, "cache should be enabled")
 
 	// Add entry to cache
-	p.cache.set("test-token", true, "app-1", "Test App")
+	p.cache.set("test-token", true, "app-1", "Test App", "tenant-1")
 
 	// Verify cache entry
 	entry, ok := p.cache.get("test-token")
@@ -265,8 +265,8 @@ func TestCacheOperations(t *testing.T) {
 	assert.False(t, ok)
 
 	// Add more entries
-	p.cache.set("token-1", true, "", "")
-	p.cache.set("token-2", false, "", "")
+	p.cache.set("token-1", true, "", "", "")
+	p.cache.set("token-2", false, "", "", "")
 
 	// Clear cache
 	p.ClearCache()

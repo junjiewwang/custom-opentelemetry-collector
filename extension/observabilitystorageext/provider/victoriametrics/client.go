@@ -59,6 +59,11 @@ type VMClient interface {
 
 	// Health probes /health.
 	Health(ctx context.Context) error
+
+	// ForAccount returns a client scoped to a VictoriaMetrics account (native
+	// multitenancy). The base client (account 0) is used when account scoping is
+	// disabled.
+	ForAccount(accountID uint32) VMClient
 }
 
 // VMSeriesList is a Prometheus-format query result.
@@ -85,23 +90,54 @@ type VMExportSeries struct {
 
 // httpVMClient is the real VMClient over net/http.
 type httpVMClient struct {
-	writeBase  string
-	readBase   string
-	httpClient *http.Client
-	readClient *http.Client
-	maxRetries int
+	writeBase    string
+	readBase     string
+	httpClient   *http.Client
+	readClient   *http.Client
+	maxRetries   int
+	accountScope bool   // native multitenancy: /select/<acct>/ + /insert/<acct>/
+	accountID    uint32 // set via ForAccount
 }
 
 // newHTTPVMClient builds the real client. Write and read use separate
 // http.Clients so their timeouts stay independent.
 func newHTTPVMClient(cfg *Config) *httpVMClient {
 	return &httpVMClient{
-		writeBase:  strings.TrimRight(cfg.writeBase(), "/"),
-		readBase:   strings.TrimRight(cfg.readBase(), "/"),
-		httpClient: &http.Client{Timeout: cfg.WriteTimeout},
-		readClient: &http.Client{Timeout: cfg.ReadTimeout},
-		maxRetries: cfg.MaxRetries,
+		writeBase:    strings.TrimRight(cfg.writeBase(), "/"),
+		readBase:     strings.TrimRight(cfg.readBase(), "/"),
+		httpClient:   &http.Client{Timeout: cfg.WriteTimeout},
+		readClient:   &http.Client{Timeout: cfg.ReadTimeout},
+		maxRetries:   cfg.MaxRetries,
+		accountScope: cfg.AccountScope,
 	}
+}
+
+// ForAccount returns a shallow copy scoped to the given VM account. The
+// underlying http.Clients are shared (safe for concurrent use).
+func (c *httpVMClient) ForAccount(accountID uint32) VMClient {
+	cc := *c
+	cc.accountID = accountID
+	return &cc
+}
+
+// writePath builds the write URL. Under account scoping the account is injected
+// as /insert/<accountID>/prometheus before the suffix; otherwise the single-
+// tenant vmsingle path is used verbatim.
+func (c *httpVMClient) writePath(suffix string) string {
+	if c.accountScope {
+		return fmt.Sprintf("%s/insert/%d/prometheus%s", c.writeBase, c.accountID, suffix)
+	}
+	return c.writeBase + suffix
+}
+
+// readPath builds the read URL. Under account scoping the account is injected as
+// /select/<accountID>/prometheus before the suffix; otherwise the single-tenant
+// vmsingle path is used verbatim.
+func (c *httpVMClient) readPath(suffix string) string {
+	if c.accountScope {
+		return fmt.Sprintf("%s/select/%d/prometheus%s", c.readBase, c.accountID, suffix)
+	}
+	return c.readBase + suffix
 }
 
 // VMMeta is one metric family's native metadata from VM.
@@ -125,7 +161,7 @@ func (c *httpVMClient) ImportText(ctx context.Context, lines []byte) error {
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			c.writeBase+"/api/v1/import/prometheus", bytes.NewReader(lines))
+			c.writePath("/api/v1/import/prometheus"), bytes.NewReader(lines))
 		if err != nil {
 			return err
 		}
@@ -197,7 +233,7 @@ func (c *httpVMClient) Export(ctx context.Context, match []string, start, end ti
 	q.Set("end", strconv.FormatInt(end.Unix(), 10))
 	q.Set("format", "json")
 
-	u := c.readBase + "/api/v1/export?" + q.Encode()
+	u := c.readPath("/api/v1/export?") + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -287,7 +323,7 @@ func (c *httpVMClient) Health(ctx context.Context) error {
 // promGet issues a GET against the read endpoint and decodes the Prometheus
 // envelope {"status","data"} into out.
 func (c *httpVMClient) promGet(ctx context.Context, path string, q url.Values, out any) error {
-	u := c.readBase + path + "?" + q.Encode()
+	u := c.readPath(path) + "?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err

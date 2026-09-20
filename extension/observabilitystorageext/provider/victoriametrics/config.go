@@ -36,6 +36,12 @@ type Config struct {
 	// ExtraLabels are injected into every written series (e.g. cluster="prod").
 	ExtraLabels map[string]string `mapstructure:"extra_labels"`
 
+	// AccountScope enables VictoriaMetrics native multitenancy: read/write URLs
+	// become /select/<accountID>/prometheus/... and /insert/<accountID>/prometheus/...
+	// (requires WriteEndpoint/ReadEndpoint pointing at vminsert/vmselect). When
+	// false (default), the provider uses the vmsingle single-tenant endpoints and
+	// the label-based tenant_id soft isolation.
+	AccountScope bool `mapstructure:"account_scope"`
 }
 
 // ApplyDefaults fills zero-valued fields with sensible defaults.

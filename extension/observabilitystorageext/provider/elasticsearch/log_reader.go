@@ -12,6 +12,7 @@ import (
 
 	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -45,9 +46,10 @@ func (r *LogReader) SearchLogs(ctx context.Context, query LogQuery) (*LogSearchR
 	}
 
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		From:  query.Offset,
-		Size:  limit,
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		From:     query.Offset,
+		Size:     limit,
 		Sort: []map[string]any{
 			{FieldLogTimeUnixNano: map[string]any{"order": "desc"}},
 		},
@@ -117,9 +119,10 @@ func (r *LogReader) SearchLogMetric(ctx context.Context, query LogMetricQuery) (
 	}
 
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  0,
-		Sort:  nil, // not needed for aggregations
+		TenantID: query.TenantID,
+		Query:    esQuery,
+		Size:     0,
+		Sort:     nil, // not needed for aggregations
 	}
 	if len(query.GroupByLabels) > 0 {
 		searchReq.Aggregations = outerAgg
@@ -370,6 +373,7 @@ func (r *LogReader) ListLogFields(ctx context.Context, timeRange TimeRange) ([]L
 			},
 		},
 	}
+	searchReq.TenantID = tenantctx.TenantIDFromContext(ctx)
 
 	resp, err := r.searcher.Search(ctx, r.indexPatternForRange("", timeRange.Start, timeRange.End), searchReq)
 	if err != nil {
@@ -421,6 +425,7 @@ func (r *LogReader) GetLogStats(ctx context.Context, query LogStatsQuery) (*LogS
 	}
 
 	searchReq := &SearchRequest{
+		TenantID: query.TenantID,
 		Query: map[string]any{
 			"bool": map[string]any{"must": must},
 		},

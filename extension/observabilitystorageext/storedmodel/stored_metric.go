@@ -19,13 +19,14 @@ type StoredMetricDataPoint struct {
 	Resource      map[string]any `json:"resource,omitempty"`
 	ServiceName   string         `json:"serviceName"`
 	AppID         string         `json:"appId,omitempty"`
+	TenantID      string         `json:"tenantId,omitempty"`
 	// Unit is the OTel metric unit (e.g. "By"=bytes, "1"=count, "ms", "s").
 	// Backs the Prometheus /metadata "unit" field so Grafana Metrics Drilldown
 	// can show "Unit: bytes" instead of a bare number.
 	Unit string `json:"unit,omitempty"`
 
 	// Histogram-specific fields (present only when Type="histogram").
-	BucketCounts  []uint64  `json:"bucket_counts,omitempty"`
+	BucketCounts   []uint64  `json:"bucket_counts,omitempty"`
 	ExplicitBounds []float64 `json:"explicit_bounds,omitempty"`
 	// AggregationTemporality records the histogram's aggregation temporality
 	// ("cumulative" or "delta"). Empty for non-histogram metrics and for
@@ -67,11 +68,13 @@ func ConvertOTLPMetric(metric pmetric.Metric, resource pcommon.Resource) []Store
 	resourceAttrs := resource.Attributes()
 	serviceName := getAttrStr(resourceAttrs, "service.name", "unknown")
 	appID := getAppIDAttr(resourceAttrs)
+	tenantID := getAttrStr(resourceAttrs, "tenant_id", "")
 
 	base := StoredMetricDataPoint{
 		Name:        metric.Name(),
 		ServiceName: serviceName,
 		AppID:       appID,
+		TenantID:    tenantID,
 		Unit:        metric.Unit(),
 		Resource:    pcommonMapToFlat(resourceAttrs),
 	}

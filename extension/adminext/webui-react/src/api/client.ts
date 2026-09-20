@@ -20,6 +20,9 @@ import type {
   AgentConfig,
 
   ApiError,
+  Tenant,
+  TenantAPIKey,
+  CreateAPIKeyResponse,
 } from '@/types/api';
 
 import type {
@@ -79,8 +82,17 @@ interface InstrumentationTargetListResponse {
   total: number;
 }
 
+/** Auth identity returned by GET /auth/me — key_type ∈ {super, operator, tenant}. */
+export interface AuthMe {
+  key_type: string;
+  tenant_id: string;
+  /** true when an admin/operator key is impersonating another tenant. */
+  impersonating?: boolean;
+}
+
 class ApiClient {
   private apiKey: string = '';
+  private impersonateTenant: string = '';
 
   setApiKey(key: string): void {
     this.apiKey = key;
@@ -90,16 +102,29 @@ class ApiClient {
     return this.apiKey;
   }
 
+  /** Set the tenant to impersonate (admin "view as tenant"). Empty clears it. */
+  setImpersonateTenant(tenantID: string): void {
+    this.impersonateTenant = tenantID;
+  }
+
+  clearImpersonateTenant(): void {
+    this.impersonateTenant = '';
+  }
+
   /**
    * 通用请求方法
    */
   async request<T>(method: string, path: string, data?: unknown): Promise<T> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-API-Key': this.apiKey,
+    };
+    if (this.impersonateTenant) {
+      headers['X-Tenant-Id'] = this.impersonateTenant;
+    }
     const options: RequestInit = {
       method,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': this.apiKey,
-      },
+      headers,
     };
 
     if (data) {
@@ -123,6 +148,14 @@ class ApiClient {
     }
 
     return res.json() as Promise<T>;
+  }
+
+  // ========================================================================
+  // Auth (identity)
+  // ========================================================================
+
+  getAuthMe(): Promise<AuthMe> {
+    return this.request<AuthMe>('GET', '/auth/me');
   }
 
   // ========================================================================
@@ -601,6 +634,45 @@ class ApiClient {
   /** 删除 App 某 signal 的 retention override */
   deleteAppRetention(appId: string, signal: string): Promise<{ message: string; success: boolean }> {
     return this.request('DELETE', `/apps/${encodeURIComponent(appId)}/retention/${signal}`);
+  }
+
+  // ========================================================================
+  // Tenants (Multi-tenancy)
+  // ========================================================================
+
+  getTenants(): Promise<Tenant[]> {
+    return this.request<{ tenants: Tenant[]; total: number }>('GET', '/tenants')
+      .then(res => res.tenants || []);
+  }
+
+  createTenant(data: { name: string; description?: string }): Promise<Tenant> {
+    return this.request<Tenant>('POST', '/tenants', data);
+  }
+
+  updateTenant(id: string, data: { name?: string; description?: string; status?: string }): Promise<Tenant> {
+    return this.request<Tenant>('PUT', `/tenants/${encodeURIComponent(id)}`, data);
+  }
+
+  deleteTenant(id: string): Promise<{ deleted: boolean }> {
+    return this.request<{ deleted: boolean }>('DELETE', `/tenants/${encodeURIComponent(id)}`);
+  }
+
+  getTenantApps(id: string): Promise<string[]> {
+    return this.request<{ apps: string[]; total: number }>('GET', `/tenants/${encodeURIComponent(id)}/apps`)
+      .then(res => res.apps || []);
+  }
+
+  getTenantKeys(id: string): Promise<TenantAPIKey[]> {
+    return this.request<{ keys: TenantAPIKey[]; total: number }>('GET', `/tenants/${encodeURIComponent(id)}/keys`)
+      .then(res => res.keys || []);
+  }
+
+  createTenantKey(id: string, data: { name: string; key_type: string; scopes?: string[] }): Promise<CreateAPIKeyResponse> {
+    return this.request<CreateAPIKeyResponse>('POST', `/tenants/${encodeURIComponent(id)}/keys`, data);
+  }
+
+  revokeTenantKey(id: string, keyId: string): Promise<{ revoked: boolean }> {
+    return this.request<{ revoked: boolean }>('DELETE', `/tenants/${encodeURIComponent(id)}/keys/${encodeURIComponent(keyId)}`);
   }
 }
 

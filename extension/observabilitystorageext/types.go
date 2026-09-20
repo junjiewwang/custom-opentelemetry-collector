@@ -109,6 +109,7 @@ type TimeRange struct {
 // TraceQuery holds parameters for searching traces.
 type TraceQuery struct {
 	AppID         string                `json:"appId,omitempty"`
+	TenantID      string                `json:"tenantId,omitempty"`
 	ServiceName   string                `json:"service,omitempty"`
 	OperationName string                `json:"operation,omitempty"`
 	Tags          map[string]string     `json:"tags,omitempty"`
@@ -243,6 +244,7 @@ type Dependency struct {
 // MetricQuery holds parameters for an instant metric query.
 type MetricQuery struct {
 	AppID         string            `json:"appId,omitempty"`
+	TenantID      string            `json:"tenantId,omitempty"`
 	MetricName    string            `json:"metric"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
@@ -261,6 +263,7 @@ type MetricQuery struct {
 //	FILL(<Fill>) SLIMIT <SeriesLimit> LIMIT <Limit>
 type MetricRangeQuery struct {
 	AppID         string            `json:"appId,omitempty"`
+	TenantID      string            `json:"tenantId,omitempty"`
 	MetricName    string            `json:"metric"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
@@ -285,6 +288,7 @@ type MetricResult struct {
 // LabelCombinationsQuery holds parameters for a label combination exploration query.
 type LabelCombinationsQuery struct {
 	AppID      string   `json:"appId,omitempty"`
+	TenantID   string   `json:"tenantId,omitempty"`
 	MetricName string   `json:"metric"`
 	LabelKeys  []string `json:"labelKeys"`
 }
@@ -327,6 +331,7 @@ type MetricTimeValue struct {
 // Used by PromQL rate()/increase() which need the original sample sequence.
 type MetricRawQuery struct {
 	AppID         string            `json:"appId,omitempty"`
+	TenantID      string            `json:"tenantId,omitempty"`
 	MetricName    string            `json:"metric"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
@@ -368,6 +373,7 @@ type MetricSample struct {
 // across all matching documents, performing grouping + aggregation in Go.
 type MetricFlatQuery struct {
 	AppID         string            `json:"appId,omitempty"`
+	TenantID      string            `json:"tenantId,omitempty"`
 	MetricName    string            `json:"metric"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
@@ -406,6 +412,7 @@ type MetricFlatResult struct {
 // grouping dimensions alongside le.
 type MetricHeatmapRangeQuery struct {
 	AppID         string            `json:"appId,omitempty"`
+	TenantID      string            `json:"tenantId,omitempty"`
 	MetricName    string            `json:"metric"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
@@ -413,8 +420,8 @@ type MetricHeatmapRangeQuery struct {
 	LabelNotMatch map[string]string `json:"labelNotMatch,omitempty"`
 	TimeRange     TimeRange         `json:"timeRange"`
 	Step          time.Duration     `json:"step"`
-	RangeDuration time.Duration     `json:"rangeDuration"`      // rate window [5m]
-	GroupBy       []string          `json:"groupBy,omitempty"`  // extra (non-le) grouping dims
+	RangeDuration time.Duration     `json:"rangeDuration"`     // rate window [5m]
+	GroupBy       []string          `json:"groupBy,omitempty"` // extra (non-le) grouping dims
 	SeriesLimit   int               `json:"seriesLimit,omitempty"`
 }
 
@@ -434,6 +441,7 @@ type DensityBucket struct {
 // asks for a bucketed doc-count histogram rather than raw samples.
 type FlatDensityQuery struct {
 	AppID         string            `json:"appId,omitempty"`
+	TenantID      string            `json:"tenantId,omitempty"`
 	MetricName    string            `json:"metric"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	LabelMatch    map[string]string `json:"labelMatch,omitempty"`
@@ -455,6 +463,7 @@ type FlatDensityQuery struct {
 // LogQuery holds parameters for searching logs.
 type LogQuery struct {
 	AppID       string            `json:"appId,omitempty"`
+	TenantID    string            `json:"tenantId,omitempty"`
 	Query       string            `json:"query,omitempty"` // free-text or ES query_string
 	ServiceName string            `json:"service,omitempty"`
 	Severity    []string          `json:"severity,omitempty"`
@@ -548,6 +557,7 @@ type LogRecord struct {
 	// Derived fields
 	ServiceName string `json:"serviceName"`
 	AppID       string `json:"appId,omitempty"`
+	TenantID    string `json:"tenantId,omitempty"`
 }
 
 // LogContext holds surrounding log lines for context viewing.
@@ -567,6 +577,7 @@ type LogField struct {
 // LogStatsQuery holds parameters for log statistics queries.
 type LogStatsQuery struct {
 	AppID       string    `json:"appId,omitempty"`
+	TenantID    string    `json:"tenantId,omitempty"`
 	ServiceName string    `json:"service,omitempty"`
 	TimeRange   TimeRange `json:"timeRange"`
 	GroupBy     string    `json:"groupBy,omitempty"`

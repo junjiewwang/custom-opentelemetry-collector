@@ -44,10 +44,10 @@ func TestServiceGraph_ClientServer(t *testing.T) {
 	gen := NewServiceGraphGenerator(defaultSGConfig())
 
 	cSpan, cRes := makeSGSpan("GET /data", ptrace.SpanKindClient, 50, "tapm-api", "tapm-db", nil)
-	gen.ProcessSpan("tapm-api", "test-app", cRes, cSpan)
+	gen.ProcessSpan("tapm-api", "test-app", "", cRes, cSpan)
 
 	sSpan, sRes := makeSGSpan("query", ptrace.SpanKindServer, 30, "tapm-db", "tapm-api", nil)
-	gen.ProcessSpan("tapm-db", "test-app", sRes, sSpan)
+	gen.ProcessSpan("tapm-db", "test-app", "", sRes, sSpan)
 
 	edges := gen.Collect()
 	require.Len(t, edges, 1)
@@ -62,7 +62,7 @@ func TestServiceGraph_ClientOnly(t *testing.T) {
 	gen := NewServiceGraphGenerator(defaultSGConfig())
 
 	cSpan, cRes := makeSGSpan("GET /api", ptrace.SpanKindClient, 25, "tapm-api", "tapm-db", nil)
-	gen.ProcessSpan("tapm-api", "test-app", cRes, cSpan)
+	gen.ProcessSpan("tapm-api", "test-app", "", cRes, cSpan)
 
 	edges := gen.Collect()
 	require.Len(t, edges, 1)
@@ -76,7 +76,7 @@ func TestServiceGraph_ServerOnly(t *testing.T) {
 	gen := NewServiceGraphGenerator(defaultSGConfig())
 
 	sSpan, sRes := makeSGSpan("query", ptrace.SpanKindServer, 30, "tapm-db", "tapm-api", nil)
-	gen.ProcessSpan("tapm-db", "test-app", sRes, sSpan)
+	gen.ProcessSpan("tapm-db", "test-app", "", sRes, sSpan)
 
 	edges := gen.Collect()
 	require.Len(t, edges, 1)
@@ -91,7 +91,7 @@ func TestServiceGraph_Failed(t *testing.T) {
 
 	sSpan, sRes := makeSGSpan("query", ptrace.SpanKindServer, 10, "tapm-db", "tapm-api", nil)
 	sSpan.Status().SetCode(ptrace.StatusCodeError)
-	gen.ProcessSpan("tapm-db", "test-app", sRes, sSpan)
+	gen.ProcessSpan("tapm-db", "test-app", "", sRes, sSpan)
 
 	edges := gen.Collect()
 	require.Len(t, edges, 1)
@@ -104,11 +104,11 @@ func TestServiceGraph_Messaging(t *testing.T) {
 
 	pSpan, pRes := makeSGSpan("publish", ptrace.SpanKindProducer, 5, "tapm-api", "kafka/orders-topic",
 		map[string]string{"messaging.system": "kafka"})
-	gen.ProcessSpan("tapm-api", "test-app", pRes, pSpan)
+	gen.ProcessSpan("tapm-api", "test-app", "", pRes, pSpan)
 
 	cSpan, cRes := makeSGSpan("process", ptrace.SpanKindConsumer, 20, "tapm-worker", "kafka/orders-topic",
 		map[string]string{"messaging.system": "kafka", "messaging.message.body.size": "200"})
-	gen.ProcessSpan("tapm-worker", "test-app", cRes, cSpan)
+	gen.ProcessSpan("tapm-worker", "test-app", "", cRes, cSpan)
 
 	edges := gen.Collect()
 	require.Len(t, edges, 2, "Producer→Kafka and Kafka→Consumer are two edges")
@@ -141,7 +141,7 @@ func TestServiceGraph_NoPeerService(t *testing.T) {
 	gen := NewServiceGraphGenerator(defaultSGConfig())
 
 	span, res := makeSGSpan("no-peer", ptrace.SpanKindClient, 10, "tapm-api", "", nil)
-	gen.ProcessSpan("tapm-api", "test-app", res, span)
+	gen.ProcessSpan("tapm-api", "test-app", "", res, span)
 
 	assert.Equal(t, 0, gen.Cardinality())
 	assert.Empty(t, gen.Collect())
@@ -153,7 +153,7 @@ func TestServiceGraph_Disabled(t *testing.T) {
 	gen := NewServiceGraphGenerator(cfg)
 
 	span, res := makeSGSpan("x", ptrace.SpanKindServer, 10, "tapm-api", "tapm-db", nil)
-	gen.ProcessSpan("tapm-api", "test-app", res, span)
+	gen.ProcessSpan("tapm-api", "test-app", "", res, span)
 
 	assert.Equal(t, 0, gen.Cardinality())
 }

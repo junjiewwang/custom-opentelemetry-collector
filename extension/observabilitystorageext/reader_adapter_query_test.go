@@ -20,6 +20,7 @@ import (
 func TestToStoredTraceQuery_CopiesEveryFilter(t *testing.T) {
 	in := TraceQuery{
 		AppID:         "app",
+		TenantID:      "tn-1",
 		ServiceName:   "gateway",
 		OperationName: "GET /checkout",
 		Tags:          map[string]string{"http.method": "GET"},

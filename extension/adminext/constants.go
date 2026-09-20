@@ -8,8 +8,7 @@ package adminext
 // ═══════════════════════════════════════════════════
 //
 // This file centralizes all hardcoded string constants used across
-// prometheus_handler.go, tempo_handler.go, influxdb_handler.go,
-// and traceql/ast.go.
+// prometheus_handler.go, tempo_handler.go, and traceql/ast.go.
 //
 // Rules:
 //   - Do NOT add raw string literals for these values in handler/parser code.

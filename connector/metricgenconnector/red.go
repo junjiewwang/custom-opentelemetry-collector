@@ -17,6 +17,7 @@ import (
 type redMetricSeries struct {
 	dims     dimensionSet
 	appID    string
+	tenantID string
 	calls    counter
 	latency  *histogram
 	overflow atomic.Bool
@@ -91,7 +92,7 @@ func NewREDGenerator(config *REDConfig, cardinalityLimit int) *REDGenerator {
 }
 
 // ProcessSpan aggregates a single span into the RED metrics.
-func (g *REDGenerator) ProcessSpan(svcName, appID string, resource pcommon.Resource, span ptrace.Span) {
+func (g *REDGenerator) ProcessSpan(svcName, appID, tenantID string, resource pcommon.Resource, span ptrace.Span) {
 	if !g.config.Enabled {
 		return
 	}
@@ -113,7 +114,7 @@ func (g *REDGenerator) ProcessSpan(svcName, appID string, resource pcommon.Resou
 	}
 
 	ds := newDimensionSet(dims)
-	series := g.getOrCreateSeries(ds, appID)
+	series := g.getOrCreateSeries(ds, appID, tenantID)
 
 	if series.overflow.Load() {
 		return
@@ -130,7 +131,7 @@ func (g *REDGenerator) ProcessSpan(svcName, appID string, resource pcommon.Resou
 
 // getOrCreateSeries returns the series for the given dimensions, creating one
 // if it doesn't exist (subject to cardinality limits).
-func (g *REDGenerator) getOrCreateSeries(ds dimensionSet, appID string) *redMetricSeries {
+func (g *REDGenerator) getOrCreateSeries(ds dimensionSet, appID, tenantID string) *redMetricSeries {
 	// Fast path: read lock.
 	g.mu.RLock()
 	s, ok := g.series[ds.hash]
@@ -158,9 +159,10 @@ func (g *REDGenerator) getOrCreateSeries(ds dimensionSet, appID string) *redMetr
 	}
 
 	s = &redMetricSeries{
-		dims:    ds,
-		appID:   appID,
-		latency: newHistogram(g.config.Histogram.Buckets),
+		dims:     ds,
+		appID:    appID,
+		tenantID: tenantID,
+		latency:  newHistogram(g.config.Histogram.Buckets),
 	}
 	g.series[ds.hash] = s
 	return s

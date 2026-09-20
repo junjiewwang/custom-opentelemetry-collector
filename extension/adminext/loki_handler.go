@@ -78,6 +78,7 @@ func (h *lokiHandlers) handleLokiQueryRange(w http.ResponseWriter, r *http.Reque
 		branch.Limit = limit
 		branch.Direction = direction
 		storageQ := ev.Evaluate(branch)
+		storageQ.TenantID = TenantIDFromContext(r.Context())
 		logs, err := h.logReader.SearchLogs(r.Context(), *storageQ)
 		if err != nil {
 			h.logger.Warn("loki: search logs failed for OR branch", zap.Error(err))
@@ -217,6 +218,7 @@ func (h *lokiHandlers) handleLokiInstantQuery(w http.ResponseWriter, r *http.Req
 		branch.Limit = limit
 		branch.Direction = "backward"
 		storageQ := ev.Evaluate(branch)
+		storageQ.TenantID = TenantIDFromContext(r.Context())
 		logs, err := h.logReader.SearchLogs(r.Context(), *storageQ)
 		if err != nil {
 			h.logger.Warn("loki: instant search failed for OR branch", zap.Error(err))
@@ -529,6 +531,7 @@ func (h *lokiHandlers) handleLokiIndexVolume(w http.ResponseWriter, r *http.Requ
 	parsed.End = end
 	ev := &logql.Evaluator{}
 	storageQ := ev.Evaluate(parsed)
+	storageQ.TenantID = TenantIDFromContext(r.Context())
 
 	// Execute a metric aggregation: one terms agg on the groupByLabel.
 	metricQ := &observabilitystorageext.LogMetricQuery{
@@ -688,11 +691,12 @@ func (h *lokiHandlers) handleLokiDetectedFields(w http.ResponseWriter, r *http.R
 				parsed.End = end
 				ev := &logql.Evaluator{}
 				lq := ev.Evaluate(parsed)
+				lq.TenantID = TenantIDFromContext(r.Context())
 				storageQ = lq
 			}
 		}
 		if storageQ == nil {
-			storageQ = &observabilitystorageext.LogQuery{TimeRange: observabilitystorageext.TimeRange{Start: start, End: end}}
+			storageQ = &observabilitystorageext.LogQuery{TenantID: TenantIDFromContext(r.Context()), TimeRange: observabilitystorageext.TimeRange{Start: start, End: end}}
 		}
 		storageQ.Limit = 5
 

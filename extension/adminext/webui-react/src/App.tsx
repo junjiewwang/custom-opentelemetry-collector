@@ -14,6 +14,7 @@ import LazyLoadFallback from '@/components/LazyLoadFallback';
 import LoginPage from '@/pages/LoginPage';
 import DashboardPage from '@/pages/DashboardPage';
 import AppsPage from '@/pages/AppsPage';
+import TenantsPage from '@/pages/TenantsPage';
 import ServicesPage from '@/pages/ServicesPage';
 import InstancesPage from '@/pages/InstancesPage';
 import InstrumentationPage from '@/pages/InstrumentationPage';
@@ -29,37 +30,46 @@ const StorageAdminPage = lazy(() => import('@/pages/StorageAdminPage'));
  * 受保护路由 - 未认证时重定向到登录页
  */
 function ProtectedRoutes() {
-  const { authenticated } = useAuth();
+  const { authenticated, role } = useAuth();
 
   if (!authenticated) {
     return <LoginPage />;
   }
 
+  const isAdmin = role === 'admin';
+  // tenant 角色落点到 Traces；admin 落点到 Dashboard
+  const fallback = isAdmin ? '/dashboard' : '/traces';
+
   return (
     <Suspense fallback={<LazyLoadFallback />}>
       <Routes>
         <Route element={<MainLayout />}>
-          {/* 默认重定向到 Dashboard */}
-          <Route index element={<Navigate to="/dashboard" replace />} />
+          {/* 默认重定向：admin → Dashboard，tenant → Traces */}
+          <Route index element={<Navigate to={fallback} replace />} />
 
-          {/* 已迁移页面 - React 原生实现 */}
-          <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="apps" element={<AppsPage />} />
-          <Route path="services" element={<ServicesPage />} />
-          <Route path="instances" element={<InstancesPage />} />
-          <Route path="instrumentation" element={<InstrumentationPage />} />
-          {/* /configs 已整合进 ServicesPage Config Tab，旧书签兼容重定向 */}
-          <Route path="configs" element={<Navigate to="/services" replace />} />
+          {/* 管理页面 - 仅 admin 可见（tenant key 后端无权限，前端一并隐藏） */}
+          {isAdmin && (
+            <>
+              <Route path="dashboard" element={<DashboardPage />} />
+              <Route path="apps" element={<AppsPage />} />
+              <Route path="tenants" element={<TenantsPage />} />
+              <Route path="services" element={<ServicesPage />} />
+              <Route path="instances" element={<InstancesPage />} />
+              <Route path="instrumentation" element={<InstrumentationPage />} />
+              {/* /configs 已整合进 ServicesPage Config Tab，旧书签兼容重定向 */}
+              <Route path="configs" element={<Navigate to="/services" replace />} />
+              <Route path="storage" element={<StorageAdminPage />} />
+            </>
+          )}
 
-          {/* 懒加载页面 - 含 ECharts 或大型依赖 */}
+          {/* 可观测性页面 - 所有角色可见（后端按 tenant_id 隔离） */}
           <Route path="traces/compare" element={<TraceComparePage />} />
           <Route path="traces" element={<TracesPage />} />
           <Route path="metrics" element={<MetricsPage />} />
           <Route path="logs" element={<LogsPage />} />
-          <Route path="storage" element={<StorageAdminPage />} />
 
-          {/* 兜底 - 未匹配路由重定向到 Dashboard */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          {/* 兜底 - 未匹配路由按角色重定向 */}
+          <Route path="*" element={<Navigate to={fallback} replace />} />
         </Route>
       </Routes>
     </Suspense>

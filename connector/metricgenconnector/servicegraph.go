@@ -30,6 +30,7 @@ func newSGEdgeKey(client, server, connType string) sgEdgeKey {
 type sgEdgeSeries struct {
 	key           sgEdgeKey
 	appID         string
+	tenantID      string
 	requestTotal  counter
 	failedTotal   counter
 	clientSeconds *histogram
@@ -87,7 +88,7 @@ func NewServiceGraphGenerator(config *ServiceGraphConfig) *ServiceGraphGenerator
 }
 
 // ProcessSpan aggregates a single span into service graph metrics.
-func (g *ServiceGraphGenerator) ProcessSpan(svcName, appID string, resource pcommon.Resource, span ptrace.Span) {
+func (g *ServiceGraphGenerator) ProcessSpan(svcName, appID, tenantID string, resource pcommon.Resource, span ptrace.Span) {
 	if !g.config.Enabled {
 		return
 	}
@@ -104,7 +105,7 @@ func (g *ServiceGraphGenerator) ProcessSpan(svcName, appID string, resource pcom
 		return
 	}
 
-	edge := g.getOrCreateEdge(client, server, connType, appID)
+	edge := g.getOrCreateEdge(client, server, connType, appID, tenantID)
 	if edge.overflow.Load() {
 		return
 	}
@@ -148,7 +149,7 @@ func (g *ServiceGraphGenerator) ProcessSpan(svcName, appID string, resource pcom
 	}
 }
 
-func (g *ServiceGraphGenerator) getOrCreateEdge(client, server, connType, appID string) *sgEdgeSeries {
+func (g *ServiceGraphGenerator) getOrCreateEdge(client, server, connType, appID, tenantID string) *sgEdgeSeries {
 	key := newSGEdgeKey(client, server, connType)
 
 	g.mu.RLock()
@@ -168,6 +169,7 @@ func (g *ServiceGraphGenerator) getOrCreateEdge(client, server, connType, appID 
 	e = &sgEdgeSeries{
 		key:           key,
 		appID:         appID,
+		tenantID:      tenantID,
 		clientSeconds: newHistogram(g.latencyBounds),
 		serverSeconds: newHistogram(g.latencyBounds),
 		msgSeconds:    newHistogram(g.latencyBounds),
