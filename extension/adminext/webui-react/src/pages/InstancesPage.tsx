@@ -16,6 +16,7 @@ import { useToast } from '@/contexts/ToastContext';
 import { useConfirm } from '@/components/ConfirmDialog';
 import SearchableSelect, { type SelectOption } from '@/components/SearchableSelect';
 import InstanceTasksTab from '@/components/InstanceTasksTab';
+import { copyText } from '@/utils/clipboard';
 import type { Instance, App, AppService, ApiError } from '@/types/api';
 
 // 懒加载终端面板（包含 xterm.js，约 200KB）
@@ -310,9 +311,10 @@ export default function InstancesPage() {
 
   // ── 复制到剪贴板 ──────────────────────────────────
 
-  const copyToClipboard = useCallback(async (text: string) => {
-    try { await navigator.clipboard.writeText(text); showToast('Copied', 'success'); }
-    catch { showToast('Failed to copy', 'error'); }
+  const copyToClipboard = useCallback((text: string) => {
+    void copyText(text).then((ok) => {
+      showToast(ok ? 'Copied' : 'Failed to copy', ok ? 'success' : 'error');
+    });
   }, [showToast]);
 
   // ── 空状态类型判断 ──────────────────────────────────

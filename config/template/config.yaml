@@ -159,10 +159,11 @@ extensions:
     # hybrid.metric routes the metric signal to victoriametrics; trace/log/admin
     # stay on elasticsearch. Rollback = set hybrid.metric back to elasticsearch
     # (historical ES data is untouched).
+    # vmsingle uses one endpoint; account_scope is only for vm-cluster.
+    # Values are injected from render metadata (.Service).
     victoriametrics:
-      write_endpoint: "http://vminsert.vm-cluster.svc.cluster.local:8480"
-      read_endpoint: "http://vmselect.vm-cluster.svc.cluster.local:8481"
-      account_scope: true
+      endpoint: "[[ .Service.victoriametrics.endpoint ]]"
+      account_scope: [[ .Service.victoriametrics.account_scope ]]
       flush_interval: 3s
       batch_size: 5000
       write_timeout: 10s
@@ -391,8 +392,7 @@ extensions:
     # CORS configuration
     cors:
       enabled: true
-      allowed_origins:
-        - "*"
+      allowed_origins: [[ .Service.admin.cors_origins | toJson ]]
       allowed_methods:
         - "GET"
         - "POST"
@@ -425,9 +425,7 @@ extensions:
       # API key auth configuration
       api_key:
         header: "X-API-Key"
-        keys:
-          - "your-api-key-1"
-          - "your-api-key-2"
+        keys: [[ .Service.admin.api_keys | toJson ]]
     
     # WebSocket token configuration for secure WS authentication
     # In distributed mode (multiple collector replicas), use Redis to share tokens
@@ -631,7 +629,7 @@ extensions:
       # Authentication for internal cross-node communication
       internal_auth:
         # Pre-shared token (required when distributed mode is enabled)
-        token: "internal-token"
+        token: "[[ .Service.arthas_tunnel.internal_token ]]"
         # HTTP header name for the token
         header_name: "X-Internal-Token"
       
@@ -693,8 +691,7 @@ extensions:
       type: api_key  # "api_key" or "none"
       # API keys for authenticating MCP clients
       # Supports Authorization: Bearer <key> or X-API-Key: <key> headers
-      api_keys:
-        - "your-mcp-api-key-1"
+      api_keys: [[ .Service.mcp.api_keys | toJson ]]
 
     # Reference to control plane extension (for agent management and task execution)
     controlplane_extension: controlplane
@@ -865,18 +862,6 @@ exporters:
     sampling_initial: 5
     sampling_thereafter: 200
 
-  # OTLP HTTP exporter
-  otlphttp/jaeger:
-    endpoint: [[ .Service.otlp_jeager.url ]]
-
-  # Prometheus Remote Write exporter for metrics
-  prometheusremotewrite:
-    endpoint: [[ .Service.prometheus_server.url ]]
-    tls:
-      insecure: true
-    resource_to_telemetry_conversion:
-      enabled: true
-
   # Observability Storage exporter - bridges pipeline to unified storage extension
   observability_storage:
     storage_extension: observability_storage
@@ -972,7 +957,7 @@ service:
       # Inject the self-monitoring token so tokenauth processor allows self-telemetry
       # (traces AND metrics AND logs) on all three pipelines. Must match the
       # seed_apps token in the controlplane config.
-      token: collector-self-monitoring-token
+      token: "[[ .Service.telemetry.resource_token ]]"
       # Physical host identifier so self-monitoring spans carry host.name. This
       # lets operators distinguish multiple collector instances writing to the
       # same backend (e.g. a stray `docker run` container vs the k8s pod) directly

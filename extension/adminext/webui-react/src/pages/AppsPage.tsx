@@ -11,6 +11,7 @@ import { useToast } from '@/contexts/ToastContext';
 import EmptyState from '@/components/EmptyState';
 import AppDetailDrawer from '@/components/AppDetailDrawer';
 import type { App } from '@/types/api';
+import { copyText } from '@/utils/clipboard';
 
 /** Token 最大长度（与后端 MaxTokenLength 保持一致） */
 const MAX_TOKEN_LENGTH = 64;
@@ -134,8 +135,9 @@ export default function AppsPage() {
   // ========================================================================
 
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    showToast('Copied to clipboard', 'success');
+    void copyText(text).then((ok) => {
+      showToast(ok ? 'Copied to clipboard' : 'Failed to copy', ok ? 'success' : 'error');
+    });
   };
 
   const formatDate = (dateStr: string) => {

@@ -12,6 +12,7 @@ import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { useConfirm } from '@/components/ConfirmDialog';
 import DetailDrawer, { DrawerSection } from '@/components/DetailDrawer';
+import { copyText } from '@/utils/clipboard';
 import SearchableSelect, { type SelectOption } from '@/components/SearchableSelect';
 import type {
   TaskInfoV2, TaskResultRaw, Task, TaskStatus, NormalizedTaskResult,
@@ -434,9 +435,10 @@ export default function InstanceTasksTab({ agentId, serviceName, isOnline }: Ins
     setUninstrClassName(''); setUninstrMethodName(''); setUninstrType('');
   }, []);
 
-  const copyToClipboard = useCallback(async (text: string) => {
-    try { await navigator.clipboard.writeText(text); showToast('Copied', 'success'); }
-    catch { showToast('Failed to copy', 'error'); }
+  const copyToClipboard = useCallback((text: string) => {
+    void copyText(text).then((ok) => {
+      showToast(ok ? 'Copied' : 'Failed to copy', ok ? 'success' : 'error');
+    });
   }, [showToast]);
 
   // ── 渲染 ──────────────────────────────────────────

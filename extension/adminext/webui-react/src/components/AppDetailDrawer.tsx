@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import AppRetentionRow from '@/components/AppRetentionRow';
+import { copyText } from '@/utils/clipboard';
 import type { App } from '@/types/api';
 import type { AppRetentionResponse } from '@/types/storage';
 
@@ -105,8 +106,9 @@ export default function AppDetailDrawer({ app, open, onClose, onDelete }: Props)
               </code>
               <button
                 onClick={() => {
-                  navigator.clipboard.writeText(app.token);
-                  showToast('Token copied', 'success');
+                  void copyText(app.token).then((ok) => {
+                    showToast(ok ? 'Token copied' : 'Failed to copy', ok ? 'success' : 'error');
+                  });
                 }}
                 className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 cursor-pointer text-sm"
                 title="Copy Token"

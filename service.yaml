@@ -342,6 +342,28 @@ local_dev:
     # 卷类型配置（kompose 转换时使用）
     volume_type: configMap # configMap | persistentVolumeClaim | emptyDir | hostPath
 
+    # Ingress 配置（由 service-template 生成 .tad/k8s-ingress.yaml）
+    ingress:
+      enabled: true
+      class_name: nginx
+      host: collector.local
+      tls:
+        enabled: false
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+      rules:
+      - path: /
+        path_type: Prefix
+        service_port: 8088
+      - path: /v1/
+        path_type: Prefix
+        service_port: 4318
+      - path: /mcp
+        path_type: Prefix
+        service_port: 8686
+
     # 部署等待配置
     wait:
       enabled: true

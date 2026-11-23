@@ -19,6 +19,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useShellChrome } from '@/contexts/ShellChromeContext';
+import { copyText } from '@/utils/clipboard';
 
 // ── 类型定义 ──────────────────────────────────────────
 
@@ -233,7 +234,7 @@ export function DrawerInfoRow({ label, value, mono = false, copyable = false }: 
 }) {
   const handleCopy = () => {
     if (typeof value === 'string') {
-      navigator.clipboard.writeText(value);
+      void copyText(value);
     }
   };
 

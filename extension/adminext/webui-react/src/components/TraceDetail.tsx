@@ -11,6 +11,7 @@
  */
 
 import { useState, useMemo, useRef, useCallback, type ReactNode } from 'react';
+import { copyText } from '@/utils/clipboard';
 import { useNavigate } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -90,28 +91,7 @@ function isSpanError(span: OTelSpan): boolean {
   return span.status?.code === 'STATUS_CODE_ERROR';
 }
 
-/** 通用剪贴板复制（兼容 HTTP 非安全上下文） */
-function copyText(text: string): boolean {
-  if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text);
-    return true;
-  }
-  // Fallback: execCommand (works in HTTP contexts)
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.style.position = 'fixed';
-  ta.style.opacity = '0';
-  document.body.appendChild(ta);
-  ta.select();
-  try {
-    document.execCommand('copy');
-    return true;
-  } catch {
-    return false;
-  } finally {
-    document.body.removeChild(ta);
-  }
-}
+
 
 // ============================================================================
 // TraceDetail 主组件
