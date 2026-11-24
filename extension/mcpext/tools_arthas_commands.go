@@ -19,9 +19,7 @@ func (w *mcpServerWrapper) registerArthasExecTool() {
 		mcp.WithDescription(
 			"在目标 Agent 上执行任意 Arthas 命令。这是一个通用的 Arthas 命令执行工具，"+
 				"适用于不在专用工具列表中的命令（如 ognl、classloader、vmoption 等）。\n\n"+
-				"前提条件：Arthas 必须已经 attach 到目标 Agent（使用 arthas_attach）。\n\n"+
-				"执行方式：通过 Control Plane 任务链路下发 arthas_exec_sync 任务到 Agent，"+
-				"Agent 通过结构化命令桥接执行并返回 JSON 结果。"),
+				commandPathDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
@@ -56,7 +54,7 @@ func (w *mcpServerWrapper) registerArthasTraceTool() {
 		mcp.WithDescription(
 			"方法内部调用路径追踪，显示每个方法的调用耗时。"+
 				"用于定位慢方法的具体瓶颈点。返回方法调用树和每个节点的耗时。\n\n"+
-				"前提条件：Arthas 必须已 attach。"),
+				commandPathDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -113,7 +111,7 @@ func (w *mcpServerWrapper) registerArthasWatchTool() {
 		mcp.WithDescription(
 			"监控方法调用，输出方法的入参、返回值和异常信息。"+
 				"用于在运行时查看方法的实际传入参数和返回结果。\n\n"+
-				"前提条件：Arthas 必须已 attach。"),
+				commandPathDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -172,7 +170,7 @@ func (w *mcpServerWrapper) registerArthasJadTool() {
 		mcp.WithDescription(
 			"反编译类查看运行时代码。用于查看类的实际运行版本源码，"+
 				"确认代码是否为预期版本，排查类加载问题。\n\n"+
-				"前提条件：Arthas 必须已 attach。"),
+				commandPathDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -213,7 +211,7 @@ func (w *mcpServerWrapper) registerArthasScTool() {
 		mcp.WithDescription(
 			"搜索已加载的类。用于查找类是否存在、被哪个 ClassLoader 加载、"+
 				"以及类的详细信息（接口、父类、注解等）。\n\n"+
-				"前提条件：Arthas 必须已 attach。"),
+				commandPathDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -253,7 +251,7 @@ func (w *mcpServerWrapper) registerArthasThreadTool() {
 	tool := mcp.NewTool("arthas_thread",
 		mcp.WithDescription(
 			"查看 JVM 线程信息。用于排查死锁、查看线程状态、找出 CPU 占用最高的线程。\n\n"+
-				"前提条件：Arthas 必须已 attach。"),
+				commandPathDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),
@@ -301,7 +299,7 @@ func (w *mcpServerWrapper) registerArthasStackTool() {
 		mcp.WithDescription(
 			"输出方法的调用栈。用于查看一个方法是从哪里被调用的，"+
 				"帮助理解代码执行路径。\n\n"+
-				"前提条件：Arthas 必须已 attach。"),
+				commandPathDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。"),

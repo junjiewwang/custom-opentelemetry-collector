@@ -1,6 +1,6 @@
 ---
 name: mcpext-arthas-diagnostic
-description: 当用户需要通过 custom-opentelemetry-collector 的 mcpext MCP 工具，对 Java Agent 执行 Arthas 运行时诊断、排障、trace、watch、thread、jad、sc、stack、attach/detach 或异步 session 操作时使用。适用于慢请求排查、死锁分析、类加载排查、运行时代码确认，以及指导模型按正确顺序调用 list_agents、agent_info、arthas_status、arthas_attach、专用 Arthas 工具和 session 工具。
+description: 当用户需要通过 custom-opentelemetry-collector 的 mcpext MCP 工具，对 Java Agent 执行 Arthas 运行时诊断、排障、trace、watch、thread、jad、sc、stack、attach/detach 或异步 session 操作时使用。适用于慢请求排查、死锁分析、类加载排查、运行时代码确认。命令工具走控制面任务链路并自带 auto_attach，无需 Tunnel 注册；诊断入口是 list_agents → agent_info → 轻量命令探测，而不是 arthas_status → arthas_attach 门禁。
 ---
 
 ## 目标
@@ -90,9 +90,10 @@ description: 当用户需要通过 custom-opentelemetry-collector 的 mcpext MCP
 1. 调用 `list_agents`
 2. 如果用户没有明确 agent，结合返回结果选择最合适的实例
 3. 调用 `agent_info` 了解 JVM / 应用信息
-4. 调用 `arthas_status`
-5. 若状态为 `not_attached`，调用 `arthas_attach`
-6. 再次确认 Arthas 已可用后开始诊断
+4. 用 `arthas_exec('version')` 或专用轻量命令做一次探测；成功即可开始诊断
+5. 命令任务自带 `auto_attach`，**不需要**先调用 `arthas_attach`
+6. `arthas_status` 只用于了解状态：`tunnel_not_registered` 表示没有 Tunnel WS 注册，不影响结构化命令
+7. 只有需要交互式 Web Terminal，或首次 auto attach 超时需要预热时，才调用 `arthas_attach`
 
 ### 工作流二：同步诊断
 

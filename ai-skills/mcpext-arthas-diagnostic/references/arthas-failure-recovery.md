@@ -26,9 +26,11 @@
 
 #### 正确做法
 
-- 先调 `arthas_status`
-- 如为 `not_attached`，调用 `arthas_attach`
-- attach 后再重新进入诊断流程
+- 先调 `arthas_status` 了解三个正交状态
+- `tunnel_not_registered` 不是失败：命令工具走控制面任务链路，不依赖 Tunnel
+- 用 `arthas_exec('version')` 探测 Runtime；成功则直接诊断
+- 只有探测失败、Agent 侧 auto attach 超时，或需要交互式 Terminal 时才调用 `arthas_attach`
+- 若探测失败，优先排查 Agent 在线状态、任务链路、错误码与超时，不要循环等待 tunnel_registered
 
 ### 3. 命令无结果
 

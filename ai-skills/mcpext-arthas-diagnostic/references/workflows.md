@@ -7,9 +7,10 @@
 1. 调用 `list_agents`
 2. 根据应用名、服务名、IP 等信息定位目标 Agent
 3. 调用 `agent_info`
-4. 调用 `arthas_status`
-5. 若为 `not_attached`，调用 `arthas_attach`
-6. 诊断结束后视情况调用 `arthas_detach`
+4. 用 `arthas_exec('version')` 探测 Runtime；成功即可进入诊断，无需 `arthas_attach`
+5. `arthas_status` 仅用于了解 `agent_online` / `arthas_runtime` / `tunnel_registered` 三个正交状态
+6. 只有需要交互式 Web Terminal 或首次 auto attach 超时时才调用 `arthas_attach`
+7. 诊断结束后视情况调用 `arthas_detach`
 
 ### 2. 慢请求 / 慢方法排查
 

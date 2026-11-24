@@ -35,7 +35,7 @@ func (w *mcpServerWrapper) registerArthasSessionOpenTool() {
 				"通过 arthas_session_interrupt 中断正在执行的命令，"+
 				"最后通过 arthas_session_close 关闭会话释放资源。\n\n"+
 				"会话有 TTL（总存活时间）和 idle timeout（空闲超时），超时后会自动回收。\n\n"+
-				"前提条件：Arthas 必须已 attach 到目标 Agent。"),
+				commandPathDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),

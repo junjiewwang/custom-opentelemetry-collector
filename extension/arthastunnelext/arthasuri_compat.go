@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
@@ -67,10 +65,19 @@ type arthasURICompat struct {
 	// Distributed manager (optional, nil in local mode)
 	distributed *DistributedManager
 
-	// Task submitter (optional). When set, used by auto-detach to submit arthas_detach tasks.
+	// Task submitter (optional), retained for programmatic terminal flows.
 	taskSubmitter interface {
 		SubmitTaskForAgent(ctx context.Context, agentID string, task *model.Task) error
 	}
+
+	// Optional Control Plane activity recorder. Idle reclaim is owned by the
+	// Control Plane; this extension only reports Tunnel interactions.
+	activityRecorder ArthasActivityRecorder
+}
+
+// ArthasActivityRecorder reports external Arthas activity to the Control Plane.
+type ArthasActivityRecorder interface {
+	RecordArthasActivity(agentID, source string)
 }
 
 type compatAgent struct {
@@ -88,14 +95,12 @@ type compatAgent struct {
 	connectedAt int64 // unix milli, set once at registration
 	lastPongAt  int64 // unix milli, updated atomically on pong
 
-	// Session activity tracking (all unix milli)
-	lastActivityAt    int64 // updated on pending/tunnel lifecycle
-	lastTunnelEndedAt int64 // updated when relay ends
-	lastAutoDetachAt  int64 // updated when auto-detach task submitted
-
 	// Counters
 	activePendings int64 // number of connectArthas pending (waiting for openTunnel)
 	activeTunnels  int64 // number of active relays
+
+	// Reports Tunnel activity to the Control Plane idle reclaim tracker.
+	onActivity func(agentID, source string)
 }
 
 // safeWriteMessage writes a message to the agent connection with mutex protection.
@@ -118,15 +123,21 @@ func (a *compatAgent) safeWriteControl(messageType int, data []byte, deadline ti
 	return a.conn.WriteControl(messageType, data, deadline)
 }
 
-func (a *compatAgent) incPending(nowMillis int64) {
+func (a *compatAgent) reportActivity(source string) {
+	if a != nil && a.onActivity != nil {
+		a.onActivity(a.agentID, source)
+	}
+}
+
+func (a *compatAgent) incPending(_ int64) {
 	if a == nil {
 		return
 	}
 	atomic.AddInt64(&a.activePendings, 1)
-	atomic.StoreInt64(&a.lastActivityAt, nowMillis)
+	a.reportActivity("tunnel:pending_open")
 }
 
-func (a *compatAgent) decPending(nowMillis int64) {
+func (a *compatAgent) decPending(_ int64) {
 	if a == nil {
 		return
 	}
@@ -134,18 +145,18 @@ func (a *compatAgent) decPending(nowMillis int64) {
 	if v < 0 {
 		atomic.StoreInt64(&a.activePendings, 0)
 	}
-	atomic.StoreInt64(&a.lastActivityAt, nowMillis)
+	a.reportActivity("tunnel:pending_close")
 }
 
-func (a *compatAgent) incTunnel(nowMillis int64) {
+func (a *compatAgent) incTunnel(_ int64) {
 	if a == nil {
 		return
 	}
 	atomic.AddInt64(&a.activeTunnels, 1)
-	atomic.StoreInt64(&a.lastActivityAt, nowMillis)
+	a.reportActivity("tunnel:open")
 }
 
-func (a *compatAgent) decTunnel(nowMillis int64) {
+func (a *compatAgent) decTunnel(_ int64) {
 	if a == nil {
 		return
 	}
@@ -153,8 +164,7 @@ func (a *compatAgent) decTunnel(nowMillis int64) {
 	if v < 0 {
 		atomic.StoreInt64(&a.activeTunnels, 0)
 	}
-	atomic.StoreInt64(&a.lastTunnelEndedAt, nowMillis)
-	atomic.StoreInt64(&a.lastActivityAt, nowMillis)
+	a.reportActivity("tunnel:close")
 }
 
 // ANSI color codes for terminal output.
@@ -249,8 +259,19 @@ func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config, di
 		taskSubmitter: taskSubmitter,
 	}
 
-	s.startAutoDetachLoop()
+	// Idle reclaim is owned by the Control Plane. When the task submitter also
+	// implements the activity recorder, Tunnel interactions refresh its timer.
+	if recorder, ok := taskSubmitter.(ArthasActivityRecorder); ok {
+		s.activityRecorder = recorder
+	}
 	return s
+}
+
+// recordActivity forwards a Tunnel event to the Control Plane when available.
+func (s *arthasURICompat) recordActivity(agentID, source string) {
+	if s != nil && s.activityRecorder != nil && agentID != "" {
+		s.activityRecorder.RecordArthasActivity(agentID, source)
+	}
 }
 
 func (s *arthasURICompat) shutdown(ctx context.Context) {
@@ -287,162 +308,6 @@ func (s *arthasURICompat) shutdown(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	}
-}
-
-func (s *arthasURICompat) startAutoDetachLoop() {
-	if s == nil || s.cfg == nil {
-		return
-	}
-	cfg := s.cfg.AutoDetach
-	if !cfg.Enabled {
-		return
-	}
-	if s.taskSubmitter == nil {
-		// Make it explicit: enabled in config but no task submitter wired.
-		s.logger.Warn("auto_detach enabled but task submitter not available; auto_detach disabled")
-		return
-	}
-	if cfg.SweepInterval <= 0 {
-		s.logger.Warn("auto_detach disabled due to invalid sweep_interval", zap.Duration("sweep_interval", cfg.SweepInterval))
-		return
-	}
-
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		ticker := time.NewTicker(cfg.SweepInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-s.ctx.Done():
-				return
-			case <-ticker.C:
-				s.runAutoDetachSweep()
-			}
-		}
-	}()
-
-	s.logger.Info("auto_detach enabled",
-		zap.Duration("idle_threshold", cfg.IdleThreshold),
-		zap.Duration("min_register_age", cfg.MinRegisterAge),
-		zap.Duration("cooldown", cfg.Cooldown),
-		zap.Duration("sweep_interval", cfg.SweepInterval),
-		zap.Bool("require_no_pending", cfg.RequireNoPending),
-		zap.Int("max_tasks_per_sweep", cfg.MaxTasksPerSweep),
-	)
-}
-
-func (s *arthasURICompat) runAutoDetachSweep() {
-	if s == nil || s.cfg == nil || !s.cfg.AutoDetach.Enabled {
-		return
-	}
-	cfg := s.cfg.AutoDetach
-
-	// Snapshot local agents to avoid holding the mutex while submitting tasks.
-	s.mu.Lock()
-	agents := make([]*compatAgent, 0, len(s.agents))
-	for _, a := range s.agents {
-		agents = append(agents, a)
-	}
-	s.mu.Unlock()
-
-	nowMillis := time.Now().UnixMilli()
-	submitted := 0
-
-	for _, a := range agents {
-		if a == nil || a.conn == nil {
-			continue
-		}
-		if submitted >= cfg.MaxTasksPerSweep {
-			break
-		}
-
-		// Only consider healthy control connections.
-		if s.isAgentTimeout(a) {
-			continue
-		}
-
-		// Cold-start protection.
-		if cfg.MinRegisterAge > 0 {
-			if age := nowMillis - a.connectedAt; age < cfg.MinRegisterAge.Milliseconds() {
-				continue
-			}
-		}
-
-		if atomic.LoadInt64(&a.activeTunnels) > 0 {
-			continue
-		}
-		if cfg.RequireNoPending && atomic.LoadInt64(&a.activePendings) > 0 {
-			continue
-		}
-
-		lastAct := atomic.LoadInt64(&a.lastActivityAt)
-		if lastAct <= 0 {
-			lastAct = a.connectedAt
-		}
-		if idle := nowMillis - lastAct; idle < cfg.IdleThreshold.Milliseconds() {
-			continue
-		}
-
-		if cfg.Cooldown > 0 {
-			lastDetach := atomic.LoadInt64(&a.lastAutoDetachAt)
-			if lastDetach > 0 && nowMillis-lastDetach < cfg.Cooldown.Milliseconds() {
-				continue
-			}
-		}
-
-		probeAgentID := strings.TrimSpace(a.agentID)
-		if probeAgentID == "" {
-			continue
-		}
-
-		if err := s.submitAutoDetachTask(probeAgentID, a, nowMillis, lastAct); err != nil {
-			s.logger.Warn("auto_detach submit failed",
-				zap.String("probe_agent_id", probeAgentID),
-				zap.String("tunnel_agent_id", a.agentID),
-				zap.Error(err),
-			)
-			continue
-		}
-		atomic.StoreInt64(&a.lastAutoDetachAt, nowMillis)
-		submitted++
-	}
-
-	if submitted > 0 {
-		s.logger.Info("auto_detach tasks submitted", zap.Int("count", submitted))
-	}
-}
-
-func (s *arthasURICompat) submitAutoDetachTask(probeAgentID string, a *compatAgent, nowMillis int64, lastActMillis int64) error {
-	if s == nil || s.taskSubmitter == nil || a == nil {
-		return errors.New("nil submitter or agent")
-	}
-
-	params := map[string]any{
-		"reason":          "idle_no_tunnel",
-		"tunnel_agent_id": a.agentID,
-		"idle_millis":     nowMillis - lastActMillis,
-		"connected_at":    a.connectedAt,
-		"last_pong_at":    atomic.LoadInt64(&a.lastPongAt),
-		"app_id":          a.appID,
-		"app_name":        a.appName,
-		"remote_addr":     a.remoteAddr,
-	}
-	b, _ := json.Marshal(params)
-
-	t := &model.Task{
-		ID:              uuid.NewString(),
-		TypeName:        model.ArthasTaskTypeDetach,
-		TargetAgentID:   probeAgentID,
-		TimeoutMillis:   int64(s.cfg.AutoDetach.TaskTimeout / time.Millisecond),
-		CreatedAtMillis: nowMillis,
-		ParametersJSON:  b,
-	}
-
-	// Bound task submission latency to avoid blocking the sweep loop.
-	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
-	defer cancel()
-	return s.taskSubmitter.SubmitTaskForAgent(ctx, probeAgentID, t)
 }
 
 func (a *compatAgent) close() {
@@ -663,9 +528,9 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 		appID:          appID,
 		remoteAddr:     remoteAddr,
 		conn:           ctx.conn,
-		connectedAt:    now,
-		lastPongAt:     now,
-		lastActivityAt: now,
+		connectedAt: now,
+		lastPongAt:  now,
+		onActivity:  s.recordActivity,
 	}
 
 	// Replace old agent connection if exists.

@@ -146,13 +146,48 @@ func formatAgentInfo(agent *agentregistry.AgentInfo) string {
 	return sb.String()
 }
 
+// ArthasStatusView is the structured input for formatArthasStatus.
+// The three state dimensions are orthogonal: a missing Tunnel registration does
+// not mean attach failed, and command tools do not depend on it.
+type ArthasStatusView struct {
+	AgentID          string
+	AgentOnline      bool
+	Runtime          string
+	TunnelRegistered bool
+	ActiveSessions   int
+	LastActivityAt   int64 // unix millis, 0 when unknown
+}
+
+func formatMilli(ms int64) string {
+	if ms <= 0 {
+		return "UNKNOWN"
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
+}
+
 // formatArthasStatus formats Arthas status check result.
-func formatArthasStatus(agentID, status, message string) string {
+func formatArthasStatus(v ArthasStatusView) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Arthas 状态检查: %s\n\n", agentID))
-	sb.WriteString(fmt.Sprintf("状态: %s\n", status))
-	sb.WriteString(fmt.Sprintf("说明: %s\n", message))
+	sb.WriteString(fmt.Sprintf("Arthas 状态检查: %s\n\n", v.AgentID))
+	sb.WriteString(fmt.Sprintf("agent_online: %t\n", v.AgentOnline))
+	sb.WriteString(fmt.Sprintf("arthas_runtime: %s\n", v.Runtime))
+	sb.WriteString(fmt.Sprintf("tunnel_registered: %t\n", v.TunnelRegistered))
+	sb.WriteString(fmt.Sprintf("active_sessions: %d\n", v.ActiveSessions))
+	sb.WriteString(fmt.Sprintf("last_activity_at: %s\n", formatMilli(v.LastActivityAt)))
+	sb.WriteString("command_channel: control_plane_task\n\n")
+
+	if !v.TunnelRegistered {
+		sb.WriteString("状态: tunnel_not_registered\n")
+		sb.WriteString("说明: 没有健康的 Tunnel WS 注册，不代表 attach 失败。结构化命令走控制面任务链路，仍可执行；\n")
+		sb.WriteString("      仅交互式 Web Terminal 需要先 arthas_attach。\n")
+	} else {
+		sb.WriteString("状态: tunnel_registered\n")
+		sb.WriteString("说明: 交互式 Web Terminal 可用；命令工具并不依赖该状态。\n")
+	}
+	if v.Runtime == "" || v.Runtime == "UNKNOWN" {
+		sb.WriteString("提示: Runtime 状态未被观测到，可用 arthas_exec('version') 探测。\n")
+	}
 
 	return sb.String()
 }

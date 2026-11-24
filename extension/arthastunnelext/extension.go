@@ -94,8 +94,8 @@ func (e *Extension) start(ctx context.Context, host component.Host) error {
 			break
 		}
 	}
-	if e.config.AutoDetach.Enabled && taskSubmitter == nil {
-		e.logger.Warn("auto_detach enabled but no controlplane task submitter found; tasks will not be submitted")
+	if e.config.AutoDetach.Enabled {
+		e.logger.Warn("arthas_tunnel.auto_detach is deprecated and ignored; idle reclaim is owned by controlplane.arthas_lifecycle")
 	}
 
 	// Create arthasURICompat with optional distributed manager

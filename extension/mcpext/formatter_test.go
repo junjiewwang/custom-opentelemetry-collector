@@ -110,28 +110,53 @@ func TestFormatAgentInfo_Minimal(t *testing.T) {
 
 func TestFormatArthasStatus(t *testing.T) {
 	tests := []struct {
-		name    string
-		status  string
-		message string
+		name   string
+		view   ArthasStatusView
+		wanted []string
 	}{
 		{
-			name:    "tunnel_registered",
-			status:  "tunnel_registered",
-			message: "Arthas 已连接到 Tunnel",
+			name: "tunnel_not_registered_but_runtime_running",
+			view: ArthasStatusView{
+				AgentID:          "test-agent",
+				AgentOnline:      true,
+				Runtime:          "RUNNING",
+				TunnelRegistered: false,
+			},
+			wanted: []string{
+				"test-agent", "agent_online: true", "arthas_runtime: RUNNING",
+				"tunnel_registered: false", "状态: tunnel_not_registered",
+				"command_channel: control_plane_task",
+			},
 		},
 		{
-			name:    "not_attached",
-			status:  "not_attached",
-			message: "Arthas 未连接到 Tunnel",
+			name: "tunnel_registered",
+			view: ArthasStatusView{
+				AgentID:          "test-agent",
+				AgentOnline:      true,
+				Runtime:          "RUNNING",
+				TunnelRegistered: true,
+			},
+			wanted: []string{"状态: tunnel_registered", "tunnel_registered: true"},
+		},
+		{
+			name: "unknown_runtime",
+			view: ArthasStatusView{
+				AgentID:          "test-agent",
+				AgentOnline:      true,
+				Runtime:          "UNKNOWN",
+				TunnelRegistered: false,
+			},
+			wanted: []string{"arthas_runtime: UNKNOWN", "arthas_exec('version')"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := formatArthasStatus("test-agent", tt.status, tt.message)
-			assert.Contains(t, result, "test-agent")
-			assert.Contains(t, result, tt.status)
-			assert.Contains(t, result, tt.message)
+			result := formatArthasStatus(tt.view)
+			for _, want := range tt.wanted {
+				assert.Contains(t, result, want)
+			}
+			assert.NotContains(t, result, "not_attached")
 		})
 	}
 }

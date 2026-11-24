@@ -11,6 +11,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"go.uber.org/zap"
+
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 )
 
 // mcpServerWrapper wraps mcp-go's MCPServer and manages tool registration.
@@ -170,7 +172,7 @@ func (w *mcpServerWrapper) handleAgentInfo(ctx context.Context, request mcp.Call
 
 func (w *mcpServerWrapper) registerArthasStatusTool() {
 	tool := mcp.NewTool("arthas_status",
-		mcp.WithDescription("检查目标 Agent 上 Arthas 是否已 attach 并注册到 Tunnel。返回状态: not_attached（Arthas 未启动）、tunnel_registered（Arthas 已连接 Tunnel，可以执行命令）。"),
+		mcp.WithDescription(statusToolDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
@@ -198,22 +200,29 @@ func (w *mcpServerWrapper) handleArthasStatus(ctx context.Context, request mcp.C
 		return mcp.NewToolResultError("Agent '" + agentID + "' 不存在或已离线"), nil
 	}
 
-	// Check if Arthas is connected to tunnel
-	isConnected := w.ext.arthasTunnel.IsAgentConnected(agentID)
-
-	var status, message string
-	if isConnected {
-		status = "tunnel_registered"
-		message = "Arthas 已连接到 Tunnel，可以执行 Arthas 命令。"
-	} else {
-		status = "not_attached"
-		message = "Arthas 未连接到 Tunnel。请先调用 arthas_attach 工具启动 Arthas。"
+	// Three orthogonal state dimensions. Tunnel registration is only one of them.
+	view := ArthasStatusView{
+		AgentID:          agentID,
+		AgentOnline:      true,
+		Runtime:          "UNKNOWN",
+		TunnelRegistered: w.ext.arthasTunnel.IsAgentConnected(agentID),
 	}
 
-	result := formatArthasStatus(agentID, status, message)
+	if provider, ok := w.ext.controlPlane.(controlplaneext.ArthasLifecycleProvider); ok {
+		if state, found := provider.GetArthasLifecycle(agentID); found {
+			if state.Runtime != "" {
+				view.Runtime = string(state.Runtime)
+			}
+			view.ActiveSessions = state.ActiveSessions
+			view.LastActivityAt = state.LastActivityAt
+		}
+	}
+
+	result := formatArthasStatus(view)
 	w.logger.Info("[arthas_status] Completed",
 		zap.String("agent_id", agentID),
-		zap.String("status", status),
+		zap.String("arthas_runtime", view.Runtime),
+		zap.Bool("tunnel_registered", view.TunnelRegistered),
 	)
 
 	return mcp.NewToolResultText(result), nil

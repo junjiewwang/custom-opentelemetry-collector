@@ -1,6 +1,10 @@
 # MCP Extension 设计文档
 
-> **状态**: Phase 2 已完成，Phase 3 待实施  
+> ⚠️ **历史架构文档**：其中的 `attached` 三态、"必须先 attach 才能执行命令"、Tunnel 作为命令通道等内容已过时。
+> 当前实现以 `docs/2026-04-01/phase0-protocol-freeze.md`、`docs/2026-04-01/phase3-sync-loop-integration.md` 和
+> `docs/2026-11-24/mcp-arthas-status-and-idle-reclaim.md` 为准：命令走 ControlPlane 任务链路并自带 auto_attach，Tunnel 只服务交互式终端。
+>
+> **状态**: 历史文档（Phase 2 已完成，Phase 3 待实施）
 > **创建时间**: 2026-03-12  
 > **目标**: 在 OTel Collector 中实现 MCP Server Extension，让 AI Agent 通过 MCP 协议调用 Arthas、性能剖析、动态增强等能力
 

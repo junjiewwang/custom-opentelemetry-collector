@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/arthaslifecycle"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
@@ -74,6 +75,14 @@ type ControlPlane interface {
 // Deprecated: Use ControlPlane instead. This alias will be removed in a future release.
 type ControlPlaneV2 = ControlPlane
 
+// ArthasLifecycleProvider is an optional capability: consumers use an
+// interface assertion so existing ControlPlane implementations are unaffected.
+type ArthasLifecycleProvider interface {
+	GetArthasLifecycle(agentID string) (arthaslifecycle.State, bool)
+}
+
+var _ ArthasLifecycleProvider = (*Extension)(nil)
+
 // Ensure Extension implements the required interfaces.
 var (
 	_ extension.Extension             = (*Extension)(nil)
@@ -100,7 +109,8 @@ type Extension struct {
 	taskExecutor   *TaskExecutor
 	statusReporter *StatusReporter
 	chunkManager   *ChunkManager
-	artifactMgr    *ArtifactManager
+	artifactMgr     *ArtifactManager
+	arthasLifecycle *arthaslifecycle.Manager
 
 	// Node identity
 	nodeID string
@@ -152,6 +162,27 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		}
 		e.storage = storage
 	}
+
+	// Arthas lifecycle observations are stored in Redis when available so that
+	// multiple replicas share runtime state and idle reclaim coordination.
+	var lifecycleTracker arthaslifecycle.Tracker = arthaslifecycle.NewMemoryTracker()
+	if e.storage != nil {
+		if client, err := e.storage.GetRedis("default"); err == nil && client != nil {
+			lifecycleTracker = arthaslifecycle.NewRedisTracker(client, "otel:arthas:lifecycle")
+		} else {
+			e.logger.Warn("arthas_lifecycle using in-memory tracker; Redis unavailable", zap.Error(err))
+		}
+	}
+	e.arthasLifecycle = arthaslifecycle.NewManager(
+		e.config.ArthasLifecycle,
+		lifecycleTracker,
+		e,
+		func(agentID string) bool {
+			agent, err := e.agentReg.GetAgent(context.Background(), agentID)
+			return err == nil && agent != nil
+		},
+		e.logger.Named("arthas-lifecycle"),
+	)
 
 	// Create component factory and initialize components
 	factory := NewComponentFactory(e.logger, e.storage)
@@ -257,6 +288,8 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		return err
 	}
 
+	e.arthasLifecycle.Start(context.Background())
+
 	e.started = true
 	return nil
 }
@@ -272,6 +305,9 @@ func (e *Extension) Shutdown(ctx context.Context) error {
 
 	e.logger.Info("Shutting down control plane extension")
 
+	if e.arthasLifecycle != nil {
+		e.arthasLifecycle.Stop()
+	}
 	close(e.stopChan)
 
 	// Shutdown components in reverse order
@@ -368,7 +404,13 @@ func (e *Extension) SubmitTaskForAgent(ctx context.Context, agentID string, task
 			AgentID: agentID,
 		}
 	}
-	return e.taskMgr.SubmitTaskForAgent(ctx, agentMeta, task)
+	if err := e.taskMgr.SubmitTaskForAgent(ctx, agentMeta, task); err != nil {
+		return err
+	}
+	if e.arthasLifecycle != nil {
+		e.arthasLifecycle.OnTaskSubmitted(agentID, task)
+	}
+	return nil
 }
 
 // GetTaskResult implements ControlPlane.
@@ -392,7 +434,13 @@ func (e *Extension) ReportTaskResult(ctx context.Context, result *model.TaskResu
 	if result == nil {
 		return fmt.Errorf("result is nil")
 	}
-	return e.taskMgr.ReportTaskResult(ctx, result)
+	if err := e.taskMgr.ReportTaskResult(ctx, result); err != nil {
+		return err
+	}
+	if e.arthasLifecycle != nil {
+		e.arthasLifecycle.OnTaskReported(result)
+	}
+	return nil
 }
 
 // CancelTask implements ControlPlane.
@@ -409,6 +457,11 @@ func (e *Extension) IsTaskCancelled(ctx context.Context, taskID string) (bool, e
 func (e *Extension) RegisterAgent(ctx context.Context, agent *agentregistry.AgentInfo) error {
 	if err := e.agentReg.Register(ctx, agent); err != nil {
 		return err
+	}
+
+	// A fresh registration invalidates any previous Arthas observation.
+	if e.arthasLifecycle != nil {
+		e.arthasLifecycle.Reset(agent.AgentID)
 	}
 
 	// Lenient EnsureService: failure must NOT block agent registration.
@@ -436,6 +489,22 @@ func (e *Extension) RegisterOrHeartbeatAgent(ctx context.Context, agent *agentre
 // UnregisterAgent implements ControlPlane.
 func (e *Extension) UnregisterAgent(ctx context.Context, agentID string) error {
 	return e.agentReg.Unregister(ctx, agentID)
+}
+
+// RecordArthasActivity lets other extensions report Arthas activity without
+// depending on the ControlPlane's internal types.
+func (e *Extension) RecordArthasActivity(agentID, source string) {
+	if e.arthasLifecycle != nil {
+		e.arthasLifecycle.RecordActivity(agentID, source)
+	}
+}
+
+// GetArthasLifecycle implements ArthasLifecycleProvider.
+func (e *Extension) GetArthasLifecycle(agentID string) (arthaslifecycle.State, bool) {
+	if e.arthasLifecycle == nil {
+		return arthaslifecycle.State{}, false
+	}
+	return e.arthasLifecycle.Get(agentID)
 }
 
 // ensureServiceForAgent is an internal helper that calls EnsureService in lenient mode.

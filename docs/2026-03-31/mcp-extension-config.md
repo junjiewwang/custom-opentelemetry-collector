@@ -1,5 +1,9 @@
 # MCP Extension 配置补充
 
+> ⚠️ **历史架构文档**：本文的 Tunnel 通信图与工具数量对应旧版实现。
+> 当前命令执行走 ControlPlane 任务链路（自带 auto_attach，不依赖 Tunnel），工具共 17 个；
+> 以 `docs/2026-04-01/phase0-protocol-freeze.md` 和 `docs/2026-11-24/mcp-arthas-status-and-idle-reclaim.md` 为准。
+
 ## 需求描述
 
 为 `config/template/config.yaml` 补充 `mcpext`（MCP Extension）的相关配置，使 AI Agent 能够通过 MCP Streamable HTTP 协议与 Collector 交互，执行 Java 应用诊断操作。

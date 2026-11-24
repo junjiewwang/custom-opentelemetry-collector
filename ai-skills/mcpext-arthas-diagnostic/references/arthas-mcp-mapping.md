@@ -59,4 +59,4 @@
 - 不要在已有 `arthas_trace` 时仍然手写 `trace ...` 给 `arthas_exec`
 - 不要把原生命令参数直接当成 MCP 参数名
 - 不要假设 session 工具会自动帮你清理；结束后仍需显式 close
-- 不要跳过 `arthas_status` / `arthas_attach` 检查就假设 Arthas 可用
+- 不要用 `tunnel_not_registered` 推断 "Arthas 不可用"；Runtime 是否可用以 `arthas_exec('version')` 探测或 `arthas_runtime` 状态为准

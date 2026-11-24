@@ -15,11 +15,7 @@ import (
 
 func (w *mcpServerWrapper) registerArthasAttachTool() {
 	tool := mcp.NewTool("arthas_attach",
-		mcp.WithDescription(
-			"在目标 Agent 上启动 Arthas 并连接到 Collector 的 Tunnel Server。"+
-				"这是执行任何 Arthas 命令的前提条件。调用后会通过 ControlPlane 下发 arthas_attach 任务到目标 Java Agent，"+
-				"Java Agent 会启动 Arthas 进程并将其连接到 Tunnel。\n\n"+
-				"调用成功后会先返回任务已受理，后续请通过 arthas_status 检查是否已经连接到 Tunnel。"),
+		mcp.WithDescription(attachToolDescription),
 		mcp.WithString("agent_id",
 			mcp.Required(),
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
@@ -39,7 +35,7 @@ func (w *mcpServerWrapper) handleArthasAttach(ctx context.Context, request mcp.C
 		zap.String("agent_id", agentID),
 	)
 
-	// 检查是否已经连接到 Tunnel
+	// 命令工具自带 auto_attach，只有明确需要交互式 Tunnel 会话时才需要 attach。
 	if w.ext.arthasTunnel.IsAgentConnected(agentID) {
 		w.logger.Info("[arthas_attach] Agent 已连接到 Tunnel",
 			zap.String("agent_id", agentID),
@@ -47,8 +43,8 @@ func (w *mcpServerWrapper) handleArthasAttach(ctx context.Context, request mcp.C
 		return mcp.NewToolResultText(fmt.Sprintf(
 			"## Arthas Attach 结果\n\n"+
 				"- **Agent**: %s\n"+
-				"- **状态**: 已连接 ✅\n"+
-				"- **说明**: Arthas 已经在运行并连接到 Tunnel，无需重复 attach。可以直接执行 Arthas 命令。",
+				"- **状态**: Tunnel 已注册 ✅\n"+
+				"- **说明**: 交互式 Web Terminal 可用；结构化命令本就不需要 Tunnel。",
 			agentID,
 		)), nil
 	}
@@ -79,7 +75,8 @@ func (w *mcpServerWrapper) handleArthasAttach(ctx context.Context, request mcp.C
 			"- **任务 ID**: %s\n"+
 			"- **确认方式**: %s\n\n"+
 			"%s\n\n"+
-			"> 请稍后调用 `arthas_status`，直到状态变为 `tunnel_registered`。",
+			"> Runtime 就绪可用 `arthas_status` 的 arthas_runtime 或 `arthas_exec('version')` 确认；"+
+			"只有需要交互式 Web Terminal 时才等待 tunnel_registered。",
 		agentID, resp.Accepted, resp.Pending, resp.State, resp.TaskID, resp.ConfirmationMode, resp.ConfirmationHint,
 	)), nil
 }

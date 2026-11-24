@@ -11,11 +11,11 @@
 
 - **`list_agents`**：列出当前在线 Java Agent。用于诊断入口，不需要参数。
 - **`agent_info`**：查看指定 `agent_id` 的详细信息，用于确认 JVM / 应用上下文。
-- **`arthas_status`**：检查目标 Agent 是否已具备可用的 Arthas 连接状态。状态重点关注：`not_attached`、`tunnel_registered`。
+- **`arthas_status`**：返回 `agent_online` / `arthas_runtime` / `tunnel_registered` 三个正交状态。`tunnel_not_registered` 不影响结构化命令。
 
 ### Arthas 生命周期
 
-- **`arthas_attach`**：在目标 Agent 上启动 Arthas，并引导其连接到 Tunnel。适用于开始诊断前的准备阶段。
+- **`arthas_attach`**：预热 JVM 内 Arthas Runtime 或建立交互式 Web Terminal 所需的 Tunnel 会话；两段式返回，不是命令前置条件。
 - **`arthas_detach`**：停止目标 Agent 上的 Arthas，释放资源。适用于诊断结束后的清理阶段。
 
 ### Arthas 同步命令

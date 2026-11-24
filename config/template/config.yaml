@@ -346,6 +346,17 @@ extensions:
       cleanup_interval: 5m     # How often to scan for stale uploads (memory only)
       upload_ttl: 1h           # How long incomplete uploads are kept
     
+    # Arthas lifecycle — Control Plane owned idle reclaim.
+    # Runtime state and activity come from the task chain, not from Tunnel WS.
+    arthas_lifecycle:
+      enabled: [[ .Service.controlplane.arthas_lifecycle.enabled ]]
+      idle_threshold: [[ .Service.controlplane.arthas_lifecycle.idle_threshold ]]
+      sweep_interval: [[ .Service.controlplane.arthas_lifecycle.sweep_interval ]]
+      min_attach_age: [[ .Service.controlplane.arthas_lifecycle.min_attach_age ]]
+      cooldown: [[ .Service.controlplane.arthas_lifecycle.cooldown ]]
+      task_timeout: [[ .Service.controlplane.arthas_lifecycle.task_timeout ]]
+      max_tasks_per_sweep: [[ .Service.controlplane.arthas_lifecycle.max_tasks_per_sweep ]]
+
     # Artifact notification configuration
     # When enabled, notifies external analysis services (e.g., perf-analysis)
     # after artifact persistence for automated profiling data analysis.
@@ -547,11 +558,11 @@ extensions:
     # Effective liveness timeout = pong_timeout + liveness_grace = 90s
     liveness_grace: 30s
 
-    # ===== Auto detach options (idle control connection -> submit arthas_detach) =====
-    # Default: enabled
+    # ===== Auto detach (deprecated) =====
+    # Idle reclaim now lives in controlplane.arthas_lifecycle; this block is
+    # parsed for compatibility only and no longer submits detach tasks.
     auto_detach:
-      # Enable/disable auto detach
-      enabled: true
+      enabled: false
       # Only detach when there are no active tunnels AND no pending connect attempts
       require_no_pending: true
       # Idle threshold since last activity (pending/tunnel lifecycle)

@@ -62,9 +62,8 @@ func injectAgent(t *testing.T, s *arthasURICompat, agentID string) *websocket.Co
 	a := &compatAgent{
 		agentID:        agentID,
 		conn:           sc,
-		connectedAt:    now,
-		lastPongAt:     now,
-		lastActivityAt: now,
+		connectedAt: now,
+		lastPongAt:  now,
 	}
 	s.mu.Lock()
 	s.agents[agentID] = a

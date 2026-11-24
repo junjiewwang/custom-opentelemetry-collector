@@ -350,8 +350,7 @@ sequenceDiagram
     participant AI as 🤖 AI Agent
     participant MCP as MCP Server
     participant CP as 🧠 ControlPlane
-    participant Tunnel as 🔧 ArthasTunnel
-    participant JVM as ☕ Java App
+    participant JVM as ☕ Java Agent / Arthas
 
     You->>AI: "订单服务响应很慢，帮我查一下"
 
@@ -360,18 +359,22 @@ sequenceDiagram
     CP-->>MCP: [order-service-pod-1, pod-2, pod-3]
     MCP-->>AI: 找到 3 个实例
 
-    AI->>MCP: arthas_attach(pod-1)
-    MCP->>CP: SubmitTaskForAgent("pod-1", arthas_attach)
-    Note over JVM: Agent 收到任务，启动 Arthas
-    JVM->>Tunnel: WebSocket 注册
-    MCP-->>AI: Arthas 已就绪 ✅
+    AI->>MCP: arthas_exec("version")  %% 轻量探测，任务自带 auto_attach
+    MCP->>CP: SubmitTaskForAgent(arthas_exec_sync)
+    CP->>JVM: Agent long-poll 领取任务
+    Note over JVM: 若需要则本地 auto attach，结构化命令桥执行
+    JVM-->>CP: ReportTaskResult(RUNNING)
+    CP-->>MCP: 结构化结果
+    MCP-->>AI: Runtime 就绪 ✅
 
     AI->>MCP: arthas_trace("com.example.OrderService", "createOrder")
-    MCP->>Tunnel: ConnectToAgent("pod-1")
-    Tunnel->>JVM: trace com.example.OrderService createOrder
-    JVM-->>Tunnel: DB 查询耗时 2.3s 🐌
-    Tunnel-->>MCP: 结构化结果
+    MCP->>CP: SubmitTaskForAgent(arthas_exec_sync)
+    CP->>JVM: 下发命令并回传结果
+    JVM-->>CP: DB 查询耗时 2.3s 🐌
+    CP-->>MCP: 结构化结果
     MCP-->>AI: 方法追踪结果
+
+    Note over MCP,JVM: 命令链路不依赖 ArthasTunnel；Tunnel 仅用于交互式 Web Terminal
 
     AI->>You: 📋 "发现 createOrder 中 DB 查询耗时 2.3s，<br/>疑似 N+1 问题，建议使用 JOIN 优化"
 ```
@@ -382,8 +385,8 @@ sequenceDiagram
 |------|------|------|----------|
 | `list_agents` | 📋 查询 | 列出所有在线 Agent | "有哪些服务在线？" |
 | `agent_info` | 📋 查询 | Agent 详细信息 | "这个实例的 JVM 参数？" |
-| `arthas_status` | 📋 查询 | Arthas 连接状态 | "Arthas 连上了吗？" |
-| `arthas_attach` | 🔄 生命周期 | 启动 Arthas | "帮我连上这个实例" |
+| `arthas_status` | 📋 查询 | Agent 在线 / Runtime / Tunnel 注册三个正交状态 | "Tunnel 注册了吗？Runtime 在跑吗？" |
+| `arthas_attach` | 🔄 生命周期 | 预热 Runtime 或建立交互式 Tunnel 会话（非命令前置条件） | "帮我预热 / 打开 Web Terminal" |
 | `arthas_detach` | 🔄 生命周期 | 停止 Arthas | "诊断完了，断开吧" |
 | `arthas_exec` | ⚡ 命令 | 通用命令执行 | "执行 dashboard 命令" |
 | `arthas_trace` | ⚡ 命令 | 方法调用追踪 | "trace createOrder 方法" |
@@ -392,6 +395,15 @@ sequenceDiagram
 | `arthas_sc` | ⚡ 命令 | 搜索已加载类 | "这个类加载了吗？" |
 | `arthas_thread` | ⚡ 命令 | 线程分析 | "有没有死锁？" |
 | `arthas_stack` | ⚡ 命令 | 调用栈 | "谁调用了这个方法？" |
+| `arthas_session_open` | ⏳ 异步会话 | 创建异步会话 | "trace 需要等流量命中" |
+| `arthas_session_exec` | ⏳ 异步会话 | 在会话中启动命令 | "开始异步 trace" |
+| `arthas_session_pull` | ⏳ 异步会话 | 多轮拉取增量结果 | "有新结果吗？" |
+| `arthas_session_interrupt` | ⏳ 异步会话 | 中断会话内命令 | "停掉这个 trace" |
+| `arthas_session_close` | ⏳ 异步会话 | 关闭会话并释放资源 | "诊断结束，关会话" |
+
+> 全部 17 个工具的命令执行都走 ControlPlane 任务链路，任务自带 `auto_attach`、不要求 Tunnel 注册；
+> `arthas_status` 中的 `tunnel_not_registered` 只表示没有交互式 Web Terminal 会话。
+> 默认支持所有 Arthas 命令，`ognl` / `vmtool` 等高能力命令由 MCP api_key 作为边界。
 
 ---
 

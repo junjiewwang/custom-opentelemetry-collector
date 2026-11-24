@@ -9,6 +9,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/arthaslifecycle"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/notification"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
@@ -58,6 +59,9 @@ type Config struct {
 	// ArtifactNotification configuration for notifying analysis services
 	// after artifact persistence (e.g., trigger perf-analysis for profiling data).
 	ArtifactNotification notification.Config `mapstructure:"artifact_notification"`
+
+	// ArthasLifecycle controls Control Plane owned Arthas idle reclaim.
+	ArthasLifecycle arthaslifecycle.Config `mapstructure:"arthas_lifecycle"`
 }
 
 // TaskExecutorConfig defines task executor settings.
@@ -136,5 +140,6 @@ func createDefaultConfig() *Config {
 		},
 		ChunkManager:         DefaultChunkManagerConfig(),
 		ArtifactNotification: notification.DefaultConfig(),
+		ArthasLifecycle:      arthaslifecycle.DefaultConfig(),
 	}
 }

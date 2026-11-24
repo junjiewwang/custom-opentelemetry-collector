@@ -269,7 +269,7 @@ func (o *ArthasOrchestrator) Attach(ctx context.Context, agentID string) (*ExecS
 		Pending:           true,
 		State:             "PENDING_CONFIRMATION",
 		ConfirmationMode:  "arthas_status",
-		ConfirmationHint:  "attach 任务已提交，请稍后调用 arthas_status，直到状态变为 tunnel_registered",
+		ConfirmationHint:  "attach 任务已提交；用 arthas_status 的 arthas_runtime 或 arthas_exec('version') 确认 Runtime 就绪，tunnel_registered 只影响交互式 Terminal",
 	}, nil
 }
 
