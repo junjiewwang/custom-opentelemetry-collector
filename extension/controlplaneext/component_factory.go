@@ -260,7 +260,7 @@ func (f *ComponentFactory) CreateServiceManager(cfg servicemanager.Config) (serv
 }
 
 // CreateInstrumentationManager creates the dynamic instrumentation manager.
-func (f *ComponentFactory) CreateInstrumentationManager(cfg instrumentationmanager.Config, agentReg agentregistry.AgentRegistry, taskMgr taskmanager.TaskManager) (instrumentationmanager.InstrumentationManager, error) {
+func (f *ComponentFactory) CreateInstrumentationManager(cfg instrumentationmanager.Config, agentReg agentregistry.AgentRegistry, taskMgr taskmanager.TaskManager, opts ...instrumentationmanager.Option) (instrumentationmanager.InstrumentationManager, error) {
 	var redisClient instrumentationmanager.RedisClient
 
 	if cfg.Type == "redis" {
@@ -278,7 +278,7 @@ func (f *ComponentFactory) CreateInstrumentationManager(cfg instrumentationmanag
 		redisClient = client
 	}
 
-	return instrumentationmanager.NewInstrumentationManager(f.logger, cfg, redisClient, agentReg, taskMgr)
+	return instrumentationmanager.NewInstrumentationManager(f.logger, cfg, redisClient, agentReg, taskMgr, opts...)
 }
 
 // CreateChunkManager creates the appropriate ChunkManager based on config.

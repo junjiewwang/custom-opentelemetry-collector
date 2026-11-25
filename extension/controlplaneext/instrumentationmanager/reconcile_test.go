@@ -19,12 +19,23 @@ import (
 )
 
 func newTestInstrumentationService(t *testing.T) (*InstrumentationService, *agentregistry.MemoryAgentRegistry, taskmanager.TaskManager) {
+	return newTestInstrumentationServiceWithAgentTTL(t, 2*time.Millisecond, 1*time.Millisecond)
+}
+
+// newTestInstrumentationServiceWithAgentTTL allows tests that expect an agent
+// to stay online to avoid the 2ms heartbeat window used by offline-detection
+// tests. Without it, reconcile can observe an agent already marked offline.
+func newTestInstrumentationServiceWithAgentTTL(
+	t *testing.T,
+	heartbeatTTL time.Duration,
+	offlineCheckInterval time.Duration,
+) (*InstrumentationService, *agentregistry.MemoryAgentRegistry, taskmanager.TaskManager) {
 	t.Helper()
 
 	logger := zap.NewNop()
 	agentCfg := agentregistry.DefaultConfig()
-	agentCfg.HeartbeatTTL = 2 * time.Millisecond
-	agentCfg.OfflineCheckInterval = 1 * time.Millisecond
+	agentCfg.HeartbeatTTL = heartbeatTTL
+	agentCfg.OfflineCheckInterval = offlineCheckInterval
 	agentReg := agentregistry.NewMemoryAgentRegistry(logger, agentCfg)
 	require.NoError(t, agentReg.Start(context.Background()))
 
@@ -124,7 +135,9 @@ func TestReconcileRuleAddsNewServiceTargetAndDispatchesApply(t *testing.T) {
 }
 
 func TestReconcileRuleReappliesRecoveredOnlineTarget(t *testing.T) {
-	svc, registry, tm := newTestInstrumentationService(t)
+	// Keep the agent online for the whole test: the 2ms heartbeat window used
+	// by offline-detection tests makes this recovery case racy.
+	svc, registry, tm := newTestInstrumentationServiceWithAgentTTL(t, 5*time.Second, time.Second)
 	registerTestAgent(t, registry, "agent-1")
 
 	rule, err := svc.CreateRule(context.Background(), &CreateRuleRequest{

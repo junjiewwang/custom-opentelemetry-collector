@@ -30,6 +30,7 @@ func TestConfig_Validate(t *testing.T) {
 			config: func() *Config {
 				c := createDefaultConfig()
 				c.Auth.Type = "none"
+				c.Auth.DynamicKeys = false
 				return c
 			}(),
 			wantErr: "",
@@ -45,14 +46,35 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: "endpoint must not be empty",
 		},
 		{
-			name: "api_key auth without keys",
+			name: "static-only auth without keys",
 			config: func() *Config {
 				c := createDefaultConfig()
 				c.Auth.Type = "api_key"
 				c.Auth.APIKeys = nil
+				c.Auth.DynamicKeys = false
 				return c
 			}(),
-			wantErr: "at least one API key must be configured",
+			wantErr: "at least one static API key must be configured when dynamic_keys is false",
+		},
+		{
+			name: "dynamic keys without static keys is valid",
+			config: func() *Config {
+				c := createDefaultConfig()
+				c.Auth.APIKeys = nil
+				c.Auth.DynamicKeys = true
+				return c
+			}(),
+			wantErr: "",
+		},
+		{
+			name: "none auth with dynamic keys is rejected",
+			config: func() *Config {
+				c := createDefaultConfig()
+				c.Auth.Type = "none"
+				c.Auth.DynamicKeys = true
+				return c
+			}(),
+			wantErr: "dynamic_keys requires auth type 'api_key'",
 		},
 		{
 			name: "unsupported auth type",
@@ -83,6 +105,28 @@ func TestConfig_Validate(t *testing.T) {
 			}(),
 			wantErr: "tool_timeout must be positive",
 		},
+		{
+			name: "instrumentation enabled without provider extension",
+			config: func() *Config {
+				c := createDefaultConfig()
+				c.Auth.APIKeys = []string{"test-key"}
+				c.Instrumentation.Enabled = true
+				c.Instrumentation.Extension = ""
+				return c
+			}(),
+			wantErr: "instrumentation: extension must not be empty",
+		},
+		{
+			name: "instrumentation enabled with invalid max targets",
+			config: func() *Config {
+				c := createDefaultConfig()
+				c.Auth.APIKeys = []string{"test-key"}
+				c.Instrumentation.Enabled = true
+				c.Instrumentation.MaxTargets = 0
+				return c
+			}(),
+			wantErr: "instrumentation: max_targets must be positive",
+		},
 	}
 
 	for _, tt := range tests {
@@ -103,8 +147,16 @@ func TestCreateDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, "0.0.0.0:8686", cfg.Endpoint)
 	assert.Equal(t, "api_key", cfg.Auth.Type)
+	assert.False(t, cfg.Auth.DynamicKeys, "dynamic keys are opt-in so deployments without a tenant manager keep working")
 	assert.Equal(t, "controlplane", cfg.ControlPlaneExtension)
 	assert.Equal(t, "arthas_tunnel", cfg.ArthasTunnelExtension)
 	assert.Equal(t, 10, cfg.MaxConcurrentSessions)
 	assert.Equal(t, 30, cfg.ToolTimeout)
+
+	assert.False(t, cfg.Instrumentation.Enabled)
+	assert.False(t, cfg.Instrumentation.AllowWrite)
+	assert.Equal(t, "admin", cfg.Instrumentation.Extension)
+	assert.Equal(t, 100, cfg.Instrumentation.MaxTargets)
+	assert.True(t, cfg.Instrumentation.ManageOnlyOwnRules)
+	assert.NotEmpty(t, cfg.Instrumentation.DeniedClassPrefixes)
 }

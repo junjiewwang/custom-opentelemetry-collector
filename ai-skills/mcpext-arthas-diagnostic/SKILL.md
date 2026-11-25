@@ -1,6 +1,6 @@
 ---
 name: mcpext-arthas-diagnostic
-description: 当用户需要通过 custom-opentelemetry-collector 的 mcpext MCP 工具，对 Java Agent 执行 Arthas 运行时诊断、排障、trace、watch、thread、jad、sc、stack、attach/detach 或异步 session 操作时使用。适用于慢请求排查、死锁分析、类加载排查、运行时代码确认。命令工具走控制面任务链路并自带 auto_attach，无需 Tunnel 注册；诊断入口是 list_agents → agent_info → 轻量命令探测，而不是 arthas_status → arthas_attach 门禁。
+description: 当用户需要通过 custom-opentelemetry-collector 的 mcpext MCP 工具，对 Java Agent 执行 Arthas 运行时诊断、排障、trace、watch、thread、jad、sc、stack、attach/detach、异步 session，或管理动态插桩规则（instrument_rule_list/get/snapshot/create/pause/resume/delete）时使用。适用于慢请求排查、死锁分析、类加载排查、运行时代码确认、业务方法插桩与运行时生效确认。命令工具走控制面任务链路并自带 auto_attach，无需 Tunnel 注册；诊断入口是 list_agents → agent_info → 轻量命令探测，而不是 arthas_status → arthas_attach 门禁；插桩流程见 references/tool-catalog.md 的「动态插桩完整调用样例」。
 ---
 
 ## 目标
@@ -20,8 +20,11 @@ description: 当用户需要通过 custom-opentelemetry-collector 的 mcpext MCP
 - `extension/mcpext/tools_arthas_lifecycle.go`
 - `extension/mcpext/tools_arthas_commands.go`
 - `extension/mcpext/tools_arthas_session.go`
+- `extension/mcpext/tools_instrumentation.go`
+- `extension/mcpext/tool_authz.go`（租户隔离与 instrumentation:write scope）
+- `extension/mcpext/instrumentation_authz.go`（规则级租户授权）
 
-如需复核工具边界，读取 `references/arthas-mcp-mapping.md` 与 `references/tool-catalog.md`。
+如需复核工具边界，读取 `references/arthas-mcp-mapping.md` 与 `references/tool-catalog.md`；动态插桩的完整调用流程与常见失败处理见 `references/tool-catalog.md` 的「动态插桩完整调用样例」。
 
 ## 触发场景
 
@@ -32,6 +35,7 @@ description: 当用户需要通过 custom-opentelemetry-collector 的 mcpext MCP
 - 提到慢请求、线程热点、死锁、类加载、运行时代码确认
 - 提到需要通过 `mcpext` / MCP 对在线 Agent 做排障
 - 需要判断是否应 attach Arthas、是否应使用异步 session
+- 提到 `dynamic_instrument`、动态插桩、`instrument_rule_*`、运行时生效确认或插桩规则清理
 
 如果用户只是讨论方案、架构设计或纯概念问答，不必强制执行诊断工具调用。
 

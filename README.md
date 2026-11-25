@@ -405,6 +405,8 @@ sequenceDiagram
 > `arthas_status` 中的 `tunnel_not_registered` 只表示没有交互式 Web Terminal 会话。
 > 默认支持所有 Arthas 命令，`ognl` / `vmtool` 等高能力命令由 MCP api_key 作为边界。
 
+**动态插桩工具（可选）**：`mcp.instrumentation.enabled=true` 时额外注册 `instrument_rule_list` / `instrument_rule_get` / `instrument_rule_snapshot`；`allow_write=true` 时再注册 `instrument_rule_create` / `instrument_rule_pause` / `instrument_rule_resume` / `instrument_rule_delete`。这组工具复用 `adminext` 持有的唯一 `InstrumentationManager`，与 WebUI 工作台共用同一份规则数据；作用域固定为 service 下的实例，目标数由 `max_targets`（默认 100）限制，默认禁止 JDK 类插桩与参数/返回值采集，并只允许管理 MCP 自己创建的规则。
+
 ---
 
 ### 6.1 🔧 MCP 配置指南

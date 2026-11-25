@@ -22,6 +22,8 @@ export default function TenantsPage() {
   const [formName, setFormName] = useState('');
   const [formDesc, setFormDesc] = useState('');
   const [formStatus, setFormStatus] = useState<'active' | 'disabled'>('active');
+  const [formInstrumentation, setFormInstrumentation] = useState(true);
+  const [formInstrumentationInherit, setFormInstrumentationInherit] = useState(true);
 
   // Key 管理模态框
   const [keysTenant, setKeysTenant] = useState<Tenant | null>(null);
@@ -29,6 +31,7 @@ export default function TenantsPage() {
   const [keysLoading, setKeysLoading] = useState(false);
   const [keyName, setKeyName] = useState('');
   const [keyType, setKeyType] = useState<'tk' | 'ok'>('tk');
+  const [keyInstrumentationWrite, setKeyInstrumentationWrite] = useState(false);
   const [newPlainKey, setNewPlainKey] = useState<string | null>(null);
 
   const loadTenants = useCallback(async () => {
@@ -56,6 +59,8 @@ export default function TenantsPage() {
     setFormName('');
     setFormDesc('');
     setFormStatus('active');
+    setFormInstrumentation(true);
+    setFormInstrumentationInherit(true);
     setShowCreateModal(true);
   };
 
@@ -64,6 +69,9 @@ export default function TenantsPage() {
     setFormName(t.name);
     setFormDesc(t.description || '');
     setFormStatus(t.status);
+    const capability = t.capabilities?.dynamic_instrumentation;
+    setFormInstrumentationInherit(capability === undefined);
+    setFormInstrumentation(capability ?? true);
   };
 
   const submitCreate = async () => {
@@ -92,6 +100,8 @@ export default function TenantsPage() {
         name: formName.trim(),
         description: formDesc.trim() || undefined,
         status: formStatus,
+        dynamic_instrumentation: formInstrumentationInherit ? undefined : formInstrumentation,
+        clear_dynamic_instrumentation: formInstrumentationInherit,
       });
       showToast('Tenant updated', 'success');
       setEditTenant(null);
@@ -123,6 +133,7 @@ export default function TenantsPage() {
     setNewPlainKey(null);
     setKeyName('');
     setKeyType('tk');
+    setKeyInstrumentationWrite(false);
     setKeysLoading(true);
     try {
       setKeys(await apiClient.getTenantKeys(t.id));
@@ -143,6 +154,7 @@ export default function TenantsPage() {
       const resp = await apiClient.createTenantKey(keysTenant.id, {
         name: keyName.trim(),
         key_type: keyType,
+        scopes: keyInstrumentationWrite ? ['instrumentation:write'] : [],
       });
       // 明文仅返回一次，醒目展示
       setNewPlainKey(resp.key);
@@ -201,6 +213,7 @@ export default function TenantsPage() {
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">ID</th>
                 <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">Instrumentation</th>
                 <th className="px-4 py-3 font-medium">Created</th>
                 <th className="px-4 py-3 font-medium text-right">Actions</th>
               </tr>
@@ -220,6 +233,23 @@ export default function TenantsPage() {
                       }`}
                     >
                       {t.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-xs ${
+                        t.capabilities?.dynamic_instrumentation === undefined
+                          ? 'bg-blue-100 text-blue-700'
+                          : t.capabilities.dynamic_instrumentation
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-200 text-gray-600'
+                      }`}
+                    >
+                      {t.capabilities?.dynamic_instrumentation === undefined
+                        ? 'inherited'
+                        : t.capabilities.dynamic_instrumentation
+                          ? 'enabled'
+                          : 'disabled'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(t.created_at)}</td>
@@ -271,6 +301,27 @@ export default function TenantsPage() {
                   <option value="active">active</option>
                   <option value="disabled">disabled</option>
                 </select>
+                <label className="flex items-center gap-2 text-sm text-gray-600 mb-2">
+                  <input
+                    type="checkbox"
+                    checked={formInstrumentationInherit}
+                    onChange={e => setFormInstrumentationInherit(e.target.checked)}
+                    className="rounded"
+                  />
+                  Inherit deployment default
+                  <span className="text-xs text-gray-400">(recommended)</span>
+                </label>
+                <label className={`flex items-center gap-2 text-sm mb-3 ${formInstrumentationInherit ? 'text-gray-400' : 'text-gray-600'}`}>
+                  <input
+                    type="checkbox"
+                    checked={formInstrumentation}
+                    disabled={formInstrumentationInherit}
+                    onChange={e => setFormInstrumentation(e.target.checked)}
+                    className="rounded"
+                  />
+                  Allow dynamic instrumentation
+                  <span className="text-xs text-gray-400">(this tenant&apos;s agents)</span>
+                </label>
               </>
             )}
             <div className="flex justify-end gap-2 mt-4">
@@ -329,6 +380,15 @@ export default function TenantsPage() {
                   <option value="ok">ok (operator)</option>
                 </select>
               </div>
+              <label className="flex items-center gap-1.5 text-xs text-gray-600 pb-2 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={keyInstrumentationWrite}
+                  onChange={e => setKeyInstrumentationWrite(e.target.checked)}
+                  className="rounded"
+                />
+                instrumentation:write
+              </label>
               <button
                 onClick={createKey}
                 className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"

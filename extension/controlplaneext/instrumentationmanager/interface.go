@@ -75,68 +75,74 @@ type InstrumentationManager interface {
 }
 
 type Config struct {
-	Type                             string `mapstructure:"type"`
-	RedisName                        string `mapstructure:"redis_name"`
-	KeyPrefix                        string `mapstructure:"key_prefix"`
-	RuntimeSnapshotTTL               int64  `mapstructure:"runtime_snapshot_ttl_millis"`
-	RuntimeSnapshotQueryTimeout      int64  `mapstructure:"runtime_snapshot_query_timeout_millis"`
-	RuntimeSnapshotPollInterval      int64  `mapstructure:"runtime_snapshot_poll_interval_millis"`
-	RuntimeSnapshotSharedSyncInterval int64 `mapstructure:"runtime_snapshot_shared_sync_interval_millis"`
-	RuntimeSnapshotLeaseTTL          int64  `mapstructure:"runtime_snapshot_lease_ttl_millis"`
-	ReconcileInterval                int64  `mapstructure:"reconcile_interval_millis"`
-	ReconcileRetryInterval           int64  `mapstructure:"reconcile_retry_interval_millis"`
-	AuditRetention                   int    `mapstructure:"audit_retention"`
-	GCInterval                       int64  `mapstructure:"gc_interval_millis"`
-	DeletedRuleRetention             int64  `mapstructure:"deleted_rule_retention_millis"`
-	ReconcileTargetExpireTimeout     int64  `mapstructure:"reconcile_target_expire_timeout_millis"`
+	Type                              string `mapstructure:"type"`
+	RedisName                         string `mapstructure:"redis_name"`
+	KeyPrefix                         string `mapstructure:"key_prefix"`
+	RuntimeSnapshotTTL                int64  `mapstructure:"runtime_snapshot_ttl_millis"`
+	RuntimeSnapshotQueryTimeout       int64  `mapstructure:"runtime_snapshot_query_timeout_millis"`
+	RuntimeSnapshotPollInterval       int64  `mapstructure:"runtime_snapshot_poll_interval_millis"`
+	RuntimeSnapshotSharedSyncInterval int64  `mapstructure:"runtime_snapshot_shared_sync_interval_millis"`
+	RuntimeSnapshotLeaseTTL           int64  `mapstructure:"runtime_snapshot_lease_ttl_millis"`
+	ReconcileInterval                 int64  `mapstructure:"reconcile_interval_millis"`
+	ReconcileRetryInterval            int64  `mapstructure:"reconcile_retry_interval_millis"`
+	AuditRetention                    int    `mapstructure:"audit_retention"`
+	GCInterval                        int64  `mapstructure:"gc_interval_millis"`
+	DeletedRuleRetention              int64  `mapstructure:"deleted_rule_retention_millis"`
+	ReconcileTargetExpireTimeout      int64  `mapstructure:"reconcile_target_expire_timeout_millis"`
+
+	// DefaultTenantInstrumentationEnabled is the deployment-wide fallback used
+	// when a tenant has no explicit dynamic-instrumentation capability.
+	// nil means true (keep legacy behavior); false opts the whole deployment
+	// out unless a tenant explicitly enables it.
+	DefaultTenantInstrumentationEnabled *bool `mapstructure:"default_tenant_instrumentation_enabled"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Type:                             "memory",
-		RedisName:                        "default",
-		KeyPrefix:                        "otel:instrumentation",
-		RuntimeSnapshotTTL:               20000,
-		RuntimeSnapshotQueryTimeout:      5000,
-		RuntimeSnapshotPollInterval:      200,
+		Type:                              "memory",
+		RedisName:                         "default",
+		KeyPrefix:                         "otel:instrumentation",
+		RuntimeSnapshotTTL:                20000,
+		RuntimeSnapshotQueryTimeout:       5000,
+		RuntimeSnapshotPollInterval:       200,
 		RuntimeSnapshotSharedSyncInterval: 1000,
-		RuntimeSnapshotLeaseTTL:          2000,
-		ReconcileInterval:                5000,
-		ReconcileRetryInterval:           15000,
-		AuditRetention:                   20,
-		GCInterval:                       60000,
-		DeletedRuleRetention:             7 * 24 * 3600 * 1000,
-		ReconcileTargetExpireTimeout:     7 * 24 * 3600 * 1000,
+		RuntimeSnapshotLeaseTTL:           2000,
+		ReconcileInterval:                 5000,
+		ReconcileRetryInterval:            15000,
+		AuditRetention:                    20,
+		GCInterval:                        60000,
+		DeletedRuleRetention:              7 * 24 * 3600 * 1000,
+		ReconcileTargetExpireTimeout:      7 * 24 * 3600 * 1000,
 	}
 }
 
 type Rule struct {
-	ID               string            `json:"rule_id"`
-	Name             string            `json:"name"`
-	Description      string            `json:"description,omitempty"`
-	AppID            string            `json:"app_id"`
-	ServiceName      string            `json:"service_name"`
-	ScopeType        ScopeType         `json:"scope_type"`
-	TargetAgentIDs   []string          `json:"target_agent_ids,omitempty"`
-	ClassName        string            `json:"class_name"`
-	MethodName       string            `json:"method_name"`
-	ParameterTypes   string            `json:"parameter_types,omitempty"`
-	MethodDescriptor string            `json:"method_descriptor,omitempty"`
-	InstrumentType   InstrumentType    `json:"instrument_type"`
-	SpanName         string            `json:"span_name,omitempty"`
-	CaptureArgs      string            `json:"capture_args,omitempty"`
-	CaptureReturn    string            `json:"capture_return,omitempty"`
-	CaptureMaxLength int               `json:"capture_max_length,omitempty"`
-	Force            bool              `json:"force,omitempty"`
-	DesiredState         RuleDesiredState  `json:"desired_state"`
-	EverApplySucceeded   bool              `json:"ever_apply_succeeded"`
-	CreatedAtMillis      int64             `json:"created_at_millis"`
-	UpdatedAtMillis  int64             `json:"updated_at_millis"`
-	CreatedBy        string            `json:"created_by,omitempty"`
-	UpdatedBy        string            `json:"updated_by,omitempty"`
-	LastOperation    *OperationSummary `json:"last_operation,omitempty"`
-	Summary          RuleSummary       `json:"summary"`
-	RecentAudits     []*RuleAuditEntry `json:"recent_audits,omitempty"`
+	ID                 string            `json:"rule_id"`
+	Name               string            `json:"name"`
+	Description        string            `json:"description,omitempty"`
+	AppID              string            `json:"app_id"`
+	ServiceName        string            `json:"service_name"`
+	ScopeType          ScopeType         `json:"scope_type"`
+	TargetAgentIDs     []string          `json:"target_agent_ids,omitempty"`
+	ClassName          string            `json:"class_name"`
+	MethodName         string            `json:"method_name"`
+	ParameterTypes     string            `json:"parameter_types,omitempty"`
+	MethodDescriptor   string            `json:"method_descriptor,omitempty"`
+	InstrumentType     InstrumentType    `json:"instrument_type"`
+	SpanName           string            `json:"span_name,omitempty"`
+	CaptureArgs        string            `json:"capture_args,omitempty"`
+	CaptureReturn      string            `json:"capture_return,omitempty"`
+	CaptureMaxLength   int               `json:"capture_max_length,omitempty"`
+	Force              bool              `json:"force,omitempty"`
+	DesiredState       RuleDesiredState  `json:"desired_state"`
+	EverApplySucceeded bool              `json:"ever_apply_succeeded"`
+	CreatedAtMillis    int64             `json:"created_at_millis"`
+	UpdatedAtMillis    int64             `json:"updated_at_millis"`
+	CreatedBy          string            `json:"created_by,omitempty"`
+	UpdatedBy          string            `json:"updated_by,omitempty"`
+	LastOperation      *OperationSummary `json:"last_operation,omitempty"`
+	Summary            RuleSummary       `json:"summary"`
+	RecentAudits       []*RuleAuditEntry `json:"recent_audits,omitempty"`
 }
 
 type RuleSummary struct {

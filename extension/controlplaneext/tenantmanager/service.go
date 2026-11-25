@@ -110,6 +110,28 @@ func (s *TenantService) UpdateTenant(ctx context.Context, id string, req *Update
 	if req.Status != "" {
 		updated.Status = req.Status
 	}
+	if req.ClearDynamicInstrumentation {
+		// Drop the tenant override so the deployment default applies again.
+		if updated.Capabilities != nil {
+			capabilities := *updated.Capabilities
+			capabilities.DynamicInstrumentation = nil
+			if capabilities == (TenantCapabilities{}) {
+				updated.Capabilities = nil
+			} else {
+				updated.Capabilities = &capabilities
+			}
+		}
+	} else if req.DynamicInstrumentation != nil {
+		capabilities := TenantCapabilities{}
+		if updated.Capabilities != nil {
+			capabilities = *updated.Capabilities
+		}
+		value := *req.DynamicInstrumentation
+		capabilities.DynamicInstrumentation = &value
+		// Replace rather than mutate: the in-memory repository returns the
+		// stored pointer, so mutating it would bypass Save.
+		updated.Capabilities = &capabilities
+	}
 	updated.UpdatedAt = time.Now()
 
 	if err := s.repo.Save(ctx, &updated); err != nil {

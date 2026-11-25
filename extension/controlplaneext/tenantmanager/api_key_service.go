@@ -118,24 +118,25 @@ func (s *APIKeyService) ValidateAPIKey(ctx context.Context, plainKey string) (*K
 	}
 
 	if key.Status != KeyStatusActive {
-		return &KeyValidation{Valid: false, TenantID: key.TenantID, KeyType: key.KeyType, Reason: "key revoked"}, nil
+		return &KeyValidation{Valid: false, TenantID: key.TenantID, KeyType: key.KeyType, KeyID: key.ID, Reason: "key revoked"}, nil
 	}
 
 	tenant, err := s.tenants.FindByID(ctx, key.TenantID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return &KeyValidation{Valid: false, TenantID: key.TenantID, KeyType: key.KeyType, Reason: "tenant not found"}, nil
+			return &KeyValidation{Valid: false, TenantID: key.TenantID, KeyType: key.KeyType, KeyID: key.ID, Reason: "tenant not found"}, nil
 		}
 		return nil, fmt.Errorf("validate api key tenant: %w", err)
 	}
 	if tenant.Status != StatusActive {
-		return &KeyValidation{Valid: false, TenantID: key.TenantID, KeyType: key.KeyType, Reason: "tenant disabled"}, nil
+		return &KeyValidation{Valid: false, TenantID: key.TenantID, KeyType: key.KeyType, KeyID: key.ID, Reason: "tenant disabled"}, nil
 	}
 
 	return &KeyValidation{
 		Valid:    true,
 		TenantID: key.TenantID,
 		KeyType:  key.KeyType,
+		KeyID:    key.ID,
 		Scopes:   key.Scopes,
 	}, nil
 }

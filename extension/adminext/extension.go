@@ -5,6 +5,7 @@ package adminext
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
+	"go.opentelemetry.io/collector/custom/extension/opsconfig"
 	"go.opentelemetry.io/collector/custom/extension/storageext"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
@@ -70,6 +72,10 @@ type Extension struct {
 
 	// WebSocket token manager for secure WS authentication
 	wsTokenMgr WSTokenManager
+
+	// Admin-managed global runtime config store (Redis + pub/sub)
+	opsStore        *opsconfig.Store
+	releaseOpsStore func()
 
 	// Observability storage extension — unified mode (structured responses)
 	observabilityStorage *observabilitystorageext.ObservabilityStorage
@@ -170,6 +176,11 @@ func (e *Extension) Start(ctx context.Context, host component.Host) error {
 		return fmt.Errorf("failed to initialize WS token manager: %w", err)
 	}
 
+	// Initialize admin-managed runtime config store (optional, non-fatal).
+	if err := e.initOpsConfig(ctx, host); err != nil {
+		e.logger.Warn("opsconfig store unavailable, ops config API disabled", zap.Error(err))
+	}
+
 	// Start HTTP server
 	if err := e.startHTTPServer(); err != nil {
 		return err
@@ -223,6 +234,39 @@ func (e *Extension) initFromControlPlane(host component.Host) error {
 		zap.String("controlplane", e.config.ControlPlaneExtension),
 	)
 
+	return nil
+}
+
+// initOpsConfig creates the shared Redis-backed runtime config store. The
+// receiver creates its own Store on the same keys/channel; writes published
+// here are observed by every replica through pub/sub.
+func (e *Extension) initOpsConfig(ctx context.Context, host component.Host) error {
+	storage := e.storage
+	if storage == nil {
+		if cpExt, ok := e.controlPlane.(*controlplaneext.Extension); ok {
+			storage = cpExt.GetStorage()
+		}
+	}
+	if storage == nil && e.config.StorageExtension != "" {
+		var err error
+		storage, err = controlplaneext.GetStorageExtension(host, e.config.StorageExtension, e.logger)
+		if err != nil {
+			return err
+		}
+	}
+	if storage == nil {
+		return errors.New("storage extension not available")
+	}
+	client, err := storage.GetRedis("default")
+	if err != nil || client == nil {
+		return errors.New("redis connection 'default' not available")
+	}
+	store, release, err := opsconfig.Shared().Acquire(client, e.logger.Named("opsconfig"))
+	if err != nil {
+		return err
+	}
+	e.opsStore = store
+	e.releaseOpsStore = release
 	return nil
 }
 
@@ -374,8 +418,13 @@ func (e *Extension) initInstrumentationManager(ctx context.Context, _ component.
 		}
 	}
 
+	opts, err := e.instrumentationCapabilityOptions()
+	if err != nil {
+		return fmt.Errorf("configure tenant instrumentation capability: %w", err)
+	}
+
 	factory := controlplaneext.NewComponentFactory(e.logger, storage)
-	mgr, err := factory.CreateInstrumentationManager(e.config.InstrumentationManager, e.agentReg, e.taskMgr)
+	mgr, err := factory.CreateInstrumentationManager(e.config.InstrumentationManager, e.agentReg, e.taskMgr, opts...)
 	if err != nil {
 		return err
 	}
@@ -424,6 +473,11 @@ func (e *Extension) Shutdown(ctx context.Context) error {
 	}
 
 	e.logger.Info("Shutting down admin extension")
+
+	if e.releaseOpsStore != nil {
+		e.releaseOpsStore()
+		e.releaseOpsStore = nil
+	}
 
 	// Shutdown HTTP server
 	if e.server != nil {

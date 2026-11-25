@@ -13,17 +13,19 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
+	"go.opentelemetry.io/collector/custom/extension/tenantauth"
 )
 
 // mcpServerWrapper wraps mcp-go's MCPServer and manages tool registration.
 type mcpServerWrapper struct {
-	ext                  *Extension
-	mcpServer            *server.MCPServer
-	httpSrv              *server.StreamableHTTPServer
-	logger               *zap.Logger
-	orchestrator         *ArthasOrchestrator
-	sessionManager       *SessionManager
-	sessionOrchestrator  *SessionOrchestrator
+	ext                 *Extension
+	mcpServer           *server.MCPServer
+	httpSrv             *server.StreamableHTTPServer
+	logger              *zap.Logger
+	orchestrator        *ArthasOrchestrator
+	sessionManager      *SessionManager
+	sessionOrchestrator *SessionOrchestrator
+	instrPolicy         *instrumentationPolicy
 }
 
 // newMCPServerWrapper creates a new MCP server wrapper with all tools registered.
@@ -51,19 +53,28 @@ func newMCPServerWrapper(ext *Extension) (*mcpServerWrapper, error) {
 	so := NewSessionOrchestrator(ext.controlPlane, sm, ext.logger, soConfig)
 
 	wrapper := &mcpServerWrapper{
-		ext:                  ext,
-		mcpServer:            s,
-		logger:               ext.logger.Named("mcp-server"),
-		orchestrator:         orch,
-		sessionManager:       sm,
-		sessionOrchestrator:  so,
+		ext:                 ext,
+		mcpServer:           s,
+		logger:              ext.logger.Named("mcp-server"),
+		orchestrator:        orch,
+		sessionManager:      sm,
+		sessionOrchestrator: so,
+		instrPolicy:         newInstrumentationPolicy(ext.config.Instrumentation),
 	}
 
 	// Register all tools
 	wrapper.registerTools()
 
-	// Create Streamable HTTP server
-	wrapper.httpSrv = server.NewStreamableHTTPServer(s)
+	// Create Streamable HTTP server. The context hook forwards the authenticated
+	// tenant identity (key type, tenant, key ID) into tool handlers.
+	wrapper.httpSrv = server.NewStreamableHTTPServer(s,
+		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+			if identity, ok := tenantauth.IdentityFromContext(r.Context()); ok {
+				return tenantauth.WithIdentity(ctx, identity)
+			}
+			return ctx
+		}),
+	)
 
 	return wrapper, nil
 }
@@ -71,6 +82,18 @@ func newMCPServerWrapper(ext *Extension) (*mcpServerWrapper, error) {
 // Handler returns the HTTP handler for the MCP server.
 func (w *mcpServerWrapper) Handler() http.Handler {
 	return w.httpSrv
+}
+
+// addTool is the single registration point for MCP tools. Every handler is
+// wrapped with the tenant-isolation gate, so a new tool cannot accidentally
+// bypass it.
+func (w *mcpServerWrapper) addTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
+	w.mcpServer.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := w.authorizeToolCall(ctx, request); err != nil {
+			return mcp.NewToolResultError("租户授权失败: " + err.Error()), nil
+		}
+		return handler(ctx, request)
+	})
 }
 
 // registerTools registers all MCP tools.
@@ -99,6 +122,11 @@ func (w *mcpServerWrapper) registerTools() {
 	w.registerArthasSessionPullTool()
 	w.registerArthasSessionInterruptTool()
 	w.registerArthasSessionCloseTool()
+
+	// ========== Dynamic Instrumentation Tools (optional) ==========
+	if w.ext.config.Instrumentation.Enabled && w.ext.instrMgr != nil {
+		w.registerInstrumentationTools()
+	}
 }
 
 // ========== Tool: list_agents ==========
@@ -107,7 +135,7 @@ func (w *mcpServerWrapper) registerListAgentsTool() {
 	tool := mcp.NewTool("list_agents",
 		mcp.WithDescription("列出所有在线的 Java Agent。返回每个 Agent 的 ID、应用名、服务名、IP 地址等信息。"),
 	)
-	w.mcpServer.AddTool(tool, w.handleListAgents)
+	w.addTool(tool, w.handleListAgents)
 }
 
 func (w *mcpServerWrapper) handleListAgents(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -117,6 +145,10 @@ func (w *mcpServerWrapper) handleListAgents(ctx context.Context, request mcp.Cal
 	if err != nil {
 		w.logger.Error("[list_agents] Failed to get online agents", zap.Error(err))
 		return mcp.NewToolResultError("获取在线 Agent 列表失败: " + err.Error()), nil
+	}
+	agents, err = w.filterAgentsByTenant(ctx, agents)
+	if err != nil {
+		return mcp.NewToolResultError("租户授权失败: " + err.Error()), nil
 	}
 
 	if len(agents) == 0 {
@@ -140,7 +172,7 @@ func (w *mcpServerWrapper) registerAgentInfoTool() {
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleAgentInfo)
+	w.addTool(tool, w.handleAgentInfo)
 }
 
 func (w *mcpServerWrapper) handleAgentInfo(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -178,7 +210,7 @@ func (w *mcpServerWrapper) registerArthasStatusTool() {
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasStatus)
+	w.addTool(tool, w.handleArthasStatus)
 }
 
 func (w *mcpServerWrapper) handleArthasStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

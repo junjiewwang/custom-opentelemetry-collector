@@ -21,7 +21,7 @@ func (w *mcpServerWrapper) registerArthasAttachTool() {
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasAttach)
+	w.addTool(tool, w.handleArthasAttach)
 }
 
 func (w *mcpServerWrapper) handleArthasAttach(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -93,7 +93,7 @@ func (w *mcpServerWrapper) registerArthasDetachTool() {
 			mcp.Description("目标 Agent 的 ID。可通过 list_agents 工具获取。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasDetach)
+	w.addTool(tool, w.handleArthasDetach)
 }
 
 func (w *mcpServerWrapper) handleArthasDetach(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -101,6 +101,7 @@ type KeyValidation struct {
 	Valid    bool     `json:"valid"`
 	TenantID string   `json:"tenant_id,omitempty"`
 	KeyType  string   `json:"key_type,omitempty"`
+	KeyID    string   `json:"key_id,omitempty"`
 	Scopes   []string `json:"scopes,omitempty"`
 	Reason   string   `json:"reason,omitempty"`
 }

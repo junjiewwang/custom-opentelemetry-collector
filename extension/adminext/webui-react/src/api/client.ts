@@ -649,7 +649,7 @@ class ApiClient {
     return this.request<Tenant>('POST', '/tenants', data);
   }
 
-  updateTenant(id: string, data: { name?: string; description?: string; status?: string }): Promise<Tenant> {
+  updateTenant(id: string, data: { name?: string; description?: string; status?: string; dynamic_instrumentation?: boolean; clear_dynamic_instrumentation?: boolean }): Promise<Tenant> {
     return this.request<Tenant>('PUT', `/tenants/${encodeURIComponent(id)}`, data);
   }
 

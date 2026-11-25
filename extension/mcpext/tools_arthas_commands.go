@@ -29,7 +29,7 @@ func (w *mcpServerWrapper) registerArthasExecTool() {
 			mcp.Description("要执行的 Arthas 命令。例如: 'version', 'thread', 'ognl @java.lang.System@getProperty(\"java.version\")'"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasExec)
+	w.addTool(tool, w.handleArthasExec)
 }
 
 func (w *mcpServerWrapper) handleArthasExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -74,7 +74,7 @@ func (w *mcpServerWrapper) registerArthasTraceTool() {
 			mcp.Description("是否跳过 JDK 内部方法。默认 true。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasTrace)
+	w.addTool(tool, w.handleArthasTrace)
 }
 
 func (w *mcpServerWrapper) handleArthasTrace(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -132,7 +132,7 @@ func (w *mcpServerWrapper) registerArthasWatchTool() {
 			mcp.Description("过滤条件（OGNL 表达式）。例如: '#cost>100' 或 'params[0]>10'"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasWatch)
+	w.addTool(tool, w.handleArthasWatch)
 }
 
 func (w *mcpServerWrapper) handleArthasWatch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -183,7 +183,7 @@ func (w *mcpServerWrapper) registerArthasJadTool() {
 			mcp.Description("指定反编译的方法名。可选，不指定则反编译整个类。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasJad)
+	w.addTool(tool, w.handleArthasJad)
 }
 
 func (w *mcpServerWrapper) handleArthasJad(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -224,7 +224,7 @@ func (w *mcpServerWrapper) registerArthasScTool() {
 			mcp.Description("是否显示详细信息（ClassLoader、接口、父类、注解等）。默认 false。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasSc)
+	w.addTool(tool, w.handleArthasSc)
 }
 
 func (w *mcpServerWrapper) handleArthasSc(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -266,7 +266,7 @@ func (w *mcpServerWrapper) registerArthasThreadTool() {
 			mcp.Description("是否检测死锁。设为 true 时仅显示死锁线程。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasThread)
+	w.addTool(tool, w.handleArthasThread)
 }
 
 func (w *mcpServerWrapper) handleArthasThread(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -316,7 +316,7 @@ func (w *mcpServerWrapper) registerArthasStackTool() {
 			mcp.Description("过滤条件（OGNL 表达式）。例如: '#cost>100'"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasStack)
+	w.addTool(tool, w.handleArthasStack)
 }
 
 func (w *mcpServerWrapper) handleArthasStack(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -4,113 +4,57 @@
 package mcpext
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/zap"
+
+	"go.opentelemetry.io/collector/custom/extension/tenantauth"
 )
 
-func TestExtractAPIKey(t *testing.T) {
+func TestMCPPrincipal(t *testing.T) {
 	tests := []struct {
 		name     string
-		headers  map[string]string
-		expected string
+		identity *tenantauth.Identity
+		want     string
 	}{
+		{name: "unauthenticated", want: anonymousMCPPrincipal},
 		{
-			name:     "bearer token",
-			headers:  map[string]string{"Authorization": "Bearer sk-test-key"},
-			expected: "sk-test-key",
+			name:     "static super key",
+			identity: &tenantauth.Identity{KeyType: tenantauth.KeyTypeSuper, KeyID: "deadbeef"},
+			want:     "mcp:super:deadbeef",
 		},
 		{
-			name:     "bearer token case insensitive",
-			headers:  map[string]string{"Authorization": "bearer sk-test-key"},
-			expected: "sk-test-key",
+			name:     "global operator key",
+			identity: &tenantauth.Identity{KeyType: tenantauth.KeyTypeOperator, KeyID: "key-2"},
+			want:     "mcp:operator:key-2",
 		},
 		{
-			name:     "x-api-key header",
-			headers:  map[string]string{"X-API-Key": "sk-test-key"},
-			expected: "sk-test-key",
-		},
-		{
-			name:     "bearer takes priority",
-			headers:  map[string]string{"Authorization": "Bearer bearer-key", "X-API-Key": "header-key"},
-			expected: "bearer-key",
-		},
-		{
-			name:     "no auth headers",
-			headers:  map[string]string{},
-			expected: "",
-		},
-		{
-			name:     "invalid authorization format",
-			headers:  map[string]string{"Authorization": "Basic abc123"},
-			expected: "",
+			name: "tenant key",
+			identity: &tenantauth.Identity{
+				KeyType:  tenantauth.KeyTypeTenant,
+				TenantID: "tn-acme",
+				KeyID:    "key-3",
+			},
+			want: "mcp:tenant:tn-acme:key-3",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
-			for k, v := range tt.headers {
-				req.Header.Set(k, v)
+			ctx := context.Background()
+			if tt.identity != nil {
+				ctx = tenantauth.WithIdentity(ctx, *tt.identity)
 			}
-			result := extractAPIKey(req)
-			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.want, mcpPrincipal(ctx))
 		})
 	}
 }
 
-func TestAPIKeyAuthMiddleware(t *testing.T) {
-	logger := zap.NewNop()
-	validKeys := []string{"sk-valid-key-1", "sk-valid-key-2"}
-
-	// Create a simple handler that returns 200
-	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+func TestMCPPrincipalNeverContainsPlaintextKey(t *testing.T) {
+	ctx := tenantauth.WithIdentity(context.Background(), tenantauth.Identity{
+		KeyType: tenantauth.KeyTypeTenant,
+		KeyID:   "key-record-id",
 	})
-
-	middleware := newAPIKeyAuthMiddleware(validKeys, logger)
-	handler := middleware(okHandler)
-
-	tests := []struct {
-		name           string
-		headers        map[string]string
-		expectedStatus int
-	}{
-		{
-			name:           "valid bearer key",
-			headers:        map[string]string{"Authorization": "Bearer sk-valid-key-1"},
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "valid x-api-key",
-			headers:        map[string]string{"X-API-Key": "sk-valid-key-2"},
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "invalid key",
-			headers:        map[string]string{"Authorization": "Bearer sk-invalid"},
-			expectedStatus: http.StatusForbidden,
-		},
-		{
-			name:           "no key",
-			headers:        map[string]string{},
-			expectedStatus: http.StatusUnauthorized,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-			for k, v := range tt.headers {
-				req.Header.Set(k, v)
-			}
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-			assert.Equal(t, tt.expectedStatus, rec.Code)
-		})
-	}
+	assert.NotContains(t, mcpPrincipal(ctx), "tk_super_secret_value")
 }

@@ -79,6 +79,8 @@ export interface Instance {
   registered_at: number;         // Unix 毫秒时间戳
   last_heartbeat: number;        // Unix 毫秒时间戳
   arthas_tunnel_agent_id?: string; // Arthas tunnel connection agent ID (from server)
+  arthas_tunnel_source?: string;   // local | ops | derived | none (reported by probe)
+  ops_revision_applied?: string;   // admin config revision applied by the probe
 }
 
 export interface InstanceStats {
@@ -279,11 +281,16 @@ export interface MenuItem {
 // Tenant (Multi-tenancy)
 // ============================================================================
 
+export interface TenantCapabilities {
+  dynamic_instrumentation?: boolean;
+}
+
 export interface Tenant {
   id: string;
   name: string;
   description?: string;
   status: 'active' | 'disabled';
+  capabilities?: TenantCapabilities;
   created_at: string;
   updated_at: string;
 }

@@ -456,6 +456,9 @@ extensions:
       key_prefix: "otel:instrumentation"
       runtime_snapshot_ttl_millis: 20000
       runtime_snapshot_query_timeout_millis: 5000
+      # Deployment-wide fallback for tenants without an explicit capability.
+      # Per-tenant override: Tenants page -> Allow dynamic instrumentation.
+      default_tenant_instrumentation_enabled: true
       runtime_snapshot_poll_interval_millis: 200
       runtime_snapshot_shared_sync_interval_millis: 1000  # Redis 模式下，本地 L1 与共享 L2 的最大校验间隔
       runtime_snapshot_lease_ttl_millis: 2000  # Redis 模式下，同一 agent 刷新的分布式短租约
@@ -688,8 +691,16 @@ extensions:
   #     - arthas_sc         - Search loaded classes
   #     - arthas_thread     - View JVM thread info, detect deadlocks
   #     - arthas_stack      - Output method call stack
+  #   Dynamic Instrumentation (optional, see instrumentation section below):
+  #     - instrument_rule_list     - List instrumentation rules
+  #     - instrument_rule_get      - Rule details and per-target status
+  #     - instrument_rule_snapshot - Runtime effectiveness snapshot
+  #     - instrument_rule_create   - Create a service-scoped rule (write)
+  #     - instrument_rule_pause    - Pause a rule (write)
+  #     - instrument_rule_resume   - Resume a rule (write)
+  #     - instrument_rule_delete   - Delete a rule (write)
   #
-  # Dependencies: controlplane, arthas_tunnel
+  # Dependencies: controlplane, arthas_tunnel, admin (when instrumentation is enabled)
   # Architecture:
   #   AI Agent <--MCP Streamable HTTP--> mcpext <---> controlplaneext + arthastunnelext
   mcp:
@@ -700,9 +711,12 @@ extensions:
     # Authentication configuration
     auth:
       type: api_key  # "api_key" or "none"
-      # API keys for authenticating MCP clients
+      # Static super keys have full privileges across tenants (optional when
+      # dynamic_keys is enabled). Tenant/operator keys (tk_ / ok_) are resolved
+      # dynamically through the shared tenant manager and are NOT listed here.
       # Supports Authorization: Bearer <key> or X-API-Key: <key> headers
       api_keys: [[ .Service.mcp.api_keys | toJson ]]
+      dynamic_keys: true
 
     # Reference to control plane extension (for agent management and task execution)
     controlplane_extension: controlplane
@@ -715,6 +729,29 @@ extensions:
 
     # Default timeout for tool execution (seconds)
     tool_timeout: 30
+
+    # Dynamic instrumentation tools. The rule manager is owned by the admin
+    # extension; mcp reuses that single instance via instrumentationmanager.Provider.
+    # Code defaults are safe (enabled=false, allow_write=false); this deployment
+    # template enables both. Set allow_write=false to register read-only tools only.
+    instrumentation:
+      enabled: true
+      extension: admin
+      allow_write: true
+      # Tenant (tk_) keys additionally need the "instrumentation:write" scope
+      # to call write tools; static super / ok_ keys are unrestricted.
+      # Max number of service instances a single created rule may target.
+      max_targets: 100
+      # Write tools can only manage rules created through MCP.
+      manage_only_own_rules: true
+      # Force instrumentation and argument/return capture are disabled by default
+      # because they can expose sensitive method data.
+      allow_force: false
+      allow_capture: false
+      # Optional class prefix guards. An empty denied list falls back to the
+      # built-in JDK/OTel denylist; a non-empty allowed list takes precedence.
+      # denied_class_prefixes: ["java.", "javax.", "jdk.", "sun.", "com.sun.", "io.opentelemetry."]
+      # allowed_class_prefixes: ["com.example."]
 
   # Memory limiter extension
   memory_limiter:

@@ -23,6 +23,15 @@ const (
 	StatusDisabled = "disabled"
 )
 
+// TenantCapabilities holds per-tenant feature switches managed from the
+// operator console. Pointer fields are tri-state: nil means "inherit the
+// deployment default" (currently allowed), an explicit value overrides it.
+type TenantCapabilities struct {
+	// DynamicInstrumentation controls whether agents owned by this tenant may
+	// be instrumented by the dynamic instrumentation rule manager.
+	DynamicInstrumentation *bool `json:"dynamic_instrumentation,omitempty"`
+}
+
 // Tenant is a multi-tenancy isolation boundary that groups apps. It is the
 // read-path counterpart to AppInfo.TenantID: a Tenant API Key resolves to a
 // TenantID, which scopes queries to that tenant's data.
@@ -40,6 +49,10 @@ type Tenant struct {
 	// Status is "active" or "disabled". A disabled tenant's keys are rejected
 	// at authentication time.
 	Status string `json:"status"`
+
+	// Capabilities are optional per-tenant feature switches. Legacy records
+	// without this field inherit the deployment default.
+	Capabilities *TenantCapabilities `json:"capabilities,omitempty"`
 
 	// AccountID is the VictoriaMetrics native-multitenancy account that hard-
 	// isolates this tenant's metrics. 0 is reserved for the default "admin"
@@ -76,6 +89,16 @@ type UpdateTenantRequest struct {
 	Name        string `json:"name,omitempty"`
 	Description string `json:"description,omitempty"`
 	Status      string `json:"status,omitempty"`
+
+	// DynamicInstrumentation is a tri-state override: nil leaves the current
+	// capability unchanged, false disables instrumentation for this tenant's
+	// agents, true enables it explicitly.
+	DynamicInstrumentation *bool `json:"dynamic_instrumentation,omitempty"`
+
+	// ClearDynamicInstrumentation removes the tenant override so the value is
+	// inherited from the deployment default. It takes precedence over
+	// DynamicInstrumentation when both are supplied.
+	ClearDynamicInstrumentation bool `json:"clear_dynamic_instrumentation,omitempty"`
 }
 
 // Validate checks the request. Returns an error if Status is set to an

@@ -47,7 +47,7 @@ func (w *mcpServerWrapper) registerArthasSessionOpenTool() {
 			mcp.Description("空闲超时（秒）。默认 120（2 分钟）。长时间未操作会话将自动关闭。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasSessionOpen)
+	w.addTool(tool, w.handleArthasSessionOpen)
 }
 
 func (w *mcpServerWrapper) handleArthasSessionOpen(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -127,7 +127,7 @@ func (w *mcpServerWrapper) registerArthasSessionExecTool() {
 			mcp.Description("要执行的 Arthas 命令。例如: 'trace com.example.OrderService createOrder'"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasSessionExec)
+	w.addTool(tool, w.handleArthasSessionExec)
 }
 
 func (w *mcpServerWrapper) handleArthasSessionExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -199,7 +199,7 @@ func (w *mcpServerWrapper) registerArthasSessionPullTool() {
 			mcp.Description("等待超时（秒）。默认 3。在此时间内如果有新数据会立即返回。建议保持在 1-3 秒，最多 5-6 秒。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasSessionPull)
+	w.addTool(tool, w.handleArthasSessionPull)
 }
 
 func (w *mcpServerWrapper) handleArthasSessionPull(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -256,7 +256,7 @@ func (w *mcpServerWrapper) registerArthasSessionInterruptTool() {
 			mcp.Description("中断原因。可选。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasSessionInterrupt)
+	w.addTool(tool, w.handleArthasSessionInterrupt)
 }
 
 func (w *mcpServerWrapper) handleArthasSessionInterrupt(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -325,7 +325,7 @@ func (w *mcpServerWrapper) registerArthasSessionCloseTool() {
 			mcp.Description("是否强制关闭。默认 false。设为 true 时即使 Agent 侧关闭失败也会在 Collector 侧标记为已关闭。"),
 		),
 	)
-	w.mcpServer.AddTool(tool, w.handleArthasSessionClose)
+	w.addTool(tool, w.handleArthasSessionClose)
 }
 
 func (w *mcpServerWrapper) handleArthasSessionClose(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

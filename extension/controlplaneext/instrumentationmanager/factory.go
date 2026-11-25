@@ -16,7 +16,7 @@ import (
 // RedisClient is a type alias for redis.UniversalClient.
 type RedisClient = redis.UniversalClient
 
-func NewInstrumentationManager(logger *zap.Logger, config Config, redisClient RedisClient, agentReg agentregistry.AgentRegistry, taskMgr taskmanager.TaskManager) (InstrumentationManager, error) {
+func NewInstrumentationManager(logger *zap.Logger, config Config, redisClient RedisClient, agentReg agentregistry.AgentRegistry, taskMgr taskmanager.TaskManager, opts ...Option) (InstrumentationManager, error) {
 	if agentReg == nil {
 		return nil, errors.New("agent registry is required for instrumentation manager")
 	}
@@ -25,9 +25,10 @@ func NewInstrumentationManager(logger *zap.Logger, config Config, redisClient Re
 	}
 
 	instanceID := newRuntimeSnapshotInstanceID()
+	var service *InstrumentationService
 	switch config.Type {
 	case "", "memory":
-		return newInstrumentationServiceWithRuntimeSnapshotStore(
+		service = newInstrumentationServiceWithRuntimeSnapshotStore(
 			logger.Named("instrumentation"),
 			config,
 			NewMemoryRuleStore(),
@@ -35,7 +36,7 @@ func NewInstrumentationManager(logger *zap.Logger, config Config, redisClient Re
 			taskMgr,
 			newMemoryRuntimeSnapshotStore(),
 			instanceID,
-		), nil
+		)
 	case "redis":
 		if redisClient == nil {
 			return nil, errors.New("redis client is required when instrumentation manager type is redis")
@@ -49,7 +50,7 @@ func NewInstrumentationManager(logger *zap.Logger, config Config, redisClient Re
 			instanceID,
 			runtimeSnapshotSharedSyncIntervalFromConfig(config),
 		)
-		return newInstrumentationServiceWithRuntimeSnapshotStore(
+		service = newInstrumentationServiceWithRuntimeSnapshotStore(
 			logger.Named("instrumentation"),
 			config,
 			store,
@@ -57,8 +58,15 @@ func NewInstrumentationManager(logger *zap.Logger, config Config, redisClient Re
 			taskMgr,
 			runtimeSnapshots,
 			instanceID,
-		), nil
+		)
 	default:
 		return nil, errors.New("unsupported instrumentation manager type: " + config.Type)
 	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(service)
+		}
+	}
+	return service, nil
 }

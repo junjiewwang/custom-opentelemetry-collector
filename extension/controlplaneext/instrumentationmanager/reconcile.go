@@ -13,8 +13,8 @@ import (
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 )
 
 type AuditSource string
@@ -49,6 +49,7 @@ type RuleAuditEntry struct {
 	AgentID         string      `json:"agent_id,omitempty"`
 	TaskID          string      `json:"task_id,omitempty"`
 	Message         string      `json:"message,omitempty"`
+	Operator        string      `json:"operator,omitempty"`
 	CreatedAtMillis int64       `json:"created_at_millis"`
 }
 
@@ -199,7 +200,7 @@ func (s *InstrumentationService) reconcileRule(ctx context.Context, rule *Rule) 
 		refreshedRule.Summary = summary
 		refreshedRule.LastOperation = lastOperation
 		refreshedRule.UpdatedAtMillis = now
-		refreshedRule.RecentAudits = appendRuleAudits(refreshedRule.RecentAudits, audits, s.auditRetention())
+		refreshedRule.RecentAudits = appendRuleAudits(refreshedRule.RecentAudits, withAuditOperator(ctx, audits), s.auditRetention())
 		if err := s.store.SaveTargetStatuses(ctx, refreshedRule.ID, nextTargets); err != nil {
 			return err
 		}
@@ -421,8 +422,8 @@ func (s *InstrumentationService) hasFreshRuntimeApplyDrift(rule *Rule, agentID s
 	item := findRuntimeSnapshotItem(entry.Items, rule.ID)
 	target := &RuleRuntimeSnapshotTarget{
 		SnapshotAvailable:        entry.HasPayload,
-		RuntimeFound:            item != nil,
-		IsEffective:             item != nil && item.IsEffective,
+		RuntimeFound:             item != nil,
+		IsEffective:              item != nil && item.IsEffective,
 		InstrumentationAvailable: entry.Summary.InstrumentationAvailable,
 		EnhancementCapability:    entry.Summary.EnhancementCapability,
 	}

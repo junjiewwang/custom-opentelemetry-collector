@@ -15,6 +15,9 @@ import (
 // status is consistent across the two — a tenant disabled via TenantService is
 // immediately rejected by APIKeyService.ValidateAPIKey.
 type MultiTenantManager struct {
+	// Type is the configured repository backend ("memory" or "redis"). It lets
+	// consumers decide whether a shared, multi-replica-safe feature is usable.
+	Type    string
 	Tenants TenantManager
 	Keys    *APIKeyService
 }
@@ -44,6 +47,7 @@ func NewMultiTenantManager(logger *zap.Logger, config Config, redisClient redis.
 
 	idGen := NewIDGenerator()
 	return &MultiTenantManager{
+		Type:    config.Type,
 		Tenants: NewTenantService(tenantRepo, idGen, appLister, logger),
 		Keys:    NewAPIKeyService(keyRepo, tenantRepo, idGen, logger),
 	}, nil

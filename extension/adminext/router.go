@@ -10,6 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
+	"go.opentelemetry.io/collector/custom/extension/tenantauth"
 )
 
 // authMiddleware returns the API auth middleware. When tenant management is
@@ -17,14 +19,19 @@ import (
 // TenantID injection); otherwise it falls back to static basic/jwt/api_key auth.
 func (e *Extension) authMiddleware() func(http.Handler) http.Handler {
 	if e.config.Auth.Type == "api_key" && e.tenantMgr != nil {
-		validator := KeyValidatorFunc(func(ctx context.Context, key string) (string, string, bool) {
+		validator := tenantauth.ValidatorFunc(func(ctx context.Context, key string) (tenantauth.Identity, bool) {
 			v, err := e.tenantMgr.Keys.ValidateAPIKey(ctx, key)
 			if err != nil || !v.Valid {
-				return "", "", false
+				return tenantauth.Identity{}, false
 			}
-			return v.TenantID, v.KeyType, true
+			return tenantauth.Identity{
+				TenantID: v.TenantID,
+				KeyType:  v.KeyType,
+				KeyID:    v.KeyID,
+				Scopes:   v.Scopes,
+			}, true
 		})
-		return NewTenantAuthMiddleware(e.config.Auth.APIKey.Keys, validator, e.logger)
+		return NewTenantAuthMiddlewareWithIdentity(e.config.Auth.APIKey.Keys, validator, e.logger)
 	}
 	return NewAuthMiddleware(e.config.Auth, e.logger)
 }
@@ -126,6 +133,18 @@ func (e *Extension) newRouter() http.Handler {
 		r.With(requireAdminMiddleware).Post("/auth/ws-token", admin.generateWSToken)
 
 		// ============================================================================
+		// Admin-managed global runtime config (ops config)
+		// ============================================================================
+		r.Route("/ops/configs", func(r chi.Router) {
+			r.Use(requireAdminMiddleware)
+			r.Get("/", admin.getOpsConfigs)
+			r.Get("/keys", admin.getOpsConfigKeys)
+			r.Get("/audit", admin.getOpsConfigAudit)
+			r.Put("/{key}", admin.setOpsConfig)
+			r.Delete("/{key}", admin.deleteOpsConfig)
+		})
+
+		// ============================================================================
 		// App Management (App = AppGroup, 1:1 with Token)
 		// ============================================================================
 		r.Route("/apps", func(r chi.Router) {
@@ -224,6 +243,7 @@ func (e *Extension) newRouter() http.Handler {
 		// ============================================================================
 		r.Route("/instrumentation", func(r chi.Router) {
 			r.Use(requireAdminMiddleware)
+			r.Use(withInstrumentationActor)
 			r.Get("/rules", admin.listInstrumentationRules)
 			r.Post("/rules", admin.createInstrumentationRule)
 			r.Get("/rules/{ruleID}", admin.getInstrumentationRule)

@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/singleflight"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 )
 
 type InstrumentationService struct {
@@ -30,6 +30,7 @@ type InstrumentationService struct {
 	runtimeSnapshots    RuntimeSnapshotStore
 	runtimeRefreshGroup singleflight.Group
 	runtimeInstanceID   string
+	capabilities        CapabilityProvider
 	reconcileCancel     context.CancelFunc
 	reconcileWG         sync.WaitGroup
 	gcCancel            context.CancelFunc
@@ -84,6 +85,11 @@ func (s *InstrumentationService) CreateRule(ctx context.Context, req *CreateRule
 	if err := validateCreateRequest(req); err != nil {
 		return nil, err
 	}
+	if err := s.ensureInstrumentationAllowed(ctx, req.AppID); err != nil {
+		return nil, err
+	}
+
+	operator := ruleActorID(ctx, req.CreatedBy)
 
 	ruleID, err := appmanager.GenerateID()
 	if err != nil {
@@ -111,8 +117,8 @@ func (s *InstrumentationService) CreateRule(ctx context.Context, req *CreateRule
 		DesiredState:     RuleDesiredStateActive,
 		CreatedAtMillis:  now,
 		UpdatedAtMillis:  now,
-		CreatedBy:        strings.TrimSpace(req.CreatedBy),
-		UpdatedBy:        strings.TrimSpace(req.CreatedBy),
+		CreatedBy:        operator,
+		UpdatedBy:        operator,
 	}
 	if rule.Name == "" {
 		rule.Name = defaultRuleName(rule)
@@ -162,6 +168,9 @@ func (s *InstrumentationService) UpdateRule(ctx context.Context, ruleID string, 
 	if rule.DesiredState == RuleDesiredStateDeleted {
 		return nil, errors.New("deleted rule cannot be updated")
 	}
+	if err := s.ensureInstrumentationAllowed(ctx, rule.AppID); err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UnixMilli()
 	rule.Name = chooseString(strings.TrimSpace(req.Name), rule.Name)
@@ -179,7 +188,7 @@ func (s *InstrumentationService) UpdateRule(ctx context.Context, ruleID string, 
 	rule.CaptureMaxLength = normalizeCaptureMaxLength(req.CaptureMaxLength)
 	rule.Force = req.Force
 	rule.UpdatedAtMillis = now
-	rule.UpdatedBy = strings.TrimSpace(req.UpdatedBy)
+	rule.UpdatedBy = ruleActorID(ctx, req.UpdatedBy)
 	if rule.Name == "" {
 		rule.Name = defaultRuleName(rule)
 	}
@@ -205,6 +214,7 @@ func (s *InstrumentationService) PauseRule(ctx context.Context, ruleID string) (
 	}
 	rule.DesiredState = RuleDesiredStatePaused
 	rule.UpdatedAtMillis = time.Now().UnixMilli()
+	rule.UpdatedBy = ruleActorID(ctx, rule.UpdatedBy)
 	if err := s.store.SaveRule(ctx, rule, false); err != nil {
 		return nil, err
 	}
@@ -222,8 +232,12 @@ func (s *InstrumentationService) ResumeRule(ctx context.Context, ruleID string) 
 	if rule.DesiredState == RuleDesiredStateDeleted {
 		return nil, errors.New("deleted rule cannot be resumed")
 	}
+	if err := s.ensureInstrumentationAllowed(ctx, rule.AppID); err != nil {
+		return nil, err
+	}
 	rule.DesiredState = RuleDesiredStateActive
 	rule.UpdatedAtMillis = time.Now().UnixMilli()
+	rule.UpdatedBy = ruleActorID(ctx, rule.UpdatedBy)
 	if err := s.store.SaveRule(ctx, rule, false); err != nil {
 		return nil, err
 	}
@@ -243,6 +257,7 @@ func (s *InstrumentationService) DeleteRule(ctx context.Context, ruleID string) 
 	}
 	rule.DesiredState = RuleDesiredStateDeleted
 	rule.UpdatedAtMillis = time.Now().UnixMilli()
+	rule.UpdatedBy = ruleActorID(ctx, rule.UpdatedBy)
 	if err := s.store.SaveRule(ctx, rule, false); err != nil {
 		return nil, err
 	}
@@ -416,7 +431,7 @@ func (s *InstrumentationService) dispatchRuleOperation(ctx context.Context, rule
 	}
 	rule.Summary = summary
 	rule.UpdatedAtMillis = now
-	rule.RecentAudits = appendRuleAudits(rule.RecentAudits, audits, s.auditRetention())
+	rule.RecentAudits = appendRuleAudits(rule.RecentAudits, withAuditOperator(ctx, audits), s.auditRetention())
 
 	if err := s.store.SaveTargetStatuses(ctx, rule.ID, targets); err != nil {
 		return err
