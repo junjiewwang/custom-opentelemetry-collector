@@ -19,16 +19,19 @@ import (
 
 	"go.opentelemetry.io/collector/custom/controlplane/model"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/agentregistry"
+	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/configmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
-	"go.opentelemetry.io/collector/custom/extension/controlplaneext/appmanager"
 )
 
-// instanceResponse wraps AgentInfo with Arthas tunnel status.
+// instanceResponse wraps AgentInfo with Arthas tunnel status and the source of
+// the effective Tunnel endpoint reported by the probe heartbeat.
 type instanceResponse struct {
 	*agentregistry.AgentInfo
-	TunnelAgentID string `json:"arthas_tunnel_agent_id,omitempty"`
+	TunnelAgentID      string `json:"arthas_tunnel_agent_id,omitempty"`
+	TunnelSource       string `json:"arthas_tunnel_source,omitempty"`
+	OpsRevisionApplied string `json:"ops_revision_applied,omitempty"`
 }
 
 // withTunnel enriches AgentInfo slice with tunnel connection status.
@@ -41,6 +44,10 @@ func (h *adminHandlers) withTunnel(instances []*agentregistry.AgentInfo) []insta
 			if _, ok := tunnelIDs[inst.AgentID]; ok {
 				ir.TunnelAgentID = inst.AgentID
 			}
+		}
+		if inst.Labels != nil {
+			ir.TunnelSource = inst.Labels["arthas.tunnel.source"]
+			ir.OpsRevisionApplied = inst.Labels["ops.revision.applied"]
 		}
 		result[i] = ir
 	}

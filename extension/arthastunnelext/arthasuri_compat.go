@@ -384,7 +384,7 @@ func (s *arthasURICompat) handleWS(ing wsIngress, w http.ResponseWriter, r *http
 	s.logger.Debug("WebSocket connection attempt",
 		zap.String("ingress", string(ing)),
 		zap.String("remote_addr", remoteAddr),
-		zap.String("request_uri", r.RequestURI),
+		zap.String("request_uri", sanitizeRequestURIForLog(r.RequestURI)),
 		zap.String("user_agent", r.UserAgent()),
 	)
 
@@ -393,7 +393,7 @@ func (s *arthasURICompat) handleWS(ing wsIngress, w http.ResponseWriter, r *http
 		s.logger.Error("Failed to upgrade WebSocket",
 			zap.String("ingress", string(ing)),
 			zap.String("remote_addr", remoteAddr),
-			zap.String("request_uri", r.RequestURI),
+			zap.String("request_uri", sanitizeRequestURIForLog(r.RequestURI)),
 			zap.Error(err),
 		)
 		return
@@ -404,7 +404,7 @@ func (s *arthasURICompat) handleWS(ing wsIngress, w http.ResponseWriter, r *http
 		s.logger.Warn("WebSocket missing method parameter",
 			zap.String("ingress", string(ing)),
 			zap.String("remote_addr", remoteAddr),
-			zap.String("request_uri", r.RequestURI),
+			zap.String("request_uri", sanitizeRequestURIForLog(r.RequestURI)),
 		)
 		_ = writeClose(conn, 2000, "missing method")
 		_ = conn.Close()
@@ -431,7 +431,7 @@ func (s *arthasURICompat) handleWS(ing wsIngress, w http.ResponseWriter, r *http
 		zap.String("ingress", string(ing)),
 		zap.String("method", string(m)),
 		zap.String("remote_addr", remoteAddr),
-		zap.String("query", r.URL.RawQuery),
+		zap.String("query", sanitizeQueryForLog(r.URL.RawQuery)),
 	)
 
 	ctx := &compatConnContext{
@@ -690,7 +690,7 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 
 	ctx.logger.Info("[connectArthas] Received browser connect request",
 		zap.String("requested_agent_id", agentID),
-		zap.String("full_query", ctx.request.URL.RawQuery),
+		zap.String("full_query", sanitizeQueryForLog(ctx.request.URL.RawQuery)),
 	)
 
 	if agentID == "" {
@@ -1017,7 +1017,7 @@ func (s *arthasURICompat) handleOpenTunnel(ctx *compatConnContext) {
 
 	ctx.logger.Info("[openTunnel] Received agent openTunnel request",
 		zap.String("client_connection_id", clientConnID),
-		zap.String("full_query", ctx.request.URL.RawQuery),
+		zap.String("full_query", sanitizeQueryForLog(ctx.request.URL.RawQuery)),
 	)
 
 	if clientConnID == "" {

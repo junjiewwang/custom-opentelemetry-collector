@@ -23,7 +23,6 @@ import (
 // the last waiter exits.
 const serviceStateIdleGrace = 2 * time.Minute
 
-
 // ConfigPollHandler implements LongPollHandler for configuration polling.
 // It integrates with OnDemandConfigManager for config reading and change watching.
 // It uses ServiceName as the DataID for configuration.
@@ -37,6 +36,12 @@ type ConfigPollHandler struct {
 	// metadataProviders is a list of providers for dynamic config injection
 	metadataProviders []ServerMetadataProvider
 	providersMu       sync.RWMutex
+
+	// opsRevisionProvider supplies the admin-managed ops config revision.
+	// It is included in the ETag (but never in the business Version), so a
+	// metadata-only change wakes pollers without re-applying business config.
+	opsRevisionProvider func() string
+	opsRevisionMu       sync.RWMutex
 
 	// State
 	running atomic.Bool
@@ -52,12 +57,13 @@ type serviceState struct {
 
 // ConfigWaiter represents a waiting config poll request.
 type ConfigWaiter struct {
-	agentID     string
-	appID       string
-	serviceName string
-	resultChan  chan *HandlerResult
-	ctx         context.Context
-	cancel      context.CancelFunc
+	agentID           string
+	appID             string
+	serviceName       string
+	lastConfigVersion string
+	resultChan        chan *HandlerResult
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 // NewConfigPollHandler creates a new ConfigPollHandler.
@@ -75,6 +81,86 @@ func (h *ConfigPollHandler) RegisterMetadataProvider(p ServerMetadataProvider) {
 	defer h.providersMu.Unlock()
 	h.metadataProviders = append(h.metadataProviders, p)
 	h.logger.Debug("Registered metadata provider", zap.String("name", p.Name()))
+}
+
+// SetOpsRevisionProvider registers the revision source for admin-managed
+// runtime config. The revision only participates in ETag computation.
+func (h *ConfigPollHandler) SetOpsRevisionProvider(fn func() string) {
+	h.opsRevisionMu.Lock()
+	h.opsRevisionProvider = fn
+	h.opsRevisionMu.Unlock()
+}
+
+// effectiveEtag appends the ops revision to a business config ETag.
+func (h *ConfigPollHandler) effectiveEtag(businessEtag string) string {
+	h.opsRevisionMu.RLock()
+	fn := h.opsRevisionProvider
+	h.opsRevisionMu.RUnlock()
+	if fn == nil {
+		return businessEtag
+	}
+	rev := fn()
+	if rev == "" {
+		return businessEtag
+	}
+	return businessEtag + "|" + rev
+}
+
+// NotifyOpsChanged delivers fresh metadata to every config waiter immediately
+// after an admin-managed runtime config change (global, not service-scoped).
+//
+// The response preserves the version the probe already reported, so the Java
+// agent's business config dedupe stays unchanged while its independent
+// server_metadata dedupe applies the new ops values right away. No skeleton
+// version downgrade occurs even when Nacos is unavailable.
+func (h *ConfigPollHandler) NotifyOpsChanged() {
+	h.services.Range(func(_, value interface{}) bool {
+		state := value.(*serviceState)
+		state.waiters.Range(func(_ string, w *ConfigWaiter) bool {
+			req := &PollRequest{
+				AgentID:     w.agentID,
+				AppID:       w.appID,
+				ServiceName: w.serviceName,
+			}
+			var cached *model.AgentConfig
+			if state.config != nil {
+				cached = state.config.Get()
+			}
+			var effectiveConfig *model.AgentConfig
+			if cached != nil {
+				cloned := *cached
+				effectiveConfig = &cloned
+			} else {
+				effectiveConfig = &model.AgentConfig{}
+			}
+			// Preserve the agent's current business version; an empty version
+			// means it has not reported one yet.
+			if w.lastConfigVersion != "" {
+				effectiveConfig.Version = w.lastConfigVersion
+			}
+			ctx := w.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			h.injectMetadata(ctx, req, effectiveConfig)
+			result := &HandlerResult{
+				HasChanges: true,
+				Response: NewConfigResponse(
+					true,
+					effectiveConfig,
+					effectiveConfig.Version,
+					h.effectiveEtag(effectiveConfig.Etag),
+					"ops config changed",
+				),
+			}
+			select {
+			case w.resultChan <- result:
+			default:
+			}
+			return true
+		})
+		return true
+	})
 }
 
 // injectMetadata injects dynamic metadata from all registered providers.
@@ -265,9 +351,11 @@ func (h *ConfigPollHandler) CheckImmediate(ctx context.Context, req *PollRequest
 	// 3. Always inject server metadata
 	h.injectMetadata(ctx, req, effectiveConfig)
 
-	// 4. Compare versions and ETags
+	// 4. Compare versions and ETags.
+	// The ops revision is appended to the ETag only; the business Version
+	// remains untouched so the Java agent does not re-apply sampling configs.
 	currentVersion := effectiveConfig.Version
-	currentEtag := effectiveConfig.Etag
+	currentEtag := h.effectiveEtag(effectiveConfig.Etag)
 
 	// Check version change
 	if req.CurrentConfigVersion != currentVersion {
@@ -310,12 +398,13 @@ func (h *ConfigPollHandler) Poll(ctx context.Context, req *PollRequest) (*Handle
 	state := h.getOrCreateServiceState(req.AppID, req.ServiceName)
 	waiterCtx, cancel := context.WithCancel(ctx)
 	waiter := &ConfigWaiter{
-		agentID:     req.AgentID,
-		appID:       req.AppID,
-		serviceName: req.ServiceName,
-		resultChan:  make(chan *HandlerResult, 1),
-		ctx:         waiterCtx,
-		cancel:      cancel,
+		agentID:           req.AgentID,
+		appID:             req.AppID,
+		serviceName:       req.ServiceName,
+		lastConfigVersion: req.CurrentConfigVersion,
+		resultChan:        make(chan *HandlerResult, 1),
+		ctx:               waiterCtx,
+		cancel:            cancel,
 	}
 
 	// Register waiter (WaiterMap is self-synchronized, no external lock needed)
@@ -402,7 +491,7 @@ func (h *ConfigPollHandler) notifyWaiter(waiter *ConfigWaiter, config *model.Age
 
 	result := &HandlerResult{
 		HasChanges: true,
-		Response:   NewConfigResponse(true, effectiveConfig, effectiveConfig.Version, effectiveConfig.Etag, "config change detected"),
+		Response:   NewConfigResponse(true, effectiveConfig, effectiveConfig.Version, h.effectiveEtag(effectiveConfig.Etag), "config change detected"),
 	}
 
 	select {

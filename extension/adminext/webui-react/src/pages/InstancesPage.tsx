@@ -24,7 +24,7 @@ const TerminalPanel = lazy(() => import('@/components/Terminal/TerminalPanel'));
 
 // ── 常量 ──────────────────────────────────────────────
 
-type StatusFilter = 'all' | 'online' | 'offline' | 'arthas_ready' | 'arthas_not_ready';
+type StatusFilter = 'all' | 'online' | 'offline' | 'arthas_ready' | 'arthas_not_ready' | 'local_override';
 type DetailTab = 'overview' | 'tasks';
 
 const STAT_ITEMS: { label: string; filter: StatusFilter; icon: string; activeColor: string; dotColor: string }[] = [
@@ -33,6 +33,7 @@ const STAT_ITEMS: { label: string; filter: StatusFilter; icon: string; activeCol
   { label: 'Offline', filter: 'offline',          icon: 'fas fa-circle',      activeColor: 'text-gray-600 bg-gray-100 ring-gray-300',    dotColor: 'bg-gray-300' },
   { label: 'Arthas',  filter: 'arthas_ready',     icon: 'fas fa-bug',         activeColor: 'text-purple-600 bg-purple-50 ring-purple-200', dotColor: 'bg-purple-500' },
   { label: 'N/A',     filter: 'arthas_not_ready', icon: 'fas fa-unlink',      activeColor: 'text-orange-600 bg-orange-50 ring-orange-200', dotColor: 'bg-orange-400' },
+  { label: 'Local -D', filter: 'local_override',   icon: 'fas fa-file-code',   activeColor: 'text-amber-700 bg-amber-50 ring-amber-200',  dotColor: 'bg-amber-500' },
 ];
 
 // ── 工具函数 ──────────────────────────────────────────
@@ -259,12 +260,14 @@ export default function InstancesPage() {
       all: instances.length,
       online: 0, offline: 0,
       arthas_ready: 0, arthas_not_ready: 0,
+      local_override: 0,
     };
     for (const inst of instances) {
       if (inst.status?.state === 'online') result.online++;
       else result.offline++;
       if (!!inst.arthas_tunnel_agent_id) result.arthas_ready++;
       else result.arthas_not_ready++;
+      if (inst.arthas_tunnel_source === 'local') result.local_override++;
     }
     return result;
   }, [instances]);
@@ -277,6 +280,7 @@ export default function InstancesPage() {
     else if (statusFilter === 'offline') list = list.filter(i => i.status?.state !== 'online');
     else if (statusFilter === 'arthas_ready') list = list.filter(i => i.arthas_tunnel_agent_id);
     else if (statusFilter === 'arthas_not_ready') list = list.filter(i => !i.arthas_tunnel_agent_id);
+    else if (statusFilter === 'local_override') list = list.filter(i => i.arthas_tunnel_source === 'local');
 
     const q = search.toLowerCase().trim();
     if (q) {
@@ -781,7 +785,23 @@ function OverviewTab({ instance, copyToClipboard }: { instance: Instance; copyTo
                 }`}>
                   {!!instance.arthas_tunnel_agent_id ? 'Tunnel Connected' : 'Tunnel Not Connected'}
                 </span>
+                {instance.arthas_tunnel_source && (
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                    instance.arthas_tunnel_source === 'local'
+                      ? 'bg-amber-100 text-amber-700'
+                      : instance.arthas_tunnel_source === 'ops'
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-gray-100 text-gray-600'
+                  }`}>
+                    {instance.arthas_tunnel_source === 'local' ? 'local -D' : instance.arthas_tunnel_source}
+                  </span>
+                )}
               </div>
+              {instance.ops_revision_applied && (
+                <div className="mt-1 text-[10px] text-gray-400">
+                  Ops revision: {instance.ops_revision_applied}
+                </div>
+              )}
             </div>
           </div>
         </div>

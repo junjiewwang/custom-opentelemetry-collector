@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
+	"go.opentelemetry.io/collector/custom/extension/opsconfig"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver/longpoll"
 	"go.opentelemetry.io/collector/custom/taskengine"
 )
@@ -29,7 +30,13 @@ func (r *agentGatewayReceiver) initLongPollManager(ctx context.Context) error {
 	// 1. Create long poll manager
 	r.longPollManager = longpoll.NewManager(r.logger, longpoll.DefaultManagerConfig())
 
-	// 2. Initialize and register handlers
+	// 2. Initialize the admin-managed runtime config store (Redis + pub/sub).
+	// Failure is non-fatal: agents fall back to their derived tunnel endpoint.
+	if err := r.initOpsConfig(ctx); err != nil {
+		r.logger.Warn("opsconfig store unavailable, runtime config will be skipped", zap.Error(err))
+	}
+
+	// 3. Initialize and register handlers
 	if err := r.initConfigPollHandler(); err != nil {
 		r.logger.Warn("Failed to initialize config poll handler", zap.Error(err))
 	}
@@ -63,11 +70,58 @@ func (r *agentGatewayReceiver) initConfigPollHandler() error {
 	}
 
 	configHandler := longpoll.NewConfigPollHandler(r.logger, cfgMgr)
+	r.configHandler = configHandler
 
 	// Register metadata providers
 	configHandler.RegisterMetadataProvider(&gatewayMetadataProvider{config: r.config})
+	if r.opsStore != nil {
+		configHandler.RegisterMetadataProvider(&opsMetadataProvider{store: r.opsStore})
+		configHandler.SetOpsRevisionProvider(r.opsStore.RevisionTag)
+		r.opsChanges = r.opsStore.SubscribeChanges()
+		r.shutdownWG.Add(1)
+		go r.bridgeOpsConfigChanges()
+	}
 
 	return r.longPollManager.RegisterHandler(configHandler)
+}
+
+// initOpsConfig creates the Redis-backed store shared by all collector replicas.
+func (r *agentGatewayReceiver) initOpsConfig(ctx context.Context) error {
+	storage := r.controlPlaneExt.GetStorage()
+	if storage == nil {
+		return errors.New("storage extension not available")
+	}
+	client, err := storage.GetRedis("default")
+	if err != nil || client == nil {
+		return errors.New("redis connection 'default' not available")
+	}
+	store, release, err := opsconfig.Shared().Acquire(client, r.logger.Named("opsconfig"))
+	if err != nil {
+		return err
+	}
+	r.opsStore = store
+	r.releaseOpsStore = release
+	return nil
+}
+
+// bridgeOpsConfigChanges wakes config waiters on this replica whenever any
+// replica publishes an ops config change.
+func (r *agentGatewayReceiver) bridgeOpsConfigChanges() {
+	defer r.shutdownWG.Done()
+	done := r.opsStore.Done()
+	for {
+		select {
+		case <-done:
+			return
+		case _, ok := <-r.opsChanges:
+			if !ok {
+				return
+			}
+			if r.configHandler != nil {
+				r.configHandler.NotifyOpsChanged()
+			}
+		}
+	}
 }
 
 // initTaskPollHandlerAuto initializes the engine-backed task poll handler.

@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/servicemanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/taskmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
+	"go.opentelemetry.io/collector/custom/extension/opsconfig"
 	"go.opentelemetry.io/collector/custom/extension/storageext/blobstore"
 )
 
@@ -42,6 +43,7 @@ type adminHandlers struct {
 	wsTokenMgr        WSTokenManager
 	retentionProvider appmanager.AppRetentionProvider
 	tenantMgr         *tenantmanager.MultiTenantManager
+	opsStore          *opsconfig.Store
 	logger            *zap.Logger
 }
 
@@ -61,6 +63,7 @@ func newAdminHandlers(e *Extension) *adminHandlers {
 		wsTokenMgr:        e.wsTokenMgr,
 		retentionProvider: e.retentionProvider,
 		tenantMgr:         e.tenantMgr,
+		opsStore:          e.opsStore,
 		logger:            e.logger,
 	}
 }

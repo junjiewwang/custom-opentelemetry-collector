@@ -18,6 +18,7 @@ import (
 
 	"go.opentelemetry.io/collector/custom/extension/arthastunnelext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
+	"go.opentelemetry.io/collector/custom/extension/opsconfig"
 	"go.opentelemetry.io/collector/custom/receiver/agentgatewayreceiver/longpoll"
 )
 
@@ -41,6 +42,10 @@ type agentGatewayReceiver struct {
 
 	// Long poll manager
 	longPollManager *longpoll.Manager
+	configHandler   *longpoll.ConfigPollHandler
+	opsStore        *opsconfig.Store
+	releaseOpsStore func()
+	opsChanges      <-chan struct{}
 
 	// Consumers for OTLP data
 	tracesConsumer  consumer.Traces
@@ -217,6 +222,13 @@ func (r *agentGatewayReceiver) shutdown(ctx context.Context) error {
 		if stopErr := r.longPollManager.Stop(); stopErr != nil {
 			r.logger.Warn("Error stopping long poll manager", zap.Error(stopErr))
 		}
+	}
+
+	// Release the shared ops config store before waiting for goroutines.
+	// The bridge goroutine observes Store.Done() when the last owner releases.
+	if r.releaseOpsStore != nil {
+		r.releaseOpsStore()
+		r.releaseOpsStore = nil
 	}
 
 	// Shutdown HTTP server

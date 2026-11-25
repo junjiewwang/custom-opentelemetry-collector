@@ -42,6 +42,7 @@ const MENU_GROUPS: { label: string; items: MenuItem[] }[] = [
       { id: 'logs', label: 'Logs', icon: 'fas fa-file-alt', path: '/logs' },
       { id: 'instrumentation', label: 'Instrumentation', icon: 'fas fa-wave-square', path: '/instrumentation', adminOnly: true },
       { id: 'storage', label: 'Storage', icon: 'fas fa-database', path: '/storage', adminOnly: true },
+      { id: 'ops-config', label: 'Ops Config', icon: 'fas fa-sliders-h', path: '/ops-config', adminOnly: true },
     ],
   },
 ];
