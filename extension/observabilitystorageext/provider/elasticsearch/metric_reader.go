@@ -14,6 +14,7 @@ import (
 
 	esq "go.opentelemetry.io/collector/custom/extension/observabilitystorageext/provider/elasticsearch/query"
 	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/storedmodel"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 	"go.uber.org/zap"
 )
 
@@ -62,8 +63,9 @@ func (r *MetricReader) Query(ctx context.Context, query MetricQuery) (*MetricRes
 	// worst-case scan when many series exist.
 	const instantScanSize = 500
 	searchReq := &SearchRequest{
-		Query: esQuery,
-		Size:  instantScanSize,
+		Query:    esQuery,
+		TenantID: query.TenantID,
+		Size:     instantScanSize,
 		Sort: []map[string]any{
 			{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}},
 		},
@@ -189,6 +191,7 @@ func (r *MetricReader) QueryRange(ctx context.Context, query MetricRangeQuery) (
 
 	searchReq := &SearchRequest{
 		Query:        esQuery,
+		TenantID:     query.TenantID,
 		Size:         0,
 		Aggregations: aggs,
 	}
@@ -247,8 +250,8 @@ func (r *MetricReader) queryRangeMixed(ctx context.Context, query MetricRangeQue
 	oldPattern := esq.IndexPatternForRange(r.config.Metrics.IndexPrefix+"-rollup-5m", query.AppID, query.TimeRange.Start, splitPoint)
 	recentPattern := esq.IndexPatternForRange(r.config.Metrics.IndexPrefix, query.AppID, splitPoint, query.TimeRange.End)
 
-	oldReq := &SearchRequest{Query: oldFilter.Query, Size: 0, Aggregations: aggs}
-	recentReq := &SearchRequest{Query: recentFilter.Query, Size: 0, Aggregations: aggs}
+	oldReq := &SearchRequest{Query: oldFilter.Query, TenantID: query.TenantID, Size: 0, Aggregations: aggs}
+	recentReq := &SearchRequest{Query: recentFilter.Query, TenantID: query.TenantID, Size: 0, Aggregations: aggs}
 
 	// Execute both searches concurrently; a failure on either is fatal.
 	type searchResult struct {
@@ -314,15 +317,21 @@ func (r *MetricReader) queryRangeMixed(ctx context.Context, query MetricRangeQue
 // the meta index does not exist (fresh deployment, or the write path has not
 // yet populated it), falls back to the terms aggregation.
 func (r *MetricReader) ListMetricNames(ctx context.Context, timeRange TimeRange) ([]string, error) {
-	if names, ok, err := r.listMetricNamesFromMeta(ctx); ok {
-		return names, err
-	} else if err != nil {
-		r.logger.Warn("meta metric names lookup failed, falling back to aggregation", zap.Error(err))
+	// The singleton meta index carries no tenant dimension, so a tenant-scoped
+	// caller must use the data-index aggregation path which supports filtering.
+	tenantID := tenantctx.TenantIDFromContext(ctx)
+	if tenantID == "" {
+		if names, ok, err := r.listMetricNamesFromMeta(ctx); ok {
+			return names, err
+		} else if err != nil {
+			r.logger.Warn("meta metric names lookup failed, falling back to aggregation", zap.Error(err))
+		}
 	}
 
 	searchReq := &SearchRequest{
-		Query: r.timeRangeQuery(timeRange),
-		Size:  0,
+		Query:    r.timeRangeQuery(timeRange),
+		TenantID: tenantID,
+		Size:     0,
 		Aggregations: map[string]any{
 			"metric_names": map[string]any{
 				"terms": map[string]any{
@@ -666,9 +675,10 @@ func (r *MetricReader) ListLabelValuesForMetric(ctx context.Context, label, metr
 	}
 
 	searchReq := &SearchRequest{
-		Query:  esQuery,
-		Size:   labelSampleSize,
-		Source: []string{FieldMetricLabels, FieldServiceName},
+		Query:    esQuery,
+		TenantID: tenantctx.TenantIDFromContext(ctx),
+		Size:     labelSampleSize,
+		Source:   []string{FieldMetricLabels, FieldServiceName},
 		Sort: []map[string]any{
 			{FieldMetricTimeUnixMilli: map[string]any{"order": "desc"}},
 		},
@@ -1185,14 +1195,14 @@ func (r *MetricReader) hitToDataPoint(hit SearchHit) MetricDataPoint {
 // Used by QueryFlat to return samples with their original labels for Go-side grouping.
 func (r *MetricReader) hitToSample(hit SearchHit) MetricSample {
 	var doc struct {
-		TimeUnixMilli  int64        `json:"timeUnixMilli"`
-		Value          float64      `json:"value"`
-		ServiceName    string       `json:"serviceName"`
-		Labels         metricLabels `json:"labels"`
-		BucketCounts   []int64      `json:"bucket_counts"`
-		ExplicitBounds []float64    `json:"explicit_bounds"`
-		AggregationTemporality string `json:"aggregation_temporality"`
-		Count          int64        `json:"count"`
+		TimeUnixMilli          int64        `json:"timeUnixMilli"`
+		Value                  float64      `json:"value"`
+		ServiceName            string       `json:"serviceName"`
+		Labels                 metricLabels `json:"labels"`
+		BucketCounts           []int64      `json:"bucket_counts"`
+		ExplicitBounds         []float64    `json:"explicit_bounds"`
+		AggregationTemporality string       `json:"aggregation_temporality"`
+		Count                  int64        `json:"count"`
 	}
 	if err := json.Unmarshal(hit.Source, &doc); err != nil {
 		r.logger.Warn("Failed to unmarshal metric hit", zap.String("id", hit.ID), zap.Error(err))

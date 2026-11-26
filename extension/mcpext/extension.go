@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/instrumentationmanager"
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/tenantmanager"
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext"
 	"go.opentelemetry.io/collector/custom/extension/tenantauth"
 )
 
@@ -46,6 +47,12 @@ type Extension struct {
 	arthasTunnel    arthastunnelext.ArthasTunnel
 	instrMgr        instrumentationmanager.InstrumentationManager
 	tenantValidator tenantauth.Validator
+	tenantManager   tenantmanager.TenantManager
+
+	// Read-only observability readers, owned by the shared storage extension.
+	metricReader observabilitystorageext.MetricReader
+	traceReader  observabilitystorageext.TraceReader
+	logReader    observabilitystorageext.LogReader
 
 	// MCP server
 	mcpServer *mcpServerWrapper
@@ -81,7 +88,25 @@ func (e *Extension) Dependencies() []component.ID {
 	if e.config.Instrumentation.Enabled && e.config.Instrumentation.Extension != "" {
 		deps = append(deps, component.MustNewID(e.config.Instrumentation.Extension))
 	}
+	if e.config.Observability.Enabled {
+		deps = append(deps, component.MustNewID(e.config.Observability.Extension))
+		// adminext bridges the tenant→VictoriaMetrics account resolver into the
+		// shared storage; it must start before MCP queries can be issued.
+		adminID := component.MustNewID(defaultInstrumentationExtension)
+		if !containsComponentID(deps, adminID) {
+			deps = append(deps, adminID)
+		}
+	}
 	return deps
+}
+
+func containsComponentID(ids []component.ID, target component.ID) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
 }
 
 // Start starts the MCP extension.
@@ -176,14 +201,16 @@ func (e *Extension) discoverDependencies(host component.Host) error {
 	e.arthasTunnel = atExt
 	e.logger.Info("Discovered ArthasTunnel extension", zap.String("id", atID.String()))
 
-	// Resolve the shared tenant key validator. The control plane owns the single
-	// MultiTenantManager, so admin and MCP validate exactly the same keys.
-	if e.config.Auth.DynamicKeys && e.config.Auth.Type == "api_key" {
-		provider, ok := e.controlPlane.(tenantManagerProvider)
-		if !ok {
-			return fmt.Errorf("dynamic_keys requires the controlplane extension to expose a tenant manager")
+	// Resolve the shared tenant manager once. It provides both the dynamic
+	// key validator and the per-tenant observability query settings.
+	var tenantMgr *tenantmanager.MultiTenantManager
+	if provider, ok := e.controlPlane.(tenantManagerProvider); ok {
+		tenantMgr = provider.GetMultiTenantManager()
+		if tenantMgr != nil && tenantMgr.Tenants != nil {
+			e.tenantManager = tenantMgr.Tenants
 		}
-		tenantMgr := provider.GetMultiTenantManager()
+	}
+	if e.config.Auth.DynamicKeys && e.config.Auth.Type == "api_key" {
 		if tenantMgr == nil || tenantMgr.Keys == nil {
 			return fmt.Errorf("dynamic_keys requires a started tenant manager")
 		}
@@ -203,6 +230,13 @@ func (e *Extension) discoverDependencies(host component.Host) error {
 		e.logger.Info("Discovered tenant API key validator")
 	}
 
+	// Discover the shared observability readers (optional capability).
+	if e.config.Observability.Enabled {
+		if err := e.discoverObservabilityReaders(host); err != nil {
+			return err
+		}
+	}
+
 	// Discover the shared instrumentation manager (optional capability).
 	if !e.config.Instrumentation.Enabled {
 		return nil
@@ -219,6 +253,39 @@ func (e *Extension) discoverDependencies(host component.Host) error {
 	e.instrMgr = mgr
 	e.logger.Info("Discovered InstrumentationManager", zap.String("id", imID.String()))
 
+	return nil
+}
+
+// discoverObservabilityReaders resolves the single shared storage extension
+// and keeps its read-only readers. The extension type is matched rather than a
+// full component ID, matching the approach used by adminext.
+func (e *Extension) discoverObservabilityReaders(host component.Host) error {
+	cfg := e.config.Observability
+	storageType := component.MustNewType(cfg.Extension)
+
+	var storage *observabilitystorageext.ObservabilityStorage
+	for id, ext := range host.GetExtensions() {
+		if id.Type() != storageType {
+			continue
+		}
+		if typed, ok := ext.(*observabilitystorageext.ObservabilityStorage); ok {
+			storage = typed
+			break
+		}
+	}
+	if storage == nil {
+		return fmt.Errorf("observability storage extension '%s' not found or has an unexpected type", cfg.Extension)
+	}
+
+	e.metricReader = storage.GetMetricReader()
+	e.traceReader = storage.GetTraceReader()
+	e.logReader = storage.GetLogReader()
+	e.logger.Info("Discovered observability readers",
+		zap.String("extension", cfg.Extension),
+		zap.Bool("metric", e.metricReader != nil),
+		zap.Bool("trace", e.traceReader != nil),
+		zap.Bool("log", e.logReader != nil),
+	)
 	return nil
 }
 

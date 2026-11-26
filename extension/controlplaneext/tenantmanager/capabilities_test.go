@@ -46,6 +46,88 @@ func TestUpdateTenantClearDynamicInstrumentation(t *testing.T) {
 	assert.Nil(t, stored.Capabilities)
 }
 
+func intPtr(v int) *int          { return &v }
+func stringPtr(v string) *string { return &v }
+
+func TestUpdateTenantObservabilityQueryReplaceAndClear(t *testing.T) {
+	ctx := context.Background()
+	svc := NewTenantService(NewMemoryTenantRepository(), NewIDGenerator(), fakeAppLister{}, nil)
+	created, err := svc.CreateTenant(ctx, &CreateTenantRequest{Name: "acme"})
+	require.NoError(t, err)
+
+	full := &TenantObservabilityQueryConfig{
+		QueryTimeout:    intPtr(45),
+		MaxTimeRange:    stringPtr("48h"),
+		MetricSeries:    intPtr(200),
+		Traces:          intPtr(80),
+		Logs:            intPtr(300),
+		LogContextLines: intPtr(120),
+	}
+	updated, err := svc.UpdateTenant(ctx, created.ID, &UpdateTenantRequest{ObservabilityQuery: full})
+	require.NoError(t, err)
+	require.NotNil(t, updated.Capabilities)
+	require.NotNil(t, updated.Capabilities.ObservabilityQuery)
+	assert.Equal(t, 45, *updated.Capabilities.ObservabilityQuery.QueryTimeout)
+	assert.Equal(t, "48h", *updated.Capabilities.ObservabilityQuery.MaxTimeRange)
+	assert.Equal(t, 200, *updated.Capabilities.ObservabilityQuery.MetricSeries)
+
+	// Whole-object replacement: omitted fields are cleared back to inherit.
+	partial, err := svc.UpdateTenant(ctx, created.ID, &UpdateTenantRequest{
+		ObservabilityQuery: &TenantObservabilityQueryConfig{Traces: intPtr(5)},
+	})
+	require.NoError(t, err)
+	cfg := partial.Capabilities.ObservabilityQuery
+	assert.Equal(t, 5, *cfg.Traces)
+	assert.Nil(t, cfg.QueryTimeout)
+	assert.Nil(t, cfg.MaxTimeRange)
+	assert.Nil(t, cfg.MetricSeries)
+	assert.Nil(t, cfg.Logs)
+	assert.Nil(t, cfg.LogContextLines)
+
+	cleared, err := svc.UpdateTenant(ctx, created.ID, &UpdateTenantRequest{ClearObservabilityQuery: true})
+	require.NoError(t, err)
+	if cleared.Capabilities != nil {
+		assert.Nil(t, cleared.Capabilities.ObservabilityQuery)
+	}
+
+	// Clear also wins when both fields are supplied.
+	_, err = svc.UpdateTenant(ctx, created.ID, &UpdateTenantRequest{
+		ClearObservabilityQuery: true,
+		ObservabilityQuery:      &TenantObservabilityQueryConfig{Traces: intPtr(9)},
+	})
+	require.NoError(t, err)
+	stored, err := svc.GetTenant(ctx, created.ID)
+	require.NoError(t, err)
+	if stored.Capabilities != nil {
+		assert.Nil(t, stored.Capabilities.ObservabilityQuery)
+	}
+}
+
+func TestObservabilityQueryConfigValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *TenantObservabilityQueryConfig
+		bad  bool
+	}{
+		{"nil", nil, false},
+		{"valid", &TenantObservabilityQueryConfig{QueryTimeout: intPtr(30), MaxTimeRange: stringPtr("72h")}, false},
+		{"zero timeout", &TenantObservabilityQueryConfig{QueryTimeout: intPtr(0)}, true},
+		{"negative logs", &TenantObservabilityQueryConfig{Logs: intPtr(-1)}, true},
+		{"bad duration", &TenantObservabilityQueryConfig{MaxTimeRange: stringPtr("tomorrow")}, true},
+		{"zero duration", &TenantObservabilityQueryConfig{MaxTimeRange: stringPtr("0s")}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateObservabilityQueryConfig(tc.cfg)
+			if tc.bad {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestTenantCapabilitiesLegacyJSON(t *testing.T) {
 	var tenant Tenant
 	require.NoError(t, json.Unmarshal(

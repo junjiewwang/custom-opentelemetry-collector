@@ -275,7 +275,8 @@ func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) 
 		Query: map[string]any{
 			"ids": map[string]any{"values": []string{logID}},
 		},
-		Size: 1,
+		TenantID: tenantctx.TenantIDFromContext(ctx),
+		Size:     1,
 	}
 
 	targetResp, err := r.searcher.Search(ctx, r.indexPattern(), targetReq)
@@ -304,7 +305,8 @@ func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) 
 				},
 			},
 		},
-		Size: lines,
+		Size:     lines,
+		TenantID: tenantctx.TenantIDFromContext(ctx),
 		Sort: []map[string]any{
 			{FieldLogTimeUnixNano: map[string]any{"order": "desc"}},
 		},
@@ -332,7 +334,8 @@ func (r *LogReader) GetLogContext(ctx context.Context, logID string, lines int) 
 				},
 			},
 		},
-		Size: lines,
+		Size:     lines,
+		TenantID: tenantctx.TenantIDFromContext(ctx),
 		Sort: []map[string]any{
 			{FieldLogTimeUnixNano: map[string]any{"order": "asc"}},
 		},

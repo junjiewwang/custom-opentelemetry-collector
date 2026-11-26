@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
 )
 
 // ErrESIndexNotFound indicates the target index does not exist (ES returns 404
@@ -73,9 +75,21 @@ func withTenantFilter(query map[string]any, tenantID string) map[string]any {
 	return map[string]any{"bool": map[string]any{"filter": []any{query, term}}}
 }
 
-func (c *Client) Search(ctx context.Context, indexPattern string, req *SearchRequest) (*SearchResponse, error) {
+// searchTenantID resolves the tenant filter for any ES query. Tenant isolation
+// is an abstraction-layer concern: callers pass a public query model and do not
+// need to know which backend is configured. An explicit SearchRequest.TenantID
+// wins; otherwise fall back to the authenticated tenant in ctx (reader methods
+// whose local query types lack a TenantID field). A background ctx stays global.
+func searchTenantID(ctx context.Context, req *SearchRequest) string {
 	if req.TenantID != "" {
-		req.Query = withTenantFilter(req.Query, req.TenantID)
+		return req.TenantID
+	}
+	return tenantctx.TenantIDFromContext(ctx)
+}
+
+func (c *Client) Search(ctx context.Context, indexPattern string, req *SearchRequest) (*SearchResponse, error) {
+	if tenantID := searchTenantID(ctx, req); tenantID != "" {
+		req.Query = withTenantFilter(req.Query, tenantID)
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

@@ -6,6 +6,7 @@ package mcpext
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 const (
@@ -13,6 +14,15 @@ const (
 	defaultInstrumentationExtension = "admin"
 	// defaultInstrumentationMaxTargets caps how many service instances a rule may target.
 	defaultInstrumentationMaxTargets = 100
+
+	// defaultObservabilityExtension owns the shared metric/trace/log readers.
+	defaultObservabilityExtension       = "observability_storage"
+	defaultObservabilityQueryTimeout    = 20
+	defaultObservabilityMaxTimeRange    = "24h"
+	defaultObservabilityMetricSeries    = 50
+	defaultObservabilityTraces          = 20
+	defaultObservabilityLogs            = 100
+	defaultObservabilityLogContextLines = 50
 )
 
 // defaultDeniedClassPrefixes protects JDK internals and the collector's own
@@ -56,6 +66,63 @@ type Config struct {
 	// Disabled by default; enabling it adds a dependency on the extension that
 	// owns the shared InstrumentationManager.
 	Instrumentation InstrumentationConfig `mapstructure:"instrumentation"`
+
+	// Observability configures the optional read-only metric/trace/log query
+	// tools. Disabled by default; each signal has its own switch.
+	Observability ObservabilityConfig `mapstructure:"observability"`
+}
+
+// ObservabilityConfig configures read-only observability query tools backed by
+// the shared storage extension's readers. No external datasource clients or
+// credentials are introduced.
+type ObservabilityConfig struct {
+	// Enabled registers the query tools for the signals enabled below.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Extension is the name of the observability_storage extension.
+	Extension string `mapstructure:"extension"`
+
+	// Signals selects which read-only tool groups are registered.
+	Signals ObservabilitySignals `mapstructure:"signals"`
+
+	// QueryTimeout is the per-query timeout in seconds; must not exceed ToolTimeout.
+	QueryTimeout int `mapstructure:"query_timeout"`
+
+	// MaxTimeRange is a Go duration string bounding any requested time window.
+	MaxTimeRange string `mapstructure:"max_time_range"`
+
+	// Limits cap result sizes before they reach the model's context window.
+	Limits ObservabilityLimits `mapstructure:"limits"`
+}
+
+// ObservabilitySignals enables individual read-only tool groups.
+type ObservabilitySignals struct {
+	Metric bool `mapstructure:"metric"`
+	Trace  bool `mapstructure:"trace"`
+	Log    bool `mapstructure:"log"`
+}
+
+// ObservabilityLimits caps the amount of data returned by each tool group.
+type ObservabilityLimits struct {
+	MetricSeries    int `mapstructure:"metric_series"`
+	Traces          int `mapstructure:"traces"`
+	Logs            int `mapstructure:"logs"`
+	LogContextLines int `mapstructure:"log_context_lines"`
+}
+
+func (c ObservabilityConfig) queryTimeout() time.Duration {
+	if c.QueryTimeout <= 0 {
+		return time.Duration(defaultObservabilityQueryTimeout) * time.Second
+	}
+	return time.Duration(c.QueryTimeout) * time.Second
+}
+
+func (c ObservabilityConfig) maxTimeRange() time.Duration {
+	d, err := time.ParseDuration(c.MaxTimeRange)
+	if err != nil || d <= 0 {
+		d, _ = time.ParseDuration(defaultObservabilityMaxTimeRange)
+	}
+	return d
 }
 
 // InstrumentationConfig configures the dynamic instrumentation MCP tools.
@@ -128,6 +195,19 @@ func createDefaultConfig() *Config {
 			DeniedClassPrefixes:  append([]string(nil), defaultDeniedClassPrefixes...),
 			AllowedClassPrefixes: nil,
 		},
+		Observability: ObservabilityConfig{
+			Enabled:      false,
+			Extension:    defaultObservabilityExtension,
+			Signals:      ObservabilitySignals{},
+			QueryTimeout: defaultObservabilityQueryTimeout,
+			MaxTimeRange: defaultObservabilityMaxTimeRange,
+			Limits: ObservabilityLimits{
+				MetricSeries:    defaultObservabilityMetricSeries,
+				Traces:          defaultObservabilityTraces,
+				Logs:            defaultObservabilityLogs,
+				LogContextLines: defaultObservabilityLogContextLines,
+			},
+		},
 	}
 }
 
@@ -161,6 +241,9 @@ func (c *Config) Validate() error {
 	if err := c.Instrumentation.validate(); err != nil {
 		return fmt.Errorf("instrumentation: %w", err)
 	}
+	if err := c.Observability.validate(c.ToolTimeout); err != nil {
+		return fmt.Errorf("observability: %w", err)
+	}
 
 	return nil
 }
@@ -174,6 +257,32 @@ func (c *InstrumentationConfig) validate() error {
 	}
 	if c.MaxTargets <= 0 {
 		return errors.New("max_targets must be positive")
+	}
+	return nil
+}
+
+func (c *ObservabilityConfig) validate(toolTimeout int) error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Extension == "" {
+		return errors.New("extension must not be empty when enabled")
+	}
+	if !c.Signals.Metric && !c.Signals.Trace && !c.Signals.Log {
+		return errors.New("at least one signal must be enabled")
+	}
+	if c.QueryTimeout <= 0 {
+		return errors.New("query_timeout must be positive")
+	}
+	if c.QueryTimeout > toolTimeout {
+		return errors.New("query_timeout must not exceed tool_timeout")
+	}
+	d, err := time.ParseDuration(c.MaxTimeRange)
+	if err != nil || d <= 0 {
+		return fmt.Errorf("max_time_range must be a positive Go duration: %q", c.MaxTimeRange)
+	}
+	if c.Limits.MetricSeries <= 0 || c.Limits.Traces <= 0 || c.Limits.Logs <= 0 || c.Limits.LogContextLines <= 0 {
+		return errors.New("all observability limits must be positive")
 	}
 	return nil
 }

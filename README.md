@@ -405,6 +405,8 @@ sequenceDiagram
 > `arthas_status` 中的 `tunnel_not_registered` 只表示没有交互式 Web Terminal 会话。
 > 默认支持所有 Arthas 命令，`ognl` / `vmtool` 等高能力命令由 MCP api_key 作为边界。
 
+**可观测性查询工具（可选，只读）**：`mcp.observability.enabled=true` 并按 `signals.metric/trace/log` 分别开启时，额外注册 `metric_query` / `metric_query_range` / `metric_list_names` / `metric_label_values`、`trace_search` / `trace_get` / `trace_services`、`log_search` / `log_context`。这组工具复用 `observability_storage` 的共享 Reader（metric → VictoriaMetrics，trace/log → Elasticsearch），不是直连外部 Prometheus / Tempo / Loki 服务；只接受结构化参数，不接受裸 PromQL / LogQL / TraceQL；租户由服务端依认证身份强制绑定，`tk_` key 还需 `metric:read` / `trace:read` / `log:read` scope。代码默认关闭，需在配置中显式启用。6 个查询限额（`query_timeout` / `max_time_range` / `metric_series` / `traces` / `logs` / `log_context_lines`）是部署级默认值，可在运营端「租户」页面按租户覆盖（支持放大或收紧、逐字段继承、整体清除）；限额按调用者租户生效，全局 key 使用部署默认。
+
 **动态插桩工具（可选）**：`mcp.instrumentation.enabled=true` 时额外注册 `instrument_rule_list` / `instrument_rule_get` / `instrument_rule_snapshot`；`allow_write=true` 时再注册 `instrument_rule_create` / `instrument_rule_pause` / `instrument_rule_resume` / `instrument_rule_delete`。这组工具复用 `adminext` 持有的唯一 `InstrumentationManager`，与 WebUI 工作台共用同一份规则数据；作用域固定为 service 下的实例，目标数由 `max_targets`（默认 100）限制，默认禁止 JDK 类插桩与参数/返回值采集，并只允许管理 MCP 自己创建的规则。
 
 ---

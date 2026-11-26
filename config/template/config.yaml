@@ -753,6 +753,33 @@ extensions:
       # denied_class_prefixes: ["java.", "javax.", "jdk.", "sun.", "com.sun.", "io.opentelemetry."]
       # allowed_class_prefixes: ["com.example."]
 
+    # Read-only observability query tools. Backed by the shared
+    # observability_storage readers (metric -> VictoriaMetrics, trace/log -> ES),
+    # NOT by external Prometheus / Tempo / Loki servers. Code defaults are off;
+    # this deployment enables all three explicitly. A disabled signal group is
+    # not registered in tools/list at all. tk_ keys additionally need the
+    # metric:read / trace:read / log:read scopes (grant them on the Tenants page).
+    # Tenant isolation is handled by the storage abstraction layer (public
+    # query models carry TenantID; the ES client also applies a ctx fallback).
+    # MCP tools are backend-agnostic: switching hybrid.metric does not require
+    # any MCP-side configuration change. The six values below are deployment
+    # defaults; the Tenants page can override them per caller tenant (including
+    # enlarging them) or clear the override back to "inherit".
+    observability:
+      enabled: true
+      extension: observability_storage
+      signals:
+        metric: true
+        trace: true
+        log: true
+      query_timeout: 20
+      max_time_range: 24h
+      limits:
+        metric_series: 50
+        traces: 20
+        logs: 100
+        log_context_lines: 50
+
   # Memory limiter extension
   memory_limiter:
     check_interval: 1s

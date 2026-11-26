@@ -86,6 +86,20 @@
 | 「禁止跨租户操作 Agent」 | 越权访问 Agent | 换本租户 Agent |
 | 快照 `is_effective=false` | 类不可重定义或任务失败 | 换普通业务类，查看诊断信息 |
 
+### 可观测性查询工具（可选，只读）
+
+仅在 `mcp.observability.enabled=true` 且对应 `signals.metric/trace/log` 开启时注册。底层是共享 `observability_storage` Reader（metric → VictoriaMetrics，trace/log → Elasticsearch），不是外部 Prometheus / Tempo / Loki 服务；只接受结构化参数，不接受裸查询表达式。租户由服务端依认证身份决定，工具参数里没有 `tenant_id`；`tk_` key 需要对应只读 scope。
+
+- **metric**（`metric:read`）：`metric_query`（metric / service / labels / time）、`metric_query_range`（+start / end / step / aggregation / group_by / series_limit）、`metric_list_names`、`metric_label_values`。
+- **trace**（`trace:read`）：`trace_search`（service / operation / tags / min_duration / max_duration / status / 时间窗 / limit，返回含 `trace_id` 的摘要）、`trace_get`（trace_id）、`trace_services`。
+- **log**（`log:read`）：`log_search`（query 关键字 / service / severity / trace_id / 时间窗 / limit）、`log_context`（log_id / lines）。
+
+结果统一为精简 JSON 信封，含 `signal`、`tool`、`count`、`total`、`truncated`、`items`；`truncated=true` 时表示受配置上限截断，不要当作「无数据」。时间窗受 `max_time_range` 约束，时间参数用 RFC3339。
+
+限额（`query_timeout` / `max_time_range` / `metric_series` / `traces` / `logs` / `log_context_lines`）默认取部署配置，运营端可按租户覆盖；判定主体是**调用者租户**，全局 key 使用部署默认。若查询结果被截断或时间窗被拒，不要反复放大请求参数，应请管理员在租户页面调整配置。
+
+前置条件：查询工具与动态插桩工具是两套能力，前者只读、后者可写；诊断时通常先 `log_search` / `trace_search` 定位线索，再决定是否用 Arthas 或动态插桩深入。
+
 ### 关键使用规则
 
 - **先发现后诊断**：优先 `list_agents` → `agent_info` → `arthas_status`

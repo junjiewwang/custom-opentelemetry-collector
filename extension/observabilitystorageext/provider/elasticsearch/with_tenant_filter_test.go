@@ -3,7 +3,12 @@
 
 package elasticsearch
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"go.opentelemetry.io/collector/custom/extension/observabilitystorageext/tenantctx"
+)
 
 // TestWithTenantFilter is the security-critical test for ES tenant isolation:
 // a tenantId term filter must be ANDed onto every query so a tenant never sees
@@ -34,5 +39,31 @@ func TestWithTenantFilter(t *testing.T) {
 	filters = boolQ["filter"].([]any)
 	if len(filters) != 1 {
 		t.Fatalf("expected 1 filter for empty query, got %#v", filters)
+	}
+}
+
+// TestSearchTenantID verifies the abstraction-layer fallback: reader methods
+// whose local query types have no TenantID field still get isolated from ctx,
+// while an explicit SearchRequest.TenantID always wins.
+func TestSearchTenantID(t *testing.T) {
+	tenantCtx := tenantctx.WithTenantID(context.Background(), "tn-ctx")
+
+	cases := []struct {
+		name string
+		ctx  context.Context
+		req  *SearchRequest
+		want string
+	}{
+		{"explicit wins over ctx", tenantCtx, &SearchRequest{TenantID: "tn-explicit"}, "tn-explicit"},
+		{"ctx fallback", tenantCtx, &SearchRequest{}, "tn-ctx"},
+		{"background stays global", context.Background(), &SearchRequest{}, ""},
+		{"background with explicit", context.Background(), &SearchRequest{TenantID: "tn-explicit"}, "tn-explicit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := searchTenantID(tc.ctx, tc.req); got != tc.want {
+				t.Fatalf("searchTenantID=%q, want %q", got, tc.want)
+			}
+		})
 	}
 }

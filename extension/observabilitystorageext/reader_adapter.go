@@ -34,6 +34,11 @@ func (a *traceReaderAdapter) GetTrace(ctx context.Context, traceID string) (*Tra
 	if err != nil {
 		return nil, err
 	}
+	// Tenant filtering can legitimately return no spans; treat it as a miss
+	// instead of letting buildTraceFromStoredSpans index an empty slice.
+	if len(spans) == 0 {
+		return nil, fmt.Errorf("trace %s not found", traceID)
+	}
 	return buildTraceFromStoredSpans(spans), nil
 }
 
@@ -103,6 +108,9 @@ func (a *traceReaderAdapter) SearchTraces(ctx context.Context, query TraceQuery)
 
 // buildTraceFromStoredSpans builds a public Trace from StoredSpan slice.
 func buildTraceFromStoredSpans(spans []StoredSpan) *Trace {
+	if len(spans) == 0 {
+		return &Trace{}
+	}
 	publicSpans := make([]Span, len(spans))
 	for i, ss := range spans {
 		publicSpans[i] = StoredSpanToPublic(ss)
@@ -416,6 +424,7 @@ var _ MetricReader = (*metricReaderAdapter)(nil)
 func (a *metricReaderAdapter) Query(ctx context.Context, query MetricQuery) (*MetricResult, error) {
 	esQuery := elasticsearch.MetricQuery{
 		AppID:         query.AppID,
+		TenantID:      query.TenantID,
 		MetricName:    query.MetricName,
 		Labels:        query.Labels,
 		LabelMatch:    query.LabelMatch,
@@ -434,6 +443,7 @@ func (a *metricReaderAdapter) Query(ctx context.Context, query MetricQuery) (*Me
 func (a *metricReaderAdapter) QueryRange(ctx context.Context, query MetricRangeQuery) (*MetricRangeResult, error) {
 	esQuery := elasticsearch.MetricRangeQuery{
 		AppID:         query.AppID,
+		TenantID:      query.TenantID,
 		MetricName:    query.MetricName,
 		Labels:        query.Labels,
 		LabelMatch:    query.LabelMatch,

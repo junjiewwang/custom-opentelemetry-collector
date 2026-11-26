@@ -20,11 +20,32 @@ import (
 // (static super / ok_) are unrestricted.
 const instrumentationWriteScope = "instrumentation:write"
 
+const (
+	metricReadScope = "metric:read"
+	traceReadScope  = "trace:read"
+	logReadScope    = "log:read"
+)
+
 var instrumentationWriteTools = map[string]struct{}{
 	"instrument_rule_create": {},
 	"instrument_rule_pause":  {},
 	"instrument_rule_resume": {},
 	"instrument_rule_delete": {},
+}
+
+// observabilityQueryTools maps each read-only query tool to the scope required
+// for tenant (tk_) identities. Registration is conditional, but the gate is
+// also enforced at call time so a hand-crafted request cannot bypass it.
+var observabilityQueryTools = map[string]string{
+	"metric_query":        metricReadScope,
+	"metric_query_range":  metricReadScope,
+	"metric_list_names":   metricReadScope,
+	"metric_label_values": metricReadScope,
+	"trace_search":        traceReadScope,
+	"trace_get":           traceReadScope,
+	"trace_services":      traceReadScope,
+	"log_search":          logReadScope,
+	"log_context":         logReadScope,
 }
 
 func requiresInstrumentationWriteScope(toolName string) bool {
@@ -42,14 +63,20 @@ func identityHasScope(scopes []string, want string) bool {
 }
 
 // authorizeToolCall is the single tenant-isolation gate for every MCP tool.
-// Global identities (static super / ok_) are unrestricted. Tenant (tk_) keys
-// may only act on agents that resolve to their own tenant and need an explicit
-// scope for instrumentation write tools.
+// Global identities (static super / ok_) are unrestricted except for the
+// capability/tenant-binding checks that apply to every caller.
 func (w *mcpServerWrapper) authorizeToolCall(ctx context.Context, request mcp.CallToolRequest) error {
 	identity, ok := tenantauth.IdentityFromContext(ctx)
 	if !ok {
 		return errors.New("MCP 请求缺少已认证的租户身份")
 	}
+
+	if _, isQuery := observabilityQueryTools[request.Params.Name]; isQuery {
+		if err := w.authorizeObservabilityQuery(ctx, identity, request); err != nil {
+			return err
+		}
+	}
+
 	if identity.IsGlobal() {
 		return nil
 	}
@@ -73,6 +100,51 @@ func (w *mcpServerWrapper) authorizeToolCall(ctx context.Context, request mcp.Ca
 
 	// Tools without an agent/session argument either filter their own result
 	// (list_agents) or perform rule-level authorization (instrument_rule_*).
+	return nil
+}
+
+// authorizeObservabilityQuery enforces fail-closed capability checks for the
+// read-only query tools. Tenant scope is never read from tool arguments: the
+// handlers overwrite it with the authenticated identity.
+func (w *mcpServerWrapper) authorizeObservabilityQuery(
+	ctx context.Context,
+	identity tenantauth.Identity,
+	request mcp.CallToolRequest,
+) error {
+	scope := observabilityQueryTools[request.Params.Name]
+	cfg := w.ext.config.Observability
+	if !cfg.Enabled {
+		return errors.New("可观测性查询能力未启用")
+	}
+
+	switch scope {
+	case metricReadScope:
+		if !cfg.Signals.Metric || w.ext.metricReader == nil {
+			return errors.New("metric 查询能力未启用或 Reader 不可用")
+		}
+	case traceReadScope:
+		if !cfg.Signals.Trace || w.ext.traceReader == nil {
+			return errors.New("trace 查询能力未启用或 Reader 不可用")
+		}
+	case logReadScope:
+		if !cfg.Signals.Log || w.ext.logReader == nil {
+			return errors.New("log 查询能力未启用或 Reader 不可用")
+		}
+	}
+
+	args := request.GetArguments()
+	if strings.TrimSpace(stringArg(args, "tenant_id")) != "" {
+		return errors.New("tenant_id 由服务端根据认证身份决定，禁止在工具参数中指定")
+	}
+	if appID := strings.TrimSpace(stringArg(args, "app_id")); appID != "" {
+		if err := w.instrumentationAuthorizer().authorize(ctx, appID); err != nil {
+			return fmt.Errorf("app_id 归属校验失败: %w", err)
+		}
+	}
+
+	if !identity.IsGlobal() && !identityHasScope(identity.Scopes, scope) {
+		return fmt.Errorf("该租户 key 缺少 %s scope，禁止执行可观测性查询", scope)
+	}
 	return nil
 }
 

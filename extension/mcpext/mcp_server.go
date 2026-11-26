@@ -92,6 +92,11 @@ func (w *mcpServerWrapper) addTool(tool mcp.Tool, handler server.ToolHandlerFunc
 		if err := w.authorizeToolCall(ctx, request); err != nil {
 			return mcp.NewToolResultError("租户授权失败: " + err.Error()), nil
 		}
+		// Resolve per-caller query limits once, before the handler runs, so
+		// every configuration read inside the handler sees the same settings.
+		if _, isQuery := observabilityQueryTools[request.Params.Name]; isQuery {
+			ctx = withObservabilitySettings(ctx, w.resolveObservabilitySettings(ctx))
+		}
 		return handler(ctx, request)
 	})
 }
@@ -126,6 +131,11 @@ func (w *mcpServerWrapper) registerTools() {
 	// ========== Dynamic Instrumentation Tools (optional) ==========
 	if w.ext.config.Instrumentation.Enabled && w.ext.instrMgr != nil {
 		w.registerInstrumentationTools()
+	}
+
+	// ========== Observability Query Tools (optional, read-only) ==========
+	if w.ext.config.Observability.Enabled {
+		w.registerObservabilityTools()
 	}
 }
 

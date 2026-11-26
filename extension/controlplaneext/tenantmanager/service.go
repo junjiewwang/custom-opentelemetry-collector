@@ -132,6 +132,27 @@ func (s *TenantService) UpdateTenant(ctx context.Context, id string, req *Update
 		// stored pointer, so mutating it would bypass Save.
 		updated.Capabilities = &capabilities
 	}
+	if req.ClearObservabilityQuery {
+		if updated.Capabilities != nil {
+			capabilities := *updated.Capabilities
+			capabilities.ObservabilityQuery = nil
+			if capabilities == (TenantCapabilities{}) {
+				updated.Capabilities = nil
+			} else {
+				updated.Capabilities = &capabilities
+			}
+		}
+	} else if req.ObservabilityQuery != nil {
+		capabilities := TenantCapabilities{}
+		if updated.Capabilities != nil {
+			capabilities = *updated.Capabilities
+		}
+		// Whole-object replacement: fields omitted from the request are nil
+		// and therefore cleared back to "inherit deployment default".
+		override := *req.ObservabilityQuery
+		capabilities.ObservabilityQuery = &override
+		updated.Capabilities = &capabilities
+	}
 	updated.UpdatedAt = time.Now()
 
 	if err := s.repo.Save(ctx, &updated); err != nil {

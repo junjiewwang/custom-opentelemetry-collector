@@ -361,8 +361,9 @@ func (r *TraceReader) parseTraceSummaryResult(resp *SearchResponse, offset, limi
 // GetTrace retrieves a single trace by its trace ID.
 func (r *TraceReader) GetTrace(ctx context.Context, traceID string) (*Trace, error) {
 	searchReq := &SearchRequest{
-		Query: esq.TermQ(FieldTraceID, traceID),
-		Size:  1000, // Max spans per trace.
+		Query:    esq.TermQ(FieldTraceID, traceID),
+		TenantID: tenantctx.TenantIDFromContext(ctx),
+		Size:     1000, // Max spans per trace.
 		Sort: []map[string]any{
 			{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
 		},
@@ -389,8 +390,9 @@ func (r *TraceReader) GetTrace(ctx context.Context, traceID string) (*Trace, err
 // GetTraceSpans retrieves all spans for a trace as StoredSpan.
 func (r *TraceReader) GetTraceSpans(ctx context.Context, traceID string) ([]StoredSpan, error) {
 	searchReq := &SearchRequest{
-		Query: esq.TermQ(FieldTraceID, traceID),
-		Size:  1000,
+		Query:    esq.TermQ(FieldTraceID, traceID),
+		TenantID: tenantctx.TenantIDFromContext(ctx),
+		Size:     1000,
 		Sort: []map[string]any{
 			{FieldStartTimeUnixNano: map[string]any{"order": "asc"}},
 		},

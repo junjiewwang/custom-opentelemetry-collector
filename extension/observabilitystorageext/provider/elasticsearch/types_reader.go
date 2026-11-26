@@ -227,6 +227,7 @@ type TimeBucket struct {
 // MetricQuery holds parameters for an instant metric query.
 type MetricQuery struct {
 	AppID         string // required: identifies which app's data to query
+	TenantID      string // optional: tenant isolation filter
 	MetricName    string
 	Labels        map[string]string
 	LabelMatch    map[string]string // regex match patterns (PromQL =~)
@@ -245,6 +246,7 @@ type MetricQuery struct {
 //	FILL(<Fill>) SLIMIT <SeriesLimit> LIMIT <Limit>
 type MetricRangeQuery struct {
 	AppID         string // required: identifies which app's data to query
+	TenantID      string // optional: tenant isolation filter
 	MetricName    string
 	Labels        map[string]string // WHERE tag = 'value'
 	LabelMatch    map[string]string // WHERE tag =~ /regex/

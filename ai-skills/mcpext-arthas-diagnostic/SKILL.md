@@ -36,6 +36,7 @@ description: 当用户需要通过 custom-opentelemetry-collector 的 mcpext MCP
 - 提到需要通过 `mcpext` / MCP 对在线 Agent 做排障
 - 需要判断是否应 attach Arthas、是否应使用异步 session
 - 提到 `dynamic_instrument`、动态插桩、`instrument_rule_*`、运行时生效确认或插桩规则清理
+- 提到查指标 / 查链路 / 查日志、`metric_query` / `trace_search` / `log_search`、按 `trace_id` 关联日志
 
 如果用户只是讨论方案、架构设计或纯概念问答，不必强制执行诊断工具调用。
 
