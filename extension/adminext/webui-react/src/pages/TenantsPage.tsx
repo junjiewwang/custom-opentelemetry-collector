@@ -8,7 +8,35 @@ import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import EmptyState from '@/components/EmptyState';
-import type { Tenant, TenantAPIKey } from '@/types/api';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Field } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { Tabs } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
+import type { Tenant, TenantAPIKey, TenantObservabilityQueryConfig } from '@/types/api';
+
+type QueryLimitKey = 'query_timeout' | 'max_time_range' | 'metric_series' | 'traces' | 'logs' | 'log_context_lines';
+
+const QUERY_LIMIT_FIELDS: { key: QueryLimitKey; label: string; kind: 'number' | 'text'; hint: string }[] = [
+  { key: 'query_timeout', label: 'Query timeout (s)', kind: 'number', hint: '20' },
+  { key: 'max_time_range', label: 'Max time range', kind: 'text', hint: '24h' },
+  { key: 'metric_series', label: 'Metric series', kind: 'number', hint: '50' },
+  { key: 'traces', label: 'Traces', kind: 'number', hint: '20' },
+  { key: 'logs', label: 'Logs', kind: 'number', hint: '100' },
+  { key: 'log_context_lines', label: 'Log context lines', kind: 'number', hint: '50' },
+];
+
+const allQueryInherited = (): Record<QueryLimitKey, boolean> => ({
+  query_timeout: true, max_time_range: true, metric_series: true,
+  traces: true, logs: true, log_context_lines: true,
+});
+
+const emptyQueryValues = (): Record<QueryLimitKey, string> => ({
+  query_timeout: '', max_time_range: '', metric_series: '',
+  traces: '', logs: '', log_context_lines: '',
+});
 
 export default function TenantsPage() {
   const { showToast } = useToast();
@@ -24,6 +52,10 @@ export default function TenantsPage() {
   const [formStatus, setFormStatus] = useState<'active' | 'disabled'>('active');
   const [formInstrumentation, setFormInstrumentation] = useState(true);
   const [formInstrumentationInherit, setFormInstrumentationInherit] = useState(true);
+  const [formQueryInheritAll, setFormQueryInheritAll] = useState(true);
+  const [formQueryDefaults, setFormQueryDefaults] = useState<Record<QueryLimitKey, boolean>>(allQueryInherited);
+  const [formQueryValues, setFormQueryValues] = useState<Record<QueryLimitKey, string>>(emptyQueryValues);
+  const [editTab, setEditTab] = useState<'basic' | 'capabilities' | 'query'>('basic');
 
   // Key 管理模态框
   const [keysTenant, setKeysTenant] = useState<Tenant | null>(null);
@@ -32,6 +64,9 @@ export default function TenantsPage() {
   const [keyName, setKeyName] = useState('');
   const [keyType, setKeyType] = useState<'tk' | 'ok'>('tk');
   const [keyInstrumentationWrite, setKeyInstrumentationWrite] = useState(false);
+  const [keyMetricRead, setKeyMetricRead] = useState(false);
+  const [keyTraceRead, setKeyTraceRead] = useState(false);
+  const [keyLogRead, setKeyLogRead] = useState(false);
   const [newPlainKey, setNewPlainKey] = useState<string | null>(null);
 
   const loadTenants = useCallback(async () => {
@@ -61,6 +96,10 @@ export default function TenantsPage() {
     setFormStatus('active');
     setFormInstrumentation(true);
     setFormInstrumentationInherit(true);
+    setFormQueryInheritAll(true);
+    setFormQueryDefaults(allQueryInherited());
+    setFormQueryValues(emptyQueryValues());
+    setEditTab('basic');
     setShowCreateModal(true);
   };
 
@@ -72,6 +111,23 @@ export default function TenantsPage() {
     const capability = t.capabilities?.dynamic_instrumentation;
     setFormInstrumentationInherit(capability === undefined);
     setFormInstrumentation(capability ?? true);
+
+    const query = t.capabilities?.observability_query;
+    const defaults = allQueryInherited();
+    const values = emptyQueryValues();
+    if (query) {
+      for (const field of QUERY_LIMIT_FIELDS) {
+        const override = query[field.key];
+        if (override !== undefined && override !== null) {
+          defaults[field.key] = false;
+          values[field.key] = String(override);
+        }
+      }
+    }
+    setFormQueryInheritAll(!query);
+    setFormQueryDefaults(defaults);
+    setFormQueryValues(values);
+    setEditTab('basic');
   };
 
   const submitCreate = async () => {
@@ -95,6 +151,29 @@ export default function TenantsPage() {
       showToast('Tenant name is required', 'error');
       return;
     }
+    let observabilityQuery: TenantObservabilityQueryConfig | undefined;
+    if (!formQueryInheritAll) {
+      const overrides: TenantObservabilityQueryConfig = {};
+      for (const field of QUERY_LIMIT_FIELDS) {
+        if (formQueryDefaults[field.key]) continue;
+        const raw = formQueryValues[field.key].trim();
+        if (!raw) {
+          showToast(`${field.label} is required when not inheriting`, 'error');
+          return;
+        }
+        if (field.kind === 'number') {
+          const parsed = Number(raw);
+          if (!Number.isInteger(parsed) || parsed <= 0) {
+            showToast(`${field.label} must be a positive integer`, 'error');
+            return;
+          }
+          Object.assign(overrides, { [field.key]: parsed });
+        } else {
+          Object.assign(overrides, { [field.key]: raw });
+        }
+      }
+      observabilityQuery = overrides;
+    }
     try {
       await apiClient.updateTenant(editTenant.id, {
         name: formName.trim(),
@@ -102,6 +181,8 @@ export default function TenantsPage() {
         status: formStatus,
         dynamic_instrumentation: formInstrumentationInherit ? undefined : formInstrumentation,
         clear_dynamic_instrumentation: formInstrumentationInherit,
+        observability_query: observabilityQuery,
+        clear_observability_query: formQueryInheritAll,
       });
       showToast('Tenant updated', 'success');
       setEditTenant(null);
@@ -134,6 +215,9 @@ export default function TenantsPage() {
     setKeyName('');
     setKeyType('tk');
     setKeyInstrumentationWrite(false);
+    setKeyMetricRead(false);
+    setKeyTraceRead(false);
+    setKeyLogRead(false);
     setKeysLoading(true);
     try {
       setKeys(await apiClient.getTenantKeys(t.id));
@@ -150,11 +234,16 @@ export default function TenantsPage() {
       showToast('Key name is required', 'error');
       return;
     }
+    const scopes: string[] = [];
+    if (keyInstrumentationWrite) scopes.push('instrumentation:write');
+    if (keyMetricRead) scopes.push('metric:read');
+    if (keyTraceRead) scopes.push('trace:read');
+    if (keyLogRead) scopes.push('log:read');
     try {
       const resp = await apiClient.createTenantKey(keysTenant.id, {
         name: keyName.trim(),
         key_type: keyType,
-        scopes: keyInstrumentationWrite ? ['instrumentation:write'] : [],
+        scopes,
       });
       // 明文仅返回一次，醒目展示
       setNewPlainKey(resp.key);
@@ -273,74 +362,182 @@ export default function TenantsPage() {
 
       {/* ── 创建 / 编辑模态框 ── */}
       {(showCreateModal || editTenant) && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-96 p-6">
-            <h2 className="text-lg font-semibold mb-4">{editTenant ? 'Edit Tenant' : 'New Tenant'}</h2>
-            <label className="block text-sm text-gray-600 mb-1">Name</label>
-            <input
-              value={formName}
-              onChange={e => setFormName(e.target.value)}
-              className="w-full border rounded px-3 py-2 mb-3 text-sm"
-              placeholder="e.g. acme"
-            />
-            <label className="block text-sm text-gray-600 mb-1">Description</label>
-            <input
-              value={formDesc}
-              onChange={e => setFormDesc(e.target.value)}
-              className="w-full border rounded px-3 py-2 mb-3 text-sm"
-              placeholder="Optional"
-            />
-            {editTenant && (
-              <>
-                <label className="block text-sm text-gray-600 mb-1">Status</label>
-                <select
-                  value={formStatus}
-                  onChange={e => setFormStatus(e.target.value as 'active' | 'disabled')}
-                  className="w-full border rounded px-3 py-2 mb-3 text-sm"
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={editTenant ? 'Edit tenant' : 'New tenant'}
+            className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-ui border border-line bg-surface shadow-ui"
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-line px-6 py-4">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary-700">
+                  Tenant settings
+                </div>
+                <h2 className="mt-0.5 text-lg font-semibold tracking-tight text-ink">
+                  {editTenant ? 'Edit tenant' : 'New tenant'}
+                </h2>
+                <p className="mt-1 text-xs text-ink-muted">
+                  {editTenant
+                    ? `Editing ${editTenant.name}. Changes take effect when saved.`
+                    : 'Create a tenant, then grant capabilities and API keys.'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {editTenant && (
+                  <Badge tone={formStatus === 'active' ? 'green' : 'neutral'}>{formStatus}</Badge>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close dialog"
+                  onClick={() => { setShowCreateModal(false); setEditTenant(null); }}
                 >
-                  <option value="active">active</option>
-                  <option value="disabled">disabled</option>
-                </select>
-                <label className="flex items-center gap-2 text-sm text-gray-600 mb-2">
-                  <input
-                    type="checkbox"
-                    checked={formInstrumentationInherit}
-                    onChange={e => setFormInstrumentationInherit(e.target.checked)}
-                    className="rounded"
-                  />
-                  Inherit deployment default
-                  <span className="text-xs text-gray-400">(recommended)</span>
-                </label>
-                <label className={`flex items-center gap-2 text-sm mb-3 ${formInstrumentationInherit ? 'text-gray-400' : 'text-gray-600'}`}>
-                  <input
-                    type="checkbox"
-                    checked={formInstrumentation}
-                    disabled={formInstrumentationInherit}
-                    onChange={e => setFormInstrumentation(e.target.checked)}
-                    className="rounded"
-                  />
-                  Allow dynamic instrumentation
-                  <span className="text-xs text-gray-400">(this tenant&apos;s agents)</span>
-                </label>
-              </>
+                  <span aria-hidden="true" className="text-lg leading-none">×</span>
+                </Button>
+              </div>
+            </header>
+
+            {editTenant && (
+              <div className="px-6 pt-2">
+                <Tabs
+                  items={[
+                    { id: 'basic', label: 'Basic' },
+                    { id: 'capabilities', label: 'Capabilities' },
+                    { id: 'query', label: 'Query limits' },
+                  ]}
+                  value={editTab}
+                  onChange={(id) => setEditTab(id as 'basic' | 'capabilities' | 'query')}
+                />
+              </div>
             )}
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => {
-                  setShowCreateModal(false);
-                  setEditTenant(null);
-                }}
-                className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={editTenant ? submitEdit : submitCreate}
-                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                {editTenant ? 'Save' : 'Create'}
-              </button>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {(!editTenant || editTab === 'basic') && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Name" htmlFor="tenant-name" hint="Shown in the tenant switcher.">
+                    <Input
+                      id="tenant-name"
+                      value={formName}
+                      onChange={e => setFormName(e.target.value)}
+                      placeholder="e.g. acme"
+                    />
+                  </Field>
+                  <Field label="Description" htmlFor="tenant-desc" hint="Optional context for other operators.">
+                    <Input
+                      id="tenant-desc"
+                      value={formDesc}
+                      onChange={e => setFormDesc(e.target.value)}
+                      placeholder="Optional"
+                    />
+                  </Field>
+                  {editTenant && (
+                    <Field label="Status" htmlFor="tenant-status" hint="Disabled tenants cannot authenticate.">
+                      <select
+                        id="tenant-status"
+                        value={formStatus}
+                        onChange={e => setFormStatus(e.target.value as 'active' | 'disabled')}
+                        className="h-10 w-full rounded-ui border border-line bg-surface px-3 text-sm text-ink focus-visible:border-primary-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-100"
+                      >
+                        <option value="active">active</option>
+                        <option value="disabled">disabled</option>
+                      </select>
+                    </Field>
+                  )}
+                </div>
+              )}
+
+              {editTenant && editTab === 'capabilities' && (
+                <div className="space-y-4">
+                  <p className="text-sm leading-relaxed text-ink-muted">
+                    Controls whether agents owned by this tenant may be instrumented.
+                    This is independent of who calls the MCP tools.
+                  </p>
+                  <div className="space-y-4 rounded-ui border border-line bg-canvas p-4">
+                    <Switch
+                      checked={formInstrumentationInherit}
+                      onChange={setFormInstrumentationInherit}
+                      label="Inherit deployment default"
+                      description="Recommended. Leave this tenant without an explicit override."
+                    />
+                    <div className="border-t border-line pt-4">
+                      <Switch
+                        checked={formInstrumentation}
+                        onChange={setFormInstrumentation}
+                        disabled={formInstrumentationInherit}
+                        label="Allow dynamic instrumentation"
+                        description="Applies to this tenant's agents only."
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {editTenant && editTab === 'query' && (
+                <div className="space-y-4">
+                  <p className="text-sm leading-relaxed text-ink-muted">
+                    Read-only MCP query limits for callers authenticated as this tenant.
+                    Overrides may be larger than the deployment defaults.
+                  </p>
+                  <div className="rounded-ui border border-line bg-canvas p-4">
+                    <Switch
+                      checked={formQueryInheritAll}
+                      onChange={setFormQueryInheritAll}
+                      label="Inherit all query limits"
+                      description="Use the deployment defaults for all six values."
+                    />
+                  </div>
+                  {!formQueryInheritAll && (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {QUERY_LIMIT_FIELDS.map(field => (
+                        <div
+                          key={field.key}
+                          className={cn(
+                            'rounded-ui border border-line p-3 transition-colors',
+                            formQueryDefaults[field.key] ? 'bg-canvas' : 'bg-surface',
+                          )}
+                        >
+                          <Switch
+                            checked={!formQueryDefaults[field.key]}
+                            onChange={(override) => setFormQueryDefaults(prev => ({ ...prev, [field.key]: !override }))}
+                            label={`Override ${field.label}`}
+                          />
+                          <div className="mt-3 flex items-center gap-2">
+                            <span className="w-32 shrink-0 text-xs text-ink-muted">{field.label}</span>
+                            <Input
+                              mono
+                              aria-label={`${field.label} override`}
+                              value={formQueryValues[field.key]}
+                              disabled={formQueryDefaults[field.key]}
+                              onChange={e => setFormQueryValues(prev => ({ ...prev, [field.key]: e.target.value }))}
+                              placeholder={`default ${field.hint}`}
+                              className="h-9"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
+
+            <footer className="flex items-center justify-between gap-3 border-t border-line px-6 py-3">
+              <span className="text-xs text-ink-muted">
+                {editTenant ? 'Changes apply immediately after saving.' : 'You can add API keys after creation.'}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => { setShowCreateModal(false); setEditTenant(null); }}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={editTenant ? submitEdit : submitCreate}>
+                  {editTenant ? 'Save changes' : 'Create tenant'}
+                </Button>
+              </div>
+            </footer>
           </div>
         </div>
       )}
@@ -380,21 +577,37 @@ export default function TenantsPage() {
                   <option value="ok">ok (operator)</option>
                 </select>
               </div>
-              <label className="flex items-center gap-1.5 text-xs text-gray-600 pb-2 whitespace-nowrap">
-                <input
-                  type="checkbox"
-                  checked={keyInstrumentationWrite}
-                  onChange={e => setKeyInstrumentationWrite(e.target.checked)}
-                  className="rounded"
-                />
-                instrumentation:write
-              </label>
               <button
                 onClick={createKey}
                 className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
               >
                 Create
               </button>
+            </div>
+
+            {/* Scopes —— tk_ keys need explicit read scopes for query tools */}
+            <div className="mb-4 -mt-1">
+              <div className="text-xs text-gray-600 mb-1">
+                Scopes (tk_ keys only; super / ok_ keys are unrestricted)
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {([
+                  ['instrumentation:write', keyInstrumentationWrite, setKeyInstrumentationWrite],
+                  ['metric:read', keyMetricRead, setKeyMetricRead],
+                  ['trace:read', keyTraceRead, setKeyTraceRead],
+                  ['log:read', keyLogRead, setKeyLogRead],
+                ] as const).map(([label, checked, setter]) => (
+                  <label key={label} className="flex items-center gap-1.5 text-xs text-gray-600">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e => setter(e.target.checked)}
+                      className="rounded"
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
             </div>
 
             {/* 一次性明文 key */}

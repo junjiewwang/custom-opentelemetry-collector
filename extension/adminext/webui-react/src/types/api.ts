@@ -281,8 +281,18 @@ export interface MenuItem {
 // Tenant (Multi-tenancy)
 // ============================================================================
 
+export interface TenantObservabilityQueryConfig {
+  query_timeout?: number;
+  max_time_range?: string;
+  metric_series?: number;
+  traces?: number;
+  logs?: number;
+  log_context_lines?: number;
+}
+
 export interface TenantCapabilities {
   dynamic_instrumentation?: boolean;
+  observability_query?: TenantObservabilityQueryConfig;
 }
 
 export interface Tenant {

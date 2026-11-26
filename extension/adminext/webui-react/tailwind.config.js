@@ -39,6 +39,26 @@ export default {
           500: '#ef4444',
           600: '#dc2626',
         },
+        // Semantic tokens for the redesigned config surfaces. The blue
+        // `primary` scale above is kept as the single accent (no new palette).
+        canvas: '#f8fafc',
+        surface: '#ffffff',
+        ink: {
+          DEFAULT: '#0f172a',
+          soft: '#334155',
+          muted: '#64748b',
+          faint: '#94a3b8',
+        },
+        line: {
+          DEFAULT: '#e2e8f0',
+          strong: '#cbd5e1',
+        },
+      },
+      borderRadius: {
+        ui: '10px',
+      },
+      boxShadow: {
+        ui: '0 1px 2px rgba(15,23,42,0.04), 0 8px 24px rgba(15,23,42,0.06)',
       },
       animation: {
         'shimmer': 'shimmer 1.5s ease-in-out infinite',

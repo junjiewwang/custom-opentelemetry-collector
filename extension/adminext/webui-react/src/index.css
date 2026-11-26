@@ -6,8 +6,23 @@
 /* 全局基础样式 */
 /* ========================================================================== */
 
+/* 语义令牌：保留蓝色 primary 作为唯一强调色，其余表面/文字/描边统一治理 */
+:root {
+  --ui-canvas: #f8fafc;
+  --ui-surface: #ffffff;
+  --ui-ink: #0f172a;
+  --ui-line: #e2e8f0;
+}
+
 body {
   @apply antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ========================================================================== */

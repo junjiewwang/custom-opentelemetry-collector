@@ -790,8 +790,10 @@ function OverviewTab({ instance, copyToClipboard }: { instance: Instance; copyTo
                     instance.arthas_tunnel_source === 'local'
                       ? 'bg-amber-100 text-amber-700'
                       : instance.arthas_tunnel_source === 'ops'
-                        ? 'bg-green-100 text-green-700'
-                        : 'bg-gray-100 text-gray-600'
+                        ? 'bg-primary-50 text-primary-700'
+                        : instance.arthas_tunnel_source === 'derived'
+                          ? 'bg-success-50 text-success-600'
+                          : 'bg-gray-100 text-gray-600'
                   }`}>
                     {instance.arthas_tunnel_source === 'local' ? 'local -D' : instance.arthas_tunnel_source}
                   </span>

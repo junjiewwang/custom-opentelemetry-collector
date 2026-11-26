@@ -25,6 +25,15 @@ import type {
 import { formatBytes, DAILY_RANGES } from '@/types/storage';
 import TimeSeriesChart from '@/components/TimeSeriesChart';
 import type { ChartSeries } from '@/types/metric';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardDescription, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
+
+// 统一的下拉框样式（与 Tenants 弹窗、Ops Config 保持一致）
+const selectClass =
+  'h-9 rounded-ui border border-line bg-surface px-3 text-sm text-ink ' +
+  'focus-visible:border-primary-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-100';
 
 // ============================================================================
 // Component
@@ -126,22 +135,25 @@ export default function StorageAdminPage() {
 
   if (available === false) {
     return (
-      <div className="p-6">
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-yellow-800">
-          <h3 className="font-semibold text-lg mb-2">存储管理不可用</h3>
-          <p className="text-sm">
-            存储管理需要配置 <code className="bg-yellow-100 px-1 rounded">observability.storage_extension</code>。
+      <div className="min-h-full bg-canvas p-6 lg:p-8">
+        <Card className="mx-auto max-w-2xl border-warning-100 bg-warning-50 p-5">
+          <div className="flex items-center gap-2">
+            <Badge tone="amber">Unavailable</Badge>
+            <CardTitle>存储管理不可用</CardTitle>
+          </div>
+          <CardDescription className="mt-2 text-warning-700">
+            存储管理需要配置 <code className="rounded bg-warning-100 px-1 font-mono text-xs">observability.storage_extension</code>。
             请确保 observabilitystorageext 扩展已启用并正确配置。
-          </p>
-        </div>
+          </CardDescription>
+        </Card>
       </div>
     );
   }
 
   if (loading) {
     return (
-      <div className="p-6 flex items-center justify-center min-h-[300px]">
-        <div className="text-gray-500 animate-pulse">加载存储状态...</div>
+      <div className="flex min-h-[300px] items-center justify-center bg-canvas">
+        <span className="animate-pulse text-sm text-ink-muted">加载存储状态…</span>
       </div>
     );
   }
@@ -151,104 +163,103 @@ export default function StorageAdminPage() {
   // ========================================================================
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="min-h-full bg-canvas p-6 lg:p-8">
+      <div className="mx-auto max-w-6xl space-y-5">
       {/* Page Header */}
-      <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">存储管理</h1>
-        {apps.length > 0 && (
-          <select
-            value={selectedAppId}
-            onChange={e => setSelectedAppId(e.target.value)}
-            className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md
-              bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200"
-          >
-            <option value="">全部 App</option>
-            {apps.map(a => (
-              <option key={a.id} value={a.id}>{a.name || a.id}</option>
-            ))}
-          </select>
-        )}
-        <button
-          onClick={loadData}
-          className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md
-            hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-        >
-          刷新
-        </button>
-      </div>
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary-700">
+            Observability / storage operations
+          </div>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink">存储管理</h1>
+          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-ink-muted">
+            后端健康、磁盘用量与索引分布。保留策略按 App 在应用配置页面管理。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {apps.length > 0 && (
+            <select
+              aria-label="Filter by app"
+              value={selectedAppId}
+              onChange={e => setSelectedAppId(e.target.value)}
+              className={selectClass}
+            >
+              <option value="">全部 App</option>
+              {apps.map(a => (
+                <option key={a.id} value={a.id}>{a.name || a.id}</option>
+              ))}
+            </select>
+          )}
+          <Button variant="outline" size="sm" className="h-9" onClick={loadData}>刷新</Button>
+        </div>
+      </header>
 
       {/* Error */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
-          {error}
-          <button onClick={() => setError('')} className="ml-2 underline">关闭</button>
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-ui border border-danger-100 bg-danger-50 px-4 py-3 text-sm text-danger-600">
+          <span>{error}</span>
+          <Button variant="ghost" size="sm" onClick={() => setError('')}>关闭</Button>
         </div>
       )}
 
       {/* Health + Overview Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Health Card */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">健康状态</h3>
-          <div className="flex items-center gap-2">
-            <span className={`w-3 h-3 rounded-full ${health?.healthy ? 'bg-green-500' : 'bg-red-500'}`} />
-            <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              {health?.healthy ? '健康' : '异常'}
-            </span>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <Card className="p-4">
+          <div className="text-xs font-medium text-ink-muted">健康状态</div>
+          <div className="mt-2 flex items-center gap-2">
+            <span aria-hidden="true" className={cn('h-2 w-2 rounded-full', health?.healthy ? 'bg-success-500' : 'bg-danger-500')} />
+            <Badge tone={health?.healthy ? 'green' : 'red'}>{health?.healthy ? '健康' : '异常'}</Badge>
           </div>
           {health?.latency_ms !== undefined && (
-            <p className="text-xs text-gray-500 mt-1">延迟: {health.latency_ms}ms</p>
+            <p className="mt-2 font-mono text-xs text-ink-muted">latency · {health.latency_ms}ms</p>
           )}
-        </div>
+        </Card>
 
-        {/* Provider Card */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">存储后端</h3>
-          <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            {status?.provider || '—'}
-          </p>
-          {status?.version && (
-            <p className="text-xs text-gray-500 mt-1">版本: {status.version}</p>
-          )}
-        </div>
+        <Card className="p-4">
+          <div className="text-xs font-medium text-ink-muted">存储后端</div>
+          <div className="mt-2 truncate font-mono text-lg font-semibold text-ink">{status?.provider || '—'}</div>
+          {status?.version && <p className="mt-1 font-mono text-xs text-ink-muted">v{status.version}</p>}
+        </Card>
 
-        {/* Disk Usage Card */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">磁盘使用</h3>
+        <Card className="p-4">
+          <div className="text-xs font-medium text-ink-muted">磁盘使用</div>
           {diskUsage ? (
             <>
-              <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              <div className="mt-2 font-mono text-sm font-semibold tabular-nums text-ink">
                 {formatBytes(diskUsage.usedBytes)} / {formatBytes(diskUsage.totalBytes)}
-              </p>
-              <div className="mt-2 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              </div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-line">
                 <div
-                  className="h-full bg-blue-500 rounded-full transition-all"
+                  className="h-full rounded-full bg-primary-600 transition-all"
                   style={{ width: `${diskUsage.totalBytes > 0 ? (diskUsage.usedBytes / diskUsage.totalBytes * 100) : 0}%` }}
                 />
               </div>
-              <p className="text-xs text-gray-500 mt-1">可用: {formatBytes(diskUsage.availableBytes)}</p>
+              <p className="mt-1.5 text-xs text-ink-muted">可用 {formatBytes(diskUsage.availableBytes)}</p>
             </>
           ) : (
-            <p className="text-gray-400">—</p>
+            <p className="mt-2 text-ink-faint">—</p>
           )}
-        </div>
+        </Card>
       </div>
 
       {/* Disk Usage by Signal */}
       {diskUsage?.bySignal && Object.keys(diskUsage.bySignal).length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-          <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">按信号类型分布</h3>
-          <div className="grid grid-cols-3 gap-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>按信号类型分布</CardTitle>
+            <Badge tone="neutral">3 signals</Badge>
+          </CardHeader>
+          <CardContent className="grid grid-cols-3 gap-4">
             {(['trace', 'metric', 'log'] as SignalType[]).map(signal => (
               <div key={signal} className="text-center">
-                <p className="text-xs text-gray-500 uppercase">{signal}</p>
-                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                <div className="text-[11px] uppercase tracking-wide text-ink-muted">{signal}</div>
+                <div className="mt-1 font-mono text-lg font-semibold tabular-nums text-ink">
                   {diskUsage.bySignal?.[signal] ? formatBytes(diskUsage.bySignal[signal]) : '—'}
-                </p>
+                </div>
               </div>
             ))}
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Daily Storage Usage Chart */}
@@ -263,42 +274,42 @@ export default function StorageAdminPage() {
 
       {/* Indices Table */}
       {status?.indices && status.indices.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">索引列表</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 dark:bg-gray-900/50">
-                <tr>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">名称</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">信号类型</th>
-                  <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">文档数</th>
-                  <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">大小</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {status.indices.map((idx: IndexInfo) => (
-                  <tr key={idx.name} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                    <td className="px-4 py-2 font-mono text-xs text-gray-800 dark:text-gray-200">
-                      {idx.name}
-                    </td>
-                    <td className="px-4 py-2">
-                      <SignalBadge signal={idx.signal} />
-                    </td>
-                    <td className="px-4 py-2 text-right text-gray-700 dark:text-gray-300">
-                      {idx.docsCount.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-2 text-right text-gray-700 dark:text-gray-300">
-                      {formatBytes(idx.sizeBytes)}
-                    </td>
+        <Card className="overflow-hidden">
+          <CardHeader>
+            <CardTitle>索引列表</CardTitle>
+            <Badge tone="neutral">{status.indices.length} indices</Badge>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-canvas text-[11px] uppercase tracking-wide text-ink-muted">
+                  <tr>
+                    <th scope="col" className="px-5 py-2.5 font-medium">名称</th>
+                    <th scope="col" className="px-5 py-2.5 font-medium">信号类型</th>
+                    <th scope="col" className="px-5 py-2.5 text-right font-medium">文档数</th>
+                    <th scope="col" className="px-5 py-2.5 text-right font-medium">大小</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                </thead>
+                <tbody className="divide-y divide-line">
+                  {status.indices.map((idx: IndexInfo) => (
+                    <tr key={idx.name} className="hover:bg-canvas/60">
+                      <td className="px-5 py-2.5 font-mono text-xs text-ink">{idx.name}</td>
+                      <td className="px-5 py-2.5"><SignalBadge signal={idx.signal} /></td>
+                      <td className="px-5 py-2.5 text-right font-mono text-xs text-ink-soft">
+                        {idx.docsCount.toLocaleString()}
+                      </td>
+                      <td className="px-5 py-2.5 text-right font-mono text-xs text-ink-soft">
+                        {formatBytes(idx.sizeBytes)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
+      </div>
     </div>
   );
 }
@@ -359,35 +370,37 @@ function DailyUsageSection({ data, loading, rangeDays, onRangeChange, appName, a
   }, [data, appName, appNameMap]);
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          按天存储用量{appName ? <span className="ml-1 text-blue-600">{appName}</span> : null}
-        </h3>
-        <div className="flex gap-1">
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <CardTitle>按天存储用量</CardTitle>
+          {appName && <Badge tone="blue">{appName}</Badge>}
+        </div>
+        <div className="flex gap-1" role="group" aria-label="Time range">
           {DAILY_RANGES.map(r => (
-            <button
+            <Button
               key={r.days}
+              size="sm"
+              variant={rangeDays === r.days ? 'default' : 'ghost'}
+              aria-pressed={rangeDays === r.days}
+              className="h-7 px-2.5 text-xs"
               onClick={() => onRangeChange(r.days)}
-              className={`px-2 py-1 text-xs rounded transition-colors ${
-                rangeDays === r.days
-                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
-                  : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'
-              }`}
             >
               {r.label}
-            </button>
+            </Button>
           ))}
         </div>
-      </div>
-      <TimeSeriesChart
-        series={series}
-        chartType="area"
-        unit="bytes"
-        height={200}
-        loading={loading}
-      />
-    </div>
+      </CardHeader>
+      <CardContent>
+        <TimeSeriesChart
+          series={series}
+          chartType="area"
+          unit="bytes"
+          height={200}
+          loading={loading}
+        />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -396,15 +409,10 @@ function DailyUsageSection({ data, loading, rangeDays, onRangeChange, appName, a
 // ============================================================================
 
 function SignalBadge({ signal }: { signal: SignalType }) {
-  const colors: Record<SignalType, string> = {
-    trace: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300',
-    metric: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
-    log: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+  const tones: Record<string, 'blue' | 'green' | 'neutral'> = {
+    trace: 'blue',
+    metric: 'green',
+    log: 'neutral',
   };
-
-  return (
-    <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${colors[signal] || 'bg-gray-100 text-gray-700'}`}>
-      {signal}
-    </span>
-  );
+  return <Badge tone={tones[signal] ?? 'neutral'}>{signal}</Badge>;
 }

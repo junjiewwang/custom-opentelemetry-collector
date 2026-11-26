@@ -18,6 +18,9 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { apiClient } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { useConfirm } from '@/components/ConfirmDialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import type { AgentConfig, ApiError } from '@/types/api';
 
 // ── 类型定义 ──────────────────────────────────────────
@@ -326,116 +329,114 @@ export default function ServiceConfigTab({ appId, serviceName }: ServiceConfigTa
   // ── 渲染 ──────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-full bg-white">
+    <div className="relative flex h-full flex-col bg-surface">
       {/* Loading Overlay */}
       {editing.loading && (
-        <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center rounded-xl">
+        <div className="absolute inset-0 z-10 flex items-center justify-center rounded-ui bg-surface/85">
           <div className="text-center">
-            <i className="fas fa-spinner fa-spin text-2xl text-blue-600 mb-2" />
-            <p className="text-xs text-gray-500">Loading configuration...</p>
+            <i className="fas fa-spinner fa-spin mb-2 text-2xl text-primary-600" />
+            <p className="text-xs text-ink-muted">Loading configuration...</p>
           </div>
         </div>
       )}
 
-      {/* 模板推荐 / 缺失字段提示 Banner（可关闭，仅在需要时出现） */}
+      {/* 模板推荐 / 缺失字段提示：统一控件与语义色 */}
       {editing.showHint && (
-        <div className={`flex-shrink-0 px-4 py-2 border-b flex items-center justify-between ${
+        <div className={cn(
+          'flex shrink-0 items-center justify-between gap-2 border-b px-4 py-2',
           editing.hintType === 'template'
-            ? 'bg-amber-50/80 border-amber-100 text-amber-700'
-            : 'bg-blue-50/80 border-blue-100 text-blue-700'
-        }`}>
-          <div className="flex items-center gap-2 min-w-0">
-            <i className={`fas ${
-              editing.hintType === 'template' ? 'fa-magic text-amber-400' : 'fa-lightbulb text-blue-400'
-            } text-xs flex-shrink-0`} />
-            <span className="text-[10px] truncate">
+            ? 'border-warning-100 bg-warning-50 text-warning-700'
+            : 'border-primary-100 bg-primary-50 text-primary-700',
+        )}>
+          <div className="flex min-w-0 items-center gap-2">
+            <i className={cn('fas flex-shrink-0 text-xs',
+              editing.hintType === 'template' ? 'fa-magic text-warning-500' : 'fa-lightbulb text-primary-500')} />
+            <span className="truncate text-xs">
               {editing.hintType === 'template' ? (
-                <><span className="font-bold">Recommendation:</span> No configuration found. Use the recommended template?</>
+                <><span className="font-semibold">Recommendation:</span> No configuration found. Use the recommended template?</>
               ) : (
-                <><span className="font-bold">Optimization:</span> {editing.missingFields.length} missing fields: <code className="bg-blue-100/60 px-1 rounded text-[9px]">{editing.missingFields.join(', ')}</code></>
+                <><span className="font-semibold">Optimization:</span> {editing.missingFields.length} missing fields: <code className="rounded bg-primary-100 px-1 font-mono text-[10px]">{editing.missingFields.join(', ')}</code></>
               )}
             </span>
           </div>
-          <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
-            {editing.hintType === 'template' ? (
-              <button onClick={handleApplyTemplate} className="px-2.5 py-1 bg-amber-600 text-white rounded text-[10px] hover:bg-amber-700 transition whitespace-nowrap">
-                Apply Template
-              </button>
-            ) : (
-              <button onClick={handleFillMissing} className="px-2.5 py-1 bg-blue-600 text-white rounded text-[10px] hover:bg-blue-700 transition whitespace-nowrap">
-                Fill Missing
-              </button>
-            )}
-            <button onClick={() => setEditing(prev => ({ ...prev, showHint: false }))} className="p-0.5 hover:bg-black/5 rounded">
-              <i className="fas fa-times text-[9px] opacity-40" />
-            </button>
+          <div className="ml-2 flex shrink-0 items-center gap-1.5">
+            <Button
+              size="sm"
+              className="h-7 px-2.5 text-[11px]"
+              onClick={editing.hintType === 'template' ? handleApplyTemplate : handleFillMissing}
+            >
+              {editing.hintType === 'template' ? 'Apply Template' : 'Fill Missing'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              aria-label="Dismiss hint"
+              onClick={() => setEditing(prev => ({ ...prev, showHint: false }))}
+            >
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </Button>
           </div>
         </div>
       )}
 
-      {/* JSON 编辑区域 — 最大化垂直空间 */}
-      <div className="flex-1 relative overflow-hidden">
+      {/* JSON 编辑区域 — 保持绝对定位以占满可用高度 */}
+      <div className="relative flex-1 overflow-hidden">
         <textarea
           ref={textareaRef}
           value={editing.content}
           onChange={e => handleContentChange(e.target.value)}
-          className={`absolute inset-0 w-full h-full px-4 py-3 font-mono text-xs bg-white border-none focus:ring-0 resize-none outline-none leading-relaxed ${
-            editing.jsonError ? 'text-red-600' : 'text-gray-800'
-          }`}
+          className={cn(
+            'absolute inset-0 h-full w-full resize-none border-none bg-surface px-4 py-3 font-mono text-xs leading-relaxed outline-none focus:ring-0',
+            editing.jsonError ? 'text-danger-600' : 'text-ink',
+          )}
           placeholder={'// JSON configuration for this service\n// Example:\n{\n  "sampler": { "type": 1, "ratio": 0.5 },\n  "batch": { "max_export_batch_size": 512 }\n}'}
           spellCheck={false}
         />
       </div>
 
-      {/* 底部统一工具栏：状态信息 + 操作按钮 */}
-      <div className="flex-shrink-0 px-3 py-1.5 bg-gray-50/80 border-t border-gray-100 flex items-center justify-between gap-2">
-        {/* 左侧：状态信息 */}
-        <div className="flex items-center gap-2.5 text-[9px] text-gray-400 min-w-0">
+      {/* 底部工具栏：状态徽标 + 统一按钮 */}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-line bg-canvas px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2 text-[11px] text-ink-muted">
           {editing.jsonError ? (
-            <span className="text-red-400 flex items-center gap-1 font-medium" title={editing.jsonError}>
-              <i className="fas fa-times-circle text-[8px]" /> JSON Error
-            </span>
+            <Badge tone="red"><span title={editing.jsonError}>JSON Error</span></Badge>
           ) : editing.content.trim() ? (
-            <span className="text-green-500 flex items-center gap-1">
-              <i className="fas fa-check-circle text-[8px]" /> Valid
-            </span>
+            <Badge tone="green">Valid</Badge>
           ) : null}
-          {editing.isDirty && (
-            <span className="text-amber-500 flex items-center gap-1 font-semibold">
-              <i className="fas fa-circle text-[4px]" /> Unsaved
-            </span>
-          )}
-          <span className="text-gray-300">|</span>
-          <span>v{editing.version || 'none'}</span>
-          <span className="text-gray-300">·</span>
-          <span>{editing.content.length} chars</span>
+          {editing.isDirty && <Badge tone="amber">Unsaved</Badge>}
+          <span className="font-mono text-ink-faint">v{editing.version || 'none'}</span>
+          <span className="font-mono text-ink-faint">{editing.content.length} chars</span>
         </div>
 
-        {/* 右侧：操作按钮 */}
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button
-            onClick={handleDelete}
-            className="px-2 py-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition text-[10px] flex items-center gap-1"
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-[11px] text-danger-600 hover:bg-danger-50 hover:text-danger-700"
             title="Delete configuration"
+            onClick={handleDelete}
           >
-            <i className="fas fa-trash-alt text-[8px]" />
-          </button>
-          <button
-            onClick={handleReset}
+            <i className="fas fa-trash-alt text-[10px]" /> Delete
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
             disabled={!editing.isDirty}
-            className="px-2 py-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition text-[10px] flex items-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed"
             title="Reset changes"
+            onClick={handleReset}
           >
-            <i className="fas fa-undo text-[8px]" />
-          </button>
-          <button
-            onClick={handleSave}
+            <i className="fas fa-undo text-[10px]" /> Reset
+          </Button>
+          <Button
+            size="sm"
+            className="h-7 px-2.5 text-[11px]"
             disabled={!editing.isDirty || editing.saving || !!editing.jsonError}
-            className="px-2.5 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition text-[10px] flex items-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed shadow-sm"
+            onClick={handleSave}
           >
-            <i className={`fas ${editing.saving ? 'fa-spinner fa-spin' : 'fa-save'} text-[8px]`} />
+            <i className={`fas ${editing.saving ? 'fa-spinner fa-spin' : 'fa-save'} text-[10px]`} />
             {editing.saving ? 'Saving...' : 'Save'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

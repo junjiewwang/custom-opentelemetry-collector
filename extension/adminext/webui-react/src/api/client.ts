@@ -22,6 +22,7 @@ import type {
   ApiError,
   Tenant,
   TenantAPIKey,
+  TenantObservabilityQueryConfig,
   CreateAPIKeyResponse,
 } from '@/types/api';
 
@@ -649,7 +650,15 @@ class ApiClient {
     return this.request<Tenant>('POST', '/tenants', data);
   }
 
-  updateTenant(id: string, data: { name?: string; description?: string; status?: string; dynamic_instrumentation?: boolean; clear_dynamic_instrumentation?: boolean }): Promise<Tenant> {
+  updateTenant(id: string, data: {
+    name?: string;
+    description?: string;
+    status?: string;
+    dynamic_instrumentation?: boolean;
+    clear_dynamic_instrumentation?: boolean;
+    observability_query?: TenantObservabilityQueryConfig;
+    clear_observability_query?: boolean;
+  }): Promise<Tenant> {
     return this.request<Tenant>('PUT', `/tenants/${encodeURIComponent(id)}`, data);
   }
 
