@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -29,13 +31,13 @@ type SchemaEntry struct {
 var (
 	schemaMu sync.RWMutex
 	schema   = map[string]schemaItem{
-		KeyTunnelEndpoint: {
+		KeyTunnelBaseURL: {
 			entry: SchemaEntry{
-				Key:         KeyTunnelEndpoint,
-				Description: "Arthas Tunnel WebSocket endpoint delivered to probes",
-				ValueType:   "ws_url",
+				Key:         KeyTunnelBaseURL,
+				Description: "Base URL for deriving the tunnel endpoint: scheme://host[:port][/path prefix]. The probe appends /v1/arthas/ws; use it when control-plane and HTTP hosts differ",
+				ValueType:   "base_url",
 			},
-			validate: validateWsEndpoint,
+			validate: validateTunnelBaseURL,
 		},
 	}
 )
@@ -94,7 +96,10 @@ func Validate(key, value string) error {
 	return nil
 }
 
-func validateWsEndpoint(value string) error {
+// validateTunnelBaseURL validates the single supported override. Unlike the full-URL key,
+// an optional path prefix is allowed (reverse-proxy deployments put it here),
+// but the fixed tunnel path must NOT be included — the probe appends it.
+func validateTunnelBaseURL(value string) error {
 	if len(value) == 0 || len(value) > maxValueLength {
 		return errors.New("value must be non-empty and within the length limit")
 	}
@@ -102,17 +107,28 @@ func validateWsEndpoint(value string) error {
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	if u.Scheme != "ws" && u.Scheme != "wss" {
-		return errors.New("only ws:// and wss:// endpoints are allowed")
+	switch u.Scheme {
+	case "http", "https", "ws", "wss":
+	default:
+		return errors.New("base URL scheme must be http, https, ws or wss")
 	}
-	if u.Host == "" || u.User != nil {
-		return errors.New("endpoint host is required and userinfo is not allowed")
+	if u.Host == "" || u.Hostname() == "" || u.User != nil {
+		return errors.New("base URL host is required and userinfo is not allowed")
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("query and fragment are not allowed")
 	}
-	if u.Path != expectedTunnelPath {
-		return fmt.Errorf("endpoint path must be %s", expectedTunnelPath)
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return errors.New("base URL port must be between 1 and 65535")
+		}
+	}
+	if strings.HasSuffix(strings.TrimSuffix(u.Path, "/"), expectedTunnelPath) {
+		return fmt.Errorf("base URL must not contain %s; the probe appends it", expectedTunnelPath)
+	}
+	if strings.HasSuffix(u.Path, "/") {
+		return errors.New("base URL path prefix must not end with '/'")
 	}
 	return nil
 }

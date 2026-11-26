@@ -14,30 +14,82 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestValidateTunnelEndpoint(t *testing.T) {
+// The legacy full-URL key is no longer supported after the one-shot migration.
+const removedTunnelEndpointKey = "ops.arthas.tunnel_endpoint"
+
+func TestValidateTunnelBaseURL(t *testing.T) {
 	valid := []string{
-		"ws://custom-collector.devcloud/v1/arthas/ws",
-		"wss://collector.example.com/v1/arthas/ws",
-		"ws://10.0.0.1:4318/v1/arthas/ws",
+		"http://10.0.0.1:4318",
+		"https://custom-collector.devcloud",
+		"wss://gw.example.com/otel",
+		"ws://collector.example:4318/prefix",
 	}
 	for _, v := range valid {
-		require.NoError(t, Validate(KeyTunnelEndpoint, v), v)
+		require.NoError(t, Validate(KeyTunnelBaseURL, v), v)
 	}
 
 	invalid := []string{
 		"",
-		"http://host/v1/arthas/ws",
-		"ws://user:pass@host/v1/arthas/ws",
-		"ws://host/v1/arthas/ws?token=abc",
-		"ws://host/v1/arthas/ws#frag",
-		"ws://host/wrong/path",
-		"ws:///v1/arthas/ws",
+		"ftp://host",
+		"http://user:pass@host",
+		"https://host?token=abc",
+		"https://host#frag",
+		"https://host:70000",
+		"https://host/v1/arthas/ws",
+		"https://host/prefix/v1/arthas/ws",
+		"https://host/prefix/",
 		"not-a-url",
 	}
 	for _, v := range invalid {
-		require.Error(t, Validate(KeyTunnelEndpoint, v), v)
+		require.Error(t, Validate(KeyTunnelBaseURL, v), v)
 	}
-	require.Error(t, Validate("unknown.key", "ws://host/v1/arthas/ws"))
+	require.ErrorIs(t, Validate(KeyTunnelBaseURL, "ftp://host"), ErrValidation)
+	require.ErrorIs(t, Validate("unknown.key", "https://host"), ErrValidation)
+}
+
+func TestSchemaOnlyContainsBaseURL(t *testing.T) {
+	keys := map[string]string{}
+	for _, entry := range Schema() {
+		keys[entry.Key] = entry.ValueType
+	}
+	require.Len(t, keys, 1)
+	require.Equal(t, "base_url", keys[KeyTunnelBaseURL])
+	require.NotContains(t, keys, removedTunnelEndpointKey)
+}
+
+func TestRemovedTunnelEndpointIsUnsupported(t *testing.T) {
+	require.ErrorIs(t,
+		Validate(removedTunnelEndpointKey, "ws://collector.example/v1/arthas/ws"),
+		ErrValidation)
+
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	_, err := s.Put(context.Background(), removedTunnelEndpointKey,
+		"ws://collector.example/v1/arthas/ws", "admin")
+	require.ErrorIs(t, err, ErrValidation)
+	_, err = s.Delete(context.Background(), removedTunnelEndpointKey, "admin")
+	require.ErrorIs(t, err, ErrValidation, "an unsupported delete is a 400, not a backend failure")
+	require.Equal(t, int64(0), s.Revision(), "rejected writes must not change revision")
+}
+
+func TestStorePublishesTunnelBaseURL(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	value := "https://custom-collector.devcloud/otel"
+	_, err := s.Put(context.Background(), KeyTunnelBaseURL, value, "admin")
+	require.NoError(t, err)
+
+	// opsMetadataProvider iterates Snapshot(), so the key is delivered
+	// without any change to the metadata provider.
+	snapshot, _ := s.Snapshot()
+	require.Equal(t, value, snapshot[KeyTunnelBaseURL])
+
+	_, err = s.Delete(context.Background(), KeyTunnelBaseURL, "admin")
+	require.NoError(t, err)
+	afterDelete, _ := s.Snapshot()
+	_, ok := afterDelete[KeyTunnelBaseURL]
+	require.False(t, ok, "deleting the override restores derived mode")
 }
 
 func TestRevisionTagChanges(t *testing.T) {
@@ -62,19 +114,20 @@ func TestStorePutDeleteAudit(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
-	_, ok := s.Get(KeyTunnelEndpoint)
+	_, ok := s.Get(KeyTunnelBaseURL)
 	require.False(t, ok)
 	require.Equal(t, int64(0), s.Revision())
 
-	rev, err := s.Put(context.Background(), KeyTunnelEndpoint, "ws://collector.example/v1/arthas/ws", "admin")
+	first := "ws://collector.example"
+	rev, err := s.Put(context.Background(), KeyTunnelBaseURL, first, "admin")
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rev)
-	v, ok := s.Get(KeyTunnelEndpoint)
+	v, ok := s.Get(KeyTunnelBaseURL)
 	require.True(t, ok)
-	require.Equal(t, "ws://collector.example/v1/arthas/ws", v)
+	require.Equal(t, first, v)
 	require.Equal(t, "ops-1", s.RevisionTag())
 
-	rev2, err := s.Put(context.Background(), KeyTunnelEndpoint, "wss://other.example/v1/arthas/ws", "admin")
+	rev2, err := s.Put(context.Background(), KeyTunnelBaseURL, "wss://other.example/otel", "admin")
 	require.NoError(t, err)
 	require.Equal(t, int64(2), rev2)
 
@@ -82,12 +135,12 @@ func TestStorePutDeleteAudit(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
 	require.Equal(t, int64(2), entries[0].Revision)
-	require.Equal(t, "ws://collector.example/v1/arthas/ws", entries[0].OldValue)
+	require.Equal(t, first, entries[0].OldValue)
 
-	rev3, err := s.Delete(context.Background(), KeyTunnelEndpoint, "admin")
+	rev3, err := s.Delete(context.Background(), KeyTunnelBaseURL, "admin")
 	require.NoError(t, err)
 	require.Equal(t, int64(3), rev3)
-	_, ok = s.Get(KeyTunnelEndpoint)
+	_, ok = s.Get(KeyTunnelBaseURL)
 	require.False(t, ok)
 }
 
@@ -95,7 +148,7 @@ func TestStoreRejectsInvalidInput(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
-	_, err := s.Put(context.Background(), KeyTunnelEndpoint, "http://bad/v1/arthas/ws", "admin")
+	_, err := s.Put(context.Background(), KeyTunnelBaseURL, "ftp://bad", "admin")
 	require.ErrorIs(t, err, ErrValidation)
 	_, err = s.Put(context.Background(), "un.registered", "value", "admin")
 	require.ErrorIs(t, err, ErrValidation)
@@ -118,13 +171,14 @@ func TestStorePubSubRefreshesSecondReplica(t *testing.T) {
 	defer reader.Stop()
 	changes := reader.SubscribeChanges()
 
-	_, err := writer.Put(context.Background(), KeyTunnelEndpoint, "ws://collector.example/v1/arthas/ws", "admin")
+	value := "ws://collector.example"
+	_, err := writer.Put(context.Background(), KeyTunnelBaseURL, value, "admin")
 	require.NoError(t, err)
 
 	deadline := time.After(3 * time.Second)
 	for {
-		v, ok := reader.Get(KeyTunnelEndpoint)
-		if ok && v == "ws://collector.example/v1/arthas/ws" {
+		v, ok := reader.Get(KeyTunnelBaseURL)
+		if ok && v == value {
 			break
 		}
 		select {

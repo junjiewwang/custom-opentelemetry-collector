@@ -37,7 +37,7 @@ func TestNotifyOpsChangedDeliversMetadataWithoutVersionDowngrade(t *testing.T) {
 	h.running.Store(true)
 	h.SetOpsRevisionProvider(func() string { return "ops-1" })
 	h.RegisterMetadataProvider(staticMetadataProvider{values: map[string]string{
-		"ops.arthas.tunnel_endpoint": "ws://ops.example/v1/arthas/ws",
+		"ops.arthas.tunnel_base_url": "ws://ops.example",
 	}})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -68,8 +68,8 @@ func TestNotifyOpsChangedDeliversMetadataWithoutVersionDowngrade(t *testing.T) {
 		require.Equal(t, "|ops-1", result.Response.ConfigEtag)
 		require.Equal(
 			t,
-			"ws://ops.example/v1/arthas/ws",
-			result.Response.Config.ServerMetadata["ops.arthas.tunnel_endpoint"],
+			"ws://ops.example",
+			result.Response.Config.ServerMetadata["ops.arthas.tunnel_base_url"],
 		)
 		require.Equal(t, "", result.Response.Config.ServerMetadata["nonexistent"])
 	case <-time.After(time.Second):

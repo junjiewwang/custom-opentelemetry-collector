@@ -47,35 +47,40 @@ func TestGetOpsConfigsIncludesSchema(t *testing.T) {
 	var view opsConfigView
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &view))
 	require.Equal(t, int64(0), view.Revision)
-	require.Len(t, view.Schema, 1)
-	require.Equal(t, opsconfig.KeyTunnelEndpoint, view.Schema[0].Key)
+	keys := make(map[string]string, len(view.Schema))
+	for _, entry := range view.Schema {
+		keys[entry.Key] = entry.ValueType
+	}
+	require.Len(t, keys, 1)
+	require.Equal(t, "base_url", keys[opsconfig.KeyTunnelBaseURL])
+	require.NotContains(t, keys, "ops.arthas.tunnel_endpoint")
 }
 
 func TestSetOpsConfigValidationAndPersistence(t *testing.T) {
 	h, cleanup := newOpsTestHandler(t)
 	defer cleanup()
 
-	bad := httptest.NewRequest(http.MethodPut, "/api/v2/ops/configs/key", bytes.NewBufferString(`{"value":"http://bad"}`))
+	bad := httptest.NewRequest(http.MethodPut, "/api/v2/ops/configs/key", bytes.NewBufferString(`{"value":"ftp://bad"}`))
 	rec := httptest.NewRecorder()
-	h.setOpsConfig(rec, withURLParam(bad, opsconfig.KeyTunnelEndpoint))
+	h.setOpsConfig(rec, withURLParam(bad, opsconfig.KeyTunnelBaseURL))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Equal(t, int64(0), h.opsStore.Revision())
 
 	good := httptest.NewRequest(http.MethodPut, "/api/v2/ops/configs/key",
-		bytes.NewBufferString(`{"value":"ws://collector.example/v1/arthas/ws"}`))
+		bytes.NewBufferString(`{"value":"ws://collector.example"}`))
 	rec = httptest.NewRecorder()
-	h.setOpsConfig(rec, withURLParam(good, opsconfig.KeyTunnelEndpoint))
+	h.setOpsConfig(rec, withURLParam(good, opsconfig.KeyTunnelBaseURL))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, int64(1), h.opsStore.Revision())
-	v, ok := h.opsStore.Get(opsconfig.KeyTunnelEndpoint)
+	v, ok := h.opsStore.Get(opsconfig.KeyTunnelBaseURL)
 	require.True(t, ok)
-	require.Equal(t, "ws://collector.example/v1/arthas/ws", v)
+	require.Equal(t, "ws://collector.example", v)
 
 	del := httptest.NewRequest(http.MethodDelete, "/api/v2/ops/configs/key", nil)
 	rec = httptest.NewRecorder()
-	h.deleteOpsConfig(rec, withURLParam(del, opsconfig.KeyTunnelEndpoint))
+	h.deleteOpsConfig(rec, withURLParam(del, opsconfig.KeyTunnelBaseURL))
 	require.Equal(t, http.StatusOK, rec.Code)
-	_, ok = h.opsStore.Get(opsconfig.KeyTunnelEndpoint)
+	_, ok = h.opsStore.Get(opsconfig.KeyTunnelBaseURL)
 	require.False(t, ok)
 }
 

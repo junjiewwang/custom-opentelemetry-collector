@@ -20,8 +20,11 @@ import (
 )
 
 const (
-	// KeyTunnelEndpoint is the first admin-managed runtime config key.
-	KeyTunnelEndpoint = "ops.arthas.tunnel_endpoint"
+	// KeyTunnelBaseURL is a partial override (scheme + host[:port] + optional
+	// path prefix). The probe appends /v1/arthas/ws to it. It covers topologies
+	// where the control plane gRPC/HTTP hosts differ, without forcing the
+	// operator to hand-write a full WebSocket URL.
+	KeyTunnelBaseURL = "ops.arthas.tunnel_base_url"
 
 	DefaultKeyPrefix = "otel:ops:config"
 	DefaultChannel   = "otel:ops:config:changed"
@@ -237,7 +240,7 @@ func (s *Store) Put(ctx context.Context, key, value, operator string) (int64, er
 func (s *Store) Delete(ctx context.Context, key, operator string) (int64, error) {
 	// Deletion only requires that the key is registered in the schema.
 	if !schemaHasKey(key) {
-		return 0, fmt.Errorf("opsconfig: unsupported key %q", key)
+		return 0, fmt.Errorf("%w: unsupported key %q", ErrValidation, key)
 	}
 	old, _ := s.Get(key)
 	entry := ChangeLog{

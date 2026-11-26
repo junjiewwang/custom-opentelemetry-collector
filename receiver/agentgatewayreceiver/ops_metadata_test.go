@@ -26,13 +26,13 @@ func TestOpsMetadataProviderInjectsValuesAndRevision(t *testing.T) {
 	require.NoError(t, store.Start())
 	defer store.Stop()
 
-	_, err := store.Put(context.Background(), opsconfig.KeyTunnelEndpoint,
-		"ws://custom-collector.devcloud/v1/arthas/ws", "admin")
+	_, err := store.Put(context.Background(), opsconfig.KeyTunnelBaseURL,
+		"ws://custom-collector.devcloud", "admin")
 	require.NoError(t, err)
 
 	p := &opsMetadataProvider{store: store}
 	meta := p.ProvideMetadata(context.Background(), &longpoll.PollRequest{AgentID: "a1"})
-	require.Equal(t, "ws://custom-collector.devcloud/v1/arthas/ws", meta[opsconfig.KeyTunnelEndpoint])
+	require.Equal(t, "ws://custom-collector.devcloud", meta[opsconfig.KeyTunnelBaseURL])
 	require.Equal(t, "1", meta["ops.revision"])
 }
 
