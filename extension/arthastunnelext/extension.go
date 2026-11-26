@@ -98,8 +98,11 @@ func (e *Extension) start(ctx context.Context, host component.Host) error {
 		e.logger.Warn("arthas_tunnel.auto_detach is deprecated and ignored; idle reclaim is owned by controlplane.arthas_lifecycle")
 	}
 
-	// Create arthasURICompat with optional distributed manager
-	e.compat = newArthasURICompat(e.ctx, e.logger, e.config, e.distributed, taskSubmitter)
+	// Create arthasURICompat with optional distributed manager and relay metrics.
+	relayMetrics := newRelayMetrics(e.settings.TelemetrySettings.MeterProvider.Meter("otelcol/arthas_tunnel"))
+	e.compat = newArthasURICompat(e.ctx, e.logger, e.config, e.distributed, taskSubmitter,
+		withRelayMetrics(relayMetrics))
+	relayMetrics.setLocalAgentCount(e.compat.localAgentCount)
 
 	if e.distributed != nil {
 		e.logger.Info("Arthas tunnel extension started (distributed mode)",

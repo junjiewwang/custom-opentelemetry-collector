@@ -48,12 +48,13 @@ func (rc *relayConn) safeWriteControl(mt int, data []byte, deadline time.Time) e
 	return rc.Conn.WriteControl(mt, data, deadline)
 }
 
-func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket.Conn) {
+func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket.Conn, observers ...relaySessionObserver) {
 	if a == nil || b == nil {
 		return
 	}
 
 	startTime := time.Now()
+	stats := newRelayStats(startTime)
 
 	connA := &relayConn{Conn: a}
 	connB := &relayConn{Conn: b}
@@ -86,6 +87,11 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 
 	pump := func(src *websocket.Conn, dst *relayConn, srcName, dstName string) {
 		defer closeBoth(srcName + " closed")
+		logger.Debug("Relay pump started",
+			zap.String("from", srcName),
+			zap.String("to", dstName),
+		)
+		loggedWait := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -95,6 +101,10 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 			default:
 			}
 
+			if !loggedWait {
+				logger.Debug("Relay pump waiting for frame", zap.String("from", srcName))
+				loggedWait = true
+			}
 			mt, data, err := src.ReadMessage()
 			if err != nil {
 				// Normal close is expected.
@@ -114,6 +124,22 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 				return
 			}
 
+			stats.record(srcName, len(data))
+			if srcName == "tunnel" && stats.tunnelFrames.Load() == 1 {
+				if latency, ok := stats.firstFrameLatency(); ok {
+					logger.Info("Relay first agent frame received",
+						zap.Duration("wait", latency),
+						zap.Int("bytes", len(data)),
+					)
+				}
+			}
+			logger.Debug("Relay frame read",
+				zap.String("from", srcName),
+				zap.String("to", dstName),
+				zap.Int("message_type", mt),
+				zap.Int("bytes", len(data)),
+			)
+
 			if err := dst.safeWriteMessage(mt, data); err != nil {
 				logger.Debug("Relay write error",
 					zap.String("dst", dstName),
@@ -121,6 +147,11 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 				)
 				return
 			}
+			logger.Debug("Relay frame forwarded",
+				zap.String("from", srcName),
+				zap.String("to", dstName),
+				zap.Int("bytes", len(data)),
+			)
 		}
 	}
 
@@ -160,10 +191,18 @@ func relayWebSocketPair(ctx context.Context, logger *zap.Logger, a, b *websocket
 	case <-done:
 	}
 
-	// Log relay session summary.
+	// Log relay session summary. The counters are emitted at Info so a silent
+	// session can be diagnosed even when Debug logging is disabled.
 	duration := time.Since(startTime)
-	logger.Info("Relay session ended",
+	fields := append([]zap.Field{
 		zap.Duration("duration", duration),
 		zap.String("reason", closeReason),
-	)
+	}, stats.fields()...)
+	logger.Info("Relay session ended", fields...)
+
+	for _, observe := range observers {
+		if observe != nil {
+			observe(stats, duration)
+		}
+	}
 }

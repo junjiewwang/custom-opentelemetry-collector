@@ -43,9 +43,34 @@ const (
 	methodStartTunnel arthasURIMethod = "startTunnel"
 )
 
+// compatOption configures optional collaborators without changing the
+// constructor signature used by the existing tests.
+type compatOption func(*arthasURICompat)
+
+func withRelayObserver(o relaySessionObserver) compatOption {
+	return func(s *arthasURICompat) {
+		if o != nil {
+			s.relayObservers = append(s.relayObservers, o)
+		}
+	}
+}
+
+func withRelayMetrics(m *relayMetrics) compatOption {
+	return func(s *arthasURICompat) {
+		if m == nil {
+			return
+		}
+		s.metrics = m
+		s.relayObservers = append(s.relayObservers, m.recordSession)
+	}
+}
+
 type arthasURICompat struct {
 	logger *zap.Logger
 	cfg    *Config
+
+	relayObservers []relaySessionObserver
+	metrics        *relayMetrics
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -224,7 +249,7 @@ func sendBrowserStatus(conn *websocket.Conn, sessionID, status, message string) 
 
 func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config, distributed *DistributedManager, taskSubmitter interface {
 	SubmitTaskForAgent(ctx context.Context, agentID string, task *model.Task) error
-}) *arthasURICompat {
+}, opts ...compatOption) *arthasURICompat {
 	baseCtx := ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -263,6 +288,11 @@ func newArthasURICompat(ctx context.Context, logger *zap.Logger, cfg *Config, di
 	// implements the activity recorder, Tunnel interactions refresh its timer.
 	if recorder, ok := taskSubmitter.(ArthasActivityRecorder); ok {
 		s.activityRecorder = recorder
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
 	}
 	return s
 }
@@ -522,15 +552,15 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 
 	now := time.Now().UnixMilli()
 	a := &compatAgent{
-		agentID:        agentID,
-		appName:        appName,
-		arthasVersion:  arthasVersion,
-		appID:          appID,
-		remoteAddr:     remoteAddr,
-		conn:           ctx.conn,
-		connectedAt: now,
-		lastPongAt:  now,
-		onActivity:  s.recordActivity,
+		agentID:       agentID,
+		appName:       appName,
+		arthasVersion: arthasVersion,
+		appID:         appID,
+		remoteAddr:    remoteAddr,
+		conn:          ctx.conn,
+		connectedAt:   now,
+		lastPongAt:    now,
+		onActivity:    s.recordActivity,
 	}
 
 	// Replace old agent connection if exists.
@@ -572,7 +602,7 @@ func (s *arthasURICompat) handleAgentRegister(ctx *compatConnContext) {
 
 	ctx.logger.Info("Agent registered",
 		zap.String("agent_id", agentID),
-		zap.String("app_name", appName),
+		zap.String("app_name", "<redacted>"),
 		zap.String("arthas_version", arthasVersion),
 		zap.String("app_id", appID),
 		zap.String("remote_addr", remoteAddr),
@@ -686,6 +716,7 @@ func (s *arthasURICompat) runAgentControlLoops(ctx *compatConnContext, a *compat
 }
 
 func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
+	started := time.Now()
 	agentID := ctx.query.Get("id")
 
 	ctx.logger.Info("[connectArthas] Received browser connect request",
@@ -695,6 +726,7 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 
 	if agentID == "" {
 		ctx.logger.Warn("[connectArthas] Missing agent id in request")
+		s.metrics.recordFailure(stageLookup)
 		_ = sendBrowserStatus(ctx.conn, "", statusError, "Missing agent ID parameter")
 		_ = ctx.conn.Close()
 		return
@@ -784,6 +816,8 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 				zap.String("requested_agent_id", agentID),
 				zap.Duration("timeout", s.connectTimeout()),
 			)
+			s.metrics.recordFailure(stageTimeout)
+			s.metrics.recordPhase(phaseWaitAgent, time.Since(started))
 			_ = sendBrowserStatus(ctx.conn, sessionID, statusError,
 				"Agent is offline. Please ensure the target application has started Arthas and connected to the server.")
 			_ = ctx.conn.Close()
@@ -798,15 +832,18 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 			zap.String("session_id", sessionID),
 			zap.String("target_node", agentNodeAddr),
 		)
+		s.metrics.recordPhase(phaseWaitAgent, time.Since(started))
 		s.proxyConnectArthas(ctx, agentID, sessionID, agentNodeAddr)
 		return
 	}
+
+	s.metrics.recordPhase(phaseWaitAgent, time.Since(started))
 
 	// Agent is local, proceed with normal flow
 	ctx.logger.Info("[connectArthas] Agent found locally",
 		zap.String("agent_id", agentID),
 		zap.String("session_id", sessionID),
-		zap.String("agent_app_name", agent.appName),
+		zap.String("agent_app_name", "<redacted>"),
 		zap.String("agent_arthas_version", agent.arthasVersion),
 		zap.String("agent_remote_addr", agent.remoteAddr),
 		zap.Time("agent_connected_at", time.UnixMilli(agent.connectedAt)),
@@ -837,10 +874,15 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 			zap.String("client_connection_id", clientConnID),
 			zap.Error(err),
 		)
+		s.metrics.recordFailure(stageLookup)
 		_ = sendBrowserStatus(ctx.conn, sessionID, statusError, "Server busy, please try again later")
 		_ = ctx.conn.Close()
 		return
 	}
+
+	mode := s.mode()
+	s.metrics.pendingStarted(mode)
+	defer s.metrics.pendingStopped(mode)
 
 	pendingCounted := true
 	agent.incPending(time.Now().UnixMilli())
@@ -878,10 +920,12 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 			zap.String("client_connection_id", clientConnID),
 			zap.Error(err),
 		)
+		s.metrics.recordFailure(stageStartTunnel)
 		_ = sendBrowserStatus(ctx.conn, sessionID, statusError, "Failed to notify agent, please try again later")
 		s.cleanupPending(clientConnID, ctx.conn, "startTunnel send failed")
 		return
 	}
+	s.metrics.recordPhase(phaseStartTunnel, time.Since(createdAt))
 
 	// Step 5: Send waiting status to browser.
 	if err := sendBrowserStatus(ctx.conn, sessionID, statusWaitingTunnel, "Waiting for agent to establish tunnel..."); err != nil {
@@ -901,8 +945,15 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 
 	// Step 6: Wait for openTunnel from agent using unified pending store.
 	timeout := s.connectTimeout()
+	waitStarted := time.Now()
 	tunnelConn, err := s.pendingStore.WaitForTunnel(s.ctx, clientConnID, timeout)
 	if err != nil {
+		s.metrics.recordPhase(phaseWaitOpenTunnel, time.Since(waitStarted))
+		if err == context.DeadlineExceeded {
+			s.metrics.recordFailure(stageTimeout)
+		} else {
+			s.metrics.recordFailure(stageOpenTunnel)
+		}
 		// Determine the error type
 		if err == context.DeadlineExceeded {
 			ctx.logger.Error("[connectArthas] Timeout waiting for agent openTunnel",
@@ -933,8 +984,10 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 	}
 
 	// Success: pending delivered, remove pending record and start relay.
+	s.metrics.recordPhase(phaseWaitOpenTunnel, time.Since(waitStarted))
 	pendingCounted = false
-	nowMillis := time.Now().UnixMilli()
+	relaySetupStart := time.Now()
+	nowMillis := relaySetupStart.UnixMilli()
 	agent.decPending(nowMillis)
 	// Don't close browser conn, it's used for relay.
 	s.cleanupPending(clientConnID, nil, "")
@@ -947,7 +1000,7 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 	)
 
 	// Step 7: Send ready status to browser.
-	if err := sendBrowserStatus(ctx.conn, sessionID, statusReady, "Connected successfully, terminal is ready"); err != nil {
+	if err := sendBrowserStatus(ctx.conn, sessionID, statusReady, "Relay channel established"); err != nil {
 		ctx.logger.Warn("[connectArthas] Failed to send ready status to browser",
 			zap.String("session_id", sessionID),
 			zap.Error(err),
@@ -963,8 +1016,11 @@ func (s *arthasURICompat) handleConnectArthas(ctx *compatConnContext) {
 		zap.String("agent_tunnel_addr", tunnelConn.RemoteAddr().String()),
 	)
 
+	s.metrics.recordPhase(phaseRelaySetup, time.Since(relaySetupStart))
+	s.metrics.relayStarted()
+	defer s.metrics.relayFinished()
 	agent.incTunnel(nowMillis)
-	relayWebSocketPair(s.ctx, ctx.logger, ctx.conn, tunnelConn)
+	relayWebSocketPair(s.ctx, ctx.logger.With(zap.String("session_id", sessionID)), ctx.conn, tunnelConn, s.relayObservers...)
 	agent.decTunnel(time.Now().UnixMilli())
 }
 
@@ -992,6 +1048,7 @@ func (s *arthasURICompat) proxyConnectArthas(ctx *compatConnContext, agentID, se
 			zap.String("target_node", targetNodeAddr),
 			zap.Error(err),
 		)
+		s.metrics.recordFailure(stageProxy)
 		_ = sendBrowserStatus(ctx.conn, sessionID, statusError, "Failed to connect to agent node")
 		_ = ctx.conn.Close()
 	}
@@ -1185,6 +1242,27 @@ func (s *arthasURICompat) ListAgents() []*ConnectedAgent {
 		agents = append(agents, a.toConnectedAgent())
 	}
 	return agents
+}
+
+// localAgentCount is the gauge source. It reads only the in-memory registry so
+// metric collection never performs network IO.
+func (s *arthasURICompat) localAgentCount() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := int64(0)
+	for _, a := range s.agents {
+		if a != nil && a.conn != nil && !s.isAgentTimeout(a) {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *arthasURICompat) mode() string {
+	if s.distributed != nil {
+		return "distributed"
+	}
+	return "local"
 }
 
 // IsAgentOnline checks if agent is registered and healthy (lastPingAt not timeout).
@@ -1465,7 +1543,7 @@ func (s *arthasURICompat) connectToAgentCrossNode(ctx context.Context, agentID, 
 	// The target node's handleConnectArthas sends terminal-formatted status messages:
 	//   "\033[36m[*] Connecting to agent...\033[0m\r\n"     (CONNECTING)
 	//   "\033[36m[*] Waiting for agent...\033[0m\r\n"       (WAITING_TUNNEL)
-	//   "\033[32m[+] Connected successfully...\033[0m\r\n"  (READY)
+	//   "\033[32m[+] Relay channel established\033[0m\r\n"  (READY)
 	//   "\033[31m[-] Error message...\033[0m\r\n"           (ERROR)
 	//   "\033[33m[!] Timeout message...\033[0m\r\n"         (TIMEOUT)
 	timeout := s.connectTimeout()

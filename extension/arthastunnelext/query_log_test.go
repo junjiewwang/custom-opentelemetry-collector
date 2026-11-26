@@ -4,10 +4,24 @@
 package arthastunnelext
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// TestAgentRegisteredLogDoesNotExposeAppName guards the two log sites where
+// appName is the WS credential. The value must be a fixed marker, never the
+// variable itself.
+func TestAgentRegisteredLogDoesNotExposeAppName(t *testing.T) {
+	src, err := os.ReadFile("arthasuri_compat.go")
+	require.NoError(t, err)
+	content := string(src)
+	require.Contains(t, content, `zap.String("app_name", "<redacted>")`)
+	require.Contains(t, content, `zap.String("agent_app_name", "<redacted>")`)
+	require.NotContains(t, content, `zap.String("app_name", appName)`)
+	require.NotContains(t, content, `zap.String("agent_app_name", agent.appName)`)
+}
 
 func TestSanitizeQueryForLog(t *testing.T) {
 	raw := "method=connectArthas&token=SECRET&appName=SECRET&id=agent-1&service=svc"

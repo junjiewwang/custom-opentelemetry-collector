@@ -12,6 +12,14 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import useTerminal from './useTerminal';
+import {
+  FIRST_FRAME_TIMEOUT_MS,
+  RECONNECT_DELAY_MS,
+  RELAY_BOUND_MESSAGE,
+  decideWatchdogAction,
+  isRelayReadyFrame,
+  isServerStatusFrame,
+} from './terminalReadiness';
 import { apiClient } from '@/api/client';
 import type { Instance, ApiError } from '@/types/api';
 
@@ -73,6 +81,18 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
 
   // 标记 relay 是否已就绪（后端发送 [+] ready 状态后为 true）
   const relayReadyRef = useRef(false);
+  // 首帧看门狗：[+] 只表示通道绑定成功，不代表 Arthas 交互会话可输出。
+  const firstFrameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firstFrameReceivedRef = useRef(false);
+  const retryCountRef = useRef(0);
+  // 连接/重连的同步状态守卫，避免 React state 异步导致的重连失败。
+  const connectingRef = useRef(false);
+  const connectedRef = useRef(false);
+  // 自动重连期间只关闭 ws，不卸载面板、不展示误导性的关闭提示。
+  const autoReconnectingRef = useRef(false);
+  // 保存最新 connectWebSocket 引用，避免看门狗回调产生循环依赖。
+  const connectWebSocketRef = useRef<() => void>(() => {});
 
   const serviceName = instance.service_name || 'unknown';
   const ip = instance.ip || instance.hostname || '';
@@ -159,9 +179,9 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       // 发送到 server
       sendWS({ action: 'read', data });
     },
-    onReady: (cols, rows) => {
-      // 连接 WebSocket 时用的初始尺寸
-      connectWebSocket(cols, rows);
+    onReady: () => {
+      // 初始尺寸在收到 [+] 后随首帧一起发送，避免过早触发 resize。
+      connectWebSocket();
     },
     onResize: (cols, rows) => {
       sendWS({ action: 'resize', cols, rows });
@@ -193,6 +213,14 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       clearTimeout(closeRefreshTimerRef.current);
       closeRefreshTimerRef.current = null;
     }
+    if (firstFrameTimerRef.current) {
+      clearTimeout(firstFrameTimerRef.current);
+      firstFrameTimerRef.current = null;
+    }
+    if (openTimeoutRef.current) {
+      clearTimeout(openTimeoutRef.current);
+      openTimeoutRef.current = null;
+    }
     const ws = wsRef.current;
     if (ws) {
       ws.onopen = null;
@@ -206,47 +234,127 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
 
   // ── WebSocket 连接 ──
 
-  const connectWebSocket = useCallback(async (_initCols?: number, _initRows?: number) => {
-    if (connecting || connected) return;
+  const clearFirstFrameTimer = useCallback(() => {
+    if (firstFrameTimerRef.current) {
+      clearTimeout(firstFrameTimerRef.current);
+      firstFrameTimerRef.current = null;
+    }
+  }, []);
+
+  const clearOpenTimeout = useCallback(() => {
+    if (openTimeoutRef.current) {
+      clearTimeout(openTimeoutRef.current);
+      openTimeoutRef.current = null;
+    }
+  }, []);
+
+  // 首帧看门狗超时：[+] 只代表通道绑定成功，不代表 Arthas 交互会话可输出。
+  const handleFirstFrameTimeout = useCallback(() => {
+    firstFrameTimerRef.current = null;
+    if (disposedRef.current || firstFrameReceivedRef.current) return;
+
+    if (decideWatchdogAction(retryCountRef.current) === 'give-up') {
+      terminal.write('\r\n\x1b[31m[System] Arthas interactive session did not become ready in time. Close this terminal and retry, or restart the target application.\x1b[0m\r\n');
+      setError('Arthas interactive session did not become ready');
+      return;
+    }
+
+    retryCountRef.current += 1;
+    terminal.write('\r\n\x1b[33m[System] Arthas did not respond, reconnecting...\x1b[0m\r\n');
+    autoReconnectingRef.current = true;
+    clearOpenTimeout();
+    const old = wsRef.current;
+    if (old) {
+      old.onopen = null;
+      old.onmessage = null;
+      old.onerror = null;
+      old.onclose = null;
+      try { old.close(); } catch { /* ignore */ }
+      wsRef.current = null;
+    }
+    connectedRef.current = false;
+    connectingRef.current = false;
+    relayReadyRef.current = false;
+    setConnected(false);
+    setTimeout(() => {
+      if (disposedRef.current) return;
+      autoReconnectingRef.current = false;
+      connectWebSocketRef.current();
+    }, RECONNECT_DELAY_MS);
+  }, [terminal, clearOpenTimeout]);
+
+  // 处理一帧下行文本。状态帧继续在终端里显示；真正的 Arthas 输出才算首帧。
+  const handleIncomingFrame = useCallback((text: string) => {
+    if (disposedRef.current) return;
+    if (!relayReadyRef.current && isArthasAPIJson(text)) return;
+
+    const statusFrame = isServerStatusFrame(text);
+    const readyFrame = statusFrame && isRelayReadyFrame(text);
+
+    // 修正"假就绪"：进度状态仍显示，但不再宣称 terminal is ready。
+    terminal.write(readyFrame ? RELAY_BOUND_MESSAGE : text);
+
+    if (!statusFrame && !firstFrameReceivedRef.current) {
+      firstFrameReceivedRef.current = true;
+      clearFirstFrameTimer();
+    }
+
+    if (!relayReadyRef.current && readyFrame) {
+      relayReadyRef.current = true;
+      setTimeout(() => {
+        const dims = terminal.getProposedDimensions();
+        if (dims) sendWS({ action: 'resize', cols: dims.cols, rows: dims.rows });
+      }, 150);
+
+      clearFirstFrameTimer();
+      firstFrameTimerRef.current = setTimeout(handleFirstFrameTimeout, FIRST_FRAME_TIMEOUT_MS);
+    }
+  }, [terminal, sendWS, clearFirstFrameTimer, handleFirstFrameTimeout]);
+
+  const connectWebSocket = useCallback(async (options?: { isRetry?: boolean }) => {
+    if (connectingRef.current || connectedRef.current) return;
+    connectingRef.current = true;
     setConnecting(true);
     setError('');
 
-    // 欢迎消息
-    terminal.write('\x1b[32mArthas Terminal\x1b[0m\r\n');
-    terminal.write(`\x1b[90mService: ${serviceName}\x1b[0m\r\n`);
-    terminal.write(`\x1b[90mInstance: ${ip}\x1b[0m\r\n`);
+    const isRetry = options?.isRetry === true;
+    if (!isRetry) {
+      terminal.write('\x1b[32mArthas Terminal\x1b[0m\r\n');
+      terminal.write(`\x1b[90mService: ${serviceName}\x1b[0m\r\n`);
+      terminal.write(`\x1b[90mInstance: ${ip}\x1b[0m\r\n`);
+    }
 
     try {
-      // 如果 tunnel 未就绪，先尝试 attach
-      if (!instance.arthas_tunnel_agent_id) {
+      // 重试时跳过 attach：Arthas 已在运行，重复 attach 只会多一次任务与等待。
+      if (!isRetry && !instance.arthas_tunnel_agent_id) {
         terminal.write('\x1b[33m[System] Tunnel not ready, trying to attach Arthas...\x1b[0m\r\n');
         try {
           await apiClient.attachArthas(instance.agent_id);
           terminal.write('\x1b[32m[System] Attach request sent, waiting...\x1b[0m\r\n');
-          // 等待 tunnel 就绪
           await new Promise(r => setTimeout(r, 2000));
         } catch (attachErr) {
           terminal.write(`\x1b[31m[System] Attach failed: ${(attachErr as ApiError).message}\x1b[0m\r\n`);
           setError('Attach failed');
           setConnecting(false);
+          connectingRef.current = false;
           return;
         }
       }
 
-      const agentId = tunnelAgentId || instance.agent_id;
+      // 重试不依赖旧的 tunnelAgentId prop，直接用实例 ID。
+      const agentId = isRetry ? instance.agent_id : (tunnelAgentId || instance.agent_id);
       if (!agentId) {
         terminal.write('\x1b[31m[System] No agent ID available\x1b[0m\r\n');
         setError('No agent ID');
         setConnecting(false);
+        connectingRef.current = false;
         return;
       }
 
-      // 获取 WS Token
       terminal.write('\x1b[90m[System] Authenticating...\x1b[0m\r\n');
       const tokenRes = await apiClient.generateWSToken();
       if (!tokenRes.token) throw new Error('Failed to obtain WebSocket token');
 
-      // 建立 WebSocket 连接
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const qs = new URLSearchParams({
         method: 'connectArthas',
@@ -257,71 +365,31 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       const wsUrl = `${protocol}//${window.location.host}/api/v2/arthas/ws?${qs.toString()}`;
 
       terminal.write('\x1b[90m[System] Connecting to Arthas...\x1b[0m\r\n');
-
       const ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
+      relayReadyRef.current = false;
+      firstFrameReceivedRef.current = false;
+      clearFirstFrameTimer();
 
       ws.onopen = () => {
+        connectingRef.current = false;
+        connectedRef.current = true;
         setConnected(true);
         setConnecting(false);
-        relayReadyRef.current = false;
-        // 注意：此时后端还在执行 connectArthas 流程（查找 agent → startTunnel → 等待 openTunnel），
-        // 尚未进入 relay 模式，所以不能在这里发送 resize，否则 Arthas 收不到。
-        // resize 会在检测到后端 ready 状态消息后发送。
         terminal.focus();
         onStatusChange?.();
       };
 
       ws.onmessage = (event) => {
-
-        let text = '';
         if (event.data instanceof ArrayBuffer) {
-          text = new TextDecoder('utf-8').decode(new Uint8Array(event.data));
+          handleIncomingFrame(new TextDecoder('utf-8').decode(new Uint8Array(event.data)));
         } else if (typeof event.data === 'string') {
-          text = event.data;
+          handleIncomingFrame(event.data);
         } else if (event.data instanceof Blob) {
-          event.data.arrayBuffer().then(buf => {
-            const decoded = new TextDecoder('utf-8').decode(new Uint8Array(buf));
-            if (!relayReadyRef.current && isArthasAPIJson(decoded)) {
-              return;
-            }
-            terminal.write(decoded);
-            // Blob 类型也需要检测 ready 状态
-            if (!relayReadyRef.current && decoded.includes('[+]')) {
-              relayReadyRef.current = true;
-              setTimeout(() => {
-                const dims = terminal.getProposedDimensions();
-                if (dims) {
-                  sendWS({ action: 'resize', cols: dims.cols, rows: dims.rows });
-                }
-              }, 150);
-            }
+          void event.data.arrayBuffer().then(buf => {
+            handleIncomingFrame(new TextDecoder('utf-8').decode(new Uint8Array(buf)));
           });
-          return;
-        }
-
-        // Drain Arthas HTTP API JSON initialization messages.
-        // When the relay opens, the agent may flush pending HTTP API responses
-        // as JSON before switching to interactive TUI mode.  We discard those
-        // frames so the terminal stays clean.
-        if (!relayReadyRef.current && isArthasAPIJson(text)) {
-          return;
-        }
-
-        terminal.write(text);
-
-        // 检测后端发送的 ready 状态消息（"[+] Connected successfully, terminal is ready"）
-        // 此时后端已进入 relayWebSocketPair 模式，可以安全发送 resize 触发 Arthas banner
-        if (!relayReadyRef.current && text.includes('[+]')) {
-          relayReadyRef.current = true;
-          // Notify terminal size so Arthas renders at the correct dimensions.
-          setTimeout(() => {
-            const dims = terminal.getProposedDimensions();
-            if (dims) {
-              sendWS({ action: 'resize', cols: dims.cols, rows: dims.rows });
-            }
-          }, 150);
         }
       };
 
@@ -331,17 +399,19 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       };
 
       ws.onclose = (event) => {
+        connectedRef.current = false;
+        connectingRef.current = false;
         setConnected(false);
-        wsRef.current = null;
+        if (wsRef.current === ws) wsRef.current = null;
+        clearFirstFrameTimer();
+        clearOpenTimeout();
+
+        // 自动重连时旧连接由看门狗主动关闭，不展示误导性的 Connection closed。
+        if (autoReconnectingRef.current || suppressCloseRefreshRef.current || disposedRef.current) return;
         const reason = event.reason ? `, reason: ${event.reason}` : '';
         terminal.write(`\r\n\x1b[33m[System] Connection closed (code: ${event.code}${reason})\x1b[0m\r\n`);
 
-        // 用户主动关闭或组件已卸载时，禁止旧面板的延迟刷新继续污染当前页面
-        if (suppressCloseRefreshRef.current || disposedRef.current) return;
-
-        if (closeRefreshTimerRef.current) {
-          clearTimeout(closeRefreshTimerRef.current);
-        }
+        if (closeRefreshTimerRef.current) clearTimeout(closeRefreshTimerRef.current);
         closeRefreshTimerRef.current = setTimeout(() => {
           if (suppressCloseRefreshRef.current || disposedRef.current) return;
           onStatusChange?.();
@@ -349,12 +419,13 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
         }, 500);
       };
 
-      // 超时保护
-      setTimeout(() => {
+      clearOpenTimeout();
+      openTimeoutRef.current = setTimeout(() => {
         if (ws.readyState !== WebSocket.OPEN) {
           try { ws.close(); } catch { /* ignore */ }
           setError('Connection timeout');
           setConnecting(false);
+          connectingRef.current = false;
           terminal.write('\r\n\x1b[31m[System] Connection timeout (15s)\x1b[0m\r\n');
         }
       }, 15000);
@@ -362,9 +433,13 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
     } catch (e) {
       setError((e as Error).message || 'Connection failed');
       setConnecting(false);
+      connectingRef.current = false;
       terminal.write(`\r\n\x1b[31m[System] Error: ${(e as Error).message}\x1b[0m\r\n`);
     }
-  }, [connecting, connected, instance, tunnelAgentId, serviceName, ip, terminal, sendWS, onStatusChange]);
+  }, [instance, tunnelAgentId, serviceName, ip, terminal, sendWS, onStatusChange,
+      handleIncomingFrame, clearFirstFrameTimer, clearOpenTimeout]);
+
+  connectWebSocketRef.current = () => { void connectWebSocket({ isRetry: true }); };
 
   // ── 关闭 ──
 
@@ -374,6 +449,16 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       clearTimeout(closeRefreshTimerRef.current);
       closeRefreshTimerRef.current = null;
     }
+    if (firstFrameTimerRef.current) {
+      clearTimeout(firstFrameTimerRef.current);
+      firstFrameTimerRef.current = null;
+    }
+    if (openTimeoutRef.current) {
+      clearTimeout(openTimeoutRef.current);
+      openTimeoutRef.current = null;
+    }
+    connectedRef.current = false;
+    connectingRef.current = false;
 
     const ws = wsRef.current;
     if (ws) {
