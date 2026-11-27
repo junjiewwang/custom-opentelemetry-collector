@@ -63,6 +63,11 @@ export interface InstrumentationRule {
   capture_max_length?: number;
   force?: boolean;
   desired_state: InstrumentationRuleDesiredState;
+  ever_apply_succeeded?: boolean;
+  revision?: number;
+  uninstall_confirmed?: boolean;
+  uninstall_evidence_source?: string;
+  uninstall_confirmed_at_millis?: number;
   created_at_millis: number;
   updated_at_millis: number;
   created_by?: string;

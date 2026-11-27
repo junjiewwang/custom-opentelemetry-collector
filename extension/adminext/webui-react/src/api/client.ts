@@ -346,6 +346,25 @@ class ApiClient {
     return this.request<InstrumentationRuleRuntimeSnapshot>('POST', `/instrumentation/rules/${encodeURIComponent(ruleId)}/runtime-snapshot/refresh`);
   }
 
+  listTenantInstrumentationRules(params?: { app_id?: string; service_name?: string; unconfirmed?: boolean }): Promise<InstrumentationRule[]> {
+    const qs = new URLSearchParams();
+    if (params?.app_id) qs.set('app_id', params.app_id);
+    if (params?.service_name) qs.set('service_name', params.service_name);
+    if (params?.unconfirmed) qs.set('unconfirmed', 'true');
+    return this.request<{ rules: InstrumentationRule[]; total: number }>('GET', `/tenant/instrumentation/rules${qs.toString() ? '?' + qs : ''}`)
+      .then(res => res.rules || []);
+  }
+
+  verifyInstrumentationUninstall(ruleId: string): Promise<InstrumentationRule> {
+    return this.request<{ rule: InstrumentationRule }>('POST', `/tenant/instrumentation/rules/${encodeURIComponent(ruleId)}/verify`)
+      .then(res => res.rule);
+  }
+
+  purgeInstrumentationRule(ruleId: string, reason: string): Promise<void> {
+    return this.request<{ purged: string }>('POST', `/tenant/instrumentation/rules/${encodeURIComponent(ruleId)}/purge`, { reason })
+      .then(() => undefined);
+  }
+
   // ========================================================================
   // Arthas
   // ========================================================================

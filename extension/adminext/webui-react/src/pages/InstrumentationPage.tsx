@@ -871,6 +871,7 @@ export default function InstrumentationPage() {
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState<RuleStateFilter>('all');
   const [typeFilter, setTypeFilter] = useState<RuleTypeFilter>('all');
+  const [unconfirmedOnly, setUnconfirmedOnly] = useState(false);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<InstrumentationRule | null>(null);
@@ -1084,6 +1085,7 @@ export default function InstrumentationPage() {
     return rules.filter(rule => {
       if (stateFilter !== 'all' && rule.desired_state !== stateFilter) return false;
       if (typeFilter !== 'all' && rule.instrument_type !== typeFilter) return false;
+      if (unconfirmedOnly && (rule.desired_state !== 'deleted' || rule.uninstall_confirmed)) return false;
       if (!query) return true;
       return [
         rule.name,
@@ -1094,13 +1096,14 @@ export default function InstrumentationPage() {
         rule.instrument_type,
       ].some(field => (field || '').toLowerCase().includes(query));
     });
-  }, [rules, search, stateFilter, typeFilter]);
+  }, [rules, search, stateFilter, typeFilter, unconfirmedOnly]);
 
   const counts = useMemo(() => ({
     total: rules.length,
     active: rules.filter(rule => rule.desired_state === 'active').length,
     paused: rules.filter(rule => rule.desired_state === 'paused').length,
     deleted: rules.filter(rule => rule.desired_state === 'deleted').length,
+    unconfirmed: rules.filter(rule => rule.desired_state === 'deleted' && !rule.uninstall_confirmed).length,
   }), [rules]);
 
   const selectedApp = useMemo(
@@ -1225,6 +1228,38 @@ export default function InstrumentationPage() {
     }
   }, [confirm, loadRules, showToast]);
 
+  const handleVerifyUninstall = useCallback(async (rule: InstrumentationRule) => {
+    try {
+      const updated = await apiClient.verifyInstrumentationUninstall(rule.rule_id);
+      showToast(
+        updated.uninstall_confirmed ? 'Uninstall evidence confirmed' : 'Uninstall evidence still missing',
+        updated.uninstall_confirmed ? 'success' : 'error',
+      );
+      await loadRules(updated.app_id, updated.service_name);
+      setSelectedRule(updated);
+    } catch (e) {
+      showToast(`Failed to verify uninstall: ${(e as ApiError).message}`, 'error');
+    }
+  }, [loadRules, showToast]);
+
+  const handlePurgeRule = useCallback(async (rule: InstrumentationRule) => {
+    const ok = await confirm({
+      title: 'Purge Instrumentation Rule',
+      message: `Permanently remove deleted rule "${rule.name || summarizeRule(rule)}" and its targets? This cannot be undone${rule.uninstall_confirmed ? '' : ' and uninstall evidence is still missing'}.`,
+      confirmText: 'Purge',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    try {
+      await apiClient.purgeInstrumentationRule(rule.rule_id, 'purged from instrumentation console');
+      showToast('Instrumentation rule purged', 'success');
+      setSelectedRule(null);
+      await loadRules(rule.app_id, rule.service_name);
+    } catch (e) {
+      showToast(`Failed to purge rule: ${(e as ApiError).message}`, 'error');
+    }
+  }, [confirm, loadRules, showToast]);
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex-shrink-0 flex items-center gap-4 pb-2">
@@ -1310,6 +1345,15 @@ export default function InstrumentationPage() {
                   </button>
                 );
               })}
+              <label className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border border-amber-200 bg-amber-50 text-amber-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={unconfirmedOnly}
+                  onChange={e => setUnconfirmedOnly(e.target.checked)}
+                  className="rounded"
+                />
+                Unconfirmed ({counts.unconfirmed})
+              </label>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -1484,6 +1528,28 @@ export default function InstrumentationPage() {
                     >
                       <i className="fas fa-trash-alt mr-2 text-xs" />Delete
                     </button>
+
+                    {selectedRule.desired_state === 'deleted' && (
+                      <>
+                        <span className={`px-2 py-1 rounded text-[11px] font-medium ${selectedRule.uninstall_confirmed ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
+                          {selectedRule.uninstall_confirmed
+                            ? `Evidence: ${selectedRule.uninstall_evidence_source || 'confirmed'}`
+                            : 'Evidence: missing'}
+                        </span>
+                        <button
+                          onClick={() => handleVerifyUninstall(selectedRule)}
+                          className="px-3 py-2 rounded-lg border border-gray-200 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 transition"
+                        >
+                          <i className="fas fa-sync mr-2 text-xs" />Verify
+                        </button>
+                        <button
+                          onClick={() => handlePurgeRule(selectedRule)}
+                          className="px-3 py-2 rounded-lg border border-red-300 bg-red-50 text-red-700 text-sm font-medium hover:bg-red-100 transition"
+                        >
+                          <i className="fas fa-eraser mr-2 text-xs" />Purge
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

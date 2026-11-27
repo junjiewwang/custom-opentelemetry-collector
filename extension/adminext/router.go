@@ -256,6 +256,16 @@ func (e *Extension) newRouter() http.Handler {
 			r.Post("/rules/{ruleID}/runtime-snapshot/refresh", admin.refreshInstrumentationRuntimeSnapshot)
 		})
 
+		// Tenant self-service instrumentation cleanup. Deliberately NOT behind
+		// requireAdminMiddleware (that middleware blocks tk_ keys). App-level
+		// ownership is enforced per rule in the handlers.
+		r.Route("/tenant/instrumentation", func(r chi.Router) {
+			r.Use(withInstrumentationActor)
+			r.Get("/rules", admin.listTenantInstrumentationRules)
+			r.Post("/rules/{ruleID}/verify", admin.verifyTenantInstrumentationRule)
+			r.Post("/rules/{ruleID}/purge", admin.purgeTenantInstrumentationRule)
+		})
+
 		// ============================================================================
 		// Dashboard (admin-only — cross-tenant aggregate overview)
 		// ============================================================================

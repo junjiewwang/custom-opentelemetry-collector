@@ -13,6 +13,18 @@ import (
 	"go.opentelemetry.io/collector/custom/extension/controlplaneext/instrumentationmanager"
 )
 
+// instrumentationError maps manager errors to HTTP status codes. A revision
+// conflict means another writer won the CAS race; retrying is the caller's job.
+func instrumentationError(err error) *APIError {
+	if errors.Is(err, instrumentationmanager.ErrRevisionConflict) {
+		return errConflict("rule was modified concurrently; retry the operation")
+	}
+	if errors.Is(err, instrumentationmanager.ErrRuleNotFound) {
+		return errNotFound(err.Error())
+	}
+	return errBadRequest(err.Error())
+}
+
 func (h *adminHandlers) listInstrumentationRules(w http.ResponseWriter, r *http.Request) {
 	if h.instrMgr == nil {
 		h.handleError(w, errInternal("instrumentation manager not available"))
@@ -30,7 +42,7 @@ func (h *adminHandlers) listInstrumentationRules(w http.ResponseWriter, r *http.
 
 	rules, err := h.instrMgr.ListRules(r.Context(), query)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
@@ -48,13 +60,13 @@ func (h *adminHandlers) createInstrumentationRule(w http.ResponseWriter, r *http
 
 	req, err := decodeJSON[instrumentationmanager.CreateRuleRequest](r)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
 	rule, err := h.instrMgr.CreateRule(r.Context(), req)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
@@ -86,13 +98,13 @@ func (h *adminHandlers) updateInstrumentationRule(w http.ResponseWriter, r *http
 	ruleID := chi.URLParam(r, "ruleID")
 	req, err := decodeJSON[instrumentationmanager.UpdateRuleRequest](r)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
 	rule, err := h.instrMgr.UpdateRule(r.Context(), ruleID, req)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
@@ -108,7 +120,7 @@ func (h *adminHandlers) pauseInstrumentationRule(w http.ResponseWriter, r *http.
 	ruleID := chi.URLParam(r, "ruleID")
 	rule, err := h.instrMgr.PauseRule(r.Context(), ruleID)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
@@ -124,7 +136,7 @@ func (h *adminHandlers) resumeInstrumentationRule(w http.ResponseWriter, r *http
 	ruleID := chi.URLParam(r, "ruleID")
 	rule, err := h.instrMgr.ResumeRule(r.Context(), ruleID)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
@@ -140,7 +152,7 @@ func (h *adminHandlers) deleteInstrumentationRule(w http.ResponseWriter, r *http
 	ruleID := chi.URLParam(r, "ruleID")
 	rule, err := h.instrMgr.DeleteRule(r.Context(), ruleID)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
@@ -156,7 +168,7 @@ func (h *adminHandlers) listInstrumentationTargets(w http.ResponseWriter, r *htt
 	ruleID := chi.URLParam(r, "ruleID")
 	targets, err := h.instrMgr.ListTargetStatuses(r.Context(), ruleID)
 	if err != nil {
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
@@ -179,7 +191,7 @@ func (h *adminHandlers) getInstrumentationRuntimeSnapshot(w http.ResponseWriter,
 			h.handleError(w, errNotFound(err.Error()))
 			return
 		}
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
@@ -199,7 +211,7 @@ func (h *adminHandlers) refreshInstrumentationRuntimeSnapshot(w http.ResponseWri
 			h.handleError(w, errNotFound(err.Error()))
 			return
 		}
-		h.handleError(w, errBadRequest(err.Error()))
+		h.handleError(w, instrumentationError(err))
 		return
 	}
 
