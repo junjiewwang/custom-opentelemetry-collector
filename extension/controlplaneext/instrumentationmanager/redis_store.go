@@ -111,10 +111,7 @@ func (s *RedisRuleStore) SaveRule(ctx context.Context, rule *Rule, isNew bool) e
 	}
 
 	payload := cloneRule(rule)
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal rule: %w", err)
-	}
+	committedRevision := int64(0)
 
 	const maxRetries = 3
 	for i := 0; i < maxRetries; i++ {
@@ -129,13 +126,35 @@ func (s *RedisRuleStore) SaveRule(ctx context.Context, rule *Rule, isNew bool) e
 			if !exists && !isNew {
 				return ErrRuleNotFound
 			}
+			currentRevision := int64(0)
+			if !isNew {
+				raw, err := tx.HGet(ctx, s.rulesKey(), payload.ID).Bytes()
+				if err != nil {
+					return err
+				}
+				var current Rule
+				if err := json.Unmarshal(raw, &current); err != nil {
+					return err
+				}
+				currentRevision = current.Revision
+			}
+			next := cloneRule(payload)
+			next.Revision = currentRevision + 1
+			data, err := json.Marshal(next)
+			if err != nil {
+				return err
+			}
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.HSet(ctx, s.rulesKey(), payload.ID, data)
 				return nil
 			})
+			if err == nil {
+				committedRevision = next.Revision
+			}
 			return err
 		}, s.rulesKey())
 		if err == nil {
+			rule.Revision = committedRevision
 			return nil
 		}
 		if errors.Is(err, redis.TxFailedErr) {
@@ -145,6 +164,82 @@ func (s *RedisRuleStore) SaveRule(ctx context.Context, rule *Rule, isNew bool) e
 		return fmt.Errorf("save rule: %w", err)
 	}
 	return fmt.Errorf("save rule: %w", redis.TxFailedErr)
+}
+
+// CommitRule atomically writes the rule and (when targets != nil) its targets
+// while checking the optimistic revision. ErrRevisionConflict is returned
+// without a retry so callers can surface HTTP 409.
+func (s *RedisRuleStore) CommitRule(ctx context.Context, rule *Rule, targets []*RuleTargetStatus, expectedRevision int64) error {
+	if rule == nil || strings.TrimSpace(rule.ID) == "" {
+		return errors.New("rule_id is required")
+	}
+	client, err := s.getClient()
+	if err != nil {
+		return err
+	}
+	payload := cloneRule(rule)
+	var targetData []byte
+	if targets != nil {
+		targetData, err = json.Marshal(cloneAndSortTargetStatuses(targets))
+		if err != nil {
+			return fmt.Errorf("marshal target statuses: %w", err)
+		}
+	}
+	committedRevision := int64(0)
+
+	const maxRetries = 3
+	for i := 0; i < maxRetries; i++ {
+		err = client.Watch(ctx, func(tx *redis.Tx) error {
+			raw, err := tx.HGet(ctx, s.rulesKey(), payload.ID).Bytes()
+			if err == redis.Nil {
+				return ErrRuleNotFound
+			}
+			if err != nil {
+				return err
+			}
+			var current Rule
+			if err := json.Unmarshal(raw, &current); err != nil {
+				return err
+			}
+			if expectedRevision != SkipRevisionCheck && current.Revision != expectedRevision {
+				return ErrRevisionConflict
+			}
+			next := cloneRule(payload)
+			next.Revision = current.Revision + 1
+			data, err := json.Marshal(next)
+			if err != nil {
+				return err
+			}
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.HSet(ctx, s.rulesKey(), payload.ID, data)
+				if targetData != nil {
+					if len(targets) == 0 {
+						pipe.Del(ctx, s.targetKey(payload.ID))
+					} else {
+						pipe.Set(ctx, s.targetKey(payload.ID), targetData, 0)
+					}
+				}
+				return nil
+			})
+			if err == nil {
+				committedRevision = next.Revision
+			}
+			return err
+		}, s.rulesKey(), s.targetKey(payload.ID))
+		if err == nil {
+			rule.Revision = committedRevision
+			return nil
+		}
+		if errors.Is(err, ErrRevisionConflict) {
+			return err
+		}
+		if errors.Is(err, redis.TxFailedErr) {
+			sleepBeforeRedisRetry(i + 1)
+			continue
+		}
+		return fmt.Errorf("commit rule: %w", err)
+	}
+	return fmt.Errorf("commit rule: %w", redis.TxFailedErr)
 }
 
 func (s *RedisRuleStore) GetRule(ctx context.Context, ruleID string) (*Rule, error) {

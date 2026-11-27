@@ -468,6 +468,15 @@ extensions:
       # GC (Garbage Collection) settings for deleted rules
       # gc_interval_millis: 60000                        # How often GC scans for eligible rules (default: 60s)
       # deleted_rule_retention_millis: 604800000          # How long to keep deleted rules before physical removal (default: 7 days)
+      # A deleted rule is only purged after uninstall evidence is recorded.
+      # Keeping unconfirmed rules is what lets reconcile re-dispatch remove
+      # when an offline agent comes back. Set gc_uninstall_evidence_required
+      # to false to roll back to the legacy terminal-state GC.
+      gc_uninstall_evidence_required: true
+      gc_evidence_scan_interval_millis: 300000            # global cycle (one elected replica), ±10% jitter
+      gc_evidence_max_rules_per_scan: 50                 # global quota per cycle, not per replica
+      gc_evidence_batch_lease_ttl_millis: 120000
+      gc_unconfirmed_alert_after_millis: 604800000
       # Reconcile target expiration
       # reconcile_target_expire_timeout_millis: 604800000 # Auto-expire offline targets after this duration (default: 7 days)
     

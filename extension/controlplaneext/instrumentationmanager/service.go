@@ -35,6 +35,8 @@ type InstrumentationService struct {
 	reconcileWG         sync.WaitGroup
 	gcCancel            context.CancelFunc
 	gcWG                sync.WaitGroup
+	evidenceCancel      context.CancelFunc
+	evidenceWG          sync.WaitGroup
 }
 
 var _ InstrumentationManager = (*InstrumentationService)(nil)
@@ -72,10 +74,12 @@ func (s *InstrumentationService) Start(ctx context.Context) error {
 	}
 	s.startReconcileWorker()
 	s.startGCWorker()
+	s.startEvidenceVerifier()
 	return nil
 }
 
 func (s *InstrumentationService) Close() error {
+	s.stopEvidenceVerifier()
 	s.stopGCWorker()
 	s.stopReconcileWorker()
 	return errors.Join(s.runtimeSnapshots.Close(), s.store.Close())
@@ -131,6 +135,46 @@ func (s *InstrumentationService) CreateRule(ctx context.Context, req *CreateRule
 		return nil, err
 	}
 	return s.GetRule(ctx, rule.ID)
+}
+
+// commitRule writes the rule (and optionally its targets) under the revision
+// the caller read. A conflict is propagated so the HTTP layer can return 409.
+func (s *InstrumentationService) commitRule(ctx context.Context, rule *Rule, targets []*RuleTargetStatus) error {
+	return s.store.CommitRule(ctx, rule, targets, rule.Revision)
+}
+
+// commitRuleBestEffort is for background workers. On a revision conflict it
+// re-reads the stored rule and re-applies only the fields this cycle owns
+// (summary/operation/audits/timestamps), never DesiredState, so a concurrent
+// DeleteRule can never be overwritten back to active. A second conflict is
+// abandoned; the next reconcile/evidence cycle retries naturally.
+func (s *InstrumentationService) commitRuleBestEffort(ctx context.Context, rule *Rule, targets []*RuleTargetStatus) error {
+	err := s.commitRule(ctx, rule, targets)
+	if !errors.Is(err, ErrRevisionConflict) {
+		return err
+	}
+	latest, getErr := s.store.GetRule(ctx, rule.ID)
+	if getErr != nil {
+		return nil
+	}
+	latest.Summary = rule.Summary
+	latest.LastOperation = rule.LastOperation
+	latest.UpdatedAtMillis = rule.UpdatedAtMillis
+	latest.RecentAudits = rule.RecentAudits
+	latest.EverApplySucceeded = rule.EverApplySucceeded || latest.EverApplySucceeded
+	if rule.UninstallConfirmed {
+		latest.UninstallConfirmed = true
+		latest.UninstallEvidenceSource = rule.UninstallEvidenceSource
+		latest.UninstallConfirmedAtMillis = rule.UninstallConfirmedAtMillis
+	}
+	if retryErr := s.store.CommitRule(ctx, latest, targets, latest.Revision); retryErr != nil {
+		if errors.Is(retryErr, ErrRevisionConflict) {
+			return nil
+		}
+		return retryErr
+	}
+	rule.Revision = latest.Revision
+	return nil
 }
 
 func (s *InstrumentationService) GetRule(ctx context.Context, ruleID string) (*Rule, error) {
@@ -193,7 +237,7 @@ func (s *InstrumentationService) UpdateRule(ctx context.Context, ruleID string, 
 		rule.Name = defaultRuleName(rule)
 	}
 
-	if err := s.store.SaveRule(ctx, rule, false); err != nil {
+	if err := s.commitRule(ctx, rule, nil); err != nil {
 		return nil, err
 	}
 	if rule.DesiredState == RuleDesiredStateActive {
@@ -215,7 +259,7 @@ func (s *InstrumentationService) PauseRule(ctx context.Context, ruleID string) (
 	rule.DesiredState = RuleDesiredStatePaused
 	rule.UpdatedAtMillis = time.Now().UnixMilli()
 	rule.UpdatedBy = ruleActorID(ctx, rule.UpdatedBy)
-	if err := s.store.SaveRule(ctx, rule, false); err != nil {
+	if err := s.commitRule(ctx, rule, nil); err != nil {
 		return nil, err
 	}
 	if err := s.dispatchRuleOperation(ctx, rule, OperationTypeRemove); err != nil {
@@ -238,7 +282,7 @@ func (s *InstrumentationService) ResumeRule(ctx context.Context, ruleID string) 
 	rule.DesiredState = RuleDesiredStateActive
 	rule.UpdatedAtMillis = time.Now().UnixMilli()
 	rule.UpdatedBy = ruleActorID(ctx, rule.UpdatedBy)
-	if err := s.store.SaveRule(ctx, rule, false); err != nil {
+	if err := s.commitRule(ctx, rule, nil); err != nil {
 		return nil, err
 	}
 	if err := s.dispatchRuleOperation(ctx, rule, OperationTypeApply); err != nil {
@@ -258,13 +302,35 @@ func (s *InstrumentationService) DeleteRule(ctx context.Context, ruleID string) 
 	rule.DesiredState = RuleDesiredStateDeleted
 	rule.UpdatedAtMillis = time.Now().UnixMilli()
 	rule.UpdatedBy = ruleActorID(ctx, rule.UpdatedBy)
-	if err := s.store.SaveRule(ctx, rule, false); err != nil {
+	if err := s.commitRule(ctx, rule, nil); err != nil {
 		return nil, err
 	}
 	if err := s.dispatchRuleOperation(ctx, rule, OperationTypeRemove); err != nil {
 		return nil, err
 	}
 	return s.GetRule(ctx, rule.ID)
+}
+
+// PurgeRule physically removes a deleted rule. It is an explicit operator
+// action; authorization is enforced by the HTTP layer before calling here.
+func (s *InstrumentationService) PurgeRule(ctx context.Context, ruleID string, reason string) error {
+	rule, err := s.store.GetRule(ctx, ruleID)
+	if err != nil {
+		return err
+	}
+	if rule.DesiredState != RuleDesiredStateDeleted {
+		return errors.New("only deleted rules can be purged")
+	}
+	if err := s.store.PhysicalDeleteRule(ctx, ruleID); err != nil && !errors.Is(err, ErrRuleNotFound) {
+		return err
+	}
+	s.logger.Info("Instrumentation rule purged",
+		zap.String("rule_id", ruleID),
+		zap.String("rule_name", rule.Name),
+		zap.String("reason", strings.TrimSpace(reason)),
+		zap.String("actor", ruleActorID(ctx, "")),
+	)
+	return nil
 }
 
 func (s *InstrumentationService) ListTargetStatuses(ctx context.Context, ruleID string) ([]*RuleTargetStatus, error) {
@@ -319,10 +385,7 @@ func (s *InstrumentationService) refreshRule(ctx context.Context, rule *Rule) (*
 		updated = true
 	}
 	if updated {
-		if err := s.store.SaveTargetStatuses(ctx, rule.ID, targets); err != nil {
-			return nil, err
-		}
-		if err := s.store.SaveRule(ctx, rule, false); err != nil {
+		if err := s.commitRuleBestEffort(ctx, rule, targets); err != nil {
 			return nil, err
 		}
 	}
@@ -358,7 +421,8 @@ func (s *InstrumentationService) refreshTargetStatus(ctx context.Context, rule *
 		if target.State == TargetStateApplied && !rule.EverApplySucceeded {
 			rule.EverApplySucceeded = true
 		}
-		return currentState != target.State || currentTaskStatus != target.TaskStatus || currentError != target.LastErrorMessage, nil
+		evidenceChanged := markWeakUninstallEvidence(target)
+		return currentState != target.State || currentTaskStatus != target.TaskStatus || currentError != target.LastErrorMessage || evidenceChanged, nil
 	}
 
 	info, err := s.taskMgr.GetTaskStatus(ctx, target.TaskID)
@@ -369,9 +433,34 @@ func (s *InstrumentationService) refreshTargetStatus(ctx context.Context, rule *
 		return false, nil
 	}
 	target.TaskStatus = normalizeTaskStatus(info.Status)
-	target.State = mapInfoStatusToTargetState(info.Status)
+	mapped := mapInfoStatusToTargetState(info.Status, rule.DesiredState)
+	// A task-status snapshot is authoritative only when it is itself terminal.
+	// Otherwise keep the terminal state derived from the task result: results
+	// are evicted by result_ttl while the task record remains, and mapping an
+	// evicted SUCCESS to "pending" silently rolled applied targets back to an
+	// un-instrumented state (reported as Low Coverage in the console).
+	// A newly dispatched operation resets State to dispatched first, so this
+	// guard never blocks a new task from progressing.
+	if !isResultDerivedTerminalState(currentState) || isResultDerivedTerminalState(mapped) {
+		target.State = mapped
+	}
 	target.UpdatedAtMillis = now
-	return currentState != target.State || currentTaskStatus != target.TaskStatus, nil
+	evidenceChanged := markWeakUninstallEvidence(target)
+	return currentState != target.State || currentTaskStatus != target.TaskStatus || evidenceChanged, nil
+}
+
+// markWeakUninstallEvidence records that the uninstall task reported success.
+// This is NOT sufficient for GC: only a runtime snapshot can prove the probe
+// actually reverted the enhancement.
+func markWeakUninstallEvidence(target *RuleTargetStatus) bool {
+	if target == nil || target.TaskType != taskTypeForOperation(OperationTypeRemove) {
+		return false
+	}
+	if target.TaskStatus != "success" || target.UninstallTaskAcked {
+		return false
+	}
+	target.UninstallTaskAcked = true
+	return true
 }
 
 func (s *InstrumentationService) dispatchRuleOperation(ctx context.Context, rule *Rule, operationType OperationType) error {
@@ -433,10 +522,7 @@ func (s *InstrumentationService) dispatchRuleOperation(ctx context.Context, rule
 	rule.UpdatedAtMillis = now
 	rule.RecentAudits = appendRuleAudits(rule.RecentAudits, withAuditOperator(ctx, audits), s.auditRetention())
 
-	if err := s.store.SaveTargetStatuses(ctx, rule.ID, targets); err != nil {
-		return err
-	}
-	if err := s.store.SaveRule(ctx, rule, false); err != nil {
+	if err := s.commitRule(ctx, rule, targets); err != nil {
 		return err
 	}
 	s.markRuntimeSnapshotsDirty(ctx, uniqueStrings(dirtyAgentIDs))
@@ -599,14 +685,41 @@ func mapResultStatusToTargetState(status model.TaskStatus, desired RuleDesiredSt
 	}
 }
 
-func mapInfoStatusToTargetState(status model.TaskStatus) TargetState {
+// mapInfoStatusToTargetState maps a task status snapshot to a target state.
+// Unlike the result mapper, pending/unspecified resolve to "dispatched" here:
+// a task record without a result means the operation was handed to the agent.
+// Terminal outcomes are mapped exactly like results, in particular SUCCESS
+// resolves to applied/removed (not "pending") — the previous omission was the
+// root cause of applied targets being rolled back once result_ttl elapsed.
+func mapInfoStatusToTargetState(status model.TaskStatus, desired RuleDesiredState) TargetState {
 	switch status {
+	case model.TaskStatusSuccess:
+		if desired == RuleDesiredStateActive {
+			return TargetStateApplied
+		}
+		return TargetStateRemoved
+	case model.TaskStatusFailed, model.TaskStatusTimeout, model.TaskStatusCancelled, model.TaskStatusResultTooLarge:
+		return TargetStateFailed
 	case model.TaskStatusRunning:
 		return TargetStateRunning
 	case model.TaskStatusPending, model.TaskStatusUnspecified:
 		return TargetStateDispatched
 	default:
 		return TargetStatePending
+	}
+}
+
+// isResultDerivedTerminalState reports whether a state came from a terminal
+// task outcome and must not be overwritten by a less precise status snapshot.
+// This is deliberately different from gc.go's isTerminalTargetState: that one
+// describes states needing no further reconciliation (and excludes applied),
+// while this one protects a recorded outcome (and includes applied).
+func isResultDerivedTerminalState(state TargetState) bool {
+	switch state {
+	case TargetStateApplied, TargetStateRemoved, TargetStateFailed:
+		return true
+	default:
+		return false
 	}
 }
 

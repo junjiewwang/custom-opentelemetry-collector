@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGCPhysicallyDeletesEligibleRule 验证满足三个条件（deleted + 所有 target 终态 + retention 已过期）的规则被物理删除。
+// TestGCPhysicallyDeletesEligibleRule 验证满足三个条件（deleted + 强卸载确证 + retention 已过期）的规则被物理删除。
 func TestGCPhysicallyDeletesEligibleRule(t *testing.T) {
 	svc, registry, tm := newTestInstrumentationService(t)
 	svc.config.DeletedRuleRetention = 1 // 1ms retention，极短
@@ -32,13 +32,16 @@ func TestGCPhysicallyDeletesEligibleRule(t *testing.T) {
 	_, err = svc.DeleteRule(context.Background(), rule.ID)
 	require.NoError(t, err)
 
-	// 手动设置所有 target 为终态（removed）
+	// 手动写入强确证（由 evidence verifier 在真实环境完成）
 	targets, err := svc.store.ListTargetStatuses(context.Background(), rule.ID)
 	require.NoError(t, err)
 	for _, tgt := range targets {
 		tgt.State = TargetStateRemoved
 		tgt.TaskID = ""
 		tgt.TaskStatus = ""
+		tgt.RuntimeClean = true
+		tgt.RuntimeCleanAtMillis = time.Now().UnixMilli()
+		tgt.EvidenceSource = EvidenceSourceRuntimeSnapshot
 	}
 	require.NoError(t, svc.store.SaveTargetStatuses(context.Background(), rule.ID, targets))
 

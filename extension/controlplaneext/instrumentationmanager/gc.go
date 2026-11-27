@@ -5,6 +5,7 @@ package instrumentationmanager
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.uber.org/zap"
@@ -87,12 +88,31 @@ func (s *InstrumentationService) gcOnce(ctx context.Context) {
 			continue
 		}
 
-		if !allTargetsTerminal(targets) {
+		if !s.config.GCUninstallEvidenceRequired {
+			// Rollback switch: legacy behaviour.
+			if !allTargetsTerminal(targets) {
+				continue
+			}
+		} else if !hasUninstallEvidence(rule, targets) {
+			// Keeping the record is the precondition for self-healing: while it
+			// exists, reconcile can keep re-dispatching dynamic_uninstrument.
+			// Verified in isolation: purging an unconfirmed rule leaves an agent
+			// with no compensate task when it comes back online.
+			if s.config.GCUnconfirmedAlertAfter > 0 && now-rule.UpdatedAtMillis >= s.config.GCUnconfirmedAlertAfter {
+				s.logger.Warn("GC: deleted rule still lacks uninstall evidence",
+					zap.String("rule_id", rule.ID),
+					zap.String("rule_name", rule.Name),
+					zap.Int("target_count", len(targets)),
+				)
+			}
 			continue
 		}
 
 		// All conditions met — physically delete the rule and its targets.
 		if err := s.store.PhysicalDeleteRule(ctx, rule.ID); err != nil {
+			if errors.Is(err, ErrRuleNotFound) {
+				continue // another replica already purged it
+			}
 			s.logger.Warn("GC: failed to physically delete rule",
 				zap.String("rule_id", rule.ID),
 				zap.Error(err),
@@ -110,6 +130,27 @@ func (s *InstrumentationService) gcOnce(ctx context.Context) {
 	if purgedCount > 0 {
 		s.logger.Info("GC cycle completed", zap.Int("purged_rules", purgedCount))
 	}
+}
+
+// hasUninstallEvidence reports whether it is safe to forget a deleted rule.
+// Rule-level evidence covers rules with no targets; otherwise every target
+// must have a strong runtime-clean confirmation (not merely a task ACK).
+func hasUninstallEvidence(rule *Rule, targets []*RuleTargetStatus) bool {
+	if rule == nil {
+		return false
+	}
+	if rule.UninstallConfirmed {
+		return true
+	}
+	if len(targets) == 0 {
+		return false
+	}
+	for _, target := range targets {
+		if target == nil || !target.RuntimeClean {
+			return false
+		}
+	}
+	return true
 }
 
 // allTargetsTerminal returns true if every target in the list is in a terminal state.

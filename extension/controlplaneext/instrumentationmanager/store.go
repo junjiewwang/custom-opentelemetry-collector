@@ -12,8 +12,16 @@ import (
 )
 
 var ErrRuleNotFound = errors.New("instrumentation rule not found")
+var ErrRevisionConflict = errors.New("instrumentation rule revision conflict")
+
+// SkipRevisionCheck disables the CAS comparison for legacy/internal writers.
+const SkipRevisionCheck int64 = -1
 
 type RuleStore interface {
+	// CommitRule atomically writes a rule and (when targets != nil) its target
+	// statuses under an optimistic revision check. On success rule.Revision is
+	// advanced to the stored value.
+	CommitRule(ctx context.Context, rule *Rule, targets []*RuleTargetStatus, expectedRevision int64) error
 	SaveRule(ctx context.Context, rule *Rule, isNew bool) error
 	GetRule(ctx context.Context, ruleID string) (*Rule, error)
 	ListRules(ctx context.Context, query ListRulesQuery) ([]*Rule, error)
@@ -54,7 +62,45 @@ func (s *MemoryRuleStore) SaveRule(_ context.Context, rule *Rule, isNew bool) er
 		return ErrRuleNotFound
 	}
 
-	s.rules[rule.ID] = cloneRule(rule)
+	stored := cloneRule(rule)
+	if existing, ok := s.rules[rule.ID]; ok {
+		stored.Revision = existing.Revision + 1
+	} else {
+		stored.Revision = 1
+	}
+	s.rules[rule.ID] = stored
+	rule.Revision = stored.Revision
+	return nil
+}
+
+// CommitRule atomically replaces the rule and (optionally) its targets. A nil
+// targets slice means "leave targets untouched".
+func (s *MemoryRuleStore) CommitRule(_ context.Context, rule *Rule, targets []*RuleTargetStatus, expectedRevision int64) error {
+	if rule == nil || rule.ID == "" {
+		return errors.New("rule_id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.rules[rule.ID]
+	if !ok {
+		return ErrRuleNotFound
+	}
+	if expectedRevision != SkipRevisionCheck && existing.Revision != expectedRevision {
+		return ErrRevisionConflict
+	}
+
+	stored := cloneRule(rule)
+	stored.Revision = existing.Revision + 1
+	s.rules[rule.ID] = stored
+	if targets != nil {
+		copied := make([]*RuleTargetStatus, 0, len(targets))
+		for _, target := range targets {
+			copied = append(copied, cloneTargetStatus(target))
+		}
+		s.targets[rule.ID] = copied
+	}
+	rule.Revision = stored.Revision
 	return nil
 }
 
@@ -174,6 +220,9 @@ func filterAndSortRules(items []*Rule, query ListRulesQuery) []*Rule {
 			continue
 		}
 		if !query.IncludeDeleted && rule.DesiredState == RuleDesiredStateDeleted {
+			continue
+		}
+		if query.UnconfirmedOnly && (rule.DesiredState != RuleDesiredStateDeleted || rule.UninstallConfirmed) {
 			continue
 		}
 		if query.AppID != "" && rule.AppID != query.AppID {

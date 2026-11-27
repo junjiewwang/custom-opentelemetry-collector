@@ -96,7 +96,7 @@ func (s *InstrumentationService) reconcileOnce(ctx context.Context) {
 	}
 
 	for _, rule := range rules {
-		if rule == nil || rule.ScopeType != ScopeTypeService {
+		if rule == nil {
 			continue
 		}
 		if err := s.reconcileRule(ctx, rule); err != nil {
@@ -110,7 +110,7 @@ func (s *InstrumentationService) reconcileOnce(ctx context.Context) {
 }
 
 func (s *InstrumentationService) reconcileRule(ctx context.Context, rule *Rule) error {
-	if rule == nil || rule.ScopeType != ScopeTypeService {
+	if rule == nil {
 		return nil
 	}
 
@@ -140,7 +140,19 @@ func (s *InstrumentationService) reconcileRule(ctx context.Context, rule *Rule) 
 		agentID := strings.TrimSpace(current.AgentID)
 		agent, ok := agentsByID[agentID]
 		if !ok {
-			audits = append(audits, newAuditEntry(AuditSourceReconcile, AuditActionTargetPrune, AuditStatusSuccess, agentID, "", "target left current service scope", now))
+			// A deleted rule without uninstall evidence must keep its target
+			// record: pruning it would remove the only object reconcile can use
+			// to re-dispatch dynamic_uninstrument when the agent returns.
+			if refreshedRule.DesiredState == RuleDesiredStateDeleted &&
+				!refreshedRule.UninstallConfirmed && !current.RuntimeClean {
+				kept := cloneTargetStatus(current)
+				kept.State = TargetStateOffline
+				kept.UpdatedAtMillis = now
+				nextTargets = append(nextTargets, kept)
+				audits = append(audits, newAuditEntry(AuditSourceReconcile, AuditActionTargetPrune, AuditStatusSkipped, agentID, "", "target retained: uninstall evidence missing", now))
+			} else {
+				audits = append(audits, newAuditEntry(AuditSourceReconcile, AuditActionTargetPrune, AuditStatusSuccess, agentID, "", "target left current service scope", now))
+			}
 			continue
 		}
 		delete(agentsByID, agentID)
@@ -201,10 +213,7 @@ func (s *InstrumentationService) reconcileRule(ctx context.Context, rule *Rule) 
 		refreshedRule.LastOperation = lastOperation
 		refreshedRule.UpdatedAtMillis = now
 		refreshedRule.RecentAudits = appendRuleAudits(refreshedRule.RecentAudits, withAuditOperator(ctx, audits), s.auditRetention())
-		if err := s.store.SaveTargetStatuses(ctx, refreshedRule.ID, nextTargets); err != nil {
-			return err
-		}
-		if err := s.store.SaveRule(ctx, refreshedRule, false); err != nil {
+		if err := s.commitRuleBestEffort(ctx, refreshedRule, nextTargets); err != nil {
 			return err
 		}
 	}

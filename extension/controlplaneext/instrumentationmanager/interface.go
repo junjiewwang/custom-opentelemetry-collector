@@ -70,6 +70,8 @@ type InstrumentationManager interface {
 	ListTargetStatuses(ctx context.Context, ruleID string) ([]*RuleTargetStatus, error)
 	GetRuleRuntimeSnapshot(ctx context.Context, ruleID string) (*RuleRuntimeSnapshot, error)
 	RefreshRuleRuntimeSnapshot(ctx context.Context, ruleID string) (*RuleRuntimeSnapshot, error)
+	VerifyUninstall(ctx context.Context, ruleID string) (*Rule, error)
+	PurgeRule(ctx context.Context, ruleID string, reason string) error
 	Start(ctx context.Context) error
 	Close() error
 }
@@ -89,6 +91,11 @@ type Config struct {
 	GCInterval                        int64  `mapstructure:"gc_interval_millis"`
 	DeletedRuleRetention              int64  `mapstructure:"deleted_rule_retention_millis"`
 	ReconcileTargetExpireTimeout      int64  `mapstructure:"reconcile_target_expire_timeout_millis"`
+	GCUninstallEvidenceRequired       bool   `mapstructure:"gc_uninstall_evidence_required"`
+	GCEvidenceScanInterval            int64  `mapstructure:"gc_evidence_scan_interval_millis"`
+	GCEvidenceMaxRulesPerScan         int    `mapstructure:"gc_evidence_max_rules_per_scan"`
+	GCEvidenceBatchLeaseTTL           int64  `mapstructure:"gc_evidence_batch_lease_ttl_millis"`
+	GCUnconfirmedAlertAfter           int64  `mapstructure:"gc_unconfirmed_alert_after_millis"`
 
 	// DefaultTenantInstrumentationEnabled is the deployment-wide fallback used
 	// when a tenant has no explicit dynamic-instrumentation capability.
@@ -113,36 +120,48 @@ func DefaultConfig() Config {
 		GCInterval:                        60000,
 		DeletedRuleRetention:              7 * 24 * 3600 * 1000,
 		ReconcileTargetExpireTimeout:      7 * 24 * 3600 * 1000,
+		GCUninstallEvidenceRequired:       true,
+		GCEvidenceScanInterval:            300000,
+		GCEvidenceMaxRulesPerScan:         50,
+		GCEvidenceBatchLeaseTTL:           120000,
+		GCUnconfirmedAlertAfter:           7 * 24 * 3600 * 1000,
 	}
 }
 
 type Rule struct {
-	ID                 string            `json:"rule_id"`
-	Name               string            `json:"name"`
-	Description        string            `json:"description,omitempty"`
-	AppID              string            `json:"app_id"`
-	ServiceName        string            `json:"service_name"`
-	ScopeType          ScopeType         `json:"scope_type"`
-	TargetAgentIDs     []string          `json:"target_agent_ids,omitempty"`
-	ClassName          string            `json:"class_name"`
-	MethodName         string            `json:"method_name"`
-	ParameterTypes     string            `json:"parameter_types,omitempty"`
-	MethodDescriptor   string            `json:"method_descriptor,omitempty"`
-	InstrumentType     InstrumentType    `json:"instrument_type"`
-	SpanName           string            `json:"span_name,omitempty"`
-	CaptureArgs        string            `json:"capture_args,omitempty"`
-	CaptureReturn      string            `json:"capture_return,omitempty"`
-	CaptureMaxLength   int               `json:"capture_max_length,omitempty"`
-	Force              bool              `json:"force,omitempty"`
-	DesiredState       RuleDesiredState  `json:"desired_state"`
-	EverApplySucceeded bool              `json:"ever_apply_succeeded"`
-	CreatedAtMillis    int64             `json:"created_at_millis"`
-	UpdatedAtMillis    int64             `json:"updated_at_millis"`
-	CreatedBy          string            `json:"created_by,omitempty"`
-	UpdatedBy          string            `json:"updated_by,omitempty"`
-	LastOperation      *OperationSummary `json:"last_operation,omitempty"`
-	Summary            RuleSummary       `json:"summary"`
-	RecentAudits       []*RuleAuditEntry `json:"recent_audits,omitempty"`
+	ID                 string           `json:"rule_id"`
+	Name               string           `json:"name"`
+	Description        string           `json:"description,omitempty"`
+	AppID              string           `json:"app_id"`
+	ServiceName        string           `json:"service_name"`
+	ScopeType          ScopeType        `json:"scope_type"`
+	TargetAgentIDs     []string         `json:"target_agent_ids,omitempty"`
+	ClassName          string           `json:"class_name"`
+	MethodName         string           `json:"method_name"`
+	ParameterTypes     string           `json:"parameter_types,omitempty"`
+	MethodDescriptor   string           `json:"method_descriptor,omitempty"`
+	InstrumentType     InstrumentType   `json:"instrument_type"`
+	SpanName           string           `json:"span_name,omitempty"`
+	CaptureArgs        string           `json:"capture_args,omitempty"`
+	CaptureReturn      string           `json:"capture_return,omitempty"`
+	CaptureMaxLength   int              `json:"capture_max_length,omitempty"`
+	Force              bool             `json:"force,omitempty"`
+	DesiredState       RuleDesiredState `json:"desired_state"`
+	EverApplySucceeded bool             `json:"ever_apply_succeeded"`
+	// Revision is a monotonic CAS token. Legacy stored rules have Revision 0.
+	Revision int64 `json:"revision,omitempty"`
+	// Rule-level GC evidence. Deleted rules with no targets carry it directly
+	// because there is no target status to attach evidence to.
+	UninstallConfirmed         bool              `json:"uninstall_confirmed,omitempty"`
+	UninstallEvidenceSource    string            `json:"uninstall_evidence_source,omitempty"`
+	UninstallConfirmedAtMillis int64             `json:"uninstall_confirmed_at_millis,omitempty"`
+	CreatedAtMillis            int64             `json:"created_at_millis"`
+	UpdatedAtMillis            int64             `json:"updated_at_millis"`
+	CreatedBy                  string            `json:"created_by,omitempty"`
+	UpdatedBy                  string            `json:"updated_by,omitempty"`
+	LastOperation              *OperationSummary `json:"last_operation,omitempty"`
+	Summary                    RuleSummary       `json:"summary"`
+	RecentAudits               []*RuleAuditEntry `json:"recent_audits,omitempty"`
 }
 
 type RuleSummary struct {
@@ -184,7 +203,19 @@ type RuleTargetStatus struct {
 	LastErrorMessage     string           `json:"last_error_message,omitempty"`
 	LastDispatchAtMillis int64            `json:"last_dispatch_at_millis,omitempty"`
 	UpdatedAtMillis      int64            `json:"updated_at_millis"`
+	// UninstallTaskAcked is a weak signal: the uninstall task reported success.
+	UninstallTaskAcked bool `json:"uninstall_task_acked,omitempty"`
+	// RuntimeClean is the strong evidence that the probe really reverted the
+	// enhancement. Only the evidence verifier may set it.
+	RuntimeClean         bool   `json:"runtime_clean,omitempty"`
+	RuntimeCleanAtMillis int64  `json:"runtime_clean_at_millis,omitempty"`
+	EvidenceSource       string `json:"evidence_source,omitempty"`
 }
+
+const (
+	EvidenceSourceRuntimeSnapshot   = "runtime_snapshot"
+	EvidenceSourceNeverInstrumented = "never_instrumented"
+)
 
 type ListRulesQuery struct {
 	AppID          string
@@ -193,6 +224,8 @@ type ListRulesQuery struct {
 	DesiredState   RuleDesiredState
 	Search         string
 	IncludeDeleted bool
+	// UnconfirmedOnly keeps deleted rules whose uninstall evidence is missing.
+	UnconfirmedOnly bool
 }
 
 type CreateRuleRequest struct {
