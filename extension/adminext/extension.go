@@ -422,6 +422,7 @@ func (e *Extension) initInstrumentationManager(ctx context.Context, _ component.
 	if err != nil {
 		return fmt.Errorf("configure tenant instrumentation capability: %w", err)
 	}
+	opts = append(opts, instrumentationmanager.WithMeterProvider(e.settings.TelemetrySettings.MeterProvider))
 
 	factory := controlplaneext.NewComponentFactory(e.logger, storage)
 	mgr, err := factory.CreateInstrumentationManager(e.config.InstrumentationManager, e.agentReg, e.taskMgr, opts...)

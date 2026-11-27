@@ -31,6 +31,7 @@ type InstrumentationService struct {
 	runtimeRefreshGroup singleflight.Group
 	runtimeInstanceID   string
 	capabilities        CapabilityProvider
+	metrics             *instrumentationMetrics
 	reconcileCancel     context.CancelFunc
 	reconcileWG         sync.WaitGroup
 	gcCancel            context.CancelFunc
@@ -60,6 +61,7 @@ func newInstrumentationServiceWithRuntimeSnapshotStore(logger *zap.Logger, confi
 		taskMgr:           taskMgr,
 		runtimeSnapshots:  runtimeSnapshots,
 		runtimeInstanceID: strings.TrimSpace(runtimeInstanceID),
+		metrics:           newInstrumentationMetrics(nil),
 	}
 }
 

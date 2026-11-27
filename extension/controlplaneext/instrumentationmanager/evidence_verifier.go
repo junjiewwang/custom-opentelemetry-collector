@@ -86,11 +86,11 @@ func (s *InstrumentationService) verifyEvidenceOnce(ctx context.Context) {
 		return
 	}
 	if !acquired {
-		s.logger.Info("Evidence verifier: skipped cycle, another replica owns the batch lease",
+		s.logger.Debug("Evidence verifier: skipped cycle, another replica owns the batch lease",
 			zap.String("instance", s.runtimeInstanceID))
 		return
 	}
-	s.logger.Info("Evidence verifier: batch lease acquired",
+	s.logger.Debug("Evidence verifier: batch lease acquired",
 		zap.String("instance", s.runtimeInstanceID))
 
 	rules, err := s.store.ListRules(ctx, ListRulesQuery{IncludeDeleted: true})
@@ -110,14 +110,28 @@ func (s *InstrumentationService) verifyEvidenceOnce(ctx context.Context) {
 	if limit := s.evidenceMaxRulesPerScan(); len(candidates) > limit {
 		candidates = candidates[:limit]
 	}
+	failures := 0
 	for _, rule := range candidates {
 		if ctx.Err() != nil {
 			return
 		}
 		if _, err := s.VerifyUninstall(ctx, rule.ID); err != nil {
-			s.logger.Warn("Evidence verifier: verification failed",
+			failures++
+			s.logger.Debug("Evidence verifier: verification failed",
 				zap.String("rule_id", rule.ID), zap.Error(err))
 		}
+	}
+	manualReview, pending := s.metrics.counts()
+	s.logger.Debug("Evidence verifier: scan cycle completed",
+		zap.Int("candidates", len(candidates)),
+		zap.Int("failed", failures),
+		zap.Int64("unconfirmed_manual_review", manualReview),
+		zap.Int64("unconfirmed_evidence_pending", pending),
+	)
+	if failures > 0 {
+		// Real errors are still visible, but as one aggregate line per cycle
+		// instead of one line per rule.
+		s.logger.Warn("Evidence verifier: verification errors in scan cycle", zap.Int("failed", failures))
 	}
 }
 
@@ -146,7 +160,11 @@ func (s *InstrumentationService) VerifyUninstall(ctx context.Context, ruleID str
 	// state to query, so the absence of any apply attempt is the evidence.
 	if len(targets) == 0 {
 		if rule.EverApplySucceeded {
-			s.logger.Warn("Evidence verifier: deleted rule had successful apply but no targets; manual review required",
+			// This is a steady-state record in the manual-review queue, not a
+			// new failure. Reporting it per rule on every cycle produced a
+			// constant stream of identical warnings; the aggregate gauge and
+			// the console's Unconfirmed filter carry this information instead.
+			s.logger.Debug("Evidence verifier: deleted rule needs manual review",
 				zap.String("rule_id", ruleID))
 			return rule, nil
 		}

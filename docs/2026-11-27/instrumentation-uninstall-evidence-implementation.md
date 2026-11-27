@@ -204,6 +204,22 @@
 - 快照 TTL 20s、失败 TTL 5s；确证写入后 GC 只读持久化字段，避免易失缓存造成误判。
 - runtime snapshot 刷新是查询类探针任务，会更新快照缓存；批量扫描有全局配额与 per-agent lease 双重限流。
 
+## 6.1 补充：日志噪音治理与未确证规则指标化
+
+**问题**：部署后 verifier 每 5 分钟对 4 条「人工复核队列」规则各打一条 Warn，并打一条 `batch lease acquired` Info，形成 15 轮 × 5 行/小时的稳态刷屏。根因是这些规则 `ever_apply_succeeded=true` 且 `targets=0`，`VerifyUninstall` 只告警、不写状态，下一轮仍是候选；日志级别与去重机制缺失。GC 侧 `gc_unconfirmed_alert_after` 门槛（7 天）达到后还会以 60 秒周期重复同类逐条 Warn。
+
+**改动**：
+
+- 新增 `instrumentationmanager/metrics.go`：`instrumentation_unconfirmed_rules` **Int64ObservableGauge**，低基数 `reason` 属性 `manual_review` / `evidence_pending`；通过 `WithMeterProvider` 从 `adminext` 注入 collector 的 `TelemetrySettings.MeterProvider`，nil 时退化为 no-op。
+- 每个副本在 60 秒 GC 扫描中调用 `updateUnconfirmedMetrics` 统计并写入原子缓存，ObservableGauge 回调只读缓存、不做 store I/O；指标值不依赖谁拿到 verifier 批次租约。
+- verifier 的 `manual review required`、`batch lease acquired` / `skipped cycle` 降为 Debug；真错误聚合成每轮一条 Warn；每轮一条 Debug 汇总（candidates / failed / 两类未确证计数）。
+- GC 删除逐条 Warn，改为每轮一条聚合 Debug；保留 `gc_unconfirmed_alert_after` 作为聚合门槛。
+- 页面 `Unconfirmed (N)` 与筛选逻辑**未改动**，继续作为逐条明细的可视化入口。
+
+**线上验证（2026-11-27 17:37 部署后）**：VictoriaMetrics 查询 `instrumentation_unconfirmed_rules` 返回 `reason=manual_review → 4`、`reason=evidence_pending → 0`，与页面 `Unconfirmed (4)` 一致；日志级别 `info`（Debug 不输出）。主动触发 4 次 `POST /rules/{id}/verify`（与周期扫描同一 `VerifyUninstall` 路径）后，`manual review required` / `batch lease acquired` / GC 逐条 Warn / 验证错误 Warn 计数均为 **0**。未等待完整 5 分钟周期（用户要求缩短等待），周期扫描不复刷由「同一代码路径 + 日志级别」确证。
+
+**边界**：真异常（快照残留、租约失败、ListRules 失败、物理删除失败）仍保留 Warn；指标是聚合值，逐条原因仍以页面为准。
+
 ## 7. 收尾
 
 - 本批所有改动未提交；验证用端口转发、临时 key 与临时文件按验证清单清理。

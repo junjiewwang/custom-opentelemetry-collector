@@ -66,7 +66,8 @@ func (s *InstrumentationService) gcOnce(ctx context.Context) {
 
 	now := time.Now().UnixMilli()
 	retention := s.deletedRuleRetention()
-	var purgedCount int
+	var purgedCount, alertableUnconfirmed int
+	manualReview, evidencePending := s.updateUnconfirmedMetrics(ctx, rules)
 
 	for _, rule := range rules {
 		if rule == nil || rule.DesiredState != RuleDesiredStateDeleted {
@@ -99,11 +100,7 @@ func (s *InstrumentationService) gcOnce(ctx context.Context) {
 			// Verified in isolation: purging an unconfirmed rule leaves an agent
 			// with no compensate task when it comes back online.
 			if s.config.GCUnconfirmedAlertAfter > 0 && now-rule.UpdatedAtMillis >= s.config.GCUnconfirmedAlertAfter {
-				s.logger.Warn("GC: deleted rule still lacks uninstall evidence",
-					zap.String("rule_id", rule.ID),
-					zap.String("rule_name", rule.Name),
-					zap.Int("target_count", len(targets)),
-				)
+				alertableUnconfirmed++
 			}
 			continue
 		}
@@ -130,6 +127,39 @@ func (s *InstrumentationService) gcOnce(ctx context.Context) {
 	if purgedCount > 0 {
 		s.logger.Info("GC cycle completed", zap.Int("purged_rules", purgedCount))
 	}
+	if alertableUnconfirmed > 0 {
+		s.logger.Debug("GC: deleted rules still lack uninstall evidence; see instrumentation_unconfirmed_rules gauge",
+			zap.Int("rule_count", alertableUnconfirmed),
+			zap.Int64("manual_review", manualReview),
+			zap.Int64("evidence_pending", evidencePending),
+		)
+	}
+}
+
+// updateUnconfirmedMetrics classifies deleted rules that still lack uninstall
+// evidence and publishes the aggregate to the observable gauge. It runs on
+// every replica during the GC sweep, so metric values do not depend on which
+// replica won the evidence-verifier batch lease.
+func (s *InstrumentationService) updateUnconfirmedMetrics(ctx context.Context, rules []*Rule) (int64, int64) {
+	var manualReview, evidencePending int64
+	for _, rule := range rules {
+		if rule == nil || rule.DesiredState != RuleDesiredStateDeleted || rule.UninstallConfirmed {
+			continue
+		}
+		targets, err := s.store.ListTargetStatuses(ctx, rule.ID)
+		if err != nil {
+			// Unknown breakdown still counts as an unconfirmed rule.
+			evidencePending++
+			continue
+		}
+		if len(targets) == 0 && rule.EverApplySucceeded {
+			manualReview++
+		} else {
+			evidencePending++
+		}
+	}
+	s.metrics.setUnconfirmedCounts(manualReview, evidencePending)
+	return manualReview, evidencePending
 }
 
 // hasUninstallEvidence reports whether it is safe to forget a deleted rule.
