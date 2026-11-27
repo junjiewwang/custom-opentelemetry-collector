@@ -47,7 +47,7 @@ export interface TerminalHandle {
   blur: () => void;
   /** 重新 fit（容器大小变化后手动调用） */
   fit: () => { cols: number; rows: number } | null;
-  /** 获取建议尺寸（不实际 resize） */
+  /** 获取当前应生效的尺寸（不实际 resize）；已含 FIT_SAFETY_MARGIN 修正，与 xterm.cols/rows 一致 */
   getProposedDimensions: () => { cols: number; rows: number } | null;
   /** 搜索相关 */
   findNext: (query: string, options?: SearchOptions) => boolean;
@@ -88,12 +88,25 @@ const DARK_THEME = {
 };
 
 /**
- * 调整后的 cols/rows，减 1 防止滚动条遮挡和末行截断。
+ * 实际生效尺寸 = FitAddon 建议尺寸 - 安全余量。
+ *
+ * 为什么要减：@xterm/addon-fit@0.11 的 proposeDimensions() 取
+ * getComputedStyle(parent).width/height；项目全局 box-sizing: border-box，
+ * 且 xterm 容器带 px-2 pt-2 pb-2（8px padding），该值含 padding。FitAddon
+ * 只减去 .xterm 自身 padding（实测 0px）并预留固定 14px overview ruler，
+ * 于是高估约 1 列 / 1 行；字符单元实测 8.4024 × 16px，raw 行会超出可用高。
+ *
+ * 浏览器实测 5 种视口（800×600 / 1024×768 / 1280×720 / 1440×900 /
+ * 1600×1000）：raw-1 在每一档都恰好抵消误差，既不溢出也不浪费。
+ * 这是与 fontSize=14、容器 padding=8px、DPR=1、border-box 绑定的经验余量；
+ * 修改字体/缩放/容器 padding 或升级 addon-fit 时必须重新实测，不要直接删掉。
  */
+const FIT_SAFETY_MARGIN = 1;
+
 function adjustDimensions(raw: { cols: number; rows: number }) {
   return {
-    cols: Math.max(1, raw.cols - 1),
-    rows: Math.max(1, raw.rows - 1),
+    cols: Math.max(1, raw.cols - FIT_SAFETY_MARGIN),
+    rows: Math.max(1, raw.rows - FIT_SAFETY_MARGIN),
   };
 }
 

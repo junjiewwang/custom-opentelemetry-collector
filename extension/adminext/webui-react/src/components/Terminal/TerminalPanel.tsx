@@ -65,6 +65,9 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
   const [connecting, setConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
+  // Effective xterm dimensions (the adjusted values sent to the PTY), not the
+  // raw values proposed by FitAddon.
+  const [dimensions, setDimensions] = useState<{ cols: number; rows: number } | null>(null);
 
   // 搜索相关
   const [searchOpen, setSearchOpen] = useState(false);
@@ -179,11 +182,13 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
       // 发送到 server
       sendWS({ action: 'read', data });
     },
-    onReady: () => {
+    onReady: (cols, rows) => {
+      setDimensions({ cols, rows });
       // 初始尺寸在收到 [+] 后随首帧一起发送，避免过早触发 resize。
       connectWebSocket();
     },
     onResize: (cols, rows) => {
+      setDimensions({ cols, rows });
       sendWS({ action: 'resize', cols, rows });
     },
   });
@@ -516,6 +521,13 @@ export default function TerminalPanel({ instance, onClose, onStatusChange }: Ter
             <span className="text-gray-500 mx-2">@</span>
             <span className="text-green-400 font-medium">{ip}</span>
           </div>
+          <span
+            data-testid="terminal-dimensions"
+            className="px-2 py-0.5 rounded bg-gray-700/70 text-[10px] font-mono text-gray-300 whitespace-nowrap"
+            title="xterm 实际生效并同步给 PTY 的列数 × 行数（FitAddon 建议值已扣除安全余量）"
+          >
+            {dimensions ? `${dimensions.cols} × ${dimensions.rows}` : '— × —'}
+          </span>
           {error && (
             <span className="text-[10px] text-red-400 bg-red-900/30 px-2 py-0.5 rounded">{error}</span>
           )}
